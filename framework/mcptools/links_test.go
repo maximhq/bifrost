@@ -45,6 +45,12 @@ func TestLogsViewLinkEncodesFilters(t *testing.T) {
 	require.Contains(t, link, "end_time=1788307200")
 }
 
+func TestMCPLogDetailLink(t *testing.T) {
+	require.Equal(t, "/workspace/mcp-logs?selected_log=mcp-1", mcpLogDetailLink("mcp-1"))
+	require.Equal(t, "/workspace/mcp-logs?selected_log=a%2Fb", mcpLogDetailLink("a/b"), "ids are escaped")
+	require.Empty(t, mcpLogDetailLink(""), "no id, no link")
+}
+
 func TestLogsViewLinkOmitsEmptyFilters(t *testing.T) {
 	require.Equal(t, "/workspace/logs", logsViewLink(&logstore.SearchFilters{}))
 	require.Equal(t, "/workspace/logs", logsViewLink(nil))
@@ -470,12 +476,40 @@ func TestEveryFilteredToolLinksItsFilters(t *testing.T) {
 		"query_model_performance": {},
 		RenderChartToolName:       {"kind": "line", "metric": "requests", "interval": "day", "title": "Requests per day"},
 	}
+	// The MCP tools take their own filter object and link the MCP Logs page.
+	mcpCases := map[string]map[string]any{
+		"query_mcp_logs":     {},
+		"count_mcp_logs":     {},
+		"query_mcp_metrics":  {"metrics": []any{"summary"}},
+		"query_mcp_usage_by": {},
+	}
 	for _, tool := range buildTools() {
-		if !strings.Contains(tool.schemaJSON, `"filters"`) {
+		switch {
+		case strings.Contains(tool.schemaJSON, FilterSchema):
+			require.Contains(t, cases, tool.name, "%s takes filters and has no link case here", tool.name)
+		case strings.Contains(tool.schemaJSON, MCPFilterSchema):
+			require.Contains(t, mcpCases, tool.name, "%s takes MCP filters and has no link case here", tool.name)
+		case strings.Contains(tool.schemaJSON, `"filters"`):
+			require.Fail(t, "unknown filter schema", "%s takes filters of a shape this test does not know", tool.name)
+		default:
 			require.NotContains(t, cases, tool.name)
-			continue
+			require.NotContains(t, mcpCases, tool.name)
 		}
-		require.Contains(t, cases, tool.name, "%s takes filters and has no link case here", tool.name)
+	}
+	mcpWant := matrixQuery(map[string]string{"tool_names": "search", "status": "success"})
+	for name, args := range mcpCases {
+		t.Run(name, func(t *testing.T) {
+			args["filters"] = matrixFilters(map[string]any{"tool_names": []any{"search"}, "status": []any{"success"}})
+			result, err := runTool(t, name, &Deps{LogManager: &fakeLogReader{}}, args)
+			require.NoError(t, err)
+			requireMCPLogsLink(t, resultMap(t, result)["logs_link"], mcpWant, name)
+
+			// And none of them links what the page cannot show.
+			args["filters"] = matrixFilters(map[string]any{"min_latency": float64(100)})
+			result, err = runTool(t, name, &Deps{LogManager: &fakeLogReader{}}, args)
+			require.NoError(t, err)
+			require.NotContains(t, resultMap(t, result), "logs_link", "%s linked a query the MCP Logs page cannot reproduce", name)
+		})
 	}
 
 	// An empty ranking, so query_usage_by has no rows to narrow its link to.
@@ -731,5 +765,126 @@ func TestFailuresLinkConditions(t *testing.T) {
 		out := resultMap(t, result)
 		requireLogsLink(t, out["failures_link"], matrixQuery(map[string]string{"providers": "anthropic", "status": "error"}), name)
 		requireLogsLink(t, out["logs_link"], matrixQuery(map[string]string{"providers": "anthropic"}), name)
+	}
+}
+
+// requireMCPLogsLink checks a link opens the MCP Logs page with exactly want.
+func requireMCPLogsLink(t *testing.T, link any, want url.Values, context string) {
+	t.Helper()
+	text, ok := link.(string)
+	require.True(t, ok, "%s: link must be a string, got %T", context, link)
+	parsed, err := url.Parse(text)
+	require.NoError(t, err)
+	require.Equal(t, mcpLogsViewPath, parsed.Path, context)
+	require.Equal(t, want, parsed.Query(), context)
+}
+
+// One case per MCP filter the tools accept: the argument as the model sends it,
+// and the parameter the MCP Logs page must receive (its useQueryStates block in
+// ui/app/workspace/mcp-logs/page.tsx). A filter the page does not read gets no
+// link rather than a wider one.
+func TestMCPLogsLinkPerFilterArgument(t *testing.T) {
+	type filterCase struct {
+		arg    any
+		want   string
+		noLink bool
+	}
+	cases := map[string]filterCase{
+		"start_time":           {arg: matrixStart, want: matrixStartUnix},
+		"end_time":             {arg: matrixEnd, want: matrixEndUnix},
+		"tool_names":           {arg: []any{"search", "fetch"}, want: "search,fetch"},
+		"server_labels":        {arg: []any{"github"}, want: "github"},
+		"status":               {arg: []any{"error"}, want: "error"},
+		"virtual_key_ids":      {arg: []any{"vk-1"}, want: "vk-1"},
+		"team_ids":             {arg: []any{"team-1"}, want: "team-1"},
+		"customer_ids":         {arg: []any{"cust-1"}, want: "cust-1"},
+		"user_ids":             {arg: []any{"u-1", "u-2"}, want: "u-1,u-2"},
+		"business_unit_ids":    {arg: []any{"bu-1"}, want: "bu-1"},
+		"project_ids":          {arg: []any{"proj-1"}, want: "proj-1"},
+		"device_ids":           {arg: []any{"dev-1"}, want: "dev-1"},
+		"apps":                 {arg: []any{"a,b"}, want: "a%2Cb"},
+		"agent_names":          {arg: []any{"triage"}, want: "triage"},
+		"session_id":           {arg: "sess-1", want: "sess-1"},
+		"agent_correlation_id": {arg: "run-1", want: "run-1"},
+		"content_search":       {arg: "timeout, 50%", want: "timeout, 50%"},
+		"user_agents":          {arg: []any{"curl/8.0"}, noLink: true},
+		"llm_request_ids":      {arg: []any{"req-1"}, noLink: true},
+		"min_latency":          {arg: float64(10), noLink: true},
+		"max_latency":          {arg: float64(900), noLink: true},
+		// Widens the question; the page has no parameter for it.
+		"scope": {arg: "all"},
+	}
+	var schema struct {
+		Properties map[string]any `json:"properties"`
+	}
+	require.NoError(t, sonic.UnmarshalString(MCPFilterSchema, &schema))
+	for name := range schema.Properties {
+		require.Contains(t, cases, name, "MCP filter %s is offered to the model and has no link case here", name)
+	}
+	for name := range cases {
+		require.Contains(t, schema.Properties, name, "case %s is not an MCP filter the tools offer", name)
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			result, err := runTool(t, "count_mcp_logs", &Deps{LogManager: &fakeLogReader{}}, map[string]any{
+				"filters": matrixFilters(map[string]any{name: tc.arg}),
+			})
+			require.NoError(t, err)
+			out := resultMap(t, result)
+			if tc.noLink {
+				require.NotContains(t, out, "logs_link", "the MCP Logs page cannot filter by %s", name)
+				return
+			}
+			want := matrixQuery(nil)
+			if tc.want != "" && name != "start_time" && name != "end_time" {
+				want.Set(name, tc.want)
+			}
+			requireMCPLogsLink(t, out["logs_link"], want, name)
+		})
+	}
+}
+
+// failures_link on an MCP result opens the failed executions, and only when
+// there are some the query's own status filter lets through.
+func TestMCPFailuresLinkConditions(t *testing.T) {
+	failing := &logstore.MCPToolLogStats{TotalExecutions: 10, SuccessRate: 80}
+	result, err := runTool(t, "count_mcp_logs", &Deps{LogManager: &fakeLogReader{mcpStats: failing}}, map[string]any{
+		"filters": matrixFilters(map[string]any{"tool_names": []any{"search"}}),
+	})
+	require.NoError(t, err)
+	requireMCPLogsLink(t, resultMap(t, result)["failures_link"], matrixQuery(map[string]string{"tool_names": "search", "status": "error"}), "failures")
+
+	for name, tc := range map[string]struct {
+		stats   *logstore.MCPToolLogStats
+		filters map[string]any
+	}{
+		"nothing failed":      {&logstore.MCPToolLogStats{TotalExecutions: 10, SuccessRate: 100}, nil},
+		"nothing ran":         {&logstore.MCPToolLogStats{}, nil},
+		"errors filtered out": {failing, map[string]any{"status": []any{"success"}}},
+	} {
+		result, err := runTool(t, "count_mcp_logs", &Deps{LogManager: &fakeLogReader{mcpStats: tc.stats}}, map[string]any{
+			"filters": matrixFilters(tc.filters),
+		})
+		require.NoError(t, err)
+		require.NotContains(t, resultMap(t, result), "failures_link", name)
+	}
+}
+
+// A ranked tool opens its own executions, not the whole ranking's.
+func TestMCPUsageByRowsLinkToTheirOwnTool(t *testing.T) {
+	fake := &fakeLogReader{mcpTopTools: &logstore.MCPTopToolsResult{
+		Tools: []logstore.MCPTopToolResult{{ToolName: "search", Count: 3}, {ToolName: "fetch", Count: 1}},
+	}}
+	result, err := runTool(t, "query_mcp_usage_by", &Deps{LogManager: fake}, map[string]any{
+		"filters": matrixFilters(map[string]any{"server_labels": []any{"github"}}),
+	})
+	require.NoError(t, err)
+	tools := resultMap(t, result)["tools"].([]any)
+	require.Len(t, tools, 2)
+	for _, raw := range tools {
+		row := raw.(map[string]any)
+		requireMCPLogsLink(t, row["link"], matrixQuery(map[string]string{
+			"server_labels": "github", "tool_names": row["tool_name"].(string),
+		}), row["tool_name"].(string))
 	}
 }

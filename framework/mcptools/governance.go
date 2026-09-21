@@ -5,27 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 )
-
-// VirtualKeyFinder resolves a key by name. It is the paginated, searchable
-// key read every config store already has - the enterprise wrapper applies
-// the caller's key scope inside it, so a name lookup cannot reach a key the
-// caller may not see. Optional: a reader without it answers by id only.
-//
-// It exists because describe_filter_space lists keys from logged traffic, and
-// a key that was just created, or has not been used in a month, is not there.
-// Asked for that key's budget, the model concluded the key did not exist - a false
-// statement about a key sitting in the dashboard. A name lookup that reads
-// configuration rather than traffic is what makes "the key X" answerable
-// whether or not X has ever been used.
-type VirtualKeyFinder interface {
-	GetVirtualKeysPaginated(ctx context.Context, params configstore.VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
-}
 
 // VirtualKeyDecorator fills in what a key row alone cannot say about a key's
 // governance, before describe_virtual_key projects it.
@@ -106,17 +96,59 @@ type UserGovernanceModelBudget struct {
 	RateLimit *tables.TableRateLimit
 }
 
-// GovernanceReader is the slice of the config store describe_virtual_key is
-// allowed to read.
-//
-// Like LogReader, this is deliberately one method: reviewing what the server can see
-// about how the deployment is governed means reading this interface, not
-// auditing configstore.ConfigStore's whole surface. GetVirtualKey in
-// particular is scope-aware - a caller's ctx narrows which rows it can return,
-// the same row-level enforcement every logstore query gets - so this tool
-// inherits that for free rather than needing its own access check.
+// GovernanceReader is the slice of the config store these tools may reach,
+// and it is reads only: a write is a request to an admin route, made through
+// AdminDispatcher. configstore.ConfigStore satisfies it structurally. Only some
+// methods apply the request's row filter (virtual keys, teams, customers read
+// through ScopedDB; budgets, rate limits and model configs do not), so the
+// tools enforce the caller's tenant themselves - see tenant.go.
 type GovernanceReader interface {
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
+	GetVirtualKeysPaginated(ctx context.Context, params configstore.VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
+
+	GetTeam(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableTeam, error)
+	GetTeamsPaginated(ctx context.Context, params configstore.TeamsQueryParams) ([]tables.TableTeam, int64, error)
+
+	GetCustomer(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableCustomer, error)
+	GetCustomersPaginated(ctx context.Context, params configstore.CustomersQueryParams) ([]tables.TableCustomer, int64, error)
+
+	GetBudget(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableBudget, error)
+	GetBudgets(ctx context.Context) ([]tables.TableBudget, error)
+
+	GetProviders(ctx context.Context) ([]tables.TableProvider, error)
+	GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error)
+	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*configstore.ProviderConfig, error)
+
+	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
+	GetMCPClientsPaginated(ctx context.Context, params configstore.MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
+
+	GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
+	GetVirtualMCPsPaginated(ctx context.Context, params configstore.VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
+	GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error)
+
+	GetRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error)
+	GetRoutingRulesPaginated(ctx context.Context, params configstore.RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error)
+
+	GetRateLimit(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableRateLimit, error)
+	GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error)
+
+	GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error)
+	GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error)
+	GetModelConfigsPaginated(ctx context.Context, params configstore.ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error)
+
+	GetPlugin(ctx context.Context, name string) (*tables.TablePlugin, error)
+	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
+
+	GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error)
+	GetPricingOverridesPaginated(ctx context.Context, params configstore.PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error)
+
+	GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointsPaginated(ctx context.Context, params configstore.WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error)
+
+	ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error)
+
+	ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPOauthToken, error)
+	ListMCPPerUserHeaderCredentials(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error)
 }
 
 // describeVirtualKeyTool looks up one virtual key's budget, rate limit and
@@ -145,6 +177,8 @@ func describeVirtualKeyTool() Tool {
     "name": {"type": "string", "description": "The key's exact name, when the id is not known. Case-insensitive; must match the whole name."}
   }
 }`,
+		noLogs:       true,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			if deps.Governance == nil {
 				return nil, fmt.Errorf("virtual key detail is not available on this deployment")
@@ -163,12 +197,18 @@ func describeVirtualKeyTool() Tool {
 				}
 				id = resolved
 			}
+			notFound := fmt.Errorf("no virtual key with id %q - describe_filter_space lists the real ones", id)
 			vk, err := deps.Governance.GetVirtualKey(ctx, id)
 			if err != nil {
 				if errors.Is(err, configstore.ErrNotFound) {
-					return nil, fmt.Errorf("no virtual key with id %q - describe_filter_space lists the real ones", id)
+					return nil, notFound
 				}
 				return nil, fmt.Errorf("virtual key lookup failed: %w", err)
+			}
+			if err := hiddenOutsideTenant(ctx, true, func(t tenant) (bool, error) {
+				return t.ownsVirtualKey(ctx, deps.Governance, vk)
+			}, notFound); err != nil {
+				return nil, err
 			}
 			var governedBy []string
 			if deps.VKDecorator != nil {
@@ -192,17 +232,37 @@ func describeVirtualKeyTool() Tool {
 const virtualKeyNameSearchLimit = 50
 
 // resolveVirtualKeyByName turns an exact, case-insensitive key name into an
-// id through the reader's scoped search. Anything short of exactly one
-// whole-name match is an error that says what was found, so the model can ask
-// for the id rather than guess between keys.
+// id. Anything short of exactly one whole-name match is an error that says
+// what was found, so the model can ask for the id rather than guess between
+// keys.
+//
+// It reads configuration rather than traffic: describe_filter_space lists keys
+// from logged requests, and a key that was just created or has not been used
+// is not there, so "the key X" has to be answerable from the store. The store's
+// search applies the request's row filter, which for a known tenant has been
+// stripped (see tenantCallContext) - so a tenant's candidates come from its own
+// key index instead, and every error text names only keys it owns.
 func resolveVirtualKeyByName(ctx context.Context, reader GovernanceReader, name string) (string, error) {
-	finder, ok := reader.(VirtualKeyFinder)
-	if !ok {
-		return "", fmt.Errorf("this deployment looks keys up by id only - pass virtual_key_id from describe_filter_space")
-	}
-	keys, total, err := finder.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{Search: name, Limit: virtualKeyNameSearchLimit})
-	if err != nil {
-		return "", fmt.Errorf("virtual key search failed: %w", err)
+	var keys []tables.TableVirtualKey
+	var total int64
+	if t, known, err := readTenant(ctx, true); err != nil {
+		return "", err
+	} else if known {
+		index, err := t.index(ctx, reader)
+		if err != nil {
+			return "", err
+		}
+		for _, vk := range index.keys {
+			if matchesSearch(vk.Name, name) {
+				keys = append(keys, vk)
+			}
+		}
+		total = int64(len(keys))
+	} else {
+		keys, total, err = reader.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{Search: name, Limit: virtualKeyNameSearchLimit})
+		if err != nil {
+			return "", fmt.Errorf("virtual key search failed: %w", err)
+		}
 	}
 	var exact []tables.TableVirtualKey
 	var near []string
@@ -427,6 +487,7 @@ func describeUserLimitsTool() Tool {
 		description: "Look up what governs one person's spend: the budgets, per-provider budgets and rate limits their access profile puts on them, with live usage - their configured room, not their traffic. " +
 			"Use it for \"how much budget do I have left\", a person's limit or allowance, and any budget question about a key that describe_virtual_key reports as managed by an access profile. " +
 			"Needs the user's id: caller_user_id from describe_filter_space for the person asking, or the id on a user ranking row (query_usage_by with dimension user) for someone else - a name is not enough. " +
+			"A virtual key that belongs to a team or customer can only look up the person it is calling for. " +
 			"Budget amounts are US dollars: write them with a $ sign.",
 		schemaJSON: `{
   "type": "object",
@@ -435,6 +496,8 @@ func describeUserLimitsTool() Tool {
   },
   "required": ["user_id"]
 }`,
+		noLogs:       true,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			if deps.UserGovernance == nil {
 				return nil, fmt.Errorf("per-user limits are not available on this deployment")
@@ -444,14 +507,117 @@ func describeUserLimitsTool() Tool {
 			if id == "" {
 				return nil, fmt.Errorf("user_id is required")
 			}
+			notFound := fmt.Errorf("no user with id %q that you can see - describe_filter_space gives the caller's id, and a user ranking gives everyone else's", id)
+			// A known tenant reads governance with the row filter stripped
+			// (tenantCallContext), and the user store has no team or customer
+			// column to check ownership against afterwards. The one person a
+			// team or customer key can be shown to own is its own caller, so
+			// anyone else - or anyone at all when the caller is unidentified -
+			// reads as a user it cannot see. A scope that is not one team or
+			// customer is left to the reader, which applies the caller's own.
+			if _, known, err := readTenant(ctx, true); err != nil {
+				return nil, err
+			} else if known {
+				if callerID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); callerID == "" || callerID != id {
+					return nil, notFound
+				}
+			}
 			gov, err := deps.UserGovernance.DescribeUserGovernance(ctx, id)
 			if err != nil {
 				if errors.Is(err, ErrUserNotFound) {
-					return nil, fmt.Errorf("no user with id %q that you can see - describe_filter_space gives the caller's id, and a user ranking gives everyone else's", id)
+					return nil, notFound
 				}
 				return nil, fmt.Errorf("user limits lookup failed: %w", err)
 			}
 			return describeUserGovernance(gov), nil
+		},
+	}
+}
+
+func listLimit(args map[string]any) (int, error) {
+	return intArg(args, "limit", 10, MaxGovernanceRows)
+}
+
+func listVirtualKeysTool() Tool {
+	return Tool{
+		name:        "list_virtual_keys",
+		description: "List virtual keys (id, name, active, team/customer). Never returns the secret value. Use describe_virtual_key for budget and providers.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "search": {"type": "string"},
+    "team_id": {"type": "string"},
+    "customer_id": {"type": "string"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+  }
+}`,
+		noLogs:       true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			limit, err := listLimit(args)
+			if err != nil {
+				return nil, err
+			}
+			search, _, err := optionalStringArg(args, "search")
+			if err != nil {
+				return nil, err
+			}
+			teamID, _, err := optionalStringArg(args, "team_id")
+			if err != nil {
+				return nil, err
+			}
+			customerID, _, err := optionalStringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			var rows []tables.TableVirtualKey
+			var total int64
+			if t, known, err := readTenant(ctx, true); err != nil {
+				return nil, err
+			} else if known {
+				// A scoped caller lists its tenant's keys, filtered here: the
+				// store's own filters cannot say "this team, or any team under
+				// this customer".
+				index, err := t.index(ctx, gov)
+				if err != nil {
+					return nil, err
+				}
+				for _, vk := range index.keys {
+					if teamID != "" && (vk.TeamID == nil || *vk.TeamID != teamID) {
+						continue
+					}
+					if customerID != "" && (vk.CustomerID == nil || *vk.CustomerID != customerID) {
+						continue
+					}
+					if !matchesSearch(vk.Name, search) {
+						continue
+					}
+					total++
+					if len(rows) < limit {
+						rows = append(rows, vk)
+					}
+				}
+			} else {
+				rows, total, err = gov.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+					Limit: limit, Search: search, TeamID: teamID, CustomerID: customerID,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("list virtual keys failed: %w", err)
+				}
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for i := range rows {
+				item := describeVirtualKey(&rows[i])
+				delete(item, "budgets")
+				delete(item, "rate_limit")
+				delete(item, "providers")
+				out = append(out, item)
+			}
+			return map[string]any{"virtual_keys": out, "total": total, "returned": len(out)}, nil
 		},
 	}
 }
@@ -517,6 +683,974 @@ func describeUserGovernance(gov *UserGovernance) map[string]any {
 		out["guidance"] = "No access profile is attached to this user, so nothing caps their spend at the user level. A budget on a key they use, or on their team, customer or business unit, may still apply."
 	} else {
 		out["guidance"] = "remaining_usd is max_limit_usd minus current_usage_usd, per budget, in US dollars, and resets reset_duration after last_reset. An inactive or expired profile does not cap anything. Report each profile by name."
+	}
+	return out
+}
+
+func listTeamsTool() Tool {
+	return Tool{
+		name:        "list_teams",
+		description: "List teams (id, name, customer, budget summaries). Use describe_team for one team.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "search": {"type": "string"},
+    "customer_id": {"type": "string"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+  }
+}`,
+		noLogs:       true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			limit, err := listLimit(args)
+			if err != nil {
+				return nil, err
+			}
+			search, _, err := optionalStringArg(args, "search")
+			if err != nil {
+				return nil, err
+			}
+			customerID, _, err := optionalStringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			var rows []tables.TableTeam
+			var total int64
+			if t, known, err := readTenant(ctx, true); err != nil {
+				return nil, err
+			} else if known {
+				index, err := t.index(ctx, gov)
+				if err != nil {
+					return nil, err
+				}
+				for _, team := range index.teams {
+					if customerID != "" && (team.CustomerID == nil || *team.CustomerID != customerID) {
+						continue
+					}
+					if !matchesSearch(team.Name, search) {
+						continue
+					}
+					total++
+					if len(rows) < limit {
+						rows = append(rows, team)
+					}
+				}
+			} else {
+				rows, total, err = gov.GetTeamsPaginated(ctx, configstore.TeamsQueryParams{
+					Limit: limit, Search: search, CustomerID: customerID,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("list teams failed: %w", err)
+				}
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for i := range rows {
+				out = append(out, describeTeam(&rows[i]))
+			}
+			return map[string]any{"teams": out, "total": total, "returned": len(out)}, nil
+		},
+	}
+}
+
+func describeTeamTool() Tool {
+	return Tool{
+		name:        "describe_team",
+		description: "One team's budgets, rate limit and virtual-key count.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "team_id": {"type": "string"}
+  },
+  "required": ["team_id"]
+}`,
+		noLogs:       true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			id, err := stringArg(args, "team_id")
+			if err != nil {
+				return nil, err
+			}
+			notFound := fmt.Errorf("no team with id %q", id)
+			team, err := gov.GetTeam(ctx, id)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil, notFound
+				}
+				return nil, fmt.Errorf("team lookup failed: %w", err)
+			}
+			if err := hiddenOutsideTenant(ctx, true, func(t tenant) (bool, error) {
+				return t.ownsTeam(ctx, gov, team.ID)
+			}, notFound); err != nil {
+				return nil, err
+			}
+			return describeTeam(team), nil
+		},
+	}
+}
+
+func listCustomersTool() Tool {
+	return Tool{
+		name:        "list_customers",
+		description: "List customers (id, name, budget summaries).",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "search": {"type": "string"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+  }
+}`,
+		noLogs:       true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			limit, err := listLimit(args)
+			if err != nil {
+				return nil, err
+			}
+			search, _, err := optionalStringArg(args, "search")
+			if err != nil {
+				return nil, err
+			}
+			var rows []tables.TableCustomer
+			var total int64
+			if t, known, err := readTenant(ctx, true); err != nil {
+				return nil, err
+			} else if known {
+				// Only a customer key has a customer of its own to list; a team
+				// key owns none, not even its team's.
+				index, err := t.index(ctx, gov)
+				if err != nil {
+					return nil, err
+				}
+				if index.customer != nil && matchesSearch(index.customer.Name, search) {
+					rows, total = []tables.TableCustomer{*index.customer}, 1
+				}
+			} else {
+				rows, total, err = gov.GetCustomersPaginated(ctx, configstore.CustomersQueryParams{
+					Limit: limit, Search: search,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("list customers failed: %w", err)
+				}
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for i := range rows {
+				out = append(out, describeCustomer(&rows[i]))
+			}
+			return map[string]any{"customers": out, "total": total, "returned": len(out)}, nil
+		},
+	}
+}
+
+func describeCustomerTool() Tool {
+	return Tool{
+		name:        "describe_customer",
+		description: "One customer's budgets, rate limit and virtual-key count.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "customer_id": {"type": "string"}
+  },
+  "required": ["customer_id"]
+}`,
+		noLogs:       true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			id, err := stringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			notFound := fmt.Errorf("no customer with id %q", id)
+			customer, err := gov.GetCustomer(ctx, id)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil, notFound
+				}
+				return nil, fmt.Errorf("customer lookup failed: %w", err)
+			}
+			if err := hiddenOutsideTenant(ctx, true, func(t tenant) (bool, error) {
+				return t.ownsCustomer(customer.ID), nil
+			}, notFound); err != nil {
+				return nil, err
+			}
+			return describeCustomer(customer), nil
+		},
+	}
+}
+
+func listBudgetsTool() Tool {
+	return Tool{
+		name:        "list_budgets",
+		description: "List budgets (id, cap, usage, reset, owner). VK-owned budgets live on model configs and may not appear here.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+  }
+}`,
+		noLogs:       true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			limit, err := listLimit(args)
+			if err != nil {
+				return nil, err
+			}
+			rows, err := gov.GetBudgets(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list budgets failed: %w", err)
+			}
+			// The budget store applies no row filter, so a scoped caller's
+			// list is cut to its tenant here, before the limit.
+			if t, known, err := readTenant(ctx, false); err != nil {
+				return nil, err
+			} else if known {
+				index, err := t.index(ctx, gov)
+				if err != nil {
+					return nil, err
+				}
+				rows = slices.DeleteFunc(rows, func(b tables.TableBudget) bool { return !index.ownsBudget(&b) })
+			}
+			if len(rows) > limit {
+				rows = rows[:limit]
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for i := range rows {
+				out = append(out, describeBudget(&rows[i]))
+			}
+			return map[string]any{"budgets": out, "returned": len(out)}, nil
+		},
+	}
+}
+
+func describeBudgetTool() Tool {
+	return Tool{
+		name:        "describe_budget",
+		description: "One budget: cap, current usage, reset window and owner.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "budget_id": {"type": "string"}
+  },
+  "required": ["budget_id"]
+}`,
+		noLogs:       true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			id, err := stringArg(args, "budget_id")
+			if err != nil {
+				return nil, err
+			}
+			notFound := fmt.Errorf("no budget with id %q", id)
+			budget, err := gov.GetBudget(ctx, id)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil, notFound
+				}
+				return nil, fmt.Errorf("budget lookup failed: %w", err)
+			}
+			if err := hiddenOutsideTenant(ctx, false, func(t tenant) (bool, error) {
+				return t.ownsBudget(ctx, gov, budget)
+			}, notFound); err != nil {
+				return nil, err
+			}
+			return describeBudget(budget), nil
+		},
+	}
+}
+
+func createVirtualKeyTool() Tool {
+	return Tool{
+		name:        "create_virtual_key",
+		description: "Create a virtual key. Returns the sk-bf- secret once; store it. Later get/list calls never include it. Attach to a team or a customer, not both.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "team_id": {"type": "string"},
+    "customer_id": {"type": "string"},
+    "allow_all_providers": {"type": "boolean", "description": "Defaults to true so the key can reach every configured provider."},
+    "token_max_limit": {"type": "integer", "minimum": 1},
+    "token_reset_duration": {"type": "string"},
+    "request_max_limit": {"type": "integer", "minimum": 1},
+    "request_reset_duration": {"type": "string"}
+  },
+  "required": ["name"]
+}`,
+		noLogs:       true,
+		mutating:     true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := stringArg(args, "name"); err != nil {
+				return nil, err
+			}
+			teamID, hasTeam, err := optionalStringArg(args, "team_id")
+			if err != nil {
+				return nil, err
+			}
+			customerID, hasCustomer, err := optionalStringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			if hasTeam && hasCustomer {
+				return nil, fmt.Errorf("virtual key cannot be attached to both team and customer")
+			}
+			// The route does not know the caller's tenant. A scoped caller
+			// creates keys inside its own tenant: in it by default, and never
+			// in a team or customer outside it. The owner checked here is the
+			// owner sent.
+			if err := checkTenant(ctx, func(t tenant) error {
+				if !hasTeam && !hasCustomer {
+					if t.teamID != "" {
+						teamID, hasTeam = t.teamID, true
+					} else {
+						customerID, hasCustomer = t.customerID, true
+					}
+				}
+				if hasTeam {
+					owned, err := t.ownsTeam(ctx, gov, teamID)
+					return requireOwned(owned, err, t, fmt.Sprintf("team %q", teamID))
+				}
+				return requireOwned(t.ownsCustomer(customerID), nil, t, fmt.Sprintf("customer %q", customerID))
+			}); err != nil {
+				return nil, err
+			}
+			body := adminBody{"allow_all_providers": true}.copySet(args, "name", "description", "allow_all_providers")
+			if hasTeam {
+				body["team_id"] = teamID
+			}
+			if hasCustomer {
+				body["customer_id"] = customerID
+			}
+			if rateLimit := nestedRateLimitBody(args, nil); rateLimit != nil {
+				body["rate_limit"] = rateLimit
+			}
+			response, err := callAdmin(ctx, deps, http.MethodPost, "/api/governance/virtual-keys", body)
+			if err != nil {
+				return nil, err
+			}
+			return describeVirtualKeyResponse(response, "this is the only time the secret is returned; store it now")
+		},
+	}
+}
+
+func updateVirtualKeyTool() Tool {
+	return Tool{
+		name: "update_virtual_key",
+		description: "Update a virtual key's name, description, active flag, team/customer, or rate limit. Does not rotate the secret. " +
+			"Rate-limit fields you do not name keep their stored values. A key managed by an access profile takes its limits from the profile, so rate-limit edits on it are refused.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "virtual_key_id": {"type": "string"},
+    "name": {"type": "string"},
+    "description": {"type": "string"},
+    "is_active": {"type": "boolean"},
+    "team_id": {"type": "string"},
+    "customer_id": {"type": "string"},
+    "allow_all_providers": {"type": "boolean"},
+    "token_max_limit": {"type": "integer", "minimum": 1},
+    "token_reset_duration": {"type": "string"},
+    "request_max_limit": {"type": "integer", "minimum": 1},
+    "request_reset_duration": {"type": "string"}
+  },
+  "required": ["virtual_key_id"]
+}`,
+		noLogs:       true,
+		mutating:     true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			id, err := stringArg(args, "virtual_key_id")
+			if err != nil {
+				return nil, err
+			}
+			path, err := adminPath("/api/governance/virtual-keys/{vk_id}", id)
+			if err != nil {
+				return nil, err
+			}
+			vk, err := gov.GetVirtualKey(ctx, id)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil, fmt.Errorf("no virtual key with id %q", id)
+				}
+				return nil, fmt.Errorf("virtual key lookup failed: %w", err)
+			}
+			teamID, hasTeam, err := optionalStringArg(args, "team_id")
+			if err != nil {
+				return nil, err
+			}
+			customerID, hasCustomer, err := optionalStringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			if hasTeam && hasCustomer {
+				return nil, fmt.Errorf("virtual key cannot be attached to both team and customer")
+			}
+			// The route does not know the caller's tenant. Moving a key is
+			// checked on both ends: it must be the caller's to move, and it
+			// may only land inside the caller's tenant. The owner checked
+			// here is the owner sent, and no other field below names one.
+			if err := checkTenant(ctx, func(t tenant) error {
+				owned, err := t.ownsVirtualKey(ctx, gov, vk)
+				if err := requireOwned(owned, err, t, fmt.Sprintf("virtual key %q", id)); err != nil {
+					return err
+				}
+				if hasTeam {
+					owned, err := t.ownsTeam(ctx, gov, teamID)
+					return requireOwned(owned, err, t, fmt.Sprintf("team %q", teamID))
+				}
+				if hasCustomer {
+					return requireOwned(t.ownsCustomer(customerID), nil, t, fmt.Sprintf("customer %q", customerID))
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+			body := adminBody{}.copySet(args, "name", "description", "is_active", "allow_all_providers")
+			// A key has one owner, so naming a new one clears the other: the
+			// route refuses a key left with both.
+			if hasTeam {
+				body["team_id"], body["customer_id"] = teamID, nil
+			}
+			if hasCustomer {
+				body["customer_id"], body["team_id"] = customerID, nil
+			}
+			if namesRateLimit(args) {
+				stored, err := virtualKeyRateLimit(ctx, deps, vk)
+				if err != nil {
+					return nil, err
+				}
+				body["rate_limit"] = nestedRateLimitBody(args, stored)
+			}
+			response, err := callAdmin(ctx, deps, http.MethodPut, path, body)
+			if err != nil {
+				return nil, err
+			}
+			return describeVirtualKeyResponse(response, "")
+		},
+	}
+}
+
+func deactivateVirtualKeyTool() Tool {
+	return Tool{
+		name:        "deactivate_virtual_key",
+		description: "Deactivate a virtual key so it stops authenticating. Does not delete the row or rotate the secret.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "virtual_key_id": {"type": "string"}
+  },
+  "required": ["virtual_key_id"]
+}`,
+		noLogs:       true,
+		mutating:     true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			args["is_active"] = false
+			return updateVirtualKeyTool().execute(ctx, deps, args)
+		},
+	}
+}
+
+func rotateVirtualKeyTool() Tool {
+	return Tool{
+		name: "rotate_virtual_key",
+		description: "Issue a new sk-bf- secret for a virtual key. Returns the new value once. The previous value stays valid for vk_rotation_cooldown (or stops immediately when that is 0). " +
+			"Rotating also revokes the MCP OAuth grants obtained with the key (its refresh tokens and any consented but unexchanged authorization codes), so MCP clients signed in through it must sign in again with the new value.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "virtual_key_id": {"type": "string"}
+  },
+  "required": ["virtual_key_id"]
+}`,
+		noLogs:       true,
+		mutating:     true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			id, err := stringArg(args, "virtual_key_id")
+			if err != nil {
+				return nil, err
+			}
+			path, err := adminPath("/api/governance/virtual-keys/{vk_id}/rotate", id)
+			if err != nil {
+				return nil, err
+			}
+			vk, err := gov.GetVirtualKey(ctx, id)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil, fmt.Errorf("no virtual key with id %q", id)
+				}
+				return nil, fmt.Errorf("virtual key lookup failed: %w", err)
+			}
+			// The route does not know the caller's tenant.
+			if err := checkTenant(ctx, func(t tenant) error {
+				owned, err := t.ownsVirtualKey(ctx, gov, vk)
+				return requireOwned(owned, err, t, fmt.Sprintf("virtual key %q", id))
+			}); err != nil {
+				return nil, err
+			}
+			response, err := callAdmin(ctx, deps, http.MethodPost, path, nil)
+			if err != nil {
+				return nil, err
+			}
+			out, err := describeVirtualKeyResponse(response, "this is the only time the new secret is returned; store it now")
+			if err != nil {
+				return nil, err
+			}
+			// The grace window is not in the route's answer; the stored key has it.
+			if rotated, err := gov.GetVirtualKey(ctx, id); err == nil && rotated != nil && rotated.PreviousValueExpiresAt != nil {
+				out["previous_value_expires_at"] = *rotated.PreviousValueExpiresAt
+			}
+			return out, nil
+		},
+	}
+}
+
+// describeVirtualKeyResponse projects the key a virtual key route answers with.
+// note is set on the two answers that carry the secret, create and rotate, and
+// is what puts the secret in the result; every other answer leaves it out.
+func describeVirtualKeyResponse(response []byte, note string) (map[string]any, error) {
+	var vk tables.TableVirtualKey
+	if err := decodeAdminField(response, "virtual_key", &vk); err != nil {
+		return nil, err
+	}
+	out := describeVirtualKey(&vk)
+	if note != "" {
+		out["value"] = gjson.GetBytes(response, "virtual_key.value").String()
+		out["note"] = note
+	}
+	return out, nil
+}
+
+// namesRateLimit reports whether the call set any rate-limit field.
+func namesRateLimit(args map[string]any) bool {
+	for _, field := range rateLimitFields {
+		if value, present := args[field]; present && value != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// virtualKeyRateLimit is the rate limit an update_virtual_key edit merges over.
+//
+// The route keeps a key's own rate limit on its key-scoped, provider-less "*"
+// model config and replaces that tier's limit with exactly the fields it is
+// sent, so a partial edit has to carry the tier's other fields. A key with no
+// tier yet still has its legacy rate-limit row, which the route adopts.
+//
+// A key an access profile manages is refused: its limits are the profile's,
+// and a write here would land on the key's untracked mirror rows - accepted,
+// and never enforced.
+func virtualKeyRateLimit(ctx context.Context, deps *Deps, vk *tables.TableVirtualKey) (*tables.TableRateLimit, error) {
+	if deps.VKDecorator != nil {
+		decorated := *vk
+		if _, err := deps.VKDecorator(ctx, &decorated); err != nil {
+			return nil, fmt.Errorf("could not resolve what governs virtual key %q: %w", vk.ID, err)
+		}
+		if decorated.IsAccessProfileManaged {
+			return nil, fmt.Errorf("virtual key %q is managed by an access profile, so its rate limit and budgets are the profile's and cannot be changed on the key; change the profile instead (describe_user_limits shows it)", vk.ID)
+		}
+	}
+	tier, err := deps.Governance.GetModelConfig(ctx, tables.ModelConfigScopeVirtualKey, &vk.ID, tables.ModelConfigAllModels, nil)
+	switch {
+	case err == nil && tier != nil:
+		if limit, err := storedRateLimit(ctx, deps.Governance, tier.RateLimit, tier.RateLimitID); err != nil || limit != nil {
+			return limit, err
+		}
+	case err != nil && !errors.Is(err, configstore.ErrNotFound):
+		return nil, fmt.Errorf("model config lookup failed: %w", err)
+	}
+	return storedRateLimit(ctx, deps.Governance, vk.RateLimit, vk.RateLimitID)
+}
+
+// storedRateLimit returns an owner's rate limit, loading it when the owner was
+// read without it.
+func storedRateLimit(ctx context.Context, gov GovernanceReader, loaded *tables.TableRateLimit, id *string) (*tables.TableRateLimit, error) {
+	if loaded != nil || id == nil || *id == "" {
+		return loaded, nil
+	}
+	stored, err := gov.GetRateLimit(ctx, *id)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("rate limit lookup failed: %w", err)
+	}
+	return stored, nil
+}
+
+// ownerLimitsBody adds the budgets and the rate limit a team or customer tool
+// was given to body. The routes replace the rate limit with what they are
+// sent, so the limits the caller did not name are sent as stored.
+func ownerLimitsBody(body adminBody, args map[string]any, stored *tables.TableRateLimit) {
+	body.copySet(args, "budgets")
+	if rateLimit := nestedRateLimitBody(args, stored); rateLimit != nil {
+		body["rate_limit"] = rateLimit
+	}
+}
+
+func createTeamTool() Tool {
+	return Tool{
+		name:        "create_team",
+		description: "Create a team, optionally under a customer, with budgets and a rate limit of its own.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "customer_id": {"type": "string"},
+    "budgets": {"type": "array", "description": "The full set of budgets: it replaces every budget already there, and [] removes them all. Each needs its own reset_duration.", "items": {
+      "type": "object",
+      "properties": {
+        "max_limit": {"type": "number", "minimum": 0},
+        "reset_duration": {"type": "string", "description": "Budget window, e.g. 1d, 1w, 1M."}
+      },
+      "required": ["max_limit", "reset_duration"]
+    }},
+    "token_max_limit": {"type": "integer", "minimum": 1},
+    "token_reset_duration": {"type": "string"},
+    "request_max_limit": {"type": "integer", "minimum": 1},
+    "request_reset_duration": {"type": "string"}
+  },
+  "required": ["name"]
+}`,
+		noLogs:       true,
+		mutating:     true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			if _, err := stringArg(args, "name"); err != nil {
+				return nil, err
+			}
+			customerID, hasCustomer, err := optionalStringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			// The route does not know the caller's tenant. A team key cannot
+			// create sibling teams; a customer key creates teams under its
+			// own customer, by default and only there.
+			if err := checkTenant(ctx, func(t tenant) error {
+				if t.teamID != "" {
+					return fmt.Errorf("a virtual key scoped to %s cannot create teams", t)
+				}
+				if !hasCustomer {
+					customerID, hasCustomer = t.customerID, true
+				}
+				return requireOwned(t.ownsCustomer(customerID), nil, t, fmt.Sprintf("customer %q", customerID))
+			}); err != nil {
+				return nil, err
+			}
+			body := adminBody{}.copySet(args, "name")
+			if hasCustomer {
+				body["customer_id"] = customerID
+			}
+			ownerLimitsBody(body, args, nil)
+			response, err := callAdmin(ctx, deps, http.MethodPost, "/api/governance/teams", body)
+			if err != nil {
+				return nil, err
+			}
+			return describeTeamResponse(response)
+		},
+	}
+}
+
+func updateTeamTool() Tool {
+	return Tool{
+		name:        "update_team",
+		description: "Rename a team, move it to another customer, or set its budgets and rate limit. Does not reset current usage.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "team_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string"},
+    "customer_id": {"type": "string"},
+    "budgets": {"type": "array", "description": "The full set of budgets: it replaces every budget already there, and [] removes them all. Each needs its own reset_duration.", "items": {
+      "type": "object",
+      "properties": {
+        "max_limit": {"type": "number", "minimum": 0},
+        "reset_duration": {"type": "string", "description": "Budget window, e.g. 1d, 1w, 1M."}
+      },
+      "required": ["max_limit", "reset_duration"]
+    }},
+    "token_max_limit": {"type": "integer", "minimum": 1},
+    "token_reset_duration": {"type": "string"},
+    "request_max_limit": {"type": "integer", "minimum": 1},
+    "request_reset_duration": {"type": "string"}
+  },
+  "required": ["team_id"]
+}`,
+		noLogs:       true,
+		mutating:     true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			id, err := stringArg(args, "team_id")
+			if err != nil {
+				return nil, err
+			}
+			path, err := adminPath("/api/governance/teams/{team_id}", id)
+			if err != nil {
+				return nil, err
+			}
+			team, err := gov.GetTeam(ctx, id)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil, fmt.Errorf("no team with id %q", id)
+				}
+				return nil, fmt.Errorf("team lookup failed: %w", err)
+			}
+			customerID, hasCustomer, err := optionalStringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			// The route does not know the caller's tenant. The team must be
+			// the caller's, and it may only be moved inside the caller's
+			// tenant - which for a team key is nowhere, since a team key owns
+			// no customer.
+			if err := checkTenant(ctx, func(t tenant) error {
+				owned, err := t.ownsTeam(ctx, gov, id)
+				if err := requireOwned(owned, err, t, fmt.Sprintf("team %q", id)); err != nil {
+					return err
+				}
+				if hasCustomer {
+					return requireOwned(t.ownsCustomer(customerID), nil, t, fmt.Sprintf("customer %q", customerID))
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+			body := adminBody{}.copySet(args, "name")
+			if hasCustomer {
+				body["customer_id"] = customerID
+			}
+			stored, err := storedRateLimit(ctx, gov, team.RateLimit, team.RateLimitID)
+			if err != nil {
+				return nil, err
+			}
+			ownerLimitsBody(body, args, stored)
+			response, err := callAdmin(ctx, deps, http.MethodPut, path, body)
+			if err != nil {
+				return nil, err
+			}
+			return describeTeamResponse(response)
+		},
+	}
+}
+
+func createCustomerTool() Tool {
+	return Tool{
+		name:        "create_customer",
+		description: "Create a customer, with budgets and a rate limit of its own.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "budgets": {"type": "array", "description": "The full set of budgets: it replaces every budget already there, and [] removes them all. Each needs its own reset_duration.", "items": {
+      "type": "object",
+      "properties": {
+        "max_limit": {"type": "number", "minimum": 0},
+        "reset_duration": {"type": "string", "description": "Budget window, e.g. 1d, 1w, 1M."}
+      },
+      "required": ["max_limit", "reset_duration"]
+    }},
+    "token_max_limit": {"type": "integer", "minimum": 1},
+    "token_reset_duration": {"type": "string"},
+    "request_max_limit": {"type": "integer", "minimum": 1},
+    "request_reset_duration": {"type": "string"}
+  },
+  "required": ["name"]
+}`,
+		noLogs:   true,
+		mutating: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			if _, err := stringArg(args, "name"); err != nil {
+				return nil, err
+			}
+			body := adminBody{}.copySet(args, "name")
+			ownerLimitsBody(body, args, nil)
+			response, err := callAdmin(ctx, deps, http.MethodPost, "/api/governance/customers", body)
+			if err != nil {
+				return nil, err
+			}
+			return describeCustomerResponse(response)
+		},
+	}
+}
+
+func updateCustomerTool() Tool {
+	return Tool{
+		name:        "update_customer",
+		description: "Rename a customer, or set its budgets and rate limit. Does not reset current usage.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "customer_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string"},
+    "budgets": {"type": "array", "description": "The full set of budgets: it replaces every budget already there, and [] removes them all. Each needs its own reset_duration.", "items": {
+      "type": "object",
+      "properties": {
+        "max_limit": {"type": "number", "minimum": 0},
+        "reset_duration": {"type": "string", "description": "Budget window, e.g. 1d, 1w, 1M."}
+      },
+      "required": ["max_limit", "reset_duration"]
+    }},
+    "token_max_limit": {"type": "integer", "minimum": 1},
+    "token_reset_duration": {"type": "string"},
+    "request_max_limit": {"type": "integer", "minimum": 1},
+    "request_reset_duration": {"type": "string"}
+  },
+  "required": ["customer_id"]
+}`,
+		noLogs:       true,
+		mutating:     true,
+		tenantScoped: true,
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			gov, err := requireGovernance(deps)
+			if err != nil {
+				return nil, err
+			}
+			id, err := stringArg(args, "customer_id")
+			if err != nil {
+				return nil, err
+			}
+			path, err := adminPath("/api/governance/customers/{customer_id}", id)
+			if err != nil {
+				return nil, err
+			}
+			// The route does not know the caller's tenant. Checked before the
+			// lookup, so another tenant's customer reads like a missing one.
+			if err := checkTenant(ctx, func(t tenant) error {
+				return requireOwned(t.ownsCustomer(id), nil, t, fmt.Sprintf("customer %q", id))
+			}); err != nil {
+				return nil, err
+			}
+			customer, err := gov.GetCustomer(ctx, id)
+			if err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil, fmt.Errorf("no customer with id %q", id)
+				}
+				return nil, fmt.Errorf("customer lookup failed: %w", err)
+			}
+			body := adminBody{}.copySet(args, "name")
+			stored, err := storedRateLimit(ctx, gov, customer.RateLimit, customer.RateLimitID)
+			if err != nil {
+				return nil, err
+			}
+			ownerLimitsBody(body, args, stored)
+			response, err := callAdmin(ctx, deps, http.MethodPut, path, body)
+			if err != nil {
+				return nil, err
+			}
+			return describeCustomerResponse(response)
+		},
+	}
+}
+
+func describeTeamResponse(response []byte) (any, error) {
+	var team tables.TableTeam
+	if err := decodeAdminField(response, "team", &team); err != nil {
+		return nil, err
+	}
+	return describeTeam(&team), nil
+}
+
+func describeCustomerResponse(response []byte) (any, error) {
+	var customer tables.TableCustomer
+	if err := decodeAdminField(response, "customer", &customer); err != nil {
+		return nil, err
+	}
+	return describeCustomer(&customer), nil
+}
+
+func describeTeam(team *tables.TableTeam) map[string]any {
+	out := map[string]any{
+		"id":                team.ID,
+		"name":              team.Name,
+		"virtual_key_count": team.VirtualKeyCount,
+	}
+	if team.CustomerID != nil {
+		out["customer_id"] = *team.CustomerID
+	}
+	if len(team.Budgets) > 0 {
+		budgets := make([]map[string]any, len(team.Budgets))
+		for i, budget := range team.Budgets {
+			budgets[i] = budgetSummary(budget)
+		}
+		out["budgets"] = budgets
+	}
+	if team.RateLimit != nil {
+		out["rate_limit"] = rateLimitSummary(*team.RateLimit)
+	}
+	return out
+}
+
+func describeCustomer(customer *tables.TableCustomer) map[string]any {
+	out := map[string]any{
+		"id":                customer.ID,
+		"name":              customer.Name,
+		"virtual_key_count": customer.VirtualKeyCount,
+	}
+	if len(customer.Budgets) > 0 {
+		budgets := make([]map[string]any, len(customer.Budgets))
+		for i, budget := range customer.Budgets {
+			budgets[i] = budgetSummary(budget)
+		}
+		out["budgets"] = budgets
+	}
+	if customer.RateLimit != nil {
+		out["rate_limit"] = rateLimitSummary(*customer.RateLimit)
+	}
+	return out
+}
+
+func describeBudget(budget *tables.TableBudget) map[string]any {
+	out := budgetSummary(*budget)
+	if budget.TeamID != nil {
+		out["team_id"] = *budget.TeamID
+	}
+	if budget.CustomerID != nil {
+		out["customer_id"] = *budget.CustomerID
+	}
+	if budget.VirtualKeyID != nil {
+		out["virtual_key_id"] = *budget.VirtualKeyID
 	}
 	return out
 }

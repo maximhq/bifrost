@@ -17,9 +17,9 @@ type LogReader = mcptools.LogReader
 // KeyPair is an id paired with the name it is known by.
 type KeyPair = mcptools.KeyPair
 
-// GovernanceReader is the slice of the config store describe_virtual_key
-// reads. Owned by mcptools for the same reason LogReader is; Warp only carries
-// it from the config store to the server's Deps.
+// GovernanceReader is the slice of the config store catalog and write tools
+// read and persist through. Owned by mcptools; Warp only carries it from the
+// config store to the server's Deps.
 type GovernanceReader = mcptools.GovernanceReader
 
 // VirtualKeyDecorator, UserGovernanceReader and the UserGovernance shapes are
@@ -27,7 +27,6 @@ type GovernanceReader = mcptools.GovernanceReader
 // server, and Warp carries the transport's implementations to its Deps.
 type (
 	VirtualKeyDecorator       = mcptools.VirtualKeyDecorator
-	VirtualKeyFinder          = mcptools.VirtualKeyFinder
 	UserGovernanceReader      = mcptools.UserGovernanceReader
 	UserGovernance            = mcptools.UserGovernance
 	UserGovernanceProfile     = mcptools.UserGovernanceProfile

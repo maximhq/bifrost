@@ -2239,3 +2239,44 @@ func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
 	_, leaked := providers[schemas.Gemini]
 	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
 }
+
+// Every write the MCP tools make goes through the dispatcher the server
+// attaches, which reaches the admin handlers on the server's internal router.
+func TestBifrostMCPDepsCarryTheAdminDispatcher(t *testing.T) {
+	server := &BifrostHTTPServer{}
+	deps := server.bifrostMCPDeps()
+	if deps.Admin == nil {
+		t.Fatal("expected the MCP tools to be given an admin dispatcher")
+	}
+	if _, _, err := deps.Admin.Do(context.Background(), "POST", "/api/providers", nil); err == nil {
+		t.Fatal("with no internal router yet, a write must report itself unavailable")
+	}
+
+	server.adminRouter = router.New()
+	reached := false
+	server.adminRouter.POST("/api/providers", func(*fasthttp.RequestCtx) { reached = true })
+	if _, _, err := server.bifrostMCPDeps().Admin.Do(context.Background(), "POST", "/api/providers", nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if !reached {
+		t.Fatal("the dispatcher must reach the server's internal router")
+	}
+}
+
+// list_mcp_client_tools reads a client's tools from the live MCP manager
+// through the dependency the server attaches; with no client, or no MCP
+// manager, it reports nothing live so the tool falls back to the stored row.
+func TestBifrostMCPDepsListLiveMCPTools(t *testing.T) {
+	server := &BifrostHTTPServer{}
+	deps := server.bifrostMCPDeps()
+	if deps.MCPTools == nil {
+		t.Fatal("expected the MCP tools to be given a live tool lister")
+	}
+	if _, ok := deps.MCPTools(context.Background(), "c-1"); ok {
+		t.Fatal("with no bifrost client, nothing is live")
+	}
+	server.Client = &bifrost.Bifrost{}
+	if _, ok := server.bifrostMCPDeps().MCPTools(context.Background(), "c-1"); ok {
+		t.Fatal("with no MCP manager, nothing is live")
+	}
+}

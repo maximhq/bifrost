@@ -68,6 +68,9 @@ func semanticSearchLogsTool() Tool {
   },
   "required": ["queries", "filters"]
 }`,
+		noLogs:       true,
+		readsLogRows: true,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			queries, err := stringSliceArg(args, "queries")
 			if err != nil {
@@ -132,6 +135,7 @@ func queryLogsTool() Tool {
   },
   "required": ["filters"]
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			filters, scope, err := filterArg(ctx, args, nowFrom(ctx))
 			if err != nil {
@@ -193,6 +197,7 @@ func getLogDetailTool() Tool {
   },
   "required": ["log_id"]
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			// Type-checked like every other argument here. A discarded assertion
 			// turned a present non-string into "", so the tool answered "log_id is
@@ -246,6 +251,7 @@ func countLogsTool() Tool {
   },
   "required": ["filters"]
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			filters, scope, err := filterArg(ctx, args, nowFrom(ctx))
 			if err != nil {
@@ -336,6 +342,7 @@ func queryMetricsTool() Tool {
   },
   "required": ["filters", "metrics"]
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			filters, scope, err := filterArg(ctx, args, nowFrom(ctx))
 			if err != nil {
@@ -929,6 +936,7 @@ func queryUsageByTool() Tool {
   },
   "required": ["dimension", "filters"]
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			raw, _ := args["dimension"].(string)
 			dimension, ok := validRankingDimension(raw)
@@ -1020,6 +1028,7 @@ func queryModelsTool() Tool {
   },
   "required": ["filters"]
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			filters, scope, err := filterArg(ctx, args, nowFrom(ctx))
 			if err != nil {
@@ -1097,6 +1106,7 @@ func describeFilterSpaceTool() Tool {
     "search": {"type": "string", "description": "Optional part of a value's name to narrow the returned values, e.g. \"Platform\" or \"sonnet\" - never a category such as \"team\" or \"customer\", which only matches values whose own names contain that word. Omit it to list every kind of value."}
   }
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			// A discarded type assertion turned a malformed search into "", and the
 			// tool then ran four unfiltered discovery queries and returned every

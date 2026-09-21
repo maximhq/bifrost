@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -1662,10 +1664,91 @@ func sendUnauthorizedWithCode(ctx *fasthttp.RequestCtx, code, message string) {
 // gating inference on dashboard credentials would reject virtual-key callers, since a VK
 // is not an admin/session credential. Admin-password auth therefore stays exclusive to
 // dashboard/API routes (APIMiddleware) and is never required for inference.
+//
+// The one admin-API decision made here is the MCP write grant; see adminAPIAuthenticates.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
-	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
+	inner := m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return true
 	}, true)
+	adminChain := m.setupLockHandler(m.APIMiddleware()(func(probe *fasthttp.RequestCtx) {
+		probe.SetUserValue(adminProbeReachedKey{}, true)
+	}))
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return inner(func(ctx *fasthttp.RequestCtx) {
+			// Write tools on Bifrost's own MCP server follow the caller's virtual
+			// key grants when governance governs the request (mcptools checks
+			// that itself). For a request with no key they follow the admin API:
+			// granted only when the OSS /api chain would admit this same request
+			// on a credential it verified. Never keyed off AuthBypassed - inner
+			// sets that on every request here, since inference skips dashboard auth.
+			// Checked only on the MCP routes: a session lookup on every
+			// inference request would cost the hot path a database round trip.
+			if isMCPToolRoute(string(ctx.Path())) && m.adminAPIAuthenticates(ctx, adminChain) && !m.setupTokenOnlyWhereNotHonoured(ctx) {
+				mcptools.GrantWriteAccess(ctx)
+			}
+			next(ctx)
+		})
+	}
+}
+
+// isMCPToolRoute reports whether path can execute a tool on Bifrost's MCP
+// server: the /mcp gateway and the direct tool-execute endpoint.
+func isMCPToolRoute(path string) bool {
+	return path == "/mcp" || strings.HasPrefix(path, "/mcp/") || path == "/v1/mcp/tool/execute"
+}
+
+// adminProbeReachedKey marks a probe request that got through the admin chain.
+type adminProbeReachedKey struct{}
+
+// adminProbePool reuses the shadow requests adminAPIAuthenticates runs through the
+// admin chain; a RequestCtx is several KB, and this runs on every MCP tool request.
+var adminProbePool = sync.Pool{New: func() any { return &fasthttp.RequestCtx{} }}
+
+// adminAPIAuthenticates reports whether the OSS admin API chain (SetupLockMiddleware then
+// APIMiddleware, exactly as server.go wires /api) would admit this request on a credential
+// it actually verified. It runs that chain itself, on a shadow copy of the request headers,
+// so the rule cannot drift from the admin API's:
+//
+//   - dashboard auth active: a live session (Bearer or the token cookie, Authorization
+//     taking precedence as on /api) or the admin username and password (Basic, or the
+//     legacy base64 Bearer form). A virtual key, a wrong password or no credential is not one.
+//   - dashboard auth inactive: the configured setup token in SetupTokenHeader (a wrong one
+//     is refused even beside a valid cookie) or a valid setup session cookie, and only from an
+//     origin the open management API accepts. With no setup token configured, nothing is.
+//     On enterprise, which has no setup lock, nothing is (see setupTokenOnlyWhereNotHonoured).
+//
+// An admission on which no credential was checked does not count: a whitelisted route
+// (marked AuthBypassed) and a scoped temp token (anonymous, route-bound) both pass the
+// chain but never prove an admin. The shadow keeps the chain's responses and context
+// values off the real inference request.
+func (m *AuthMiddleware) adminAPIAuthenticates(ctx *fasthttp.RequestCtx, adminChain fasthttp.RequestHandler) bool {
+	probe := adminProbePool.Get().(*fasthttp.RequestCtx)
+	defer func() {
+		probe.ResetUserValues()
+		probe.Request.Reset()
+		probe.Response.Reset()
+		adminProbePool.Put(probe)
+	}()
+	ctx.Request.Header.CopyTo(&probe.Request.Header)
+	adminChain(probe)
+	if reached, _ := probe.UserValue(adminProbeReachedKey{}).(bool); !reached {
+		return false
+	}
+	if bypassed, _ := probe.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+		return false
+	}
+	return probe.UserValue(schemas.BifrostContextKeyTempTokenScope) == nil
+}
+
+// setupTokenOnlyWhereNotHonoured reports a request whose only admission by the probe chain
+// could have been the setup token, on a build whose /api does not honour it. Enterprise
+// installs InferenceMiddleware too (when SCIM is off) but never SetupLockMiddleware, so with
+// dashboard auth inactive its /api admits requests on no credential at all (AuthBypassed),
+// and a setup token proves nothing there: no write grant on that path. With dashboard auth
+// active the setup lock is a no-op and the admin credential decides, on both builds.
+func (m *AuthMiddleware) setupTokenOnlyWhereNotHonoured(ctx *fasthttp.RequestCtx) bool {
+	enterprise, _ := ctx.UserValue(schemas.BifrostContextKeyIsEnterprise).(bool)
+	return enterprise && !m.IsDashboardAuthActive()
 }
 
 // apiSystemWhitelistedRoutes are exact API paths that never require a credential.
@@ -1862,44 +1945,51 @@ func (m *AuthMiddleware) SetupLockMiddleware() schemas.BifrostHTTPMiddleware {
 		logger.Warn("================================================================")
 	}
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
-		return func(ctx *fasthttp.RequestCtx) {
-			if m.IsDashboardAuthActive() {
-				next(ctx)
-				return
-			}
-			if isAPIKeyAuth, ok := ctx.UserValue(schemas.IsAPIKeyAuthContextKey).(bool); ok && isAPIKeyAuth {
-				next(ctx)
-				return
-			}
-			// Raw path, for the same router-congruence reason as middleware().
-			if m.isAPIRouteWhitelisted(string(ctx.Request.URI().PathOriginal())) {
-				next(ctx)
-				return
-			}
-			if m.setupToken.Load() == nil {
-				SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is not configured and no setup token is set; set setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and restart Bifrost")
-				return
-			}
-			// An explicit header wins: API clients send it, and a wrong one is a 403 even if
-			// a setup session cookie is also present.
-			if token := string(ctx.Request.Header.Peek(SetupTokenHeader)); token != "" {
-				if !m.CheckConfiguredSetupToken(token) {
-					SendError(ctx, fasthttp.StatusForbidden, "invalid setup token")
-					return
-				}
-				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
-				next(ctx)
-				return
-			}
-			// The dashboard holds an HttpOnly setup session cookie instead of the token.
-			// Browsers send it on WebSocket upgrades too, so no ticket is needed.
-			if m.validSetupSession(string(ctx.Request.Header.Cookie(SetupSessionCookie)), time.Now()) {
-				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
-				next(ctx)
-				return
-			}
-			SendError(ctx, fasthttp.StatusUnauthorized, fmt.Sprintf("dashboard auth is not configured; send the setup token in the %s header", SetupTokenHeader))
+		return m.setupLockHandler(next)
+	}
+}
+
+// setupLockHandler is SetupLockMiddleware's gate without the boot warning, so
+// InferenceMiddleware can run the admin chain for the MCP write grant (see
+// adminAPIAuthenticates) without logging it twice.
+func (m *AuthMiddleware) setupLockHandler(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if m.IsDashboardAuthActive() {
+			next(ctx)
+			return
 		}
+		if isAPIKeyAuth, ok := ctx.UserValue(schemas.IsAPIKeyAuthContextKey).(bool); ok && isAPIKeyAuth {
+			next(ctx)
+			return
+		}
+		// Raw path, for the same router-congruence reason as middleware().
+		if m.isAPIRouteWhitelisted(string(ctx.Request.URI().PathOriginal())) {
+			next(ctx)
+			return
+		}
+		if m.setupToken.Load() == nil {
+			SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is not configured and no setup token is set; set setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and restart Bifrost")
+			return
+		}
+		// An explicit header wins: API clients send it, and a wrong one is a 403 even if
+		// a setup session cookie is also present.
+		if token := string(ctx.Request.Header.Peek(SetupTokenHeader)); token != "" {
+			if !m.CheckConfiguredSetupToken(token) {
+				SendError(ctx, fasthttp.StatusForbidden, "invalid setup token")
+				return
+			}
+			ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+			next(ctx)
+			return
+		}
+		// The dashboard holds an HttpOnly setup session cookie instead of the token.
+		// Browsers send it on WebSocket upgrades too, so no ticket is needed.
+		if m.validSetupSession(string(ctx.Request.Header.Cookie(SetupSessionCookie)), time.Now()) {
+			ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+			next(ctx)
+			return
+		}
+		SendError(ctx, fasthttp.StatusUnauthorized, fmt.Sprintf("dashboard auth is not configured; send the setup token in the %s header", SetupTokenHeader))
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -1572,6 +1573,151 @@ func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing
 
 			if !nextCalled {
 				t.Fatalf("expected inference request %q to pass the middleware (governance enforces auth downstream), got %d", tc.name, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+// The write tools on Bifrost's MCP server change what the admin API guards, so a
+// request with no virtual key gets them exactly when the OSS /api chain
+// (SetupLockMiddleware then APIMiddleware) would admit the same request on a verified
+// credential: an admin credential while dashboard auth is on, the setup token or a setup
+// session while it is off. Admission still belongs to governance: every case below
+// passes the middleware; what differs is whether write access is granted.
+func TestAuthMiddleware_InferenceMiddleware_GrantsMCPWriteAccessLikeAdminAPI(t *testing.T) {
+	SetLogger(&mockLogger{})
+	hashed, err := encrypt.Hash("s3cret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newTestConfigStore(t)
+	const liveSession, expiredSession = "live-session-token", "expired-session-token"
+	for token, expires := range map[string]time.Time{liveSession: time.Now().Add(time.Hour), expiredSession: time.Now().Add(-time.Hour)} {
+		if err := store.CreateSession(context.Background(), &tables.SessionsTable{Token: token, ExpiresAt: expires}); err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+	}
+	basic := func(user, pass string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	}
+	enabled := &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hashed),
+		IsEnabled:     true,
+	}
+	disabled := &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hashed),
+		IsEnabled:     false,
+	}
+	const setupToken = "setup-s3cret"
+	sessionMinter := newSetupLockedAuthMiddleware(setupToken, disabled)
+	setupSession, _, err := sessionMinter.IssueSetupSession(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredSetupSession, _, err := sessionMinter.IssueSetupSession(time.Now().Add(-SetupSessionTTL - time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name        string
+		config      *configstore.AuthConfig
+		setupToken  string
+		whitelisted []string
+		uri         string
+		auth        string
+		vk          string
+		cookies     map[string]string
+		headers     map[string]string
+		enterprise  bool
+		want        bool
+	}{
+		// Dashboard auth on: only what APIMiddleware verifies as the admin.
+		{name: "auth on: admin basic on /mcp", config: enabled, uri: "/mcp/bifrost", auth: basic("admin", "s3cret"), want: true},
+		{name: "auth on: admin basic on tool execute", config: enabled, uri: "/v1/mcp/tool/execute", auth: basic("admin", "s3cret"), want: true},
+		{name: "auth on: legacy base64 bearer", config: enabled, uri: "/mcp", auth: "Bearer " + base64.StdEncoding.EncodeToString([]byte("admin:s3cret")), want: true},
+		{name: "auth on: session bearer", config: enabled, uri: "/mcp/bifrost", auth: "Bearer " + liveSession, want: true},
+		{name: "auth on: session cookie", config: enabled, uri: "/mcp/bifrost", cookies: map[string]string{"token": liveSession}, want: true},
+		{name: "auth on: expired session bearer", config: enabled, uri: "/mcp/bifrost", auth: "Bearer " + expiredSession},
+		{name: "auth on: expired session cookie", config: enabled, uri: "/mcp/bifrost", cookies: map[string]string{"token": expiredSession}},
+		// /api judges a present Authorization header alone; a valid cookie does not rescue it.
+		{name: "auth on: wrong password beside a valid cookie", config: enabled, uri: "/mcp/bifrost", auth: basic("admin", "nope"), cookies: map[string]string{"token": liveSession}},
+		{name: "auth on: wrong password", config: enabled, uri: "/mcp/bifrost", auth: basic("admin", "nope")},
+		{name: "auth on: wrong username", config: enabled, uri: "/mcp/bifrost", auth: basic("root", "s3cret")},
+		{name: "auth on: virtual key bearer", config: enabled, uri: "/mcp/bifrost", auth: "Bearer sk-bf-abc123"},
+		{name: "auth on: virtual key header", config: enabled, uri: "/mcp/bifrost", vk: "sk-bf-abc123"},
+		{name: "auth on: no credentials", config: enabled, uri: "/mcp/bifrost"},
+		{name: "auth on: setup token is not an admin credential", config: enabled, setupToken: setupToken, uri: "/mcp/bifrost", headers: map[string]string{SetupTokenHeader: setupToken}},
+		// A whitelisted route passes /api without a credential check; that proves no admin.
+		{name: "auth on: whitelisted /mcp without credentials", config: enabled, whitelisted: []string{"/mcp/*"}, uri: "/mcp/bifrost"},
+		{name: "auth on: not an MCP route", config: enabled, uri: "/v1/chat/completions", auth: basic("admin", "s3cret")},
+
+		// Dashboard auth off: only what SetupLockMiddleware accepts.
+		{name: "auth off: no setup token sent", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost"},
+		{name: "auth off: no admin account, no setup token sent", setupToken: setupToken, uri: "/mcp/bifrost"},
+		{name: "auth off: none configured", config: disabled, uri: "/mcp/bifrost", headers: map[string]string{SetupTokenHeader: setupToken}},
+		{name: "auth off: wrong setup token", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", headers: map[string]string{SetupTokenHeader: "nope"}},
+		{name: "auth off: setup token header", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", headers: map[string]string{SetupTokenHeader: setupToken}, want: true},
+		{name: "auth off: no admin account, setup token header", setupToken: setupToken, uri: "/v1/mcp/tool/execute", headers: map[string]string{SetupTokenHeader: setupToken}, want: true},
+		{name: "auth off: setup session cookie", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", cookies: map[string]string{SetupSessionCookie: setupSession}, want: true},
+		{name: "auth off: expired setup session cookie", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", cookies: map[string]string{SetupSessionCookie: expiredSetupSession}},
+		{name: "auth off: wrong header beside a valid setup session", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", headers: map[string]string{SetupTokenHeader: "nope"}, cookies: map[string]string{SetupSessionCookie: setupSession}},
+		// The open management API refuses an unlisted cross-origin browser page even with the token.
+		{name: "auth off: setup token from a foreign origin", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", headers: map[string]string{SetupTokenHeader: setupToken, "Origin": "https://evil.example"}},
+		{name: "auth off: admin basic is not checked", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", auth: basic("admin", "s3cret")},
+		{name: "auth off: whitelisted /mcp without a setup token", config: disabled, setupToken: setupToken, whitelisted: []string{"/mcp/*"}, uri: "/mcp/bifrost"},
+		{name: "auth off: virtual key header", config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", vk: "sk-bf-abc123"},
+		{name: "auth off: not an MCP route", config: disabled, setupToken: setupToken, uri: "/v1/chat/completions", headers: map[string]string{SetupTokenHeader: setupToken}},
+
+		// Enterprise installs this middleware too (SCIM off) but never the setup lock.
+		{name: "enterprise auth on: admin basic", enterprise: true, config: enabled, uri: "/mcp/bifrost", auth: basic("admin", "s3cret"), want: true},
+		{name: "enterprise auth on: virtual key header", enterprise: true, config: enabled, uri: "/mcp/bifrost", vk: "sk-bf-abc123"},
+		{name: "enterprise auth off: setup token is not honoured", enterprise: true, config: disabled, setupToken: setupToken, uri: "/mcp/bifrost", headers: map[string]string{SetupTokenHeader: setupToken}},
+		{name: "enterprise auth off: no credentials", enterprise: true, config: disabled, uri: "/mcp/bifrost"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			am := &AuthMiddleware{store: store}
+			am.UpdateAuthConfig(tc.config)
+			am.UpdateWhitelistedRoutes(tc.whitelisted)
+			if tc.setupToken != "" {
+				token := tc.setupToken
+				am.setupToken.Store(&token)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetHost("bifrost.internal:8080")
+			if tc.enterprise {
+				ctx.SetUserValue(schemas.BifrostContextKeyIsEnterprise, true)
+			}
+			if tc.auth != "" {
+				ctx.Request.Header.Set("Authorization", tc.auth)
+			}
+			if tc.vk != "" {
+				ctx.Request.Header.Set("x-bf-vk", tc.vk)
+			}
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			for k, v := range tc.cookies {
+				ctx.Request.Header.SetCookie(k, v)
+			}
+			nextCalled := false
+			am.InferenceMiddleware()(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx)
+			if !nextCalled {
+				t.Fatalf("inference request must pass the middleware, got %d", ctx.Response.StatusCode())
+			}
+			if got := mcptools.HasWriteAccess(ctx); got != tc.want {
+				t.Fatalf("write access = %v, want %v", got, tc.want)
+			}
+			// The admin chain runs on a shadow request: none of its refusals or
+			// context values may leak onto the inference request.
+			if status := ctx.Response.StatusCode(); status != fasthttp.StatusOK {
+				t.Fatalf("inference response status = %d, want untouched 200", status)
+			}
+			if authed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool); authed {
+				t.Fatal("setup-token mark leaked from the admin probe onto the inference request")
 			}
 		})
 	}
@@ -5204,6 +5350,28 @@ func BenchmarkRequestDecompressionMiddlewareParallel(b *testing.B) {
 				}
 			})
 			b.ReportMetric(float64(refused.Load())/float64(total.Load()), "503/op")
+		})
+	}
+}
+
+// BenchmarkInferenceMiddleware_MCPWriteGrant measures the MCP write-grant probe
+// (adminAPIAuthenticates) a keyless /mcp request pays, against a non-MCP inference
+// request, which must not pay it.
+func BenchmarkInferenceMiddleware_MCPWriteGrant(b *testing.B) {
+	SetLogger(&mockLogger{})
+	for _, path := range []string{"/v1/chat/completions", "/mcp/bifrost"} {
+		b.Run(path, func(b *testing.B) {
+			am := newSetupLockedAuthMiddleware("setup-s3cret", nil)
+			handler := am.InferenceMiddleware()(func(*fasthttp.RequestCtx) {})
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(path)
+			ctx.Request.Header.Set(SetupTokenHeader, "setup-s3cret")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				ctx.ResetUserValues()
+				handler(ctx)
+			}
 		})
 	}
 }
