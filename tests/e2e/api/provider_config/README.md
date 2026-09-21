@@ -48,6 +48,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-bedrock.postman_environment.json`
 - `bifrost-v1-cerebras.postman_environment.json`
 - `bifrost-v1-cohere.postman_environment.json`
+- `bifrost-v1-coreweave.postman_environment.json`
 - `bifrost-v1-elevenlabs.postman_environment.json`
 - `bifrost-v1-gemini.postman_environment.json`
 - `bifrost-v1-groq.postman_environment.json`
