@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -162,12 +163,26 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 
 	logger.Info("[realtime-client-secrets] upstream success: provider=%s model=%s status=%d",
 		providerKey, model, resp.StatusCode)
-	cacheRealtimeEphemeralKeyMapping(
+	// Prefer the settled identity: it is what minting governance evaluated, so the
+	// mapping cannot attribute later turns to a different key than the one that was
+	// authorized here. The raw-header parse is only a fallback for routes where the
+	// settled context does not retain the virtual key at mapping time (observed live
+	// for bearer-based mints).
+	virtualKey := realtimeMappingVirtualKey(bifrostCtx)
+	if virtualKey == "" {
+		if presented := governance.ParseVirtualKeyFromFastHTTPRequest(ctx); presented != nil {
+			virtualKey = *presented
+		}
+	}
+	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(
 		h.handlerStore.GetKVStore(),
-		resp.Body,
+		resp,
 		key.ID,
-		bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyVirtualKey),
-	)
+		virtualKey,
+	); bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
 
 	writeRealtimeClientSecretResponse(ctx, resp)
 }
@@ -365,34 +380,89 @@ func rewriteGASessionTranscriptionModel(session map[string]json.RawMessage, norm
 const realtimeEphemeralKeyMappingPrefix = "realtime:ephemeral-key:"
 
 type realtimeEphemeralKeyMapping struct {
-	KeyID      string `json:"key_id,omitempty"`
-	VirtualKey string `json:"virtual_key,omitempty"`
+	KeyID         string `json:"key_id,omitempty"`
+	VirtualKey    string `json:"virtual_key,omitempty"`
+	ProviderToken string `json:"provider_token,omitempty"`
 }
 
-func cacheRealtimeEphemeralKeyMapping(kv schemas.KVStore, body []byte, keyID string, virtualKey string) {
-	if kv == nil || len(body) == 0 || strings.TrimSpace(keyID) == "" {
-		return
+func realtimeMappingVirtualKey(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
+	if ctx.Grant() != nil {
+		if virtualKey := governance.PresentedVirtualKey(ctx); virtualKey != "" {
+			return virtualKey
+		}
+	}
+	return bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+}
+
+func replaceAndCacheRealtimeEphemeralToken(kv schemas.KVStore, resp *schemas.BifrostPassthroughResponse, keyID string, virtualKey string) *schemas.BifrostError {
+	if kv == nil || resp == nil || len(resp.Body) == 0 || strings.TrimSpace(keyID) == "" {
+		return newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to secure realtime client secret", nil)
 	}
 
-	token, ttl, ok := parseRealtimeEphemeralKeyMapping(body)
-	if !ok || strings.TrimSpace(token) == "" || ttl <= 0 {
-		return
+	providerToken, ttl, nested, ok := parseRealtimeEphemeralKeyMapping(resp.Body)
+	if !ok || strings.TrimSpace(providerToken) == "" || ttl <= 0 {
+		return newRealtimeClientSecretHandlerError(fasthttp.StatusBadGateway, "server_error", "provider returned an invalid realtime client secret", nil)
+	}
+
+	bifrostToken := "ek_bf_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	body, err := replaceRealtimeEphemeralToken(resp.Body, bifrostToken, nested)
+	if err != nil {
+		return newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to secure realtime client secret", err)
 	}
 
 	mapping := realtimeEphemeralKeyMapping{
-		KeyID:      strings.TrimSpace(keyID),
-		VirtualKey: strings.TrimSpace(virtualKey),
+		KeyID:         strings.TrimSpace(keyID),
+		VirtualKey:    strings.TrimSpace(virtualKey),
+		ProviderToken: strings.TrimSpace(providerToken),
+	}
+	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(bifrostToken), mapping, ttl); err != nil {
+		logger.Error("failed to cache realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
+		return newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to secure realtime client secret", err)
 	}
 
-	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), mapping, ttl); err != nil {
-		logger.Warn("failed to cache realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
-	}
+	resp.Body = body
+	return nil
 }
 
-func parseRealtimeEphemeralKeyMapping(body []byte) (string, time.Duration, bool) {
+func replaceRealtimeEphemeralToken(body []byte, token string, nested bool) ([]byte, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(body, &root); err != nil {
-		return "", 0, false
+		return nil, err
+	}
+
+	if nested {
+		var clientSecret map[string]json.RawMessage
+		if err := json.Unmarshal(root["client_secret"], &clientSecret); err != nil {
+			return nil, err
+		}
+		value, err := json.Marshal(token)
+		if err != nil {
+			return nil, err
+		}
+		clientSecret["value"] = value
+		rewritten, err := json.Marshal(clientSecret)
+		if err != nil {
+			return nil, err
+		}
+		root["client_secret"] = rewritten
+	} else {
+		value, err := json.Marshal(token)
+		if err != nil {
+			return nil, err
+		}
+		root["value"] = value
+	}
+
+	return json.Marshal(root)
+}
+
+func parseRealtimeEphemeralKeyMapping(body []byte) (string, time.Duration, bool, bool) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(body, &root); err != nil {
+		return "", 0, false, false
 	}
 
 	var clientSecret struct {
@@ -403,25 +473,33 @@ func parseRealtimeEphemeralKeyMapping(body []byte) (string, time.Duration, bool)
 	// OpenAI client_secrets responses expose the ephemeral token at the top level.
 	// Keep accepting the nested shape too so the mapping logic stays compatible
 	// with any provider/session endpoint variants that wrap the secret object.
+	nested := false
 	if err := json.Unmarshal(body, &clientSecret); err != nil || strings.TrimSpace(clientSecret.Value) == "" || clientSecret.ExpiresAt <= 0 {
 		clientSecretRaw, ok := root["client_secret"]
 		if !ok || len(clientSecretRaw) == 0 || string(clientSecretRaw) == "null" {
-			return "", 0, false
+			return "", 0, false, false
 		}
+		// Reset before reparsing: Unmarshal preserves fields absent from the new
+		// JSON, so leftovers from the failed top-level attempt could otherwise
+		// combine with nested fields into a token/expiry pair no single shape
+		// actually carried — and misreport which shape holds the secret.
+		clientSecret.Value = ""
+		clientSecret.ExpiresAt = 0
 		if err := json.Unmarshal(clientSecretRaw, &clientSecret); err != nil {
-			return "", 0, false
+			return "", 0, false, false
 		}
+		nested = true
 	}
 	if strings.TrimSpace(clientSecret.Value) == "" || clientSecret.ExpiresAt <= 0 {
-		return "", 0, false
+		return "", 0, false, false
 	}
 
 	ttl := time.Until(time.Unix(clientSecret.ExpiresAt, 0))
 	if ttl <= 0 {
-		return "", 0, false
+		return "", 0, false, false
 	}
 
-	return clientSecret.Value, ttl, true
+	return clientSecret.Value, ttl, nested, true
 }
 
 func buildRealtimeEphemeralKeyMappingKey(token string) string {

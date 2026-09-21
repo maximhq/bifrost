@@ -2208,8 +2208,18 @@ type AnthropicMessageError struct {
 
 // AnthropicMessageErrorStruct represents the error structure of an Anthropic messages API error response
 type AnthropicMessageErrorStruct struct {
-	Type    string `json:"type"`    // Error type
-	Message string `json:"message"` // Error message
+	Type    string                        `json:"type"`              // Error type
+	Message string                        `json:"message"`           // Error message
+	Details *AnthropicMessageErrorDetails `json:"details,omitempty"` // Machine-readable details some errors carry (e.g. thread error codes)
+}
+
+// AnthropicMessageErrorDetails is the optional machine-readable payload of an
+// Anthropic error envelope. Clients key recovery behavior on ErrorCode (e.g.
+// "thread_not_found" triggers a full-conversation replay, and
+// "thread_unsupported_request" additionally drops the thread field for the
+// rest of the session).
+type AnthropicMessageErrorDetails struct {
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // AnthropicError represents the error response structure from Anthropic's API (legacy)

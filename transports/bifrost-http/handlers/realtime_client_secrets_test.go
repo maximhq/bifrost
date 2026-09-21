@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -357,12 +359,15 @@ func TestRewriteGASessionTranscriptionModelNoOpForFullRealtimeSession(t *testing
 func TestParseRealtimeEphemeralKeyMapping(t *testing.T) {
 	t.Parallel()
 
-	token, ttl, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+	token, ttl, nested, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
 		"value": "ek_test_123",
 		"expires_at": 4102444800
 	}`))
 	if !ok {
 		t.Fatal("expected ephemeral mapping to be parsed")
+	}
+	if nested {
+		t.Fatal("expected top-level secret shape")
 	}
 	if token != "ek_test_123" {
 		t.Fatalf("token = %q, want %q", token, "ek_test_123")
@@ -375,7 +380,7 @@ func TestParseRealtimeEphemeralKeyMapping(t *testing.T) {
 func TestParseRealtimeEphemeralKeyMapping_NestedFallback(t *testing.T) {
 	t.Parallel()
 
-	token, ttl, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+	token, ttl, nested, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
 		"client_secret": {
 			"value": "ek_test_nested",
 			"expires_at": 4102444800
@@ -383,6 +388,9 @@ func TestParseRealtimeEphemeralKeyMapping_NestedFallback(t *testing.T) {
 	}`))
 	if !ok {
 		t.Fatal("expected nested ephemeral mapping to be parsed")
+	}
+	if !nested {
+		t.Fatal("expected nested secret shape")
 	}
 	if token != "ek_test_nested" {
 		t.Fatalf("token = %q, want %q", token, "ek_test_nested")
@@ -392,7 +400,68 @@ func TestParseRealtimeEphemeralKeyMapping_NestedFallback(t *testing.T) {
 	}
 }
 
-func TestCacheRealtimeEphemeralKeyMappingStoresKeyID(t *testing.T) {
+// TestParseRealtimeEphemeralKeyMapping_RejectsCompositeShapes is a regression
+// test for a coderabbit-caught bug: json.Unmarshal preserves fields absent from
+// the new JSON, so a top-level field left over from the failed first parse could
+// combine with a nested field into a token/expiry pair no single shape carried.
+func TestParseRealtimeEphemeralKeyMapping_RejectsCompositeShapes(t *testing.T) {
+	t.Parallel()
+
+	// Top-level value + nested expiry: neither shape is complete on its own.
+	if _, _, _, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+		"value": "ek_top_only",
+		"client_secret": {
+			"expires_at": 4102444800
+		}
+	}`)); ok {
+		t.Fatal("top-level value must not combine with nested expires_at")
+	}
+
+	// Top-level expiry + nested value: the mirror composite.
+	if _, _, _, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+		"expires_at": 4102444800,
+		"client_secret": {
+			"value": "ek_nested_only"
+		}
+	}`)); ok {
+		t.Fatal("nested value must not combine with top-level expires_at")
+	}
+}
+
+func TestRealtimeMappingVirtualKeyUsesRequestHeader(t *testing.T) {
+	t.Parallel()
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.Set("Authorization", "Bearer sk-bf-header")
+
+	if got := governance.ParseVirtualKeyFromFastHTTPRequest(&ctx); got == nil || *got != "sk-bf-header" {
+		t.Fatalf("ParseVirtualKeyFromFastHTTPRequest() = %v, want request virtual key", got)
+	}
+}
+
+func TestRealtimeMappingVirtualKeyUsesSettledBearerCredential(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-bearer"))
+
+	if got := realtimeMappingVirtualKey(ctx); got != "sk-bf-bearer" {
+		t.Fatalf("realtimeMappingVirtualKey() = %q, want settled bearer virtual key", got)
+	}
+}
+
+func TestRealtimeMappingVirtualKeyFallsBackToContextValue(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-context")
+
+	if got := realtimeMappingVirtualKey(ctx); got != "sk-bf-context" {
+		t.Fatalf("realtimeMappingVirtualKey() = %q, want context virtual key", got)
+	}
+}
+
+func TestReplaceAndCacheRealtimeEphemeralToken(t *testing.T) {
 	t.Parallel()
 
 	store, err := kvstore.New(kvstore.Config{})
@@ -401,13 +470,28 @@ func TestCacheRealtimeEphemeralKeyMappingStoresKeyID(t *testing.T) {
 	}
 	defer store.Close()
 
-	body := []byte(`{
-		"value": "ek_test_456",
-		"expires_at": ` + "4102444800" + `
-	}`)
-	cacheRealtimeEphemeralKeyMapping(store, body, "key_123", "sk-bf-test")
+	resp := &schemas.BifrostPassthroughResponse{Body: []byte(`{
+		"value": "ek_provider_456",
+		"expires_at": 4102444800
+	}`)}
+	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(store, resp, "key_123", "sk-bf-test"); bifrostErr != nil {
+		t.Fatalf("replaceAndCacheRealtimeEphemeralToken() error = %v", bifrostErr)
+	}
 
-	raw, err := store.Get(buildRealtimeEphemeralKeyMappingKey("ek_test_456"))
+	var rewritten struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(resp.Body, &rewritten); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !strings.HasPrefix(rewritten.Value, "ek_bf_") {
+		t.Fatalf("returned token = %q, want Bifrost token", rewritten.Value)
+	}
+	if rewritten.Value == "ek_provider_456" {
+		t.Fatal("returned provider token unchanged")
+	}
+
+	raw, err := store.Get(buildRealtimeEphemeralKeyMappingKey(rewritten.Value))
 	if err != nil {
 		t.Fatalf("store.Get() error = %v", err)
 	}
@@ -415,15 +499,12 @@ func TestCacheRealtimeEphemeralKeyMappingStoresKeyID(t *testing.T) {
 	if !ok {
 		t.Fatalf("cached value type = %T, want realtimeEphemeralKeyMapping", raw)
 	}
-	if mapping.KeyID != "key_123" {
-		t.Fatalf("mapping.KeyID = %q, want %q", mapping.KeyID, "key_123")
-	}
-	if mapping.VirtualKey != "sk-bf-test" {
-		t.Fatalf("mapping.VirtualKey = %q, want %q", mapping.VirtualKey, "sk-bf-test")
+	if mapping.KeyID != "key_123" || mapping.VirtualKey != "sk-bf-test" || mapping.ProviderToken != "ek_provider_456" {
+		t.Fatalf("mapping = %#v, want key, virtual key, and provider token", mapping)
 	}
 }
 
-func TestCacheRealtimeEphemeralKeyMappingSkipsExpiredSecrets(t *testing.T) {
+func TestReplaceAndCacheRealtimeEphemeralTokenRejectsExpiredSecret(t *testing.T) {
 	t.Parallel()
 
 	store, err := kvstore.New(kvstore.Config{})
@@ -433,14 +514,12 @@ func TestCacheRealtimeEphemeralKeyMappingSkipsExpiredSecrets(t *testing.T) {
 	defer store.Close()
 
 	expired := time.Now().Add(-time.Minute).Unix()
-	body := fmt.Appendf(nil, `{
+	resp := &schemas.BifrostPassthroughResponse{Body: fmt.Appendf(nil, `{
 		"value": "ek_expired",
 		"expires_at": %d
-	}`, expired)
-	cacheRealtimeEphemeralKeyMapping(store, body, "key_123", "")
-
-	if _, err := store.Get(buildRealtimeEphemeralKeyMappingKey("ek_expired")); err == nil {
-		t.Fatal("expected no cached mapping for expired token")
+	}`, expired)}
+	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(store, resp, "key_123", ""); bifrostErr == nil {
+		t.Fatal("expected expired provider secret to be rejected")
 	}
 }
 

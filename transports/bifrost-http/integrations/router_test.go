@@ -503,6 +503,102 @@ func TestCreateHandler_AnthropicRouteSetsPassthroughFlags(t *testing.T) {
 	require.Equal(t, true, capturedPassthroughOverrides, "PassthroughOverridesPresent should be set for a Claude Code request")
 }
 
+// anthropicThreadTestRoute mirrors the production /v1/messages route config
+// (checkAnthropicPassthrough + anthropicRefuseThreadContinue) with a sentinel
+// converter so the request never reaches a nil bifrost client.
+func anthropicThreadTestRoute(converterCalled *bool) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeAnthropic,
+		Path:   "/v1/messages",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ResponsesRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &anthropic.AnthropicMessageRequest{}
+		},
+		PreCallback:  checkAnthropicPassthrough,
+		ShortCircuit: anthropicRefuseThreadContinue,
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			*converterCalled = true
+			return nil, fmt.Errorf("stop before bifrost execution")
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return anthropic.ToAnthropicChatCompletionError(err)
+		},
+	}
+}
+
+// TestCreateHandler_AnthropicThreadContinueRefused verifies the stateless thread
+// handling: a `thread: {"type": "continue"}` request carries only the conversation
+// delta, which Bifrost cannot serve because thread state is bound to the upstream
+// account that created it. The request is refused before the Bifrost flow with the
+// thread_unsupported_request error code, which makes the client resend the turn in
+// full and drop the thread field for the rest of the session.
+func TestCreateHandler_AnthropicThreadContinueRefused(t *testing.T) {
+	converterCalled := false
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
+	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"thread":{"type":"continue","previous_message_id":"msg_123"}}`)
+
+	router.createHandler(anthropicThreadTestRoute(&converterCalled))(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.False(t, converterCalled, "a refused continuation must never reach the Bifrost flow")
+	require.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+
+	var envelope anthropic.AnthropicMessageError
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &envelope))
+	require.Equal(t, "error", envelope.Type)
+	require.Equal(t, "invalid_request_error", envelope.Error.Type)
+	require.NotNil(t, envelope.Error.Details)
+	require.Equal(t, "thread_unsupported_request", envelope.Error.Details.ErrorCode)
+	require.NotEmpty(t, envelope.Error.Message)
+}
+
+// TestCreateHandler_AnthropicThreadContinueRefusedStreaming pins that the refusal
+// is a plain JSON response even when the client requested a stream: the
+// short-circuit runs before any SSE stream starts, matching how the upstream
+// returns pre-stream errors.
+func TestCreateHandler_AnthropicThreadContinueRefusedStreaming(t *testing.T) {
+	converterCalled := false
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
+	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}],"thread":{"type":"continue","previous_message_id":"msg_123"}}`)
+
+	router.createHandler(anthropicThreadTestRoute(&converterCalled))(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.False(t, converterCalled)
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, "thread_unsupported_request")
+	require.NotContains(t, body, "event:", "the refusal must be plain JSON, not SSE framing")
+}
+
+// TestCreateHandler_AnthropicThreadCreateProceeds verifies a thread create request
+// is not refused: it carries the full conversation, so it proceeds into the Bifrost
+// flow (where the provider's raw-body path strips the field before the wire).
+func TestCreateHandler_AnthropicThreadCreateProceeds(t *testing.T) {
+	converterCalled := false
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
+	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"thread":{"type":"create"}}`)
+
+	router.createHandler(anthropicThreadTestRoute(&converterCalled))(ctx)
+
+	require.True(t, converterCalled, "a thread create request must proceed into the Bifrost flow")
+	require.NotContains(t, string(ctx.Response.Body()), "thread_unsupported_request")
+}
+
 func TestCreateHandler_CustomParserFailureClosesConnection(t *testing.T) {
 	handlerStore := &mockHandlerStore{}
 	converterCalled := false
@@ -776,6 +872,63 @@ func TestExtractPassthroughModel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := extractPassthroughModel(tt.path, tt.bodyModel); got != tt.want {
 				t.Fatalf("extractPassthroughModel(%q, %q) = %q, want %q", tt.path, tt.bodyModel, got, tt.want)
+			}
+		})
+	}
+}
+
+// Caller-auth forwarding for passthrough routes: OAuth/JWT bearer tokens are the
+// upstream credential (Claude Code, ChatGPT/Codex) and must survive to the provider,
+// while plain API keys keep the strip-and-inject behavior.
+func TestApplyPassthroughCallerAuth_AnthropicOAuthForwarded(t *testing.T) {
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	safeHeaders := map[string]string{}
+	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.Anthropic, "Bearer sk-ant-oat01-caller-token", "")
+	if got := safeHeaders["authorization"]; got != "Bearer sk-ant-oat01-caller-token" {
+		t.Fatalf("expected OAuth token forwarded in safe headers, got %q", got)
+	}
+	if skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		t.Fatal("expected SkipKeySelection to be set for OAuth passthrough")
+	}
+}
+
+func TestApplyPassthroughCallerAuth_OpenAIJWTForwarded(t *testing.T) {
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	safeHeaders := map[string]string{}
+	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln"
+	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.OpenAI, jwt, "https://chatgpt.com")
+	if got := safeHeaders["authorization"]; got != jwt {
+		t.Fatalf("expected JWT forwarded in safe headers, got %q", got)
+	}
+	if skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		t.Fatal("expected SkipKeySelection to be set for JWT passthrough")
+	}
+}
+
+func TestApplyPassthroughCallerAuth_APIKeysStayStripped(t *testing.T) {
+	for name, tc := range map[string]struct {
+		provider    schemas.ModelProvider
+		auth        string
+		upstreamURL string
+	}{
+		"openai plain api key":      {schemas.OpenAI, "Bearer sk-plain-api-key", ""},
+		"anthropic api key bearer":  {schemas.Anthropic, "Bearer sk-ant-api03-key", ""},
+		"provider override bedrock": {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
+		"openai two-segment token":  {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
+		"http upstream override":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "http://mock.local"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			safeHeaders := map[string]string{}
+			applyPassthroughCallerAuth(bifrostCtx, safeHeaders, tc.provider, tc.auth, tc.upstreamURL)
+			if _, ok := safeHeaders["authorization"]; ok {
+				t.Fatal("authorization must stay stripped")
+			}
+			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok {
+				t.Fatal("SkipKeySelection must not be set")
 			}
 		})
 	}

@@ -1,4 +1,5 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 
 interface ModelFilterSelectProps {
 	models: string[];
@@ -20,11 +21,11 @@ export function ModelFilterSelect({
 			<SelectTrigger className="!h-7.5 w-[110px] text-xs sm:w-[130px]" data-testid={testId} size="sm">
 				<SelectValue placeholder={placeholder} />
 			</SelectTrigger>
-			<SelectContent>
+			<SelectContent className="w-[300px] max-w-[var(--radix-popper-available-width)]">
 				<SelectItem value="all">{placeholder}</SelectItem>
 				{models.filter(Boolean).map((model) => (
-					<SelectItem key={model} value={model} className="text-xs">
-						{model}
+					<SelectItem key={model} value={model} className="text-xs [&>span:last-child]:min-w-0">
+						<StartTruncatedLabel>{model}</StartTruncatedLabel>
 					</SelectItem>
 				))}
 			</SelectContent>

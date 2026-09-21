@@ -323,6 +323,61 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 }
 
+func TestBuildAnthropicResponsesRequestBody_ThreadFieldStripped(t *testing.T) {
+	// Server-side thread state is bound to the account that created it; per-request
+	// key selection, retries, and fallbacks cannot keep a continuation there, so the
+	// raw path never forwards the field. Continuations themselves are refused at the
+	// transport (anthropicRefuseThreadContinue) before reaching this builder.
+	rawBody := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"thread":{"type":"create"}}`)
+
+	t.Run("raw_path_strips_thread", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-sonnet-4-5",
+			RawRequestBody: rawBody,
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "thread") {
+			t.Errorf("expected thread field to be stripped from the raw body, got %s", string(result))
+		}
+		if !providerUtils.JSONFieldExists(result, "messages") {
+			t.Error("expected messages to survive the thread strip")
+		}
+	})
+
+	t.Run("count_tokens_mode_strips_thread", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-sonnet-4-5",
+			RawRequestBody: rawBody,
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider:      schemas.Anthropic,
+			Model:         "claude-sonnet-4-5",
+			IsCountTokens: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "thread") {
+			t.Errorf("expected thread field to be stripped in count_tokens mode, got %s", string(result))
+		}
+	})
+}
+
 func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 	t.Run("count_tokens_strips_max_tokens_and_temperature_raw", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})

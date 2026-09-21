@@ -311,7 +311,6 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 	// both the GA /realtime/calls and the legacy raw-SDP routes, which funnel through here.
 	if authErr := refuseUnauthenticatedRealtime(
 		h.config.ClientConfig.EnforceAuthOnInference,
-		h.handlerStore.GetKVStore(),
 		bifrostCtx,
 		string(ctx.Request.Header.Peek("Authorization")),
 	); authErr != nil {
@@ -319,7 +318,41 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 		return
 	}
 
-	authKey, selectedKey, err := h.resolveRealtimeWebRTCKeys(ctx, bifrostCtx, providerKey, model)
+	// Resolve any Bifrost-minted ephemeral token mapping before the per-request pipeline runs,
+	// so governance resolves the originating virtual key rather than the opaque token string,
+	// and the resolution check below can refuse a mapped token whose virtual key has since been
+	// revoked before any key selection or relay work.
+	inboundToken := extractRealtimeBearerToken(ctx)
+	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), inboundToken)
+	if mapped {
+		applyRealtimeEphemeralKeyMapping(bifrostCtx, mapping)
+	}
+
+	// Run the per-request pipeline so governance resolves the request's access onto the grant,
+	// exactly as the WebSocket path does before its upgrade. The request's provider and model
+	// are already resolved for WebRTC, so routing mutations are not read back; this exists so
+	// the resolution check below reads the same answer the per-turn pipeline will.
+	h.client.RunPreRequestHooks(bifrostCtx, &schemas.BifrostRequest{
+		RequestType: schemas.RealtimeRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: providerKey,
+			Model:    model,
+		},
+	})
+	// Second admission question: a presented credential that resolved to nothing (forged or
+	// revoked sk-bf-*) is refused before any key is selected and before the SDP exchange
+	// reaches the provider.
+	if authErr := refuseUnresolvedRealtimeCredential(
+		h.config.ClientConfig.EnforceAuthOnInference,
+		bifrostCtx,
+		inboundToken,
+		mapped && mapping.VirtualKey != "",
+	); authErr != nil {
+		SendBifrostError(ctx, authErr)
+		return
+	}
+
+	authKey, selectedKey, err := h.resolveRealtimeWebRTCKeys(bifrostCtx, providerKey, model, inboundToken, mapping, mapped)
 	if err != nil {
 		SendBifrostError(ctx, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", err.Error(), nil))
 		return
@@ -364,17 +397,18 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 	ctx.SetBodyString(browserAnswer)
 }
 
+// resolveRealtimeWebRTCKeys turns the inbound credential into the upstream auth key. The
+// ephemeral-token mapping is resolved and applied by the caller before the per-request pipeline
+// runs (so admission and governance see the originating virtual key); this function only consumes
+// that result.
 func (h *WebRTCRealtimeHandler) resolveRealtimeWebRTCKeys(
-	ctx *fasthttp.RequestCtx,
 	bifrostCtx *schemas.BifrostContext,
 	providerKey schemas.ModelProvider,
 	model string,
+	inboundToken string,
+	mapping realtimeEphemeralKeyMapping,
+	mapped bool,
 ) (schemas.Key, *schemas.Key, error) {
-	inboundToken := extractRealtimeBearerToken(ctx)
-	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), inboundToken)
-	if mapped {
-		applyRealtimeEphemeralKeyMapping(bifrostCtx, mapping)
-	}
 	if isRealtimeEphemeralToken(inboundToken) && !mapped {
 		bifrostCtx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 		bifrostCtx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
@@ -394,7 +428,9 @@ func (h *WebRTCRealtimeHandler) resolveRealtimeWebRTCKeys(
 	}
 
 	authKey := selectedKey
-	if mapped && inboundToken != "" {
+	if mapped && mapping.ProviderToken != "" {
+		authKey.Value = *schemas.NewSecretVar(mapping.ProviderToken)
+	} else if mapped && inboundToken != "" {
 		authKey.Value = *schemas.NewSecretVar(inboundToken)
 	}
 	return authKey, &selectedKey, nil
@@ -432,7 +468,8 @@ func parseRealtimeEphemeralKeyMappingValue(raw []byte) (realtimeEphemeralKeyMapp
 	if err := json.Unmarshal(raw, &mapping); err == nil {
 		mapping.KeyID = strings.TrimSpace(mapping.KeyID)
 		mapping.VirtualKey = strings.TrimSpace(mapping.VirtualKey)
-		if mapping.KeyID != "" || mapping.VirtualKey != "" {
+		mapping.ProviderToken = strings.TrimSpace(mapping.ProviderToken)
+		if mapping.KeyID != "" || mapping.VirtualKey != "" || mapping.ProviderToken != "" {
 			return mapping, true
 		}
 	}

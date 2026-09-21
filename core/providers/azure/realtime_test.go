@@ -9,7 +9,41 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
+
+func TestRealtimeWebRTCUpstreamErrorPreservesProviderResponse(t *testing.T) {
+	t.Parallel()
+
+	provider := &AzureProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusTooManyRequests)
+	resp.SetBodyString(`{"error":{"message":"Quota exceeded","type":"insufficient_quota","code":"insufficient_quota","param":"model"}}`)
+
+	bifrostErr := provider.realtimeWebRTCUpstreamError(ctx, &resp)
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusTooManyRequests {
+		t.Fatalf("status = %v, want %d", bifrostErr.StatusCode, fasthttp.StatusTooManyRequests)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "Quota exceeded" {
+		t.Fatalf("error = %#v", bifrostErr.Error)
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != "insufficient_quota" {
+		t.Fatalf("error type = %v", bifrostErr.Error.Type)
+	}
+	if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "insufficient_quota" {
+		t.Fatalf("error code = %v", bifrostErr.Error.Code)
+	}
+	if bifrostErr.ExtraFields.RoutingInfo.Provider != schemas.Azure || bifrostErr.ExtraFields.RequestType != schemas.RealtimeRequest {
+		t.Fatalf("extra fields = %#v", bifrostErr.ExtraFields)
+	}
+	if bifrostErr.ExtraFields.Provider != schemas.Azure { //nolint:staticcheck // deprecated field must stay in sync for backward compatibility
+		t.Fatalf("deprecated provider = %v, want %v", bifrostErr.ExtraFields.Provider, schemas.Azure)
+	}
+	if bifrostErr.ExtraFields.RawResponse != nil {
+		t.Fatalf("raw response = %#v, want nil", bifrostErr.ExtraFields.RawResponse)
+	}
+}
 
 func TestRealtimeWebSocketURL(t *testing.T) {
 	t.Parallel()

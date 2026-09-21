@@ -421,6 +421,27 @@ VirtualKey:
         $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
+    assigned_user:
+      type: ['object', 'null']
+      readOnly: true
+      description: >
+        The user this virtual key is assigned to, or null when it is assigned to a team, a
+        customer, or nothing. Read-only and resolved per request. Enterprise only; always
+        null in the open-source build, which has no user directory. Omitted entirely when
+        the assignee lookup could not be completed, so null always means "nobody is
+        assigned" and an absent field means "not known" - clients should refetch the
+        assignee for the key rather than reading its absence as unassigned.
+      required:
+        - id
+        - name
+        - email
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
     config_hash:
       type: string
     created_by_user_id:

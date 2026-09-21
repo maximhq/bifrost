@@ -360,7 +360,7 @@ export const createColumns = (
 		{
 			accessorKey: "model",
 			header: "Model",
-			size: 190,
+			size: 280,
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName | undefined;
 				const model = row.original.model || batchAccountingDisplay(row.original)?.model;
@@ -370,7 +370,9 @@ export const createColumns = (
 					<div className="flex min-w-0 items-center gap-2">
 						{provider ? <RenderProviderIcon provider={provider as ProviderIconType} size="xs" /> : null}
 						<div className="flex min-w-0 flex-col leading-tight">
-							<TruncatedLabel className="font-mono text-[12px]">{modelLabel || "N/A"}</TruncatedLabel>
+							<TruncatedLabel truncateFrom="start" className="font-mono text-[12px]">
+								{modelLabel || "N/A"}
+							</TruncatedLabel>
 							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
 						</div>
 					</div>

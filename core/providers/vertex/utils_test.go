@@ -1005,3 +1005,46 @@ func TestVertexAnthropicPassthroughStreamUsage(t *testing.T) {
 		t.Fatalf("unexpected usage: %+v", usage.LLMUsage)
 	}
 }
+func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-central1")}}
+	validBatch := map[string]string{
+		"123": "https://us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/batchPredictionJobs/123",
+		// Vertex returns the project number, and the job may live in another region.
+		"projects/987654321/locations/europe-west4/batchPredictionJobs/123": "https://europe-west4-aiplatform.googleapis.com/v1/projects/987654321/locations/europe-west4/batchPredictionJobs/123",
+	}
+	for id, want := range validBatch {
+		got, bifrostErr := vertexBatchJobURL(key, id)
+		if bifrostErr != nil || got != want {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, %v; want %q", id, got, bifrostErr, want)
+		}
+	}
+	for _, id := range []string{
+		"../endpoints",
+		"123?x=1",
+		"projects/p/locations/attacker.example#/batchPredictionJobs/1",
+		"projects/p/locations/us-central1/endpoints/1",
+		"projects/p/locations/us-central1/batchPredictionJobs/../endpoints",
+		"projects/p/locations/us-central1/batchPredictionJobs/1/extra",
+	} {
+		if got, bifrostErr := vertexBatchJobURL(key, id); bifrostErr == nil {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, want error", id, got)
+		}
+	}
+
+	operation := "projects/proj/locations/us-central1/publishers/google/models/veo-3/operations/op-1"
+	if got, bifrostErr := vertexVideoModelPath(operation); bifrostErr != nil || got != "projects/proj/locations/us-central1/publishers/google/models/veo-3" {
+		t.Fatalf("vertexVideoModelPath = %q, %v", got, bifrostErr)
+	}
+	if got, bifrostErr := vertexVideoModelPath("projects/proj/locations/us-central1/../../endpoints/operations/op-1"); bifrostErr == nil {
+		t.Fatalf("vertexVideoModelPath accepted a traversal: %q", got)
+	}
+
+	if got, bifrostErr := expandVertexCachedContentName("cachedContents/abc", "proj", "us-central1"); bifrostErr != nil || got != "projects/proj/locations/us-central1/cachedContents/abc" {
+		t.Fatalf("expandVertexCachedContentName = %q, %v", got, bifrostErr)
+	}
+	if got, bifrostErr := expandVertexCachedContentName("projects/proj/locations/us-central1/cachedContents/../endpoints", "proj", "us-central1"); bifrostErr == nil {
+		t.Fatalf("expandVertexCachedContentName accepted a traversal: %q", got)
+	}
+}

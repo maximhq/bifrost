@@ -1,4 +1,4 @@
-import { Database, Landmark, Network, Shuffle, Workflow } from "lucide-react";
+import { Database, Landmark, Link2, Network, Shuffle, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
 
@@ -853,6 +853,7 @@ export const RoutingEngineUsedIcons = {
 	governance: ({ className = "h-5 w-5 text-green-800" }: { className?: string } = {}) => <Landmark className={className} />,
 	loadbalancing: ({ className = "h-5 w-5 text-orange-800" }: { className?: string } = {}) => <Shuffle className={className} />,
 	"model-catalog": ({ className = "h-5 w-5 text-purple-800" }: { className?: string } = {}) => <Database className={className} />,
+	"session-affinity": ({ className = "h-5 w-5 text-teal-800" }: { className?: string } = {}) => <Link2 className={className} />,
 	core: ({ className = "h-5 w-5 text-sky-800" }: { className?: string } = {}) => <Workflow className={className} />,
 } as const;
 

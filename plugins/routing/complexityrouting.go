@@ -25,7 +25,6 @@ type complexityProposal struct {
 func (p *RoutingPlugin) computeComplexity(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostRequest,
-	virtualKeyID string,
 ) *complexity.ComplexityResult {
 	input, disposition := complexity.BuildInputWithDisposition(ctx, req)
 	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
@@ -33,7 +32,7 @@ func (p *RoutingPlugin) computeComplexity(
 
 	if disposition == complexity.InputContinuation {
 		if sessionActive {
-			key := buildComplexitySessionKey(ctx, virtualKeyID, sessionID)
+			key := complexitySessionKey(ctx)
 			tier, found, err := p.sessionStore.load(key, true)
 			if err != nil {
 				p.logComplexitySessionStoreError("refresh continuation", err)
@@ -74,7 +73,7 @@ func (p *RoutingPlugin) computeComplexity(
 		return proposal.Result
 	}
 
-	key := buildComplexitySessionKey(ctx, virtualKeyID, sessionID)
+	key := complexitySessionKey(ctx)
 	priorTier, priorFound, loadErr := p.sessionStore.load(key, false)
 	if loadErr != nil {
 		p.logComplexitySessionStoreError("inspect", loadErr)
