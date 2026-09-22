@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -71,6 +72,7 @@ function MessagePreview({
 
 export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }: CommitVersionSheetProps) {
 	const [commitSession, { isLoading }] = useCommitSessionMutation();
+	const canCommit = useRbac(RbacResource.PromptRepository, RbacOperation.Update);
 	const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
 
 	const {
@@ -211,7 +213,8 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 							<Button
 								type="submit"
 								data-testid="commit-version-submit"
-								disabled={isLoading || selectedIndices.size === 0}
+								disabled={isLoading || selectedIndices.size === 0 || !canCommit}
+								title={canCommit ? undefined : "You do not have permission to change prompts"}
 								className={selectedIndices.size === 0 ? "opacity-50" : ""}
 							>
 								{isLoading ? "Committing..." : "Commit Version"}

@@ -1,4 +1,5 @@
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CodeEditor } from "@/components/ui/codeEditor";
@@ -248,6 +249,9 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
 	const [createOverride, { isLoading: isCreating }] = useCreatePricingOverrideMutation();
 	const [updateOverride, { isLoading: isPatching }] = useUpdatePricingOverrideMutation();
+	// Reached by a deep link or a stale page too, so the save checks the permission
+	// it needs rather than trusting whoever opened the sheet.
+	const canSave = useRbac(RbacResource.Settings, editingOverride ? RbacOperation.Update : RbacOperation.Create);
 
 	const methods = useForm<FormState>({ defaultValues: defaultFormState });
 	const { control, handleSubmit, setValue, watch, reset, getValues, setError, clearErrors } = methods;
@@ -990,7 +994,12 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 								<X className="h-4 w-4" />
 								Cancel
 							</Button>
-							<Button data-testid="pricing-override-save-btn" type="submit" disabled={isSaving}>
+							<Button
+								data-testid="pricing-override-save-btn"
+								type="submit"
+								disabled={isSaving || !canSave}
+								title={canSave ? undefined : "You do not have permission to change pricing overrides"}
+							>
 								<Save className="h-4 w-4" />
 								{editingOverride ? "Update Override" : "Save Override"}
 							</Button>

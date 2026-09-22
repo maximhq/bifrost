@@ -1,4 +1,5 @@
 import PageTitle from "@/components/pageTitle";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import FullPageLoader from "@/components/fullPageLoader";
 import {
@@ -36,10 +37,16 @@ function PricingOverrideActionsMenu({
 	onDelete,
 }: {
 	row: PricingOverride;
-	onEdit: (row: PricingOverride) => void;
-	onDelete: (row: PricingOverride) => void;
+	// Left out when the viewer may not edit or delete overrides; the menu then has
+	// nothing to offer and is not rendered at all.
+	onEdit?: (row: PricingOverride) => void;
+	onDelete?: (row: PricingOverride) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
+
+	if (!onEdit && !onDelete) {
+		return null;
+	}
 
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
@@ -55,31 +62,35 @@ function PricingOverrideActionsMenu({
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
-				<DropdownMenuItem
-					data-testid={`pricing-override-edit-btn-${row.id}`}
-					className="cursor-pointer"
-					onSelect={(e) => {
-						e.preventDefault();
-						onEdit(row);
-						setIsOpen(false);
-					}}
-				>
-					<Edit className="h-4 w-4" />
-					Edit
-				</DropdownMenuItem>
-				<DropdownMenuItem
-					data-testid={`pricing-override-delete-btn-${row.id}`}
-					variant="destructive"
-					className="cursor-pointer"
-					onSelect={(e) => {
-						e.preventDefault();
-						onDelete(row);
-						setIsOpen(false);
-					}}
-				>
-					<Trash2 className="h-4 w-4" />
-					Delete
-				</DropdownMenuItem>
+				{onEdit && (
+					<DropdownMenuItem
+						data-testid={`pricing-override-edit-btn-${row.id}`}
+						className="cursor-pointer"
+						onSelect={(e) => {
+							e.preventDefault();
+							onEdit(row);
+							setIsOpen(false);
+						}}
+					>
+						<Edit className="h-4 w-4" />
+						Edit
+					</DropdownMenuItem>
+				)}
+				{onDelete && (
+					<DropdownMenuItem
+						data-testid={`pricing-override-delete-btn-${row.id}`}
+						variant="destructive"
+						className="cursor-pointer"
+						onSelect={(e) => {
+							e.preventDefault();
+							onDelete(row);
+							setIsOpen(false);
+						}}
+					>
+						<Trash2 className="h-4 w-4" />
+						Delete
+					</DropdownMenuItem>
+				)}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -229,6 +240,11 @@ export default function ScopedPricingOverridesView() {
 	const { data: providersData } = useGetProvidersQuery();
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
 	const [deleteOverride, { isLoading: isDeleting }] = useDeletePricingOverrideMutation();
+	// Pricing overrides are part of settings, so a role that may only read settings
+	// sees the table and nothing that changes it.
+	const hasCreateAccess = useRbac(RbacResource.Settings, RbacOperation.Create);
+	const hasUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
+	const hasDeleteAccess = useRbac(RbacResource.Settings, RbacOperation.Delete);
 
 	useEffect(() => {
 		if (error) {
@@ -322,7 +338,7 @@ export default function ScopedPricingOverridesView() {
 		return (
 			<>
 				{pageTitle}
-				<PricingOverridesEmptyState onCreateClick={openCreateDrawer} />
+				<PricingOverridesEmptyState onCreateClick={hasCreateAccess ? openCreateDrawer : undefined} />
 				<PricingOverrideSheet
 					open={isDrawerOpen}
 					onOpenChange={setIsDrawerOpen}
@@ -375,15 +391,17 @@ export default function ScopedPricingOverridesView() {
 
 				{/* The label is hidden below sm, leaving an icon with no accessible
 				    name, so the name is carried on the button itself. */}
-				<Button
-					data-testid="pricing-override-create-btn"
-					onClick={openCreateDrawer}
-					className="gap-2 sm:ml-auto"
-					aria-label="New pricing override"
-				>
-					<Plus className="h-4 w-4" />
-					<span className="hidden sm:inline">New Override</span>
-				</Button>
+				{hasCreateAccess && (
+					<Button
+						data-testid="pricing-override-create-btn"
+						onClick={openCreateDrawer}
+						className="gap-2 sm:ml-auto"
+						aria-label="New pricing override"
+					>
+						<Plus className="h-4 w-4" />
+						<span className="hidden sm:inline">New Override</span>
+					</Button>
+				)}
 			</div>
 
 			<div className="mb-2 overflow-hidden rounded-sm border">
@@ -438,7 +456,11 @@ export default function ScopedPricingOverridesView() {
 											onClick={(e) => e.stopPropagation()}
 										>
 											<div className="flex items-center justify-center">
-												<PricingOverrideActionsMenu row={row} onEdit={openEditDrawer} onDelete={setDeleteTarget} />
+												<PricingOverrideActionsMenu
+													row={row}
+													onEdit={hasUpdateAccess ? openEditDrawer : undefined}
+													onDelete={hasDeleteAccess ? setDeleteTarget : undefined}
+												/>
 											</div>
 										</TableCell>
 									</TableRow>
