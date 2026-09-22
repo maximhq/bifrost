@@ -861,8 +861,8 @@ const messageDotClass: Record<MessageRole, string> = {
 // assistant message; label them by what they actually are.
 const decisionRoleLabel = (requestType: string | undefined, role: MessageRole): string | undefined => {
 	if (requestType !== "decisions") return undefined;
-	if (role === "user") return "State";
-	if (role === "assistant") return "Decision";
+	if (role === "user") return i18n.t("logs.detail.roles.state", { ns: "observability" });
+	if (role === "assistant") return i18n.t("logs.detail.roles.decision", { ns: "observability" });
 	return undefined;
 };
 
@@ -3328,7 +3328,12 @@ export function LogDetailView({
 																const src = b.image_url?.url;
 																if (!src) return null;
 																return (
-																	<img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />
+																	<img
+																		key={`${i}-${src}`}
+																		src={src}
+																		alt={t("logs.detail.attachedImage")}
+																		className="mt-2 max-w-full rounded border"
+																	/>
 																);
 															})}
 													{text &&
@@ -3347,7 +3352,7 @@ export function LogDetailView({
 															{message
 																.tool_calls!.map((tc) => tc.function?.name)
 																.filter(Boolean)
-																.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+																.join(", ") || t("logs.detail.toolCallCount", { count: message.tool_calls!.length })}
 														</div>
 													) : null}
 												</MessageRow>,
@@ -3390,7 +3395,7 @@ export function LogDetailView({
 												? `${t("logs.detail.lines", { count: lineCount })} · ${tokenMeta}`
 												: `${t("logs.detail.lines", { count: lineCount })}`
 											: showRefusal
-												? "refusal"
+												? t("logs.detail.refusal")
 												: tokenMeta;
 										const reasoningTokens = reasoningText
 											? log.token_usage?.completion_tokens_details?.reasoning_tokens || Math.max(1, Math.round(reasoningText.length / 4))
@@ -3608,7 +3613,7 @@ export function LogDetailView({
 														<img
 															key={`${i}-${b.image_url}`}
 															src={b.image_url}
-															alt="Attached image"
+															alt={t("logs.detail.attachedImage")}
 															className="mt-2 max-w-full rounded border"
 														/>
 													))}
