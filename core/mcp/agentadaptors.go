@@ -94,6 +94,7 @@ type responsesAPIAdapter struct {
 	makeReq         func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
 }
 
+// addExecutedToolResult preserves one result per tool call, grouping repeated tool names by call ID.
 func addExecutedToolResult(toolResults map[string]interface{}, toolCallIDsByName map[string]string, toolName, toolCallID string, output interface{}) {
 	firstCallID, repeatedName := toolCallIDsByName[toolName]
 	if !repeatedName {
@@ -219,6 +220,7 @@ func (c *chatAPIAdapter) applyUsage(response interface{}, usage *schemas.Bifrost
 //
 // Returns:
 //   - *schemas.BifrostChatResponse: A new chat response with executed results and pending tool calls
+// createChatResponseWithExecutedToolsAndNonAutoExecutableCalls builds the Chat Completions response for executed and pending tools.
 func createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	originalResponse *schemas.BifrostChatResponse,
 	executedToolResults []*schemas.ChatMessage,
@@ -441,6 +443,7 @@ func (r *responsesAPIAdapter) applyUsage(response interface{}, usage *schemas.Bi
 //
 // Returns:
 //   - *schemas.BifrostResponsesResponse: A new responses response with executed results and pending tool calls
+// createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls builds the Responses API output for executed and pending tools.
 func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	originalResponse *schemas.BifrostResponsesResponse,
 	executedToolResults []*schemas.ChatMessage,
