@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -2639,6 +2640,12 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 // back to the mcp-go library's own default client, which carried no guard at
 // all - not even the link-local/metadata block applied here.
 //
+// The process's HTTP_PROXY / HTTPS_PROXY / NO_PROXY environment is honored
+// through the http.ProxyFromEnvironment selector the cloned DefaultTransport
+// carries, matching every other outbound client in the process and the
+// behavior before core v1.8.5. See mcpProxySelector for how the destination
+// guard stays intact on the proxied path.
+//
 // TLS customization from MCPTLSConfig is layered on top when provided.
 // InsecureSkipVerify takes priority over CACertPEM when both are set.
 func (m *MCPManager) buildTLSHTTPClient(tlsCfg *schemas.MCPTLSConfig) (*http.Client, error) {
@@ -2647,14 +2654,19 @@ func (m *MCPManager) buildTLSHTTPClient(tlsCfg *schemas.MCPTLSConfig) (*http.Cli
 		baseTransport = &http.Transport{}
 	}
 	cloned := baseTransport.Clone()
-	// Clone() preserves DefaultTransport's http.ProxyFromEnvironment. With a
-	// proxy configured, http.Transport hands DialContext the proxy's address
-	// instead of the MCP destination, so the guard below would validate the
-	// proxy and the proxy would forward to the blocked target. Drop it: the
-	// guard is only meaningful when the dialer sees the real destination,
-	// which is also how every other SSRF-guarded client here is built (fresh,
-	// proxy-free transports in fetch.go, webhooks, and skills_serving).
-	cloned.Proxy = nil
+	// Clone() preserves DefaultTransport's http.ProxyFromEnvironment, and it
+	// must stay: a deployment with no direct egress (a corporate VPC, or a
+	// pod behind an explicit HTTP_PROXY/HTTPS_PROXY) can only reach a public
+	// MCP server through that proxy. Proxying does change what the dial-time
+	// guard sees, though: http.Transport hands DialContext the proxy's
+	// address, not the MCP destination, so the guard alone would validate the
+	// proxy and the proxy would forward to the blocked target. The selector
+	// wrapper closes that gap for what can be checked without DNS (an
+	// IP-literal destination) whenever a proxy is chosen for a request, and
+	// leaves name resolution to the proxy; on the direct path (no proxy
+	// configured, or a NO_PROXY match) it stays out of the way and the guard
+	// below sees the real target as before.
+	cloned.Proxy = mcpProxySelector(cloned.Proxy)
 	cloned.DialContext = network.PrivateNetworkDialContext(mcpDialTimeout)
 
 	if tlsCfg != nil {
@@ -2678,6 +2690,36 @@ func (m *MCPManager) buildTLSHTTPClient(tlsCfg *schemas.MCPTLSConfig) (*http.Cli
 		cloned.TLSClientConfig = tlsConfig
 	}
 	return &http.Client{Transport: cloned}, nil
+}
+
+// mcpProxySelector wraps an http.Transport Proxy selector so the
+// PrivateNetworkDialContext destination policy still applies to a request that
+// is routed through a proxy. A direct request is validated by the dialer,
+// which sees the real target. A proxied request is validated here on what
+// can be checked without DNS: an IP-literal host is refused if it is
+// unspecified, link-local, or a cloud metadata endpoint, and a hostname is
+// handed to the proxy unresolved. Resolving locally would make proxied
+// connections depend on DNS the host may not have (a proxy-only deployment
+// resolves names at the proxy), and would still not bind what the proxy
+// connects to, since the proxy resolves the name again on its own side. Name
+// resolution on the proxied path is therefore the proxy's policy domain; the
+// proxy is operator configuration (process environment), not request input,
+// and the dialer still refuses a proxy that itself sits on a blocked address.
+// A nil selector is returned as nil so a transport without one is unchanged.
+func mcpProxySelector(next func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	if next == nil {
+		return nil
+	}
+	return func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := next(req)
+		if err != nil || proxyURL == nil {
+			return proxyURL, err
+		}
+		if err := network.CheckPrivateNetworkLiteral(req.URL.Hostname()); err != nil {
+			return nil, err
+		}
+		return proxyURL, nil
+	}
 }
 
 // createHTTPConnection creates an HTTP-based MCP client connection without holding locks.
