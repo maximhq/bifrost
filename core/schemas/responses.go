@@ -1735,20 +1735,40 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 // It determines whether "content" is a string or array and assigns to the appropriate field.
 // It also handles direct string/array content without a wrapper object.
 func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
-	// First, try to unmarshal as a direct string
-	var stringContent string
-	if err := Unmarshal(data, &stringContent); err == nil {
-		rc.ContentStr = &stringContent
-		return nil
+	// Peek the first non-whitespace byte to pick the decode path directly: a
+	// failed whole-value unmarshal attempt still builds and discards a full DOM,
+	// and content is the largest field in a multimodal request.
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '"':
+			var stringContent string
+			if err := Unmarshal(data, &stringContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentStr = &stringContent
+			return nil
+		case '[':
+			var arrayContent []ResponsesMessageContentBlock
+			if err := Unmarshal(data, &arrayContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentBlocks = arrayContent
+			return nil
+		case 'n':
+			// A null content is valid per the OpenAI spec. Decoding null into a
+			// string yields "", matching what the previous try-string-first
+			// implementation produced.
+			var nullContent string
+			if err := Unmarshal(data, &nullContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentStr = &nullContent
+			return nil
+		}
+		break
 	}
-
-	// Try to unmarshal as a direct array of ContentBlock
-	var arrayContent []ResponsesMessageContentBlock
-	if err := Unmarshal(data, &arrayContent); err == nil {
-		rc.ContentBlocks = arrayContent
-		return nil
-	}
-
 	return fmt.Errorf("content field is neither a string nor an array of Content blocks")
 }
 
