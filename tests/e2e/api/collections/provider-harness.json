@@ -16765,6 +16765,1517 @@
           "name": "Anthropic Beta Headers",
           "item": [
             {
+             "name": "12.B15 Beta header derived from request -> cache-diagnosis-2026-04-07",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// cache-diagnosis-2026-04-07 had ZERO coverage anywhere in this collection before this row.",
+                 "//",
+                 "// The client sends no anthropic-beta: Bifrost must derive the header from",
+                 "// the diagnostics field and inject it. Anthropic refuses the gated field without it,",
+                 "// so the status is the provider confirming what went out. Outbound headers are not",
+                 "// visible here (ExtraFields carries raw_request only), which makes the status the",
+                 "// strongest signal available on a header-based provider.",
+                 "pm.test('cache-diagnosis-2026-04-07 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The field the header exists for must itself survive to the provider.",
+                 "pm.test('cache-diagnosis-2026-04-07: the gated field reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  pm.expect(rr.diagnostics, 'the diagnostics field was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"diagnostics\": {\n    \"previous_message_id\": null\n  }\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B16 Beta header derived from request -> context-management-2025-06-27",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// context-management-2025-06-27 had ZERO coverage anywhere in this collection before this row.",
+                 "//",
+                 "// The client sends no anthropic-beta: Bifrost must derive the header from",
+                 "// context_management.edits[].type = clear_tool_uses_20250919 and inject it. Anthropic refuses the gated field without it,",
+                 "// so the status is the provider confirming what went out. Outbound headers are not",
+                 "// visible here (ExtraFields carries raw_request only), which makes the status the",
+                 "// strongest signal available on a header-based provider.",
+                 "pm.test('context-management-2025-06-27 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The field the header exists for must itself survive to the provider.",
+                 "pm.test('context-management-2025-06-27: the gated field reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  pm.expect(rr.context_management, 'context_management was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(rr.context_management.edits[0].type, 'the clear-tool-uses edit was altered on the wire: ' + JSON.stringify(rr.context_management).slice(0, 300)).to.eql('clear_tool_uses_20250919');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_tool_uses_20250919\"\n      }\n    ]\n  }\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B17 Beta header derived from request -> mcp-client-2025-11-20",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// mcp-client-2025-11-20 had ZERO coverage anywhere in this collection before this row.",
+                 "//",
+                 "// The client sends no anthropic-beta: Bifrost must derive the header from",
+                 "// a non-empty mcp_servers array and inject it. Anthropic refuses the gated field without it,",
+                 "// so the status is the provider confirming what went out. Outbound headers are not",
+                 "// visible here (ExtraFields carries raw_request only), which makes the status the",
+                 "// strongest signal available on a header-based provider.",
+                 "pm.test('mcp-client-2025-11-20 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The field the header exists for must itself survive to the provider.",
+                 "pm.test('mcp-client-2025-11-20: the gated field reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  pm.expect(rr.mcp_servers, 'mcp_servers was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('array');",
+                 "  pm.expect(rr.mcp_servers[0].name, 'the MCP server definition was altered on the wire: ' + JSON.stringify(rr.mcp_servers).slice(0, 300)).to.eql('harness_mcp');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"mcp_servers\": [\n    {\n      \"type\": \"url\",\n      \"url\": \"https://example.com/mcp\",\n      \"name\": \"harness_mcp\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B18 Beta header derived from request -> server-side-fallback-2026-07-01 (default routing)",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// server-side-fallback-2026-07-01 had ZERO coverage anywhere in this collection before this row.",
+                 "//",
+                 "// The client sends no anthropic-beta: Bifrost must derive the header from",
+                 "// fallbacks set to the bare string \"default\", which needs the superset header rather than server-side-fallback-2026-06-01 and inject it. Anthropic refuses the gated field without it,",
+                 "// so the status is the provider confirming what went out. Outbound headers are not",
+                 "// visible here (ExtraFields carries raw_request only), which makes the status the",
+                 "// strongest signal available on a header-based provider.",
+                 "pm.test('server-side-fallback-2026-07-01 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The field the header exists for must itself survive to the provider.",
+                 "pm.test('server-side-fallback-2026-07-01: the gated field reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  pm.expect(rr.fallbacks, 'the fallbacks preset was dropped before the provider: ' + wire.slice(0, 400)).to.eql('default');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-opus-5\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"fallbacks\": \"default\"\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B9 Beta header derived from tools -> bedrock invoke path (anthropic_beta asserted in body)",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// Bedrock normally serves Anthropic models through CONVERSE, whose outbound body is",
+                 "// {messages, inferenceConfig, toolConfig.tools[].toolSpec} and carries no anthropic_beta",
+                 "// at all -- an earlier version of this row asserted against Converse and failed for that",
+                 "// reason, not because the header logic was wrong.",
+                 "//",
+                 "// tools[].defer_loading is one of the triggers in responsesUsesAnthropicInvokePath",
+                 "// (bedrock.go:4446), which routes the request to InvokeModel instead. That path reuses",
+                 "// the Anthropic builder end to end, so the body is Anthropic-shaped AND carries the",
+                 "// derived beta list as anthropic_beta (requestbuilder.go:488). This row therefore",
+                 "// asserts the DERIVED HEADER ITSELF on the wire, which no header-based provider allows,",
+                 "// since ExtraFields exposes raw_request and never the outbound HTTP headers.",
+                 "pm.test('bedrock invoke path: request succeeds', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means a gated field went out without its beta header, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "pm.test('bedrock: anthropic_beta on the wire carries tool-search-tool-2025-10-19', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  pm.expect(rr.anthropic_beta, 'anthropic_beta is absent, which means the request went via Converse rather than InvokeModel: ' + wire.slice(0, 500)).to.be.an('array');",
+                 "  pm.expect(rr.anthropic_beta, 'Bifrost did not derive tool-search-tool-2025-10-19 from tools[].defer_loading: ' + JSON.stringify(rr.anthropic_beta)).to.include('tool-search-tool-2025-10-19');",
+                 "});",
+                 "",
+                 "// The probe strips input_schema and description from a LOCAL copy before decoding. If that",
+                 "// ever reached the wire, tools would arrive schemaless and tool calling would break.",
+                 "pm.test('bedrock: tool feature, schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 2 tools on the Anthropic-shaped body: ' + wire.slice(0, 500)).to.eql(2);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.defer_loading, 'tools[].defer_loading was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql(true);",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        }\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"name\": \"plain_tool\",\n      \"description\": \"Plain tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B13 Beta header derived from tools -> tool-examples-2025-10-29 (Bedrock narrow variant, invoke path)",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// Bedrock normally serves Anthropic models through CONVERSE, whose outbound body is",
+                 "// {messages, inferenceConfig, toolConfig.tools[].toolSpec} and carries no anthropic_beta",
+                 "// at all -- an earlier version of this row asserted against Converse and failed for that",
+                 "// reason, not because the header logic was wrong.",
+                 "//",
+                 "// tools[].defer_loading is one of the triggers in responsesUsesAnthropicInvokePath",
+                 "// (bedrock.go:4446), which routes the request to InvokeModel instead. That path reuses",
+                 "// the Anthropic builder end to end, so the body is Anthropic-shaped AND carries the",
+                 "// derived beta list as anthropic_beta (requestbuilder.go:488). This row therefore",
+                 "// asserts the DERIVED HEADER ITSELF on the wire, which no header-based provider allows,",
+                 "// since ExtraFields exposes raw_request and never the outbound HTTP headers.",
+                 "pm.test('bedrock invoke path: request succeeds', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means a gated field went out without its beta header, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "pm.test('bedrock: anthropic_beta on the wire carries tool-search-tool-2025-10-19, tool-examples-2025-10-29', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  pm.expect(rr.anthropic_beta, 'anthropic_beta is absent, which means the request went via Converse rather than InvokeModel: ' + wire.slice(0, 500)).to.be.an('array');",
+                 "  pm.expect(rr.anthropic_beta, 'Bifrost did not derive tool-search-tool-2025-10-19 from tools[].defer_loading and tools[].input_examples: ' + JSON.stringify(rr.anthropic_beta)).to.include('tool-search-tool-2025-10-19');",
+                 "  pm.expect(rr.anthropic_beta, 'Bifrost did not derive tool-examples-2025-10-29 from tools[].defer_loading and tools[].input_examples: ' + JSON.stringify(rr.anthropic_beta)).to.include('tool-examples-2025-10-29');",
+                 "});",
+                 "",
+                 "// The probe strips input_schema and description from a LOCAL copy before decoding. If that",
+                 "// ever reached the wire, tools would arrive schemaless and tool calling would break.",
+                 "pm.test('bedrock: tool feature, schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 2 tools on the Anthropic-shaped body: ' + wire.slice(0, 500)).to.eql(2);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.defer_loading, 'tools[].defer_loading was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql(true);",
+                 "  pm.expect(probe.input_examples, 'tools[].input_examples was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.be.an('array');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        }\n      },\n      \"defer_loading\": true,\n      \"input_examples\": [\n        {\n          \"input\": {\n            \"q\": \"hello\"\n          }\n        }\n      ]\n    },\n    {\n      \"name\": \"plain_tool\",\n      \"description\": \"Plain tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B12 Beta header derived from tools -> computer-use-2025-11-24",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// No anthropic-beta from the client: Bifrost must derive computer-use-2025-11-24",
+                 "// from tools[].type computer_20251124. The upstream refuses the gated field without that header,",
+                 "// so the status is the provider confirming what went out.",
+                 "pm.test('computer-use-2025-11-24 is injected by Bifrost (200 = upstream accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "pm.test('computer-use-2025-11-24: the gated tool feature and its schema reach the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 2 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(2);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  var feature = null;",
+                 "  tools.forEach(function (t) { if (t && t.type === 'computer_20251124') { feature = t; } });",
+                 "  pm.expect(feature, 'the newer-generation computer-use tool was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(feature.display_width_px, 'the computer tool lost its parameters: ' + JSON.stringify(feature).slice(0, 300)).to.eql(1024);",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ]\n      }\n    },\n    {\n      \"type\": \"computer_20251124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1024,\n      \"display_height_px\": 768\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B14 Beta header derived from tools -> advisor-tool-2026-03-01 (tool and header must agree)",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// advisor-tool-2026-03-01 has ZERO coverage anywhere else in this collection.",
+                 "//",
+                 "// Whether the advisor tool survives is datasheet-driven: SupportsAdvisorTool falls back to",
+                 "// the provider flag (true for Anthropic) unless the model record overrides it, and the",
+                 "// datasheet is fetched at runtime, so this row cannot assume either outcome. Asserting",
+                 "// 'the tool survives' would fail on any model whose record says otherwise, which is",
+                 "// correct behaviour, not a bug.",
+                 "//",
+                 "// What must hold on EVERY model is that the tool and its beta header agree. A kept tool",
+                 "// with no header is a 400 from Anthropic; a dropped tool is a deliberate strip. Both are",
+                 "// fine, one at a time. The failure this catches is the tool surviving while the header",
+                 "// does not, which is the exact shape of a stale derivation.",
+                 "pm.test('advisor-tool-2026-03-01: advisor tool and its beta header agree', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var advisor = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.type === 'advisor_20260301') { advisor = t; } });",
+                 "  if (advisor) {",
+                 "    pm.expect(pm.response.code, 'the advisor tool reached the provider but the request was refused, which means the advisor beta header was not injected alongside it: ' + txt.slice(0, 400)).to.eql(200);",
+                 "  } else {",
+                 "    pm.expect(pm.response.code, 'the advisor tool was stripped (model datasheet says unsupported), so the request must still succeed: ' + txt.slice(0, 400)).to.eql(200);",
+                 "  }",
+                 "});",
+                 "",
+                 "// The probe tool is never gated, so it must survive either way, schema and all.",
+                 "pm.test('advisor-tool-2026-03-01: the ungated probe tool survives regardless of the advisor outcome', function () {",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ]\n      }\n    },\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B8 Beta header derived from tools -> vertex (anthropic_beta asserted in body)",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// No anthropic-beta from the client: Bifrost must derive fine-grained-tool-streaming-2025-05-14",
+                 "// from tools[].eager_input_streaming and inject it. The upstream refuses the gated field without",
+                 "// that header, so the status is the provider confirming what went out.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14 is injected by Bifrost (200 = upstream accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// This provider sets InjectBetaHeadersIntoBody, so the derived beta list is written into",
+                 "// the JSON body as anthropic_beta (requestbuilder.go:488) rather than an HTTP header.",
+                 "// That makes this the one place the harness can assert the DERIVED BETA ITSELF on the",
+                 "// wire instead of inferring it, since ExtraFields exposes raw_request and no headers.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14: anthropic_beta on the wire carries the tool-derived header', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  pm.expect(rr.anthropic_beta, 'anthropic_beta is absent from the outbound body: ' + wire.slice(0, 500)).to.be.an('array');",
+                 "  pm.expect(rr.anthropic_beta, 'Bifrost did not derive the header from the tool: ' + JSON.stringify(rr.anthropic_beta)).to.include('fine-grained-tool-streaming-2025-05-14');",
+                 "});",
+                 "",
+                 "// The gated feature must itself survive, and the tool COUNT is what catches a whole tool",
+                 "// being dropped rather than a field being stripped.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14: the gated tool feature and its schema reach the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 1 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(1);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.eager_input_streaming, 'tools[].eager_input_streaming was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql(true);",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ]\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B10 Beta header derived from tools -> azure (header path, status-inferred)",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// No anthropic-beta from the client: Bifrost must derive fine-grained-tool-streaming-2025-05-14",
+                 "// from tools[].eager_input_streaming and inject it. The upstream refuses the gated field without",
+                 "// that header, so the status is the provider confirming what went out.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14 is injected by Bifrost (200 = upstream accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature must itself survive, and the tool COUNT is what catches a whole tool",
+                 "// being dropped rather than a field being stripped.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14: the gated tool feature and its schema reach the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 1 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(1);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.eager_input_streaming, 'tools[].eager_input_streaming was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql(true);",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"azure/claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ]\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B11 Beta header derived from tools -> anthropic passthrough route",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "",
+                 "// The passthrough route forwards the upstream response verbatim, so Bifrost attaches no",
+                 "// extra_fields and raw_request is unavailable here -- unlike every other row in this set.",
+                 "// The status is still a genuine signal: the client sends no anthropic-beta, the body",
+                 "// carries tools[].eager_input_streaming, and Anthropic refuses that field without",
+                 "// fine-grained-tool-streaming-2025-05-14. A 200 therefore means Bifrost derived and sent",
+                 "// the header on the passthrough surface too.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14 is injected on the passthrough route', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected on the passthrough surface, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// A passthrough response must still be a well-formed Anthropic message, which rules out",
+                 "// the request having been mangled on the way through.",
+                 "pm.test('passthrough returns a well-formed Anthropic message', function () {",
+                 "  var body = {};",
+                 "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "  pm.expect(body.type, 'expected an Anthropic message envelope: ' + txt.slice(0, 300)).to.eql('message');",
+                 "  pm.expect(body.content, 'no content in the passthrough response: ' + txt.slice(0, 300)).to.be.an('array');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ]\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B1 Beta header derived from tools -> structured-outputs-2025-11-13",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// The client deliberately sends NO anthropic-beta header: Bifrost must derive",
+                 "// structured-outputs-2025-11-13 from tools[].strict and inject it. Anthropic refuses the gated field",
+                 "// when the header is missing, so the upstream status is the provider itself confirming",
+                 "// what went out. Outbound headers are not visible here (ExtraFields carries raw_request",
+                 "// only, no raw headers), which makes that status the strongest signal available.",
+                 "pm.test('structured-outputs-2025-11-13 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature itself must survive. Asserting only that some tool arrived would pass",
+                 "// while the field the header exists for was silently dropped. The tool COUNT is what",
+                 "// catches a whole tool being removed, which is not hypothetical: an earlier run of this",
+                 "// row caught an unsupported tool being dropped before it reached the provider.",
+                 "pm.test('structured-outputs-2025-11-13: the gated tool feature reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 1 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(1);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.strict, 'tools[].strict was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql(true);",
+                 "});",
+                 "",
+                 "// The beta probe strips input_schema and description from a LOCAL copy before decoding.",
+                 "// Were that strip ever to reach the wire, every tool would arrive with no schema and tool",
+                 "// calling would break outright on every passthrough request.",
+                 "pm.test('structured-outputs-2025-11-13: tool schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B2 Beta header derived from tools -> tool-search-tool-2025-10-19",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// The client deliberately sends NO anthropic-beta header: Bifrost must derive",
+                 "// tool-search-tool-2025-10-19 from tools[].defer_loading and inject it. Anthropic refuses the gated field",
+                 "// when the header is missing, so the upstream status is the provider itself confirming",
+                 "// what went out. Outbound headers are not visible here (ExtraFields carries raw_request",
+                 "// only, no raw headers), which makes that status the strongest signal available.",
+                 "pm.test('tool-search-tool-2025-10-19 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature itself must survive. Asserting only that some tool arrived would pass",
+                 "// while the field the header exists for was silently dropped. The tool COUNT is what",
+                 "// catches a whole tool being removed, which is not hypothetical: an earlier run of this",
+                 "// row caught an unsupported tool being dropped before it reached the provider.",
+                 "pm.test('tool-search-tool-2025-10-19: the gated tool feature reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 2 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(2);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.defer_loading, 'tools[].defer_loading was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql(true);",
+                 "});",
+                 "",
+                 "// The beta probe strips input_schema and description from a LOCAL copy before decoding.",
+                 "// Were that strip ever to reach the wire, every tool would arrive with no schema and tool",
+                 "// calling would break outright on every passthrough request.",
+                 "pm.test('tool-search-tool-2025-10-19: tool schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"name\": \"plain_tool\",\n      \"description\": \"Plain tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B3 Beta header derived from tools -> advanced-tool-use-2025-11-20",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// The client deliberately sends NO anthropic-beta header: Bifrost must derive",
+                 "// advanced-tool-use-2025-11-20 from tools[].input_examples and inject it. Anthropic refuses the gated field",
+                 "// when the header is missing, so the upstream status is the provider itself confirming",
+                 "// what went out. Outbound headers are not visible here (ExtraFields carries raw_request",
+                 "// only, no raw headers), which makes that status the strongest signal available.",
+                 "pm.test('advanced-tool-use-2025-11-20 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature itself must survive. Asserting only that some tool arrived would pass",
+                 "// while the field the header exists for was silently dropped. The tool COUNT is what",
+                 "// catches a whole tool being removed, which is not hypothetical: an earlier run of this",
+                 "// row caught an unsupported tool being dropped before it reached the provider.",
+                 "pm.test('advanced-tool-use-2025-11-20: the gated tool feature reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 1 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(1);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_examples, 'tools[].input_examples was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.be.an('array');",
+                 "  pm.expect(probe.input_examples.length, 'input_examples arrived empty: ' + JSON.stringify(probe).slice(0, 400)).to.be.above(0);",
+                 "});",
+                 "",
+                 "// The beta probe strips input_schema and description from a LOCAL copy before decoding.",
+                 "// Were that strip ever to reach the wire, every tool would arrive with no schema and tool",
+                 "// calling would break outright on every passthrough request.",
+                 "pm.test('advanced-tool-use-2025-11-20: tool schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"additionalProperties\": true\n      },\n      \"input_examples\": [\n        {\n          \"input\": {\n            \"q\": \"hello\"\n          }\n        }\n      ]\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B4 Beta header derived from tools -> advanced-tool-use-2025-11-20",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// The client deliberately sends NO anthropic-beta header: Bifrost must derive",
+                 "// advanced-tool-use-2025-11-20 from tools[].allowed_callers and inject it. Anthropic refuses the gated field",
+                 "// when the header is missing, so the upstream status is the provider itself confirming",
+                 "// what went out. Outbound headers are not visible here (ExtraFields carries raw_request",
+                 "// only, no raw headers), which makes that status the strongest signal available.",
+                 "pm.test('advanced-tool-use-2025-11-20 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature itself must survive. Asserting only that some tool arrived would pass",
+                 "// while the field the header exists for was silently dropped. The tool COUNT is what",
+                 "// catches a whole tool being removed, which is not hypothetical: an earlier run of this",
+                 "// row caught an unsupported tool being dropped before it reached the provider.",
+                 "pm.test('advanced-tool-use-2025-11-20: the gated tool feature reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 1 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(1);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.allowed_callers, 'tools[].allowed_callers was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.be.an('array');",
+                 "  pm.expect(probe.allowed_callers).to.include('direct');",
+                 "});",
+                 "",
+                 "// The beta probe strips input_schema and description from a LOCAL copy before decoding.",
+                 "// Were that strip ever to reach the wire, every tool would arrive with no schema and tool",
+                 "// calling would break outright on every passthrough request.",
+                 "pm.test('advanced-tool-use-2025-11-20: tool schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"allowed_callers\": [\n        \"direct\"\n      ]\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B5 Beta header derived from tools -> fine-grained-tool-streaming-2025-05-14",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// The client deliberately sends NO anthropic-beta header: Bifrost must derive",
+                 "// fine-grained-tool-streaming-2025-05-14 from tools[].eager_input_streaming and inject it. Anthropic refuses the gated field",
+                 "// when the header is missing, so the upstream status is the provider itself confirming",
+                 "// what went out. Outbound headers are not visible here (ExtraFields carries raw_request",
+                 "// only, no raw headers), which makes that status the strongest signal available.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature itself must survive. Asserting only that some tool arrived would pass",
+                 "// while the field the header exists for was silently dropped. The tool COUNT is what",
+                 "// catches a whole tool being removed, which is not hypothetical: an earlier run of this",
+                 "// row caught an unsupported tool being dropped before it reached the provider.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14: the gated tool feature reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 1 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(1);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.eager_input_streaming, 'tools[].eager_input_streaming was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql(true);",
+                 "});",
+                 "",
+                 "// The beta probe strips input_schema and description from a LOCAL copy before decoding.",
+                 "// Were that strip ever to reach the wire, every tool would arrive with no schema and tool",
+                 "// calling would break outright on every passthrough request.",
+                 "pm.test('fine-grained-tool-streaming-2025-05-14: tool schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"eager_input_streaming\": true\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B6 Beta header derived from tools -> prompt-caching-scope-2026-01-05",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// The client deliberately sends NO anthropic-beta header: Bifrost must derive",
+                 "// prompt-caching-scope-2026-01-05 from tools[].cache_control.scope and inject it. Anthropic refuses the gated field",
+                 "// when the header is missing, so the upstream status is the provider itself confirming",
+                 "// what went out. Outbound headers are not visible here (ExtraFields carries raw_request",
+                 "// only, no raw headers), which makes that status the strongest signal available.",
+                 "pm.test('prompt-caching-scope-2026-01-05 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature itself must survive. Asserting only that some tool arrived would pass",
+                 "// while the field the header exists for was silently dropped. The tool COUNT is what",
+                 "// catches a whole tool being removed, which is not hypothetical: an earlier run of this",
+                 "// row caught an unsupported tool being dropped before it reached the provider.",
+                 "pm.test('prompt-caching-scope-2026-01-05: the gated tool feature reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 1 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(1);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.cache_control, 'tools[].cache_control was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.cache_control.scope, 'cache_control.scope was dropped before the provider: ' + JSON.stringify(probe).slice(0, 400)).to.eql('org');",
+                 "});",
+                 "",
+                 "// The beta probe strips input_schema and description from a LOCAL copy before decoding.",
+                 "// Were that strip ever to reach the wire, every tool would arrive with no schema and tool",
+                 "// calling would break outright on every passthrough request.",
+                 "pm.test('prompt-caching-scope-2026-01-05: tool schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"scope\": \"org\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
+             "name": "12.B7 Beta header derived from tools -> computer-use-2025-01-24",
+             "event": [
+              {
+               "listen": "test",
+               "script": {
+                "type": "text/javascript",
+                "exec": [
+                 "var txt = pm.response.text() || '';",
+                 "var body = {};",
+                 "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                 "var rr = (body.extra_fields || {}).raw_request;",
+                 "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                 "var wire = JSON.stringify(rr || null);",
+                 "",
+                 "// The client deliberately sends NO anthropic-beta header: Bifrost must derive",
+                 "// computer-use-2025-01-24 from tools[].type computer_20250124 and inject it. Anthropic refuses the gated field",
+                 "// when the header is missing, so the upstream status is the provider itself confirming",
+                 "// what went out. Outbound headers are not visible here (ExtraFields carries raw_request",
+                 "// only, no raw headers), which makes that status the strongest signal available.",
+                 "pm.test('computer-use-2025-01-24 is injected by Bifrost (200 = Anthropic accepted the gated field)', function () {",
+                 "  pm.expect(pm.response.code, 'want 200; a 4xx means the beta header was not injected, and any 5xx is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                 "});",
+                 "",
+                 "// The gated feature itself must survive. Asserting only that some tool arrived would pass",
+                 "// while the field the header exists for was silently dropped. The tool COUNT is what",
+                 "// catches a whole tool being removed, which is not hypothetical: an earlier run of this",
+                 "// row caught an unsupported tool being dropped before it reached the provider.",
+                 "pm.test('computer-use-2025-01-24: the gated tool feature reaches the provider', function () {",
+                 "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var tools = rr.tools || [];",
+                 "  pm.expect(tools.length, 'expected 2 tool(s) on the wire: ' + wire.slice(0, 500)).to.eql(2);",
+                 "  var probe = null;",
+                 "  tools.forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  var feature = null;",
+                 "  tools.forEach(function (t) { if (t && t.type && String(t.type).indexOf('computer_') === 0) { feature = t; } });",
+                 "  pm.expect(feature, 'the computer-use tool was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(feature.display_width_px, 'the computer tool lost its parameters: ' + JSON.stringify(feature).slice(0, 300)).to.eql(1024);",
+                 "});",
+                 "",
+                 "// The beta probe strips input_schema and description from a LOCAL copy before decoding.",
+                 "// Were that strip ever to reach the wire, every tool would arrive with no schema and tool",
+                 "// calling would break outright on every passthrough request.",
+                 "pm.test('computer-use-2025-01-24: tool schema and description reach the provider intact', function () {",
+                 "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                 "  var probe = null;",
+                 "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'harness_probe') { probe = t; } });",
+                 "  pm.expect(probe, 'the probe tool vanished: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.description, 'tools[].description was stripped from the outbound body: ' + wire.slice(0, 400)).to.eql('Harness probe tool');",
+                 "  pm.expect(probe.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                 "  pm.expect(probe.input_schema.properties.q.type, 'the nested schema was altered on the wire: ' + JSON.stringify(probe.input_schema).slice(0, 300)).to.eql('string');",
+                 "});"
+                ]
+               }
+              }
+             ],
+             "request": {
+              "method": "POST",
+              "header": [
+               {
+                "key": "Content-Type",
+                "value": "application/json"
+               },
+               {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+               },
+               {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+               },
+               {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+               }
+              ],
+              "body": {
+               "mode": "raw",
+               "raw": "{\n  \"model\": \"claude-sonnet-4-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"computer_20250124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1024,\n      \"display_height_px\": 768\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+              },
+              "url": {
+               "raw": "{{baseUrl}}/anthropic/v1/messages",
+               "host": [
+                "{{baseUrl}}"
+               ],
+               "path": [
+                "anthropic",
+                "v1",
+                "messages"
+               ]
+              }
+             }
+            },
+            {
               "name": "Beta: token-efficient-tools",
               "request": {
                 "method": "POST",

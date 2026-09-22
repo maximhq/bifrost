@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
@@ -3810,4 +3811,81 @@ func TestPrepareFallbackRequestRetargetsEveryFallbackCapableType(t *testing.T) {
 	if cases == 0 {
 		t.Fatal("no fallback-capable sub-request types found on BifrostRequest; the reflection walk is broken")
 	}
+}
+
+// TestShutdown_RetentionNoGoroutineLeak is the core-side retention assertion.
+//
+// Bifrost runs a worker pool per provider, and a production profile showed 5120 of those
+// goroutines on a single pod. Each holds channel references and, while serving, the
+// request-scoped state that flows through them. A Shutdown that returns while workers are
+// still parked leaks the whole pool plus everything it can still reach, and nothing in the
+// suite asserted otherwise: the existing tests all `defer client.Shutdown()` and never
+// check it did anything.
+//
+// This is the same class as the client-disconnect watcher leak that pinned roughly 2.0 GB
+// of a 2.66 GB heap while GC ran perfectly, because every byte of it was reachable.
+func TestShutdown_RetentionNoGoroutineLeak(t *testing.T) {
+	memtest.AssertNoGoroutineLeak(t, func() {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.ModelProvider("custom-openai-shutdown"), 1, 1, "http://127.0.0.1:1")
+		account.SetKeysForProvider(schemas.ModelProvider("custom-openai-shutdown"), []schemas.Key{
+			{
+				ID:     "test-key-shutdown",
+				Value:  *schemas.NewSecretVar("sk-test-shutdown"),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(schemas.ModelProvider("custom-openai-shutdown"), &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		client.Shutdown()
+	})
+}
+
+// TestShutdown_RetentionClientReleased complements TestShutdown_RetentionNoGoroutineLeak.
+//
+// A goroutine count returning to baseline proves nothing is still running; it does not
+// prove nothing still holds a reference. A package-level registry, a pool entry or a
+// closure captured somewhere can keep the whole client (and its provider queues) alive
+// with zero goroutines running. That is precisely the shape that made a production heap
+// unreclaimable: not busy, just reachable.
+//
+// The weak pointer asserts unreachability directly rather than inferring it from a number.
+func TestShutdown_RetentionClientReleased(t *testing.T) {
+	memtest.AssertReleased(t, "the Bifrost client after Shutdown", func() *Bifrost {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.ModelProvider("custom-openai-release"), 1, 1, "http://127.0.0.1:1")
+		account.SetKeysForProvider(schemas.ModelProvider("custom-openai-release"), []schemas.Key{
+			{
+				ID:     "test-key-release",
+				Value:  *schemas.NewSecretVar("sk-test-release"),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(schemas.ModelProvider("custom-openai-release"), &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		client.Shutdown()
+		return client
+	})
 }

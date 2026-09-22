@@ -305,7 +305,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
 			// Cloud bodies may no longer contain model; capability checks still need it.
 			probe.Model = capModel
-			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
+			_ = AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
 		}
 
 		for _, field := range cfg.ExcludeFields {
@@ -609,7 +609,8 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		var probe AnthropicMessageRequest
 		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
 			probe.Model = capModel
-			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
+
+			_ = AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
 		}
 
 		for _, field := range cfg.ExcludeFields {
