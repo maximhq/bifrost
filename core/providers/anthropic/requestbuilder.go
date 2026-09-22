@@ -269,6 +269,10 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		// Record whether Anthropic runs this request's code execution for free, so
+		// the response path can decide the billable container session count.
+		MarkCodeExecutionBillingExemption(ctx, jsonBody)
+
 		if defaults.RemapToolVersions {
 			// request.Model is the alias-resolved model id; pass it so
 			// computer-use / text-editor / bash tools get normalized to the
@@ -579,6 +583,10 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
+
+		// Record whether Anthropic runs this request's code execution for free, so
+		// the response path can decide the billable container session count.
+		MarkCodeExecutionBillingExemption(ctx, jsonBody)
 
 		if defaults.RemapToolVersions {
 			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, capModel)

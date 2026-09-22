@@ -36,6 +36,10 @@ type AccumulatedData struct {
 	ErrorDetails     *schemas.BifrostError
 	TokenUsage       *schemas.BifrostLLMUsage
 	ServiceTier      *schemas.BifrostServiceTier
+	// Container is the code-execution sandbox the turn used. Anthropic delivers it
+	// on message_delta, after every content block has closed, so it cannot be
+	// recovered from the accumulated output items and has to be retained here.
+	Container *schemas.ResponsesResponseContainer
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *schemas.BifrostCacheMetadata
 	GuardrailDebug        *schemas.BifrostGuardrailMetadata
@@ -98,6 +102,7 @@ type ResponsesStreamChunk struct {
 	FinishReason       *string                                 // If this is the final chunk
 	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
 	ServiceTier        *schemas.BifrostServiceTier             // Served OpenAI tier if available
+	Container          *schemas.ResponsesResponseContainer     // Code-execution sandbox container if reported
 	SemanticCacheDebug *schemas.BifrostCacheMetadata           // Semantic cache metadata if available
 	GuardrailDebug     *schemas.BifrostGuardrailMetadata       // Guardrail metadata if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
@@ -438,6 +443,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.Data.TokenUsage != nil {
 			responsesResp.Usage = p.Data.TokenUsage.ToResponsesResponseUsage()
+		}
+		if p.Data.Container != nil {
+			responsesResp.Container = p.Data.Container
 		}
 		responsesResp.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType:            schemas.ResponsesRequest,

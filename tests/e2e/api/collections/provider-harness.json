@@ -10455,7 +10455,9 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution returns 200', function () {",
+                      "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                      "});",
                       "pm.test('Anthropic: code execution ran', function () {",
                       "  var j = pm.response.json();",
                       "  var blocks = j.content || [];",
@@ -10465,6 +10467,13 @@
                       "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
                       "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
                       "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                      "});",
+                      "pm.test('Anthropic: code execution request count is echoed on usage', function () {",
+                      "  var j = pm.response.json();",
+                      "  var stu = (j.usage || {}).server_tool_use;",
+                      "  pm.expect(stu, 'usage.server_tool_use missing: ' + pm.response.text()).to.be.an('object');",
+                      "  pm.expect(stu.code_execution_requests, 'code_execution_requests missing from usage').to.be.a('number');",
+                      "  pm.expect(stu.code_execution_requests, 'code_execution_requests should be at least 1').to.be.at.least(1);",
                       "});"
                     ]
                   }
@@ -10511,7 +10520,9 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution returns 200', function () {",
+                      "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                      "});",
                       "pm.test('Anthropic: code execution ran', function () {",
                       "  var j = pm.response.json();",
                       "  var blocks = j.content || [];",
@@ -10567,7 +10578,9 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution returns 200', function () {",
+                      "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                      "});",
                       "pm.test('Anthropic: code execution ran', function () {",
                       "  var j = pm.response.json();",
                       "  var blocks = j.content || [];",
@@ -10689,7 +10702,9 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution returns 200', function () {",
+                      "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                      "});",
                       "pm.test('Anthropic: code execution ran', function () {",
                       "  var j = pm.response.json();",
                       "  var blocks = j.content || [];",
@@ -10745,7 +10760,9 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if (pm.response.code >= 400) { return; }",
+                      "pm.test('Anthropic: code execution returns 200', function () {",
+                      "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                      "});",
                       "pm.test('Anthropic: code execution ran', function () {",
                       "  var j = pm.response.json();",
                       "  var blocks = j.content || [];",

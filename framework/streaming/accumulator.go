@@ -110,6 +110,7 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
+	chunk.Container = nil
 	chunk.RawResponse = nil
 	a.responsesStreamChunkPool.Put(chunk)
 }

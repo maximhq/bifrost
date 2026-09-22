@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -933,5 +934,165 @@ func TestCodeExecution_ProgrammaticStreamRoundTrip(t *testing.T) {
 	}
 	if wsResultCaller != "srv_code" {
 		t.Errorf("web_search_tool_result caller = %q, want srv_code", wsResultCaller)
+	}
+}
+
+// codeExecutionResponse builds a minimal message response reporting code execution.
+func codeExecutionResponse(codeExecutionRequests int) *AnthropicMessageResponse {
+	return &AnthropicMessageResponse{
+		ID:    "msg_codeexec",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-5",
+		Content: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("done")},
+		},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage: &AnthropicUsage{
+			InputTokens:   105,
+			OutputTokens:  239,
+			ServerToolUse: &AnthropicServerToolUseUsage{CodeExecutionRequests: codeExecutionRequests},
+		},
+	}
+}
+
+// contextForRequestBody runs the billing-exemption scan over a request body and
+// returns the context the response converters will read.
+func contextForRequestBody(t *testing.T, body string) (*schemas.BifrostContext, func()) {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	MarkCodeExecutionBillingExemption(ctx, []byte(body))
+	return ctx, cancel
+}
+
+func TestToBifrostChatResponse_BillsOneContainerSessionPerTurn(t *testing.T) {
+	ctx, cancel := contextForRequestBody(t, `{"tools":[{"type":"code_execution_20250825","name":"code_execution"}]}`)
+	defer cancel()
+
+	result := codeExecutionResponse(3).ToBifrostChatResponse(ctx)
+	if result == nil || result.Usage == nil || result.Usage.CompletionTokensDetails == nil {
+		t.Fatal("expected chat usage with completion token details")
+	}
+	details := result.Usage.CompletionTokensDetails
+	if details.NumCodeExecutionRequests == nil || *details.NumCodeExecutionRequests != 3 {
+		t.Fatalf("NumCodeExecutionRequests = %v, want 3", details.NumCodeExecutionRequests)
+	}
+	// Three calls inside one turn share one container and one five-minute minimum.
+	if details.NumContainerSessions == nil || *details.NumContainerSessions != 1 {
+		t.Fatalf("NumContainerSessions = %v, want 1", details.NumContainerSessions)
+	}
+}
+
+func TestToBifrostChatResponse_WebSearchExemptsCodeExecutionFromBilling(t *testing.T) {
+	// web_search_20260209 auto-injects code execution, which Anthropic runs free.
+	ctx, cancel := contextForRequestBody(t, `{"tools":[{"type":"web_search_20260209","name":"web_search"}]}`)
+	defer cancel()
+
+	result := codeExecutionResponse(2).ToBifrostChatResponse(ctx)
+	if result == nil || result.Usage == nil || result.Usage.CompletionTokensDetails == nil {
+		t.Fatal("expected chat usage with completion token details")
+	}
+	details := result.Usage.CompletionTokensDetails
+	// The honest call count is still reported; only the billable session count is zero.
+	if details.NumCodeExecutionRequests == nil || *details.NumCodeExecutionRequests != 2 {
+		t.Fatalf("NumCodeExecutionRequests = %v, want 2", details.NumCodeExecutionRequests)
+	}
+	if details.NumContainerSessions != nil {
+		t.Fatalf("NumContainerSessions = %v, want nil for an exempt request", *details.NumContainerSessions)
+	}
+}
+
+func TestRequestExemptsCodeExecutionBilling(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"no tools", `{}`, false},
+		{"code execution alone", `{"tools":[{"type":"code_execution_20250825"}]}`, false},
+		{"legacy web search does not auto-inject", `{"tools":[{"type":"web_search_20250305"}]}`, false},
+		{"legacy web fetch does not auto-inject", `{"tools":[{"type":"web_fetch_20250910"}]}`, false},
+		{"web search 20260209 auto-injects", `{"tools":[{"type":"web_search_20260209"}]}`, true},
+		{"web fetch 20260209 auto-injects", `{"tools":[{"type":"web_fetch_20260209"}]}`, true},
+		// Ordering must not decide the answer. Scanning only the first web tool would
+		// report false here and bill a request Anthropic runs for free.
+		{
+			"legacy web search before an auto-injecting web fetch",
+			`{"tools":[{"type":"web_search_20250305"},{"type":"web_fetch_20260209"}]}`,
+			true,
+		},
+		{
+			"auto-injecting web search before a legacy web fetch",
+			`{"tools":[{"type":"web_search_20260209"},{"type":"web_fetch_20250910"}]}`,
+			true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestExemptsCodeExecutionBilling([]byte(tt.body)); got != tt.want {
+				t.Fatalf("requestExemptsCodeExecutionBilling(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToBifrostResponsesResponse_BillsContainerSession(t *testing.T) {
+	ctx, cancel := contextForRequestBody(t, `{"tools":[{"type":"code_execution_20250825"}]}`)
+	defer cancel()
+
+	result := codeExecutionResponse(1).ToBifrostResponsesResponse(ctx)
+	if result == nil || result.Usage == nil || result.Usage.OutputTokensDetails == nil {
+		t.Fatal("expected responses usage with output token details")
+	}
+	details := result.Usage.OutputTokensDetails
+	if details.NumCodeExecutionRequests == nil || *details.NumCodeExecutionRequests != 1 {
+		t.Fatalf("NumCodeExecutionRequests = %v, want 1", details.NumCodeExecutionRequests)
+	}
+	if details.NumContainerSessions == nil || *details.NumContainerSessions != 1 {
+		t.Fatalf("NumContainerSessions = %v, want 1", details.NumContainerSessions)
+	}
+}
+
+func TestConvertBifrostUsageToAnthropicUsage_RoundTripsCodeExecutionRequests(t *testing.T) {
+	// The /v1/messages echo has to report Anthropic's own counter back unchanged,
+	// including for a request whose execution was exempt from charge.
+	usage := &schemas.ResponsesResponseUsage{
+		InputTokens:  105,
+		OutputTokens: 239,
+		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+			NumCodeExecutionRequests: schemas.Ptr(4),
+		},
+	}
+
+	got := ConvertBifrostUsageToAnthropicUsage(usage)
+	if got == nil || got.ServerToolUse == nil {
+		t.Fatal("expected server tool use on the converted usage")
+	}
+	if got.ServerToolUse.CodeExecutionRequests != 4 {
+		t.Fatalf("CodeExecutionRequests = %d, want 4", got.ServerToolUse.CodeExecutionRequests)
+	}
+}
+
+func TestBillableAnthropicUsage_MaxMergesCodeExecutionRequests(t *testing.T) {
+	usage := &AnthropicUsage{
+		InputTokens:   100,
+		OutputTokens:  50,
+		ServerToolUse: &AnthropicServerToolUseUsage{CodeExecutionRequests: 1},
+		Iterations: []AnthropicUsage{
+			{
+				Type:          schemas.Ptr(AnthropicUsageIterationTypeCompaction),
+				OutputTokens:  500,
+				ServerToolUse: &AnthropicServerToolUseUsage{CodeExecutionRequests: 5},
+			},
+		},
+	}
+
+	got := billableAnthropicUsage(usage)
+
+	if usage.ServerToolUse.CodeExecutionRequests != 1 {
+		t.Fatalf("mutated input CodeExecutionRequests: got %d want 1", usage.ServerToolUse.CodeExecutionRequests)
+	}
+	if got.ServerToolUse == nil || got.ServerToolUse.CodeExecutionRequests != 5 {
+		t.Fatalf("billable CodeExecutionRequests = %v, want 5", got.ServerToolUse)
 	}
 }

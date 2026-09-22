@@ -6018,3 +6018,170 @@ func TestCalculateCost_QueuedVideoIsNotBilledAtSubmission(t *testing.T) {
 	terminal.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
 	assert.InDelta(t, 5.60, s.CalculateCost(terminal, nil), 1e-9)
 }
+
+// containerSessionStore builds a store carrying both a chat model row and the
+// synthetic container row the sandbox fee is priced from.
+func containerSessionStore(provider schemas.ModelProvider, model string, sessionRate float64) *Store {
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model, string(provider), "chat"): {
+			Model: model, Provider: string(provider), Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("container", string(provider), "chat"): {
+			Model: "container", Provider: string(provider), Mode: "chat",
+			CodeInterpreterCostPerSession: bifrost.Ptr(sessionRate),
+		},
+	})
+}
+
+// chatUsageWithContainerSessions builds usage for a turn that ran server-side code.
+func chatUsageWithContainerSessions(sessions *int, codeExecutionRequests *int) *schemas.BifrostLLMUsage {
+	return &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumCodeExecutionRequests: codeExecutionRequests,
+			NumContainerSessions:     sessions,
+		},
+	}
+}
+
+func TestCalculateCost_ContainerSessionBilledOncePerTurn(t *testing.T) {
+	s := containerSessionStore(schemas.Anthropic, "claude-opus-5", 0.00417)
+
+	// Three code execution calls in one turn share one container and one five-minute
+	// minimum, so the provider stamped a single session.
+	resp := makeChatResponse(schemas.Anthropic, "claude-opus-5", chatUsageWithContainerSessions(bifrost.Ptr(1), bifrost.Ptr(3)))
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	if breakdown == nil {
+		t.Fatal("expected a cost breakdown")
+	}
+	// tokens: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125, plus one session.
+	assert.InDelta(t, 0.0125+0.00417, breakdown.TotalCost, 1e-12)
+	if breakdown.InputCostDetails == nil {
+		t.Fatal("expected input cost details")
+	}
+	assert.InDelta(t, 0.00417, breakdown.InputCostDetails.CodeExecutionCost, 1e-12)
+	// The session fee is its own bucket, never folded into the overloaded RequestCost.
+	assert.InDelta(t, 0.0, breakdown.InputCostDetails.RequestCost, 1e-12)
+}
+
+func TestCalculateCost_ContainerSessionScalesWithStampedCount(t *testing.T) {
+	s := containerSessionStore(schemas.OpenAI, "gpt-5", 0.03)
+
+	// Two distinct containers claimed on one response, e.g. the first expired mid-turn.
+	resp := makeChatResponse(schemas.OpenAI, "gpt-5", chatUsageWithContainerSessions(bifrost.Ptr(2), nil))
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	if breakdown == nil || breakdown.InputCostDetails == nil {
+		t.Fatal("expected a cost breakdown with input details")
+	}
+	assert.InDelta(t, 0.06, breakdown.InputCostDetails.CodeExecutionCost, 1e-12)
+}
+
+func TestCalculateCost_ContainerSessionNotBilledWithoutStamp(t *testing.T) {
+	s := containerSessionStore(schemas.Anthropic, "claude-opus-5", 0.00417)
+
+	// The provider reported code execution calls but judged them exempt (web search
+	// auto-injects code execution, which Anthropic runs at no charge), so it stamped
+	// no session. Pricing must not reconstruct one from the call count.
+	resp := makeChatResponse(schemas.Anthropic, "claude-opus-5", chatUsageWithContainerSessions(nil, bifrost.Ptr(4)))
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	if breakdown == nil {
+		t.Fatal("expected a cost breakdown")
+	}
+	assert.InDelta(t, 0.0125, breakdown.TotalCost, 1e-12)
+	if breakdown.InputCostDetails != nil {
+		assert.InDelta(t, 0.0, breakdown.InputCostDetails.CodeExecutionCost, 1e-12)
+	}
+}
+
+func TestCalculateCost_ContainerSessionIsStableAcrossRepeatedPricing(t *testing.T) {
+	s := containerSessionStore(schemas.OpenAI, "gpt-5", 0.03)
+	resp := makeChatResponse(schemas.OpenAI, "gpt-5", chatUsageWithContainerSessions(bifrost.Ptr(1), nil))
+
+	// Governance, telemetry and logging each price the same response independently,
+	// and RecalculateCosts prices it again later. Every one of them has to agree, so
+	// the session decision must live on the response rather than in this engine.
+	first := s.CalculateCost(resp, nil)
+	for i := range 3 {
+		if again := s.CalculateCost(resp, nil); again != first {
+			t.Fatalf("pricing call %d returned %v, want %v", i+2, again, first)
+		}
+	}
+	assert.InDelta(t, 0.0125+0.03, first, 1e-12)
+}
+
+func TestCalculateCost_ContainerSessionWithoutContainerRowIsFree(t *testing.T) {
+	// The chat model row exists but the provider has no container row yet. Billing a
+	// model's token rate for a sandbox session would be worse than billing nothing.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("claude-opus-5", "anthropic", "chat"): {
+			Model: "claude-opus-5", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+	})
+	resp := makeChatResponse(schemas.Anthropic, "claude-opus-5", chatUsageWithContainerSessions(bifrost.Ptr(1), bifrost.Ptr(1)))
+
+	assert.InDelta(t, 0.0125, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateCost_ContainerRowFromDatasheetJSON pins the exact datasheet entry a
+// provider needs for server-side code execution to bill. It runs the real
+// JSON -> row conversion, so a wrong key, provider or mode in the published
+// datasheet would fail here rather than silently pricing every sandbox at zero.
+func TestCalculateCost_ContainerRowFromDatasheetJSON(t *testing.T) {
+	// The shape the live datasheet already publishes for OpenAI, transcribed for
+	// Anthropic at its five-minute minimum ($0.05/hour).
+	anthropicContainer := pricingRowFromDatasheetJSON(t, "anthropic/container", `{
+		"code_interpreter_cost_per_session": 0.00417,
+		"mode": "chat",
+		"provider": "anthropic",
+		"base_model": "container"
+	}`)
+	openaiContainer := pricingRowFromDatasheetJSON(t, "openai/container", `{
+		"code_interpreter_cost_per_session": 0.03,
+		"mode": "chat",
+		"provider": "openai",
+		"base_model": "container"
+	}`)
+
+	// The model name is the part after the slash, which is what the session lookup
+	// asks for by the containerPricingModel constant.
+	require.Equal(t, containerPricingModel, anthropicContainer.Model)
+	require.Equal(t, "anthropic", anthropicContainer.Provider)
+	require.Equal(t, "chat", anthropicContainer.Mode)
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("claude-opus-5", "anthropic", "chat"): {
+			Model: "claude-opus-5", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey(anthropicContainer.Model, anthropicContainer.Provider, anthropicContainer.Mode): anthropicContainer,
+		makeKey(openaiContainer.Model, openaiContainer.Provider, openaiContainer.Mode):          openaiContainer,
+	})
+
+	// A responses-mode turn still resolves the chat-mode container row, because the
+	// session lookup pins the request type rather than passing the caller's through.
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500,
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					NumCodeExecutionRequests: bifrost.Ptr(2),
+					NumContainerSessions:     bifrost.Ptr(1),
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesRequest,
+				RoutingInfo: routingInfoFor(schemas.Anthropic, "claude-opus-5"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	require.NotNil(t, breakdown.InputCostDetails)
+	assert.InDelta(t, 0.00417, breakdown.InputCostDetails.CodeExecutionCost, 1e-12)
+}
