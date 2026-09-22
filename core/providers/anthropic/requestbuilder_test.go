@@ -1087,3 +1087,79 @@ func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsToolSearch(t *test
 		t.Errorf("anthropic_beta = %v, want it to contain %q", betas, AnthropicToolSearchBetaHeader)
 	}
 }
+
+// TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders checks the thing that actually goes
+// upstream, rather than any one step of building it.
+//
+// The beta probe strips input_schema and description from a local copy, and
+// TestBetaProbeNeverMutatesTheOutboundBody proves that copy never touches the caller's
+// bytes. But the builder does a great deal more to the body after that — strips thinking
+// blocks, remaps tool versions, deletes fields, injects anthropic_version. This asserts
+// the end of that pipeline: the body it returns still carries every tool intact, and the
+// context carries the beta headers those tools imply.
+//
+// Put plainly: the final request gets all the tools AND all the headers.
+func TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders(t *testing.T) {
+	rawBody := []byte(`{"model":"claude-opus-4-8","max_tokens":1024,` +
+		`"tools":[` +
+		`{"type":"custom","name":"lookup","description":"Look something up",` +
+		`"input_schema":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]},"strict":true},` +
+		`{"type":"computer_20250124","name":"computer","description":"Use the computer",` +
+		`"input_schema":{"type":"object"}}` +
+		`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+	out, bErr := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+		Provider:       schemas.Anthropic,
+		Model:          "claude-opus-4-8",
+		RawRequestBody: rawBody,
+	}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+	if bErr != nil {
+		t.Fatalf("building request body: %v", bErr)
+	}
+
+	// 1. Every tool survives, with the fields the probe strips from its own copy.
+	tools := providerUtils.GetJSONField(out, "tools")
+	if !tools.IsArray() || len(tools.Array()) != 2 {
+		t.Fatalf("outbound body lost tools: %s", out)
+	}
+	for i, want := range []struct{ name, description string }{
+		{"lookup", "Look something up"},
+		{"computer", "Use the computer"},
+	} {
+		base := fmt.Sprintf("tools.%d", i)
+		if got := providerUtils.GetJSONField(out, base+".name").String(); got != want.name {
+			t.Errorf("%s.name = %q, want %q", base, got, want.name)
+		}
+		if got := providerUtils.GetJSONField(out, base+".description").String(); got != want.description {
+			t.Errorf("%s.description = %q, want %q (the probe's strip reached the wire)", base, got, want.description)
+		}
+		if !providerUtils.JSONFieldExists(out, base+".input_schema") {
+			t.Errorf("%s.input_schema is missing from the outbound body", base)
+		}
+	}
+	// The nested schema must be byte-intact, not merely present.
+	if got := providerUtils.GetJSONField(out, "tools.0.input_schema.properties.q.type").String(); got != "string" {
+		t.Errorf("nested schema altered: tools.0.input_schema.properties.q.type = %q, want \"string\"", got)
+	}
+	if got := providerUtils.GetJSONField(out, "tools.0.input_schema.required.0").String(); got != "q" {
+		t.Errorf("nested schema altered: tools.0.input_schema.required[0] = %q, want \"q\"", got)
+	}
+
+	// 2. The beta headers those tools imply are on the context, ready for the request.
+	extra, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		t.Fatal("no extra headers on the context; the beta probe did not run")
+	}
+	got := extra[AnthropicBetaHeader]
+	for _, want := range []string{
+		AnthropicStructuredOutputsBetaHeader,   // from tools.0.strict
+		AnthropicComputerUseBetaHeader20250124, // from tools.1.type
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("beta header %q missing from the outbound request; got %v", want, got)
+		}
+	}
+}

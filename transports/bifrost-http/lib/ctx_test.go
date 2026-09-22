@@ -1,9 +1,11 @@
 package lib
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1140,4 +1142,133 @@ func TestConvertToBifrostContextCancelsSeededContextWhenClientDisconnects(t *tes
 	case <-time.After(5 * time.Second):
 		t.Fatal("handler never reported an outcome")
 	}
+}
+
+// countWatcherGoroutines reports how many goroutines are currently inside
+// startClientDisconnectWatcher, by name rather than by counting everything.
+//
+// runtime.NumGoroutine() is process-global, so a fasthttp worker or a TCP teardown
+// finishing at the wrong moment makes a whole-process count flap. That is fatal for a
+// release gate: a flaky assertion trains people to rerun until green. Naming the frame
+// makes the measurement immune to every goroutine that is not the subject.
+func countWatcherGoroutines() int {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	return bytes.Count(buf, []byte("startClientDisconnectWatcher"))
+}
+
+// waitForWatchers polls until the watcher count drops to want, returning the final count.
+// Teardown is not synchronous with cancel, so a poll beats a fixed sleep.
+func waitForWatchers(want int, within time.Duration) int {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if n := countWatcherGoroutines(); n <= want {
+			return n
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return countWatcherGoroutines()
+}
+
+// TestClientDisconnectWatcher_RetentionNoGoroutineLeak is the retention regression test
+// for the leak found in a production heap dump.
+//
+// ConvertToBifrostContext starts one startClientDisconnectWatcher goroutine per request.
+// Its only exits are an explicit cancel or the client socket dying, and its parent is
+// fasthttp's RequestCtx, whose Done fires only on server shutdown. A handler that returns
+// without cancelling therefore leaves the watcher polling every 500ms forever, pinning the
+// entire request-scoped BifrostContext with it.
+//
+// That is what GenericRouter.handleStreaming used to do on every SUCCESSFUL stream. Two
+// production pods showed 596 and 546 watcher goroutines behind just 34 and 38 fasthttp
+// connection goroutines, holding roughly 2.0 GB of a 2.66 GB heap that GC could not
+// reclaim because all of it was genuinely reachable.
+//
+// The existing tests here only assert the context's cancellation semantics. None asserts
+// the goroutine actually goes away, which is the property that was violated.
+func TestClientDisconnectWatcher_RetentionNoGoroutineLeak(t *testing.T) {
+	if !clientDisconnectPeekSupported {
+		t.Skip("no socket peeking on this platform, so no watcher goroutine is started")
+	}
+
+	handlerDone := make(chan struct{})
+	baselineCh := make(chan int, 1)
+
+	client := serveOneConnection(t, func(ctx *fasthttp.RequestCtx) {
+		baselineCh <- countWatcherGoroutines()
+		bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		if bifrostCtx == nil {
+			t.Error("expected a context")
+		}
+		// Exactly what a correct handler does on the way out. The bug was omitting it.
+		cancel()
+		close(handlerDone)
+	})
+
+	if _, err := client.Write([]byte(chatCompletionRawRequest)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	var baseline int
+	select {
+	case <-handlerDone:
+		baseline = <-baselineCh
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never ran")
+	}
+
+	// The client socket stays open, which is the whole point: a leaked watcher would
+	// keep peeking a healthy keep-alive connection indefinitely. Only the cancel can
+	// end it, so this fails if the cancel path ever stops reaching the watcher.
+	if final := waitForWatchers(baseline, 5*time.Second); final > baseline {
+		t.Errorf("client-disconnect watcher goroutines went %d -> %d and stayed there after "+
+			"the request completed; the watcher is outliving its request and pinning the "+
+			"request-scoped BifrostContext it captured", baseline, final)
+	}
+}
+
+// TestClientDisconnectWatcher_RetentionWatcherActuallyStarts stops the test above from passing
+// for the wrong reason. If no watcher were ever started, a "no leak" assertion would be
+// trivially true, so this pins that one genuinely runs for the life of the request.
+func TestClientDisconnectWatcher_RetentionWatcherActuallyStarts(t *testing.T) {
+	if !clientDisconnectPeekSupported {
+		t.Skip("no socket peeking on this platform, so no watcher goroutine is started")
+	}
+
+	type sample struct{ before, during int }
+	observed := make(chan sample, 1)
+	release := make(chan struct{})
+
+	client := serveOneConnection(t, func(ctx *fasthttp.RequestCtx) {
+		before := countWatcherGoroutines()
+		_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		defer cancel()
+		// startClientDisconnectWatcher spawns its goroutine, so sampling immediately can
+		// run before the scheduler has got to it and fail while the watcher is working
+		// correctly. Poll until it appears, bounded so a genuinely absent watcher still
+		// fails rather than hanging.
+		during := before
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) && during <= before {
+			time.Sleep(10 * time.Millisecond)
+			during = countWatcherGoroutines()
+		}
+		observed <- sample{before: before, during: during}
+		<-release
+	})
+
+	if _, err := client.Write([]byte(chatCompletionRawRequest)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	select {
+	case s := <-observed:
+		if s.during <= s.before {
+			t.Errorf("watcher goroutines were %d during the request vs %d just before the "+
+				"context was built; none started, which would make the leak test above vacuous",
+				s.during, s.before)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reported")
+	}
+	close(release)
 }

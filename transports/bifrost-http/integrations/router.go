@@ -2823,9 +2823,15 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 //
 // CONTEXT CANCELLATION:
 //
-// The cancel function is called ONLY when client disconnects are detected via write errors.
-// Bifrost handles cleanup internally for normal completion and errors, so we only cancel
-// upstream streams when write errors indicate the client has disconnected.
+// The producer goroutine owns the cancel function and calls it on every exit path: eagerly
+// when a write error reveals the client has disconnected (so the upstream stream is torn down
+// at once), and otherwise from its deferred cleanup once the stream has finished.
+//
+// Cancelling on normal completion is not optional. ConvertToBifrostContext starts a
+// client-disconnect watcher per request (lib.startClientDisconnectWatcher), and that goroutine
+// only stops when this context is cancelled or the client socket dies. Returning without
+// cancelling leaks the watcher and the entire request-scoped BifrostContext for as long as the
+// client keeps its connection open.
 func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
@@ -2890,6 +2896,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		}
 
 		defer func() {
+			// Ends the client-disconnect watcher ConvertToBifrostContext started for this
+			// request. The watcher's only other exits are the client socket dying or an
+			// explicit cancel, and its parent (fasthttp's RequestCtx) fires Done only on
+			// server shutdown, so a stream that completed normally used to leave the
+			// watcher polling forever and pinning this whole BifrostContext until the
+			// client's keep-alive connection closed. Registered first so it runs last,
+			// leaving traceCompleter and the post-hooks below an uncancelled context.
+			// cancel is idempotent, so the explicit error-path calls still stand.
+			defer cancel()
 			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
 			// could still be mid-send on it panics ("send on closed channel"). See
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
