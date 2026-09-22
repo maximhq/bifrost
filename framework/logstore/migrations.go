@@ -2878,6 +2878,11 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
+		name:  "idx_logs_cluster_node_ts",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_ts ON logs(cluster_node_id, timestamp)",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_alias",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_alias ON logs(alias)",
 	},

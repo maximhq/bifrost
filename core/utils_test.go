@@ -394,6 +394,8 @@ func TestClearCtxForFallback(t *testing.T) {
 		// Set by the Bedrock InvokeModel stream path; a fallback to a plain-SSE
 		// provider must not inherit the AWS event-stream reader (#6825).
 		schemas.BifrostContextKeySSEReaderFactory,
+		// The load balancer's record of the attempt that just failed.
+		schemas.BifrostContextKeyLoadBalancerAttempt,
 	}
 	// The next attempt resolves its own limits, which needs the same credential and caller.
 	preserved := []schemas.BifrostContextKey{
