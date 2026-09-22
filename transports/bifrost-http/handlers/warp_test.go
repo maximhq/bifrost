@@ -588,3 +588,41 @@ func TestWarpJobMatchesNamespace(t *testing.T) {
 	require.False(t, warpJobMatchesNamespace(job(`{ not json`), "warp-logs"),
 		"metadata we cannot read is not evidence about the current index")
 }
+
+// While the Warp feature flag is off every route answers 404, and switching it
+// on takes effect on the next request - routes are registered once at startup,
+// so the flag has to be read per request rather than at registration.
+func TestWarpRoutesAre404WhileFeatureFlagIsOff(t *testing.T) {
+	handler := newTestWarpHandler(&recordingWarpStore{})
+	enabled := false
+	handler.enabled = func() bool { return enabled }
+
+	r := router.New()
+	handler.RegisterRoutes(r)
+
+	serve := func(method, uri, body string) *fasthttp.RequestCtx {
+		ctx := adminCtx(body)
+		ctx.Request.Header.SetMethod(method)
+		ctx.Request.SetRequestURI(uri)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	for _, route := range []struct{ method, uri, body string }{
+		{"GET", "/api/warp/config", ""},
+		{"PUT", "/api/warp/config", validWarpConfigJSON},
+		{"POST", "/api/warp/chat", `{"messages":[{"role":"user","content":"hi"}]}`},
+		{"GET", "/api/warp/log-index/status", ""},
+		{"POST", "/api/warp/log-index/backfill", `{}`},
+		{"GET", "/api/warp/log-index/backfill/status", ""},
+		{"POST", "/api/warp/log-index/backfill/cancel", `{}`},
+	} {
+		ctx := serve(route.method, route.uri, route.body)
+		require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "%s %s must be hidden while the flag is off", route.method, route.uri)
+	}
+
+	enabled = true
+	ctx := serve("POST", "/api/warp/chat", `{"messages":[{"role":"user","content":"hi"}]}`)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(),
+		"with the flag on the request must reach the handler, which reports the missing log store")
+}

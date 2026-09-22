@@ -1,4 +1,6 @@
 import type { WarpQuestion, WarpUsage } from "@/components/warp/warpStream.utils";
+import { useFeatureFlag } from "@/hooks/useFeatureFlag";
+import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 /** One turn in an Warp conversation. */
@@ -110,8 +112,15 @@ const WarpContext = createContext<WarpContextValue | null>(null);
  * The conversation is in memory only. It survives navigation between views,
  * which is the point of the dock, but not a reload. Server-side persistence is a
  * separate feature with its own storage and retention questions.
+ *
+ * While the "warp" feature flag is off the provider publishes null, which every
+ * consumer already treats as "no Warp here": the launcher, the ⌘I shortcut and
+ * the dock all stand down. The provider itself stays mounted either way -
+ * swapping it for a bare fragment would change the element type above the whole
+ * dashboard and remount every page when the flag query resolves.
  */
 export function WarpProvider({ children }: { children: React.ReactNode }) {
+	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
 	const [isOpen, setIsOpen] = useState(false);
 	const [turns, setTurns] = useState<WarpTurn[]>([]);
 	const [conversationId, setConversationId] = useState("");
@@ -151,7 +160,7 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 		}),
 		[isOpen, open, close, toggle, turns, appendTurn, replaceTurns, clear, conversationId, question],
 	);
-	return <WarpContext.Provider value={value}>{children}</WarpContext.Provider>;
+	return <WarpContext.Provider value={isWarpEnabled ? value : null}>{children}</WarpContext.Provider>;
 }
 
 /**

@@ -71,8 +71,10 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
+import { useFeatureFlag } from "@/hooks/useFeatureFlag";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
@@ -583,6 +585,7 @@ export default function AppSidebar() {
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
+	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
@@ -1057,7 +1060,7 @@ export default function AppSidebar() {
 						url: "/workspace/config/warp",
 						icon: WarpNavIcon,
 						description: "Warp agent configuration",
-						hasAccess: hasSettingsAccess,
+						hasAccess: hasSettingsAccess && isWarpEnabled,
 					},
 					...(IS_ENTERPRISE
 						? [
@@ -1145,6 +1148,7 @@ export default function AppSidebar() {
 			hasAccessProfilesAccess,
 			hasProjectsAccess,
 			hasFeatureFlagsAccess,
+			isWarpEnabled,
 			hasDevicesAccess,
 			hasInventoryAccess,
 			hasEdgeConfigAccess,

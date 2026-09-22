@@ -855,9 +855,29 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 	}
 }
 
-// registerFeatureFlags registers feature flags from the config store into the global flag registry.
+// FeatureFlagWarp gates Warp, the in-dashboard agent. Off by default: while it
+// is off every /api/warp route answers 404 and new logs are not embedded into
+// Warp's index, and the dashboard hides the launcher, dock and settings page.
+// The UI references the same id in ui/lib/constants/featureFlags.ts.
+const FeatureFlagWarp = "warp"
+
+// registerFeatureFlags adds Bifrost's code-declared flags to the process-wide
+// registry. LoadConfig runs more than once per process in tests, so a flag that
+// is already registered is not an error.
 func registerFeatureFlags(_ context.Context) error {
-	// No feature flags to register
+	defs := []featureflags.FlagDef{
+		{
+			ID:          FeatureFlagWarp,
+			DisplayName: "Warp",
+			Description: "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
+			Default:     false,
+		},
+	}
+	for _, def := range defs {
+		if err := featureflags.Register(def); err != nil && !errors.Is(err, featureflags.ErrFlagAlreadyRegistered) {
+			return err
+		}
+	}
 	return nil
 }
 
