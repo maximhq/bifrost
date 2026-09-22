@@ -50,6 +50,44 @@ func TestDownloadURLToBase64HonorsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestDownloadURLToBase64CancelsStalledResponse(t *testing.T) {
+	restore := AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := DownloadURLToBase64(ctx, server.URL)
+		errCh <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for download to reach server")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DownloadURLToBase64() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stalled download did not return promptly after cancel")
+	}
+}
+
 func TestDownloadURLToBase64RejectsHTTP(t *testing.T) {
 	// Guard active: httptest server is loopback http, so the validator
 	// should reject the URL before any network call.
