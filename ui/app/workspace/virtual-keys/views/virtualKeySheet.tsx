@@ -336,14 +336,26 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	// On create, the VK is governed unless the role grants CreateStandalone (the freedom to
-	// create ungoverned keys); the profile that will apply comes from vkCreationPolicy. If
-	// governed, lock the governance fields up front — the server applies the profile regardless.
-	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
+	// On create, the VK is governed when the role lacks CreateStandalone (the freedom to create
+	// ungoverned keys) *and* vkCreationPolicy resolves a profile to govern with — with no profile
+	// the server creates the key ungoverned. If governed, lock the governance fields up front:
+	// the server applies the profile regardless.
+	const {
+		data: vkCreationPolicy,
+		isError: isVkCreationPolicyError,
+		refetch: refetchVkCreationPolicy,
+	} = useGetMyVKCreationPolicyQuery(undefined, {
 		skip: isEditing,
 		refetchOnMountOrArgChange: true,
 	});
-	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone;
+	// Only a resolved profile governs. "Managed by your access profile" is a claim about a
+	// specific profile, so it is never made on a guess: a caller who holds none gets the plain
+	// form, which is exactly the key the server will create for them.
+	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone && !!vkCreationPolicy?.has_access_profile;
+	// A failed lookup is not an answer either, and it neither locks the form nor blocks the
+	// create: the server governs the key correctly whatever this form shows, so all that is at
+	// stake is whether these fields survive. It says so and offers a retry.
+	const isVkCreationPolicyUnresolved = !isEditing && !hasCreateStandalone && isVkCreationPolicyError;
 	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
@@ -1255,6 +1267,20 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											onClick={() => void refetchOwnerProfile()}
 											data-testid="vk-owner-profile-retry"
 										>
+											Retry
+										</Button>
+									</AlertDescription>
+								</Alert>
+							)}
+							{isVkCreationPolicyUnresolved && (
+								<Alert variant="warning">
+									<AlertTriangle className="h-4 w-4" />
+									<AlertDescription className="flex items-center justify-between gap-4">
+										<span>
+											Couldn&apos;t check whether an access profile governs the keys you create. You can still create one — if a profile
+											does govern it, the profile&apos;s providers, budgets, rate limits and MCP access replace what you set here.
+										</span>
+										<Button type="button" size="sm" variant="outline" onClick={() => refetchVkCreationPolicy()}>
 											Retry
 										</Button>
 									</AlertDescription>
