@@ -70,6 +70,10 @@ type MetricsExporter struct {
 	httpRequestDuration   *syncFloat64Histogram
 	httpRequestSizeBytes  *syncFloat64Histogram
 	httpResponseSizeBytes *syncFloat64Histogram
+
+	// Stable OTel HTTP semconv server duration. Backends such as New Relic APM derive
+	// their service views from this metric, not from the Prometheus-named ones above.
+	httpServerRequestDuration *syncFloat64Histogram
 }
 
 // syncInt64Counter wraps metric.Int64Counter with thread-safe lazy initialization
@@ -464,6 +468,14 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: upstreamLatencyBuckets,
 	}
 
+	m.httpServerRequestDuration = &syncFloat64Histogram{
+		name:       "http.server.request.duration",
+		desc:       "Duration of HTTP server requests.",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
+	}
+
 	m.httpRequestSizeBytes = &syncFloat64Histogram{
 		name:       "http_request_size_bytes",
 		desc:       "Size of HTTP requests",
@@ -593,6 +605,11 @@ func (m *MetricsExporter) RecordHTTPRequestDuration(ctx context.Context, duratio
 	m.httpRequestDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
+// RecordHTTPServerRequestDuration records the semconv http.server.request.duration metric
+func (m *MetricsExporter) RecordHTTPServerRequestDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.httpServerRequestDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
 // RecordHTTPRequestSize records HTTP request size metric
 func (m *MetricsExporter) RecordHTTPRequestSize(ctx context.Context, sizeBytes float64, attrs ...attribute.KeyValue) {
 	m.httpRequestSizeBytes.Record(ctx, sizeBytes, metric.WithAttributes(attrs...))
@@ -642,6 +659,19 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("project_name", projectName),
 		attribute.String("service_instance_id", serviceInstanceID),
 	}
+}
+
+// BuildHTTPServerAttributes builds stable OTel HTTP semconv attributes. http.route is
+// omitted when no route template matched, since a raw path would explode cardinality.
+func BuildHTTPServerAttributes(route, method string, statusCode int) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		semconv.HTTPRequestMethodKey.String(method),
+		semconv.HTTPResponseStatusCode(statusCode),
+	}
+	if route != "" {
+		attrs = append(attrs, semconv.HTTPRoute(route))
+	}
+	return attrs
 }
 
 // BuildHTTPAttributes builds common HTTP metric attributes

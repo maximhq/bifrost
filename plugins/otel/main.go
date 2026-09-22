@@ -845,12 +845,18 @@ func (p *OtelPlugin) RecordHTTPMetrics(ctx context.Context, path, method, status
 		return
 	}
 	attrs := BuildHTTPAttributes(path, method, status)
+	// path falls back to the raw URL when no route matched, so http.route is read from
+	// the matched template alone to keep it low-cardinality.
+	route, _ := ctx.Value(string(schemas.BifrostContextKeyHTTPRoute)).(string)
+	statusCode, _ := strconv.Atoi(status)
+	serverAttrs := BuildHTTPServerAttributes(route, method, statusCode)
 	for _, t := range p.targets {
 		if t.metricsExporter == nil {
 			continue
 		}
 		t.metricsExporter.RecordHTTPRequest(ctx, attrs...)
 		t.metricsExporter.RecordHTTPRequestDuration(ctx, durationSeconds, attrs...)
+		t.metricsExporter.RecordHTTPServerRequestDuration(ctx, durationSeconds, serverAttrs...)
 		if requestSizeBytes > 0 {
 			t.metricsExporter.RecordHTTPRequestSize(ctx, requestSizeBytes, attrs...)
 		}

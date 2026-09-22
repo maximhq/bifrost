@@ -1116,6 +1116,7 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `mcp.client.operation.duration` | Histogram | MCP request duration observed by the client (see [Metrics Push](#metrics-push-cluster-mode) for dimensions) |
 | `http_requests_total` | Counter | Total HTTP requests |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
+| `http.server.request.duration` | Histogram | HTTP server request duration per [OTel HTTP semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/#metric-httpserverrequestduration), with `http.request.method`, `http.route` and `http.response.status_code`. Backends such as New Relic APM build service views from it |
 | `http_request_size_bytes` | Histogram | HTTP request body size |
 | `http_response_size_bytes` | Histogram | HTTP response body size |
 
