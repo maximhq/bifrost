@@ -1,3 +1,16 @@
+- feat: typesafe provider, /v1/decisions endpoint, and decision emulation via forced tool-calling for providers without native decision support (#7355, #7361, #7384, #7440)
+- feat: provider-level session affinity through the SessionAffinity seam, bound on request outcome
+- feat: Claude Opus 5.5 computer_toolset_20260801 support with toolset_name round-trip, and disabled-thinking/forced-tool-choice gating overridable from the datasheet (#7433, #7434, #7441)
+- feat: safeguards/safeguard_results passthrough for Claude Code auto-mode on direct Anthropic, stripped elsewhere; raw carrier for unknown Anthropic stream events (#7393, #7440)
+- fix: rewrite tool-schema regex NUL escapes and lookarounds for Moonshot and DeepSeek models only (#7430)
+- fix: strip Anthropic billing header at ingress and restore it only for Anthropic-family attempts (#7431)
+- fix: honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY for MCP connections with a pre-proxy link-local guard (#7437)
+- fix: stop rewriting OpenAI `computer` tool to computer_use_preview (#7426) (thanks [@abhishekgahlot2](https://github.com/abhishekgahlot2)!)
+- fix: linear StripEmptyThinkingBlocks and beta-header gating without full body decode (#7406)
+- fix: strip Bedrock cachePoint markers copy-on-write for non-Bedrock providers, preserved for fallbacks (#7182)
+- fix: Bedrock tool results with empty-string JSON keys sent as text (#7396)
+- fix: deep copy extended Responses fields in DeepCopyResponsesMessage (#7422)
+- fix: frame bundled OpenAI chat stream raw frames with a data prefix each (#7440)
 - [perf]: avoid redundant JSON decoding in Responses request preparation
 - [fix]: preserve xhigh reasoning effort for Grok 4.7 [@nettee](https://github.com/nettee)
 - [fix]: Bedrock InvokeModel keeps cache_control when any message's content is a plain string. BedrockMessage.Content is typed as content blocks, so one bare string anywhere in messages[] failed the standard unmarshal and diverted the whole request into the AI21 string fallback, which rebuilt the messages without calling applyMessageContentCacheControl. Every cache_control in the request was dropped rather than only the one on the string message, so prompt caching went off silently with just the system cachePoint surviving. The fallback now makes the same translation the standard path does (#7336) [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)
