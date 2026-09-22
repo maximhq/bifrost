@@ -18,6 +18,12 @@ describe("logs constants", () => {
 		expect(RoutingEngineUsedLabels["session-affinity"]).toBe("Session");
 	});
 
+	it("registers decisions as a known request type", () => {
+		expect(RequestTypes).toContain("decisions");
+		expect(RequestTypeLabels.decisions).toBe("Decisions");
+		expect(RequestTypeColors.decisions).toBeTruthy();
+	});
+
 	it("maps backend app names to display metadata", () => {
 		expect(mapAppToClientApp("Claude Code").name).toBe("Claude Code");
 		expect(mapAppToClientApp("Claude Code").icon).toBe("/images/claude-code.png");
