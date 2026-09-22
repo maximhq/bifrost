@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"github.com/maximhq/bifrost/core/jsonx"
 	"bufio"
 	"bytes"
 	"context"
@@ -859,7 +860,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 // extractUsageFromResponsePrefetch extracts usage metadata from the response prefetch buffer.
 // Uses sonic.Get for O(1) extraction without parsing the full response.
 func extractUsageFromResponsePrefetch(data []byte) *schemas.ResponsesResponseUsage {
-	node, err := sonic.Get(data, "usageMetadata")
+	node, err := jsonx.Get(data, "usageMetadata")
 	if err != nil {
 		return nil
 	}

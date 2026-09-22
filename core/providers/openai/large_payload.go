@@ -2,10 +2,10 @@
 package openai
 
 import (
+	"github.com/maximhq/bifrost/core/jsonx"
 	"net/http"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -144,7 +144,7 @@ func finalizeOpenAIResponse(
 // extractOpenAIUsageFromBytes extracts usage metadata from OpenAI response bytes using sonic.Get.
 // OpenAI responses have "usage" at the top level with prompt_tokens, completion_tokens, total_tokens.
 func extractOpenAIUsageFromBytes(data []byte) *schemas.BifrostLLMUsage {
-	node, err := sonic.Get(data, "usage")
+	node, err := jsonx.Get(data, "usage")
 	if err != nil {
 		return nil
 	}
