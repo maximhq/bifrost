@@ -165289,6 +165289,398 @@
           ]
         }
       ]
+    },
+    {
+      "name": "110. Tool-schema regex relaxation for Moonshot and DeepSeek only (tool-schema-regex)",
+      "item": [
+        {
+          "name": "110.1 deepseek/deepseek-chat (openai-compatible wire, runs under the openai fork) /v1/responses: \\0 rewritten and lookahead stripped (was 400 'is not a regex') - tool-schema-regex",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Every row asserts the OUTBOUND tool schema via x-bf-send-back-raw-request. The",
+                  "// rewrite (providerUtils.NormalizeRegexNULEscape + StripRegexLookaround) runs in",
+                  "// prepareResponsesRequest (core/bifrost.go) ONLY for Moonshot and DeepSeek models;",
+                  "// every other model's schema must reach the wire byte-identical. The comparison",
+                  "// is against the exact expected pattern, not fragments, so a rewrite that",
+                  "// changed any other part of the pattern would fail here.",
+                  "function collectPatterns(node, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collectPatterns(n, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === 'pattern' && typeof node[k] === 'string') { out.push(node[k]); } else { collectPatterns(node[k], out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collectPatterns(rr, []);",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "",
+                  "pm.test('pattern on the wire is exactly the relaxed form', function () {",
+                  "  pm.expect(pats, 'want exactly [' + RELAXED + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([RELAXED]);",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  pm.expect(u.output_tokens, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-chat\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"probe\",\n      \"description\": \"short\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"p\": {\n            \"type\": \"string\",\n            \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n          }\n        },\n        \"required\": [\n          \"p\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "110.2 bedrock/global.moonshotai.kimi-k3 /v1/responses: \\0 rewritten and lookahead stripped so the model answers (was empty stream) - tool-schema-regex",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Every row asserts the OUTBOUND tool schema via x-bf-send-back-raw-request. The",
+                  "// rewrite (providerUtils.NormalizeRegexNULEscape + StripRegexLookaround) runs in",
+                  "// prepareResponsesRequest (core/bifrost.go) ONLY for Moonshot and DeepSeek models;",
+                  "// every other model's schema must reach the wire byte-identical. The comparison",
+                  "// is against the exact expected pattern, not fragments, so a rewrite that",
+                  "// changed any other part of the pattern would fail here.",
+                  "function collectPatterns(node, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collectPatterns(n, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === 'pattern' && typeof node[k] === 'string') { out.push(node[k]); } else { collectPatterns(node[k], out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collectPatterns(rr, []);",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "",
+                  "pm.test('pattern on the wire is exactly the relaxed form', function () {",
+                  "  pm.expect(pats, 'want exactly [' + RELAXED + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([RELAXED]);",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  pm.expect(u.output_tokens, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.moonshotai.kimi-k3\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"probe\",\n      \"description\": \"short\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"p\": {\n            \"type\": \"string\",\n            \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n          }\n        },\n        \"required\": [\n          \"p\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "110.3 openai/gpt-4o-mini /v1/responses: pattern reaches the provider byte-identical - tool-schema-regex",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Every row asserts the OUTBOUND tool schema via x-bf-send-back-raw-request. The",
+                  "// rewrite (providerUtils.NormalizeRegexNULEscape + StripRegexLookaround) runs in",
+                  "// prepareResponsesRequest (core/bifrost.go) ONLY for Moonshot and DeepSeek models;",
+                  "// every other model's schema must reach the wire byte-identical. The comparison",
+                  "// is against the exact expected pattern, not fragments, so a rewrite that",
+                  "// changed any other part of the pattern would fail here.",
+                  "function collectPatterns(node, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collectPatterns(n, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === 'pattern' && typeof node[k] === 'string') { out.push(node[k]); } else { collectPatterns(node[k], out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collectPatterns(rr, []);",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "",
+                  "// Not Moonshot, not DeepSeek: the schema must be byte-identical to what the client",
+                  "// sent. This is what keeps prompt-cache keys stable for every other model.",
+                  "pm.test('pattern reaches the provider byte-identical', function () {",
+                  "  pm.expect(pats, 'want exactly [' + SENT + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([SENT]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"probe\",\n      \"description\": \"short\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"p\": {\n            \"type\": \"string\",\n            \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n          }\n        },\n        \"required\": [\n          \"p\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "110.4 anthropic/claude-haiku-4-5 /v1/responses: pattern reaches the provider byte-identical - tool-schema-regex",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Every row asserts the OUTBOUND tool schema via x-bf-send-back-raw-request. The",
+                  "// rewrite (providerUtils.NormalizeRegexNULEscape + StripRegexLookaround) runs in",
+                  "// prepareResponsesRequest (core/bifrost.go) ONLY for Moonshot and DeepSeek models;",
+                  "// every other model's schema must reach the wire byte-identical. The comparison",
+                  "// is against the exact expected pattern, not fragments, so a rewrite that",
+                  "// changed any other part of the pattern would fail here.",
+                  "function collectPatterns(node, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collectPatterns(n, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === 'pattern' && typeof node[k] === 'string') { out.push(node[k]); } else { collectPatterns(node[k], out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collectPatterns(rr, []);",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "",
+                  "// Not Moonshot, not DeepSeek: the schema must be byte-identical to what the client",
+                  "// sent. This is what keeps prompt-cache keys stable for every other model.",
+                  "pm.test('pattern reaches the provider byte-identical', function () {",
+                  "  pm.expect(pats, 'want exactly [' + SENT + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([SENT]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"probe\",\n      \"description\": \"short\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"p\": {\n            \"type\": \"string\",\n            \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n          }\n        },\n        \"required\": [\n          \"p\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "110.5 gemini/gemini-3.6-flash /v1/responses: pattern reaches the provider byte-identical - tool-schema-regex",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Every row asserts the OUTBOUND tool schema via x-bf-send-back-raw-request. The",
+                  "// rewrite (providerUtils.NormalizeRegexNULEscape + StripRegexLookaround) runs in",
+                  "// prepareResponsesRequest (core/bifrost.go) ONLY for Moonshot and DeepSeek models;",
+                  "// every other model's schema must reach the wire byte-identical. The comparison",
+                  "// is against the exact expected pattern, not fragments, so a rewrite that",
+                  "// changed any other part of the pattern would fail here.",
+                  "function collectPatterns(node, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collectPatterns(n, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === 'pattern' && typeof node[k] === 'string') { out.push(node[k]); } else { collectPatterns(node[k], out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collectPatterns(rr, []);",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "",
+                  "// Not Moonshot, not DeepSeek: the schema must be byte-identical to what the client",
+                  "// sent. This is what keeps prompt-cache keys stable for every other model.",
+                  "pm.test('pattern reaches the provider byte-identical', function () {",
+                  "  pm.expect(pats, 'want exactly [' + SENT + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([SENT]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.6-flash\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"probe\",\n      \"description\": \"short\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"p\": {\n            \"type\": \"string\",\n            \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n          }\n        },\n        \"required\": [\n          \"p\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

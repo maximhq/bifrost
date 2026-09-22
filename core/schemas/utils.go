@@ -2066,6 +2066,27 @@ func IsDeepSeekModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "deepseek")
 }
 
+// IsMoonshotModel reports whether the model is a Moonshot (Kimi) model, under
+// any of the ids it is reached by: "moonshotai.kimi-k3" on Bedrock (with or
+// without an inference-profile prefix), "moonshotai/kimi-k2-instruct" on Groq,
+// or a bare "kimi-k3" behind an OpenAI-compatible gateway.
+//
+// Matching is boundary-aware: a "moonshotai" path segment, or a segment that
+// starts with "kimi-", the prefix every model on Moonshot's own list carries.
+// A bare substring match would also claim unrelated ids such as
+// "kimina-prover", and this predicate gates a lossy schema rewrite, so a false
+// positive quietly degrades a model that was fine.
+func IsMoonshotModel(model string) bool {
+	for _, segment := range strings.FieldsFunc(strings.ToLower(model), func(r rune) bool {
+		return r == '/' || r == '.' || r == ':'
+	}) {
+		if segment == "moonshotai" || strings.HasPrefix(segment, "kimi-") {
+			return true
+		}
+	}
+	return false
+}
+
 // IsGPT56Model reports whether the model belongs to the gpt-5.6 family, which is the
 // first OpenAI generation to accept prompt_cache_options / prompt_cache_breakpoint.
 //
