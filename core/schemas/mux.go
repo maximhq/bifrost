@@ -739,11 +739,8 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		if pendingReasoning.Len() == 0 && len(pendingReasoningDetails) == 0 {
 			return
 		}
-		if pendingReasoning.Len() > 0 {
+		if msg.Reasoning == nil && pendingReasoning.Len() > 0 {
 			text := pendingReasoning.String()
-			if msg.Reasoning != nil && *msg.Reasoning != "" {
-				text = *msg.Reasoning + "\n" + text
-			}
 			msg.Reasoning = &text
 		}
 		if len(pendingReasoningDetails) > 0 {
@@ -753,35 +750,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		pendingReasoningDetails = nil
 	}
 
-	// Responses separates an assistant turn into reasoning, text and function_call items.
-	// Reunite adjacent text and tool calls so the tool-call message retains its reasoning.
-	flushToolCalls := func() {
-		if len(currentToolCalls) == 0 {
-			return
-		}
-		var assistant *ChatAssistantMessage
-		if len(chatMessages) > 0 && chatMessages[len(chatMessages)-1].Role == ChatMessageRoleAssistant {
-			last := &chatMessages[len(chatMessages)-1]
-			if last.ChatAssistantMessage == nil {
-				last.ChatAssistantMessage = &ChatAssistantMessage{}
-			}
-			assistant = last.ChatAssistantMessage
-		} else {
-			assistant = &ChatAssistantMessage{}
-			chatMessages = append(chatMessages, ChatMessage{
-				Role:                 ChatMessageRoleAssistant,
-				ChatAssistantMessage: assistant,
-			})
-		}
-		assistant.ToolCalls = append(assistant.ToolCalls, currentToolCalls...)
-		attachPendingReasoning(assistant)
-		currentToolCalls = nil
-	}
-
 	for _, rm := range rms {
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
 			// Buffer reasoning so it attaches to the next assistant message.
-			hasReasoningText := false
 			if rm.Content != nil {
 				for _, block := range rm.Content.ContentBlocks {
 					if block.Type == ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
@@ -789,7 +760,6 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 							pendingReasoning.WriteByte('\n')
 						}
 						pendingReasoning.WriteString(*block.Text)
-						hasReasoningText = hasReasoningText || *block.Text != ""
 						pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
 							Index:     len(pendingReasoningDetails),
 							Type:      BifrostReasoningDetailsTypeText,
@@ -800,19 +770,8 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				}
 			}
 			if rm.ResponsesReasoning != nil {
-				// Some Responses clients replay plaintext reasoning as summary_text. Use it
-				// only when no full text or encrypted state is present; never duplicate
-				// full reasoning with its summary or substitute a summary for signed state.
-				useSummary := !hasReasoningText &&
-					(rm.EncryptedContent == nil || *rm.EncryptedContent == "")
 				for _, summary := range rm.ResponsesReasoning.Summary {
 					summaryText := summary.Text
-					if useSummary && summaryText != "" {
-						if pendingReasoning.Len() > 0 {
-							pendingReasoning.WriteByte('\n')
-						}
-						pendingReasoning.WriteString(summaryText)
-					}
 					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
 						Index:   len(pendingReasoningDetails),
 						Type:    BifrostReasoningDetailsTypeSummary,
@@ -854,7 +813,20 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			continue
 		}
 
-		flushToolCalls()
+		// If we have collected tool calls, create an assistant message with them
+		if len(currentToolCalls) > 0 {
+			// Create a copy of the slice to avoid shared slice header issues
+			toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+			assistant := &ChatAssistantMessage{
+				ToolCalls: toolCallsCopy,
+			}
+			attachPendingReasoning(assistant)
+			chatMessages = append(chatMessages, ChatMessage{
+				Role:                 ChatMessageRoleAssistant,
+				ChatAssistantMessage: assistant,
+			})
+			currentToolCalls = nil // Reset for next batch
+		}
 
 		// Convert regular message
 		cm := ChatMessage{}
@@ -1034,7 +1006,18 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	}
 
 	// Handle any remaining tool calls at the end
-	flushToolCalls()
+	if len(currentToolCalls) > 0 {
+		// Create a copy of the slice to avoid shared slice header issues
+		toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+		assistant := &ChatAssistantMessage{
+			ToolCalls: toolCallsCopy,
+		}
+		attachPendingReasoning(assistant)
+		chatMessages = append(chatMessages, ChatMessage{
+			Role:                 ChatMessageRoleAssistant,
+			ChatAssistantMessage: assistant,
+		})
+	}
 
 	return chatMessages
 }
@@ -1227,6 +1210,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
+	preserveChatToolTurnReasoning(bcr.Input)
 
 	// The Responses API carries its system prompt in the top-level `instructions` field rather than
 	// as a message, and the Chat API has no equivalent - so without this it was dropped outright and
@@ -1300,6 +1284,53 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	bcr.RawRequestBody = brr.RawRequestBody
 
 	return bcr
+}
+
+// preserveChatToolTurnReasoning copies a replayed assistant turn's reasoning onto
+// its tool-call messages without changing message boundaries or response conversion.
+func preserveChatToolTurnReasoning(messages []ChatMessage) {
+	for start := 0; start < len(messages); {
+		if messages[start].Role != ChatMessageRoleAssistant {
+			start++
+			continue
+		}
+		end := start
+		var reasoning, summaries []string
+		hasEncrypted := false
+		for end < len(messages) && messages[end].Role == ChatMessageRoleAssistant {
+			assistant := messages[end].ChatAssistantMessage
+			end++
+			if assistant == nil {
+				continue
+			}
+			if assistant.Reasoning != nil && *assistant.Reasoning != "" {
+				reasoning = append(reasoning, *assistant.Reasoning)
+			}
+			for _, detail := range assistant.ReasoningDetails {
+				switch detail.Type {
+				case BifrostReasoningDetailsTypeSummary:
+					if detail.Summary != nil && *detail.Summary != "" {
+						summaries = append(summaries, *detail.Summary)
+					}
+				case BifrostReasoningDetailsTypeEncrypted:
+					hasEncrypted = hasEncrypted || (detail.Data != nil && *detail.Data != "")
+				}
+			}
+		}
+		// Full reasoning wins across the whole turn. A summary cannot replace encrypted state.
+		if len(reasoning) == 0 && !hasEncrypted {
+			reasoning = summaries
+		}
+		if len(reasoning) > 0 {
+			text := strings.Join(reasoning, "\n")
+			for i := start; i < end; i++ {
+				if assistant := messages[i].ChatAssistantMessage; assistant != nil && len(assistant.ToolCalls) > 0 {
+					assistant.Reasoning = Ptr(text)
+				}
+			}
+		}
+		start = end
+	}
 }
 
 func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {

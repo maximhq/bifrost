@@ -163155,7 +163155,7 @@
     },
     {
       "name": "108. Responses-to-Chat tool reasoning replay (gpt-load#666, responses-tool-reasoning)",
-      "description": "Regression for https://github.com/tbphp/gpt-load/issues/666. The default DeepSeek key in tests/integrations/python/config.json does not enable Anthropic endpoints, so /v1/responses goes through DeepSeekProvider.Responses/ResponsesStream -> ToChatRequest -> ToChatMessages -> Chat Completions. Replayed unencrypted summary_text must survive as reasoning_content on the tool-call assistant; optional narration must remain on that same message. A raw-request assertion pins the actual Chat wire shape even if a provider accepts missing reasoning or disables thinking. The test profile enables allow_per_request_raw_override; a missing raw_request fails rather than skipping. Cases cover summary-only unary, summary plus narration unary, and the same streaming path. No error status or streamed error is skipped. These fixtures replay the complete synthetic plaintext, not a lossy summary or encrypted reasoning.",
+      "description": "Regression for https://github.com/tbphp/gpt-load/issues/666. The default DeepSeek key in tests/integrations/python/config.json does not enable Anthropic endpoints, so /v1/responses goes through DeepSeekProvider.Responses/ResponsesStream -> ToChatRequest -> Chat Completions. Replayed unencrypted summary_text must survive as reasoning_content on the tool-call assistant; full reasoning_text takes precedence across the whole assistant turn. Narration retains its original message boundaries. Raw-request assertions pin the actual Chat wire shape even if a provider accepts missing reasoning or disables thinking. The test profile enables allow_per_request_raw_override; a missing raw_request fails rather than skipping. Cases cover summary-only unary, full text followed by a separate summary and narration unary, and summary plus two narration messages streaming. No error status or streamed error is skipped. The summary-only fixtures replay complete synthetic plaintext, not lossy or encrypted reasoning.",
       "item": [
         {
           "name": "108.1 deepseek/deepseek-v4-flash unary summary replay - responses-tool-reasoning - gpt-load#666",
@@ -163205,15 +163205,15 @@
                   "pm.test('fallback sends a Chat request with complete tool history', function () {",
                   "  pm.expect(wire, 'raw_request missing: ' + text).to.be.an('object');",
                   "  pm.expect(wire.messages, 'did not exercise Responses-to-Chat fallback: ' + text).to.be.an('array').with.lengthOf(3);",
-                  "  var assistant = wire.messages[1];",
+                  "  var assistant = wire.messages[wire.messages.length - 2];",
                   "  pm.expect(assistant.role).to.eql('assistant');",
                   "  pm.expect(assistant.reasoning_content, 'reasoning lost on the tool-call assistant: ' + text).to.eql('I should list the files, then count the result.');",
                   "  pm.expect(assistant.tool_calls).to.be.an('array').with.lengthOf(1);",
                   "  pm.expect(assistant.tool_calls[0].id).to.eql('call_files');",
                   "  pm.expect(assistant.tool_calls[0].function).to.deep.eql({name: 'list_files', arguments: '{}'});",
-                  "  pm.expect(wire.messages[2].role).to.eql('tool');",
-                  "  pm.expect(wire.messages[2].tool_call_id).to.eql('call_files');",
-                  "  pm.expect(wire.messages[2].content).to.eql('a.txt\\nb.txt');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].role).to.eql('tool');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].tool_call_id).to.eql('call_files');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].content).to.eql('a.txt\\nb.txt');",
                   "});"
                 ]
               }
@@ -163221,7 +163221,7 @@
           ]
         },
         {
-          "name": "108.2 deepseek/deepseek-v4-flash unary summary and narration - responses-tool-reasoning - gpt-load#666",
+          "name": "108.2 deepseek/deepseek-v4-flash unary full reasoning over separate summary - responses-tool-reasoning - gpt-load#666",
           "request": {
             "method": "POST",
             "header": [
@@ -163236,7 +163236,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List files with list_files, then count them. The tool result is already provided; answer only the number.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I should list the files, then count the result.\"\n        }\n      ],\n      \"encrypted_content\": null\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Listing the files.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"id\": \"fc_files\",\n      \"call_id\": \"call_files\",\n      \"name\": \"list_files\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_files\",\n      \"output\": \"a.txt\\nb.txt\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"high\"\n  },\n  \"max_output_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"list_files\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"stream\": false\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List files with list_files, then count them. The tool result is already provided; answer only the number.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"I should list the files, then count the result.\"\n        }\n      ],\n      \"summary\": []\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"Short summary of listing.\"\n        }\n      ],\n      \"encrypted_content\": null\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Listing the files.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"id\": \"fc_files\",\n      \"call_id\": \"call_files\",\n      \"name\": \"list_files\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_files\",\n      \"output\": \"a.txt\\nb.txt\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"high\"\n  },\n  \"max_output_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"list_files\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"stream\": false\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -163267,17 +163267,18 @@
                   "});",
                   "pm.test('fallback sends a Chat request with complete tool history', function () {",
                   "  pm.expect(wire, 'raw_request missing: ' + text).to.be.an('object');",
-                  "  pm.expect(wire.messages, 'did not exercise Responses-to-Chat fallback: ' + text).to.be.an('array').with.lengthOf(3);",
-                  "  var assistant = wire.messages[1];",
+                  "  pm.expect(wire.messages, 'did not exercise Responses-to-Chat fallback: ' + text).to.be.an('array').with.lengthOf(4);",
+                  "  var assistant = wire.messages[wire.messages.length - 2];",
                   "  pm.expect(assistant.role).to.eql('assistant');",
                   "  pm.expect(assistant.reasoning_content, 'reasoning lost on the tool-call assistant: ' + text).to.eql('I should list the files, then count the result.');",
                   "  pm.expect(assistant.tool_calls).to.be.an('array').with.lengthOf(1);",
                   "  pm.expect(assistant.tool_calls[0].id).to.eql('call_files');",
                   "  pm.expect(assistant.tool_calls[0].function).to.deep.eql({name: 'list_files', arguments: '{}'});",
-                  "  pm.expect(wire.messages[2].role).to.eql('tool');",
-                  "  pm.expect(wire.messages[2].tool_call_id).to.eql('call_files');",
-                  "  pm.expect(wire.messages[2].content).to.eql('a.txt\\nb.txt');",
-                  "  pm.expect(assistant.content, 'narration split from tool call: ' + text).to.eql('Listing the files.');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].role).to.eql('tool');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].tool_call_id).to.eql('call_files');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].content).to.eql('a.txt\\nb.txt');",
+                  "  pm.expect(wire.messages[1].role).to.eql('assistant');",
+                  "  pm.expect(wire.messages[1].content, 'narration changed: ' + text).to.eql('Listing the files.');",
                   "});"
                 ]
               }
@@ -163285,7 +163286,7 @@
           ]
         },
         {
-          "name": "108.3 deepseek/deepseek-v4-flash stream summary and narration - responses-tool-reasoning - gpt-load#666",
+          "name": "108.3 deepseek/deepseek-v4-flash stream summary and multiple narrations - responses-tool-reasoning - gpt-load#666",
           "request": {
             "method": "POST",
             "header": [
@@ -163300,7 +163301,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List files with list_files, then count them. The tool result is already provided; answer only the number.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I should list the files, then count the result.\"\n        }\n      ],\n      \"encrypted_content\": null\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Listing the files.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"id\": \"fc_files\",\n      \"call_id\": \"call_files\",\n      \"name\": \"list_files\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_files\",\n      \"output\": \"a.txt\\nb.txt\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"high\"\n  },\n  \"max_output_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"list_files\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"stream\": true\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"List files with list_files, then count them. The tool result is already provided; answer only the number.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I should list the files, then count the result.\"\n        }\n      ],\n      \"encrypted_content\": null\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Listing the files.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Then counting the result.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"id\": \"fc_files\",\n      \"call_id\": \"call_files\",\n      \"name\": \"list_files\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_files\",\n      \"output\": \"a.txt\\nb.txt\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"high\"\n  },\n  \"max_output_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"list_files\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"stream\": true\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -163336,17 +163337,20 @@
                   "});",
                   "pm.test('fallback sends a Chat request with complete tool history', function () {",
                   "  pm.expect(wire, 'raw_request missing: ' + text).to.be.an('object');",
-                  "  pm.expect(wire.messages, 'did not exercise Responses-to-Chat fallback: ' + text).to.be.an('array').with.lengthOf(3);",
-                  "  var assistant = wire.messages[1];",
+                  "  pm.expect(wire.messages, 'did not exercise Responses-to-Chat fallback: ' + text).to.be.an('array').with.lengthOf(5);",
+                  "  var assistant = wire.messages[wire.messages.length - 2];",
                   "  pm.expect(assistant.role).to.eql('assistant');",
                   "  pm.expect(assistant.reasoning_content, 'reasoning lost on the tool-call assistant: ' + text).to.eql('I should list the files, then count the result.');",
                   "  pm.expect(assistant.tool_calls).to.be.an('array').with.lengthOf(1);",
                   "  pm.expect(assistant.tool_calls[0].id).to.eql('call_files');",
                   "  pm.expect(assistant.tool_calls[0].function).to.deep.eql({name: 'list_files', arguments: '{}'});",
-                  "  pm.expect(wire.messages[2].role).to.eql('tool');",
-                  "  pm.expect(wire.messages[2].tool_call_id).to.eql('call_files');",
-                  "  pm.expect(wire.messages[2].content).to.eql('a.txt\\nb.txt');",
-                  "  pm.expect(assistant.content, 'narration split from tool call: ' + text).to.eql('Listing the files.');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].role).to.eql('tool');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].tool_call_id).to.eql('call_files');",
+                  "  pm.expect(wire.messages[wire.messages.length - 1].content).to.eql('a.txt\\nb.txt');",
+                  "  pm.expect(wire.messages[1].role).to.eql('assistant');",
+                  "  pm.expect(wire.messages[1].content, 'narration changed: ' + text).to.eql('Listing the files.');",
+                  "  pm.expect(wire.messages[2].role).to.eql('assistant');",
+                  "  pm.expect(wire.messages[2].content, 'second narration changed: ' + text).to.eql('Then counting the result.');",
                   "});"
                 ]
               }

@@ -3397,10 +3397,10 @@ func TestToOpenAIResponsesRequest_StripsWebSearchSourceProviderFields(t *testing
 
 func TestResponsesChatFallbackPreservesToolTurnReasoning(t *testing.T) {
 	const reasoning = "I should list the files.\nThen count the result."
-	const narration = "Listing the files."
+	narrations := []string{"Listing the files.", "Then counting the result."}
 	for _, stream := range []bool{false, true} {
-		for _, withNarration := range []bool{false, true} {
-			t.Run(fmt.Sprintf("stream=%t/narration=%t", stream, withNarration), func(t *testing.T) {
+		for _, narrationCount := range []int{0, 1, 2} {
+			t.Run(fmt.Sprintf("stream=%t/narrations=%d", stream, narrationCount), func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 					if request.URL.Path != "/v1/chat/completions" {
 						t.Errorf("path = %s, want Chat Completions fallback", request.URL.Path)
@@ -3411,20 +3411,21 @@ func TestResponsesChatFallbackPreservesToolTurnReasoning(t *testing.T) {
 						writer.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					valid := len(payload.Messages) == 3
+					valid := len(payload.Messages) == 3+narrationCount
 					if valid {
-						assistant := payload.Messages[1]
+						assistant := payload.Messages[len(payload.Messages)-2]
 						valid = assistant.OpenAIChatAssistantMessage != nil &&
 							assistant.Reasoning != nil && *assistant.Reasoning == reasoning &&
 							len(assistant.ToolCalls) == 1 &&
 							assistant.ToolCalls[0].ID != nil && *assistant.ToolCalls[0].ID == "call_1" &&
 							assistant.ToolCalls[0].Function.Name != nil && *assistant.ToolCalls[0].Function.Name == "list_files" &&
 							assistant.ToolCalls[0].Function.Arguments == "{}"
-						if withNarration {
-							valid = valid && assistant.Content != nil &&
-								assistant.Content.ContentStr != nil && *assistant.Content.ContentStr == narration
+						for index := 0; index < narrationCount; index++ {
+							message := payload.Messages[index+1]
+							valid = valid && message.Role == schemas.ChatMessageRoleAssistant && message.Content != nil &&
+								message.Content.ContentStr != nil && *message.Content.ContentStr == narrations[index]
 						}
-						tool := payload.Messages[2]
+						tool := payload.Messages[len(payload.Messages)-1]
 						valid = valid && tool.Role == schemas.ChatMessageRoleTool &&
 							tool.ChatToolMessage != nil && tool.ToolCallID != nil && *tool.ToolCallID == "call_1" &&
 							tool.Content != nil && tool.Content.ContentStr != nil && *tool.Content.ContentStr == "a.txt\nb.txt"
@@ -3467,10 +3468,10 @@ func TestResponsesChatFallbackPreservesToolTurnReasoning(t *testing.T) {
 						}},
 					},
 				}
-				if withNarration {
+				for index := 0; index < narrationCount; index++ {
 					input = append(input, schemas.ResponsesMessage{
 						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(narration)},
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(narrations[index])},
 					})
 				}
 				input = append(input,
