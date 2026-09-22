@@ -24,6 +24,9 @@ const (
 	// AnthropicDangerousToolUseBetaHeader activates safeguards evaluation.
 	AnthropicDangerousToolUseBetaHeader       = "dangerous-tool-use-2026-09-03"
 	AnthropicDangerousToolUseBetaHeaderPrefix = "dangerous-tool-use-"
+	// AnthropicAutoModeClassifierBetaHeaderPrefix rides on Claude Code's auto-mode
+	// classifier follow-up requests; sibling of dangerous-tool-use, same feature gate.
+	AnthropicAutoModeClassifierBetaHeaderPrefix = "auto-mode-classifier-"
 
 	// Beta headers for various Anthropic features
 	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.

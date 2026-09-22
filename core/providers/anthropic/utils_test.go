@@ -1387,6 +1387,22 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			}
 		})
 	}
+
+	// Claude Code auto mode sends two betas: dangerous-tool-use-* pairs with the
+	// safeguards body field, and auto-mode-classifier-* rides on the classifier's
+	// follow-up requests. Every surface that forwards safeguards must forward both.
+	t.Run("auto_mode_classifier_follows_safeguards_gate", func(t *testing.T) {
+		const classifierBeta = "auto-mode-classifier-2026-07-16"
+		for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure} {
+			result := FilterBetaHeadersForProvider([]string{classifierBeta}, provider)
+			if !ProviderFeatures[provider].Safeguards {
+				t.Fatalf("precondition: %s is expected to support safeguards", provider)
+			}
+			if !containsHeader(result, classifierBeta) {
+				t.Errorf("expected %q forwarded to %s, got %v", classifierBeta, provider, result)
+			}
+		}
+	})
 }
 
 // TestNetworkConfigBetaOverridesFlow proves the production sequence
