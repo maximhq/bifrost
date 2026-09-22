@@ -495,6 +495,12 @@ func TestParseDecisionAnswersNormalizesNearOneDistributions(t *testing.T) {
 	if score := answers["severity"].Value.(float64); math.Abs(score-wantScore) > 1e-9 {
 		t.Errorf("score = %v, want normalized expected value %v", score, wantScore)
 	}
+	// Exactly 5% below one is within the documented tolerance despite binary
+	// floating-point rounding of decimal probabilities.
+	boundary := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.9,"b":0.05}},"severity":{"value":2,"confidence":0.8,"probabilities":{"0":0,"1":0.05,"2":0.95}}}`
+	if _, err := ParseDecisionAnswers([]byte(boundary), questions); err != nil {
+		t.Fatalf("distribution at the tolerance boundary should be accepted: %v", err)
+	}
 	tooFar := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.8,"b":0.1}},"severity":{"value":2,"confidence":0.8,"probabilities":{"0":0,"1":0.05,"2":0.95}}}`
 	if _, err := ParseDecisionAnswers([]byte(tooFar), questions); err == nil || !strings.Contains(err.Error(), "sum") {
 		t.Fatalf("distribution far from one must be rejected, got %v", err)

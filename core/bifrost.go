@@ -7675,6 +7675,7 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	if r == nil {
 		return nil, nil
 	}
+	r = normalizeResponsesToolSchemas(ctx, r)
 	var supported bool
 	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
 		supported = capable.SupportsResponsesNamespaceTools(ctx, key, r.Model)
@@ -7700,6 +7701,64 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 		return r, nil
 	}
 	return providerUtils.FlattenResponsesNamespaceTools(ctx, r)
+}
+
+// normalizeResponsesToolSchemas applies toolSchemaPatternRewriter to the request's
+// tool schemas, with the same copy-on-write guarantee as promptCacheResponsesRequest:
+// a request whose model is outside the relaxed set, or whose tools need no
+// rewrite, is returned unchanged and allocates nothing.
+//
+// This sits on the shared dispatch path rather than in any one provider because
+// the affected models are reached through several: DeepSeek natively,
+// moonshotai.kimi-k3 through Bedrock, and OpenAI-compatible gateways fronting
+// either.
+func normalizeResponsesToolSchemas(ctx *schemas.BifrostContext, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if r == nil || r.Params == nil || len(r.Params.Tools) == 0 {
+		return r
+	}
+	rewrite := toolSchemaPatternRewriter(ctx, r.Model)
+	if rewrite == nil {
+		return r
+	}
+	tools, changed := providerUtils.RewriteResponsesToolSchemas(r.Params.Tools, rewrite)
+	if !changed {
+		return r
+	}
+	params := *r.Params
+	params.Tools = tools
+	cp := *r
+	cp.Params = &params
+	return &cp
+}
+
+// relaxedPatternRewriter is the tool-schema pattern rewrite for the two model
+// families whose validators reject regex syntax that every other tested backend
+// accepts: the lossless `\0` -> `\x00` normalization followed by the lossy
+// lookaround strip. Built once so the per-request path allocates no closure.
+var relaxedPatternRewriter = providerUtils.ComposePatternRewriters(
+	providerUtils.NormalizeRegexNULEscape,
+	providerUtils.StripRegexLookaround,
+)
+
+// toolSchemaPatternRewriter returns the pattern rewrite for a request's model, or
+// nil when the model's tool schemas must reach the provider untouched.
+//
+// This is a positive list on purpose. Verified live on 2026-09-22: OpenAI,
+// Anthropic (directly and on Bedrock) and Gemini all accept both `\0` and
+// lookaround; DeepSeek rejects `\0` with a 400; moonshotai.kimi-k3 on Bedrock
+// rejects both with HTTP 200 and an empty event stream. Only the two families
+// with a verified rejection are rewritten, so every other model keeps its exact
+// bytes (and its prompt-cache key), and a new backend that chokes on a pattern
+// fails loudly through the Bedrock empty-stream guard rather than being silently
+// rewritten. The check is on the model, never the provider: kimi behind an
+// OpenAI-compatible custom provider is still kimi, and Claude on Bedrock is still
+// Claude.
+func toolSchemaPatternRewriter(ctx *schemas.BifrostContext, model string) providerUtils.PatternRewriter {
+	canonical := schemas.ResolveCanonicalModel(ctx, model)
+	if schemas.IsMoonshotModel(canonical) || schemas.IsDeepSeekModel(canonical) {
+		return relaxedPatternRewriter
+	}
+	return nil
 }
 
 // promptCacheChatRequest is the Chat Completions parallel of
