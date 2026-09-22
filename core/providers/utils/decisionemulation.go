@@ -70,7 +70,9 @@ func normalizeProbabilities(name string, probs map[string]float64, allowed map[s
 			return nil, fmt.Errorf("probabilities for %q are missing key %q; every option or level requires a probability", name, k)
 		}
 	}
-	if math.Abs(sum-1) > 0.05 {
+	// Decimal probabilities can land just outside the boundary in binary
+	// floating point (for example, 0.95 differs from 1 by slightly over 0.05).
+	if math.Abs(sum-1) > 0.05+1e-12 {
 		return nil, fmt.Errorf("probabilities for %q sum to %v, expected about 1", name, sum)
 	}
 	normalized := make(map[string]float64, len(probs))

@@ -34,11 +34,11 @@ concurrency:
 jobs:
   benchmarks:
     name: Benchmarks (${{ matrix.name }})
-    # Graviton macro runner: bare metal, 600 free minutes/month on every CodSpeed
-    # plan (https://codspeed.io/docs/integrations/ci/github-actions/macro-runners).
+    # CodSpeed's managed bare-metal runner for walltime benchmarks.
+    # https://codspeed.io/docs/benchmarks/go
     # The org's Default runner group must "Allow public repositories", or the
     # jobs queue without ever starting.
-    runs-on: codspeed-macro-arm64-graviton-ubuntu-22-04
+    runs-on: codspeed-macro
     timeout-minutes: 45
 
     env:
@@ -86,6 +86,7 @@ jobs:
           allowed-endpoints: >
             api.codspeed.io:443
             api.github.com:443
+            app.codspeed.io:443
             codspeed.io:443
             dl.google.com:443
             github.com:443
@@ -127,5 +128,6 @@ jobs:
         with:
           mode: walltime
           working-directory: ${{ matrix.module }}
-          # Skip regular tests, including credential-dependent provider tests.
-          run: go test -run='^$' -bench=. ${{ matrix.packages }}
+          # CodSpeed's Go runner discovers benchmarks without running regular tests.
+          # Its Go integration currently supports only the -bench flag.
+          run: go test -bench=. ${{ matrix.packages }}
