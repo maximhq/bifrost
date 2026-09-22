@@ -226,8 +226,17 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 	logger.Info("logstore: clickhouse schema migrations complete")
 
 	constructed = true
-	return &ClickHouseLogStore{
+	store := &ClickHouseLogStore{
 		RDBLogStore: &RDBLogStore{db: db, logger: logger},
 		cluster:     config.Cluster,
-	}, nil
+	}
+
+	// Deferred so a large backlog of historical embedding rows never delays pod startup
+	go func() {
+		if err := store.backfillEmbeddingInput(context.Background()); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: clickhouse embedding_input backfill failed: %s (historical embedding logs may be missing input data)", err))
+		}
+	}()
+
+	return store, nil
 }

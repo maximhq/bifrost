@@ -447,6 +447,62 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 	return nil
 }
 
+// backfillEmbeddingInput reconstructs embedding_input for historical ClickHouse
+// embedding rows inserted before the column existed. clickhouseCreateTable's
+// reflection-based reconciliation (clickhousemigrate.go) auto-ALTERs the
+// column onto every existing deployment at boot with a non-nullable String
+// default of ”, so old rows never error on read - they just carry ” forever
+// unless backfilled.
+func (s *ClickHouseLogStore) backfillEmbeddingInput(ctx context.Context) error {
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		var ids []string
+		if err := s.db.WithContext(ctx).Model(&Log{}).
+			Where("object_type = ? AND id > ? AND input_history NOT IN (?, ?, ?) AND embedding_input = ?",
+				"embedding", cursor, "", "[]", "null", "").
+			Order("id").
+			Limit(bulkUpdateCostChunkSize).
+			Pluck("id", &ids).Error; err != nil {
+			return fmt.Errorf("clickhouse: select embedding_input backfill candidates: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+
+		if err := func() error {
+			defer s.lockRMWBatch("logs", ids)()
+			var rows []*Log
+			if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+				return err
+			}
+			var patched []*Log
+			for _, r := range rows {
+				if r.EmbeddingInput != "" {
+					continue // already backfilled or populated meanwhile
+				}
+				val, ok := computeEmbeddingInput(r.InputHistory)
+				if !ok {
+					continue
+				}
+				r.EmbeddingInput = val
+				patched = append(patched, r)
+			}
+			if len(patched) == 0 {
+				return nil
+			}
+			return s.chReinsert(ctx, &patched)
+		}(); err != nil {
+			return err
+		}
+
+		cursor = ids[len(ids)-1]
+	}
+}
+
 // UpdateMCPToolLog applies an update to an MCP tool log row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
 	st, err := chParseSchema(s.db, &MCPToolLog{})

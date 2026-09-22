@@ -1047,6 +1047,7 @@ type InitialLogData struct {
 	Object                 string
 	InputHistory           []schemas.ChatMessage
 	ResponsesInputHistory  []schemas.ResponsesMessage
+	EmbeddingInput         []schemas.EmbeddingInputItem
 	Params                 any
 	SpeechInput            *schemas.SpeechInput
 	TranscriptionInput     *schemas.TranscriptionInput
@@ -1640,6 +1641,12 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			}
 		case schemas.EmbeddingRequest:
 			initialData.Params = req.EmbeddingRequest.Params
+			items := extractEmbeddingInput(req)
+			reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+			if reqThreshold > 0 && embeddingMediaDataSize(items) > reqThreshold {
+				items = redactEmbeddingMediaData(items)
+			}
+			initialData.EmbeddingInput = items
 		case schemas.RerankRequest:
 			initialData.Params = req.RerankRequest.Params
 		case schemas.DecisionRequest:

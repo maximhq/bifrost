@@ -3,12 +3,14 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -112,6 +114,175 @@ func TestScalePostgresLogstoreMigrations(t *testing.T) {
 			sample.WaitingQuery,
 		)
 	}
+}
+
+// TestScalePostgresEmbeddingInputBackfill benchmarks ensureEmbeddingInputBackfill
+// against a realistic slice of the scale dataset (~1/8 of rows are embedding
+// logs with input_history to reconstruct, matching a 10M-log/~1M-embedding
+// deployment) and proves the batched rewrite does not stall concurrent queries
+// against logs the way the old single-transaction DO block would have.
+func TestScalePostgresEmbeddingInputBackfill(t *testing.T) {
+	if os.Getenv(scaleMigrationTestEnv) != "1" {
+		t.Skipf("set %s=1 to run the destructive large Postgres migration test", scaleMigrationTestEnv)
+	}
+
+	rows := scaleMigrationDefaultRows
+	if raw := os.Getenv(scaleMigrationRowsEnv); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		require.NoError(t, err, "invalid %s", scaleMigrationRowsEnv)
+		require.Positive(t, parsed, "%s must be positive", scaleMigrationRowsEnv)
+		rows = parsed
+	}
+
+	db := trySetupPostgresDB(t)
+	require.NotNil(t, db, "Postgres must be reachable on %s", postgresDSN)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
+	defer cancel()
+
+	resetScaleMigrationDB(t, ctx, db)
+	createScaleMigrationTables(t, ctx, db)
+	populateScaleMigrationTables(t, ctx, db, rows)
+	// Adds the embedding_input column only; the backfill itself is not part of
+	// the ledger-tracked migration pipeline (see ensureEmbeddingInputBackfill's
+	// doc comment) and is timed directly below.
+	require.NoError(t, triggerMigrations(ctx, db, testLogger{}), "logstore migrations should complete at scale")
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	conn := acquireScaleMigrationConn(t, ctx, sqlDB)
+	defer conn.Close()
+
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	var sampleMu sync.Mutex
+	var samples []lockWaitSample
+	var monitorWG sync.WaitGroup
+	monitorWG.Add(1)
+	go func() {
+		defer monitorWG.Done()
+		monitorScaleMigrationLocks(monitorCtx, t, sqlDB, &sampleMu, &samples)
+	}()
+
+	// A concurrent point-query workload against the same table: proves the
+	// batching actually stops the backfill from starving other queries, which
+	// is the entire point of the fix (the old single-DO-block implementation
+	// held row locks and grew one transaction across every candidate row).
+	// maxLatency is only ever touched by this one goroutine until workloadWG.Wait()
+	// below synchronizes the main goroutine's read with its last write.
+	workloadCtx, stopWorkload := context.WithCancel(ctx)
+	var maxLatency time.Duration
+	var workloadWG sync.WaitGroup
+	workloadWG.Add(1)
+	go func() {
+		defer workloadWG.Done()
+		for workloadCtx.Err() == nil {
+			start := time.Now()
+			var count int64
+			_ = db.WithContext(workloadCtx).Raw("SELECT count(*) FROM logs WHERE id = 'log-12345'").Scan(&count)
+			if d := time.Since(start); d > maxLatency {
+				maxLatency = d
+			}
+		}
+	}()
+
+	start := time.Now()
+	require.NoError(t, ensureEmbeddingInputBackfill(ctx, conn), "embedding_input backfill should complete at scale")
+	backfillElapsed := time.Since(start)
+
+	stopWorkload()
+	workloadWG.Wait()
+	stopMonitor()
+	monitorWG.Wait()
+
+	t.Logf("scale rows: %d (~%d embedding candidates)", rows, rows/8)
+	t.Logf("embedding_input backfill elapsed: %s", backfillElapsed)
+	t.Logf("max concurrent point-query latency during backfill: %s", maxLatency)
+	assert.Less(t, maxLatency, 2*time.Second, "no page should hold locks long enough to stall a concurrent point query")
+
+	var remaining int64
+	require.NoError(t, db.WithContext(ctx).Raw(`
+		SELECT count(*) FROM logs
+		WHERE object_type = 'embedding' AND input_history IS NOT NULL
+		  AND input_history NOT IN ('', '[]', 'null') AND embedding_input IS NULL
+	`).Scan(&remaining).Error)
+	assert.Zero(t, remaining, "every candidate row should be backfilled")
+
+	if len(samples) > 0 {
+		t.Logf("observed %d lock-wait samples", len(samples))
+		for i, sample := range samples {
+			if i >= 20 {
+				t.Logf("... %d additional lock-wait samples omitted", len(samples)-i)
+				break
+			}
+			assert.Less(t, sample.WaitingDuration, 5*time.Second, "no observed lock wait should approach the old whole-table-transaction scale")
+			t.Logf("lock wait at %s pid=%d duration=%s blockers=%s query=%q",
+				sample.ObservedAt.Format(time.RFC3339), sample.WaitingPID, sample.WaitingDuration, sample.BlockingPIDs, sample.WaitingQuery)
+		}
+	}
+
+	// Re-run should find nothing left to do and complete quickly.
+	start = time.Now()
+	require.NoError(t, ensureEmbeddingInputBackfill(ctx, conn))
+	t.Logf("idempotent re-run elapsed: %s", time.Since(start))
+}
+
+// scaleMigrationClickHouseDefaultRows is deliberately smaller than
+// scaleMigrationDefaultRows (10M, Postgres): there is no prior ClickHouse
+// scale-test precedent to match, and the RMW+reinsert backfill's per-chunk
+// cost profile is already covered by bulkUpdateCostChunkSize's existing
+// tuning, so 1M rows (matching the user-stated ~1M embedding-row scale) is
+// enough to validate throughput without an unnecessarily long default run.
+const scaleMigrationClickHouseDefaultRows = 1_000_000
+
+// TestScaleClickHouseEmbeddingInputBackfill benchmarks the ClickHouse
+// read-modify-write-and-reinsert embedding_input backfill against a bulk-seeded
+// dataset where ~1/8 of rows are embedding logs with input_history to
+// reconstruct, mirroring the Postgres scale test above.
+func TestScaleClickHouseEmbeddingInputBackfill(t *testing.T) {
+	if os.Getenv(scaleMigrationTestEnv) != "1" {
+		t.Skipf("set %s=1 to run the large ClickHouse embedding_input backfill test", scaleMigrationTestEnv)
+	}
+
+	rows := scaleMigrationClickHouseDefaultRows
+	if raw := os.Getenv(scaleMigrationRowsEnv); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		require.NoError(t, err, "invalid %s", scaleMigrationRowsEnv)
+		require.Positive(t, parsed, "%s must be positive", scaleMigrationRowsEnv)
+		rows = parsed
+	}
+
+	store := trySetupClickHouseStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
+	defer cancel()
+
+	t.Logf("seeding %d clickhouse rows (~%d embedding candidates)", rows, rows/8)
+	seedSQL := fmt.Sprintf(`
+INSERT INTO logs (id, timestamp, object_type, provider, model, input_history, embedding_input, status, created_at, latency, cost)
+SELECT
+	concat('ch-scale-', toString(number)),
+	now() - toIntervalMinute(number %% 129600),
+	if(number %% 8 = 4, 'embedding', 'chat.completion'),
+	'openai', 'gpt-4o',
+	if(number %% 8 = 4, concat('[{"role":"user","content":[{"type":"text","text":"embedding text ', toString(number), '"}]}]'), ''),
+	'', 'success', now(), 1.0, 0.001
+FROM numbers(%d)`, rows)
+	require.NoError(t, store.db.WithContext(ctx).Exec(seedSQL).Error)
+
+	start := time.Now()
+	require.NoError(t, store.backfillEmbeddingInput(ctx), "embedding_input backfill should complete at scale")
+	elapsed := time.Since(start)
+	t.Logf("clickhouse embedding_input backfill elapsed: %s for %d rows", elapsed, rows)
+
+	var remaining int64
+	require.NoError(t, store.db.WithContext(ctx).Raw(`
+		SELECT count(*) FROM logs
+		WHERE object_type = 'embedding' AND input_history NOT IN ('', '[]', 'null') AND embedding_input = ''
+	`).Scan(&remaining).Error)
+	assert.Zero(t, remaining, "every candidate row should be backfilled")
+
+	start = time.Now()
+	require.NoError(t, store.backfillEmbeddingInput(ctx))
+	t.Logf("idempotent re-run elapsed: %s", time.Since(start))
 }
 
 func resetScaleMigrationDB(t *testing.T, ctx context.Context, db *gorm.DB) {
@@ -224,7 +395,7 @@ INSERT INTO logs (
 	parent_request_id, selected_key_id, selected_key_name, virtual_key_id, virtual_key_name,
 	routing_engines_used, routing_rule_id, routing_rule_name,
 	latency, token_usage, cost, status, stream, content_summary, metadata,
-	prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, created_at
+	prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, created_at, input_history
 )
 SELECT
 	'log-' || gs,
@@ -260,7 +431,8 @@ SELECT
 	(gs % 2000)::INTEGER,
 	(gs % 6000)::INTEGER,
 	0,
-	NOW() - ((gs % 129600) * INTERVAL '1 minute')
+	NOW() - ((gs % 129600) * INTERVAL '1 minute'),
+	CASE WHEN gs % 8 = 4 THEN '[{"role":"user","content":[{"type":"text","text":"embedding text ' || gs || '"}]}]' ELSE NULL END
 FROM generate_series(1, ?) AS gs`
 	require.NoError(t, db.WithContext(ctx).Exec(insertLogsSQL, rows).Error)
 

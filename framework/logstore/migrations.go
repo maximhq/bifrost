@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -323,6 +324,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
 	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
+	{IDs: []string{"logs_add_embedding_input_column"}, run: migrationAddEmbeddingInputColumn},
+	{IDs: []string{"logs_backfill_embedding_input"}, run: migrationBackfillEmbeddingInput},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4879,4 +4882,218 @@ func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger
 		return fmt.Errorf("error while adding governance snapshot columns to mcp tool logs: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddEmbeddingInputColumn adds the embedding_input column to the logs table.
+func migrationAddEmbeddingInputColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_embedding_input_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "embedding_input")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "embedding_input")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding embedding_input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillEmbeddingInput reconstructs embedding_input from the text blocks in input_history for SQLite.
+func migrationBackfillEmbeddingInput(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_backfill_embedding_input"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() != "sqlite" {
+				return nil
+			}
+			return backfillSQLiteEmbeddingInput(ctx, tx, logger)
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while backfilling embedding_input: %s", err.Error())
+	}
+	return nil
+}
+
+// backfillSQLiteEmbeddingInput walks candidate rows with a keyset cursor on id
+// and rewrites them one committed batch at a time
+func backfillSQLiteEmbeddingInput(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	cursor := ""
+	total := 0
+	for {
+		var rows []struct {
+			ID           string
+			InputHistory string
+		}
+		if err := db.WithContext(ctx).Raw(`
+			SELECT id, input_history FROM logs
+			WHERE object_type = 'embedding'
+				AND id > ?
+				AND input_history IS NOT NULL
+				AND input_history NOT IN ('', '[]', 'null')
+				AND embedding_input IS NULL
+			ORDER BY id
+			LIMIT ?`, cursor, 100).Scan(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			break
+		}
+
+		for _, r := range rows {
+			if val, ok := computeEmbeddingInput(r.InputHistory); ok {
+				if err := db.WithContext(ctx).Exec(
+					`UPDATE logs SET embedding_input = ? WHERE id = ? AND embedding_input IS NULL`,
+					val, r.ID,
+				).Error; err != nil {
+					return err
+				}
+				total++
+			}
+		}
+		cursor = rows[len(rows)-1].ID
+	}
+	if total > 0 {
+		logger.Info("[logstore] backfilled embedding_input for %d rows", total)
+	}
+	return nil
+}
+
+// computeEmbeddingInput builds embedding_input from input_history for a single row. pure function, no db writes.
+// ok=true means embedding_input is safe to mutate.
+func computeEmbeddingInput(inputHistory string) (string, bool) {
+	switch inputHistory {
+	case "", "[]", "null":
+		return "", false
+	}
+
+	var historyItems []struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(inputHistory), &historyItems); err != nil {
+		return "", false
+	}
+
+	var items []schemas.EmbeddingInputItem
+	for _, hi := range historyItems {
+		if len(hi.Content) == 0 {
+			continue
+		}
+		var blocks []schemas.EmbeddingContentPart
+		if err := json.Unmarshal(hi.Content, &blocks); err != nil {
+			return "", false
+		}
+		for _, b := range blocks {
+			if b.Type != schemas.EmbeddingContentPartTypeText || b.Text == nil || *b.Text == "" {
+				continue
+			}
+			text := *b.Text
+			items = append(items, schemas.EmbeddingInputItem{
+				Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}},
+			})
+		}
+	}
+	if len(items) == 0 {
+		return "", false
+	}
+
+	data, err := json.Marshal(items)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// ensureEmbeddingInputBackfill backfills historical Postgres embedding logs by
+// reconstructing EmbeddingContent entries from text blocks stored in the old
+// input_history column. Deferred from migrationAddEmbeddingInputColumn so that
+// large tables do not block pod startup.
+func ensureEmbeddingInputBackfill(ctx context.Context, conn *sql.Conn) error {
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		rows, err := conn.QueryContext(ctx, `
+			SELECT id, input_history
+			FROM logs
+			WHERE object_type = 'embedding'
+				AND input_history IS NOT NULL
+				AND input_history NOT IN ('', '[]', 'null')
+				AND embedding_input IS NULL
+				AND id > $1
+			ORDER BY id
+			LIMIT $2
+		`, cursor, 1000)
+		if err != nil {
+			return fmt.Errorf("failed to select embedding_input backfill page: %w", err)
+		}
+
+		var ids, histories []string
+		for rows.Next() {
+			var id, history string
+			if err := rows.Scan(&id, &history); err != nil {
+				rows.Close()
+				return fmt.Errorf("failed to scan embedding_input backfill page: %w", err)
+			}
+			ids = append(ids, id)
+			histories = append(histories, history)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to read embedding_input backfill page: %w", err)
+		}
+		rows.Close()
+
+		if len(ids) == 0 {
+			return nil
+		}
+
+		cursor = ids[len(ids)-1]
+		args := make([]any, 0, len(ids)*2)
+		valuesClause := make([]string, 0, len(ids))
+		for i, id := range ids {
+			val, ok := computeEmbeddingInput(histories[i])
+			if !ok {
+				continue
+			}
+			args = append(args, id, val)
+			valuesClause = append(valuesClause, fmt.Sprintf("($%d::text,$%d::text)", len(args)-1, len(args)))
+		}
+		if len(args) == 0 {
+			continue
+		}
+
+		query := fmt.Sprintf(`
+			UPDATE logs SET embedding_input = v.val
+			FROM (VALUES %s) AS v(id, val)
+			WHERE logs.id = v.id AND logs.embedding_input IS NULL
+		`, strings.Join(valuesClause, ","))
+		if _, err := conn.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("failed to write embedding_input backfill page: %w", err)
+		}
+	}
 }

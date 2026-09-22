@@ -629,6 +629,57 @@ func TestClickHouseBulkUpdateCost(t *testing.T) {
 	}
 }
 
+// TestClickHouseBackfillEmbeddingInput mirrors the Postgres/SQLite embedding_input
+// backfill correctness tests (migrations_test.go), adapted to ClickHouse's
+// read-modify-write-and-reinsert update model: a good row, a row with no
+// surviving text blocks, a malformed-JSON row, and a non-embedding row.
+func TestClickHouseBackfillEmbeddingInput(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+
+	good := chTestLog("ch-emb-good", ts)
+	good.Object = "embedding"
+	good.InputHistory = `[{"role":"user","content":[{"type":"text","text":"hello"}]}]`
+	require.NoError(t, store.CreateIfNotExists(ctx, good))
+
+	noText := chTestLog("ch-emb-notext", ts.Add(time.Millisecond))
+	noText.Object = "embedding"
+	noText.InputHistory = `[{"role":"user","content":[{"type":"image","url":"x"}]}]`
+	require.NoError(t, store.CreateIfNotExists(ctx, noText))
+
+	bad := chTestLog("ch-emb-bad", ts.Add(2*time.Millisecond))
+	bad.Object = "embedding"
+	bad.InputHistory = `{not json at all`
+	require.NoError(t, store.CreateIfNotExists(ctx, bad))
+
+	notEmbedding := chTestLog("ch-chat-1", ts.Add(3*time.Millisecond))
+	notEmbedding.InputHistory = `[{"role":"user","content":[{"type":"text","text":"chat text"}]}]`
+	require.NoError(t, store.CreateIfNotExists(ctx, notEmbedding))
+
+	require.NoError(t, store.backfillEmbeddingInput(ctx))
+
+	found, err := store.FindByID(ctx, "ch-emb-good")
+	require.NoError(t, err)
+	require.NotEmpty(t, found.EmbeddingInput)
+	assert.Equal(t, int64(1), chCountRows(t, store.db, "logs", "ch-emb-good"), "FINAL collapses the reinsert to one logical row")
+
+	notext, err := store.FindByID(ctx, "ch-emb-notext")
+	require.NoError(t, err)
+	assert.Empty(t, notext.EmbeddingInput, "no surviving text blocks leaves embedding_input untouched")
+
+	badRow, err := store.FindByID(ctx, "ch-emb-bad")
+	require.NoError(t, err)
+	assert.Empty(t, badRow.EmbeddingInput, "malformed input_history must not error the run")
+
+	chat, err := store.FindByID(ctx, "ch-chat-1")
+	require.NoError(t, err)
+	assert.Empty(t, chat.EmbeddingInput, "non-embedding object_type must not be touched")
+
+	// Re-running finds nothing left to do.
+	require.NoError(t, store.backfillEmbeddingInput(ctx))
+}
+
 func TestClickHouseSearchAndStats(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
