@@ -321,6 +321,16 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	if req.Diagnostics != nil && !features.Diagnostics {
 		req.Diagnostics = nil
 	}
+	// Safeguards (Claude Code auto-mode classifier) is gated on the
+	// (provider, model) pair: the provider must carry the feature at all, and
+	// the pair must be one that accepts the field on the wire. Both halves are
+	// datasheet-overridable via SupportsSafeguards, so enabling a surface that
+	// starts accepting it is a catalog change. Fail-closed otherwise: a surface
+	// that refuses the field 400s the caller's real request.
+	if len(req.Safeguards) > 0 &&
+		(!features.Safeguards || !caps.SupportsSafeguards(DefaultSupportsSafeguards(provider, caps.Model()))) {
+		req.Safeguards = nil
+	}
 	// cache_control.scope — strip on providers without PromptCachingScope
 	// support at every slot scope can live: top-level request, tools, system
 	// blocks, and message content blocks. Vertex additionally uses the
@@ -496,6 +506,19 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "diagnostics")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw diagnostics: %w", err)
+		}
+	}
+
+	// safeguards — undocumented Claude Code auto-mode classifier field, gated on
+	// the (provider, model) pair exactly as the typed path above: the provider
+	// must carry the feature and the pair must accept the field on the wire,
+	// both datasheet-overridable via SupportsSafeguards. Fail-closed otherwise.
+	if (!features.Safeguards ||
+		!caps.SupportsSafeguards(DefaultSupportsSafeguards(provider, caps.Model()))) &&
+		providerUtils.JSONFieldExists(jsonBody, "safeguards") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "safeguards")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw safeguards: %w", err)
 		}
 	}
 
@@ -1000,6 +1023,30 @@ func DefaultSupportsFastMode(model string) bool {
 		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
 }
 
+// DefaultSupportsSafeguards is the name-detection fallback for the Claude Code
+// auto-mode server-side classifier (`safeguards` request field), gated on the
+// (provider, model) pair. It answers "would this pair accept the field on the
+// wire"; the datasheet's supports_safeguards boolean overrides it per pair, so
+// enabling a surface later is a catalog change rather than a code change.
+//
+// Claude API direct accepts it on the models that support auto mode: Sonnet 5,
+// Opus 4.7 or later (covering 4.8 and 5), and the Fable family.
+//
+// Claude cloud surfaces require dangerous-tool-use-2026-09-03 alongside the
+// field. The shared request builder injects that beta after capability filtering.
+//
+// Sources:
+//   - https://code.claude.com/docs/en/auto-mode-classifier-billing
+//   - https://code.claude.com/docs/en/permission-modes#enable-auto-mode-on-bedrock-agent-platform-or-foundry
+func DefaultSupportsSafeguards(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure:
+	default:
+		return false
+	}
+	return IsSonnet5Plus(model) || IsOpus47Plus(model) || IsFableFamily(model)
+}
+
 // DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on Opus
 // 4.6, Sonnet 4.6, Sonnet 5+, Opus 4.7+ and the Fable/Mythos family.
 func DefaultSupportsAdaptiveThinking(model string) bool {
@@ -1439,6 +1486,9 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	features, hasProvider := ProviderFeatures[provider]
 	caps := schemas.ResolveModelCaps(provider, schemas.ResolveCanonicalModel(ctx, req.Model))
 	headers := []string{}
+	if len(req.Safeguards) > 0 && (!hasProvider || (features.Safeguards && caps.SupportsSafeguards(DefaultSupportsSafeguards(provider, caps.Model())))) {
+		headers = appendUniqueHeader(headers, AnthropicDangerousToolUseBetaHeader)
+	}
 	hasCachingScope := false
 	if req.Tools != nil {
 		for _, tool := range req.Tools {
@@ -1697,6 +1747,7 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 
 // betaHeaderPrefixKnown maps known beta header prefixes for prefix-aware dedup.
 var betaHeaderPrefixKnown = []string{
+	AnthropicDangerousToolUseBetaHeaderPrefix,
 	"computer-use-",
 	AnthropicStructuredOutputsBetaHeaderPrefix,
 	AnthropicMCPClientBetaHeaderPrefix,
@@ -2091,6 +2142,7 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 // betaHeaderPrefixToFeature maps each known beta header prefix to a function that checks
 // whether the feature is supported by the provider's default feature set.
 var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
+	AnthropicDangerousToolUseBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.Safeguards },
 	"computer-use-": func(f ProviderFeatureSupport) bool { return f.ComputerUse },
 	AnthropicStructuredOutputsBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.StructuredOutputs },
 	AnthropicMCPClientBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.MCP },

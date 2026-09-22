@@ -871,6 +871,12 @@ func (state *AnthropicResponsesStreamState) getOrCreateOutputIndex(contentIndex 
 // Returns a slice of responses to support cases where a single event produces multiple responses
 func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context, sequenceNumber int, state *AnthropicResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
+	case AnthropicStreamEventTypeSafeguardsUpdate:
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:             schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+			SequenceNumber:   sequenceNumber,
+			SafeguardResults: chunk.SafeguardResults,
+		}}, nil, false
 	case AnthropicStreamEventTypeMessageStart:
 		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
 		if chunk.Message != nil {
@@ -895,6 +901,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				// Forward cache diagnostics from message_start (cache-diagnosis-2026-04-07).
 				if chunk.Message.Diagnostics != nil {
 					response.Diagnostics = chunk.Message.Diagnostics
+				}
+				// Forward safeguard_results nested in message_start.message (Claude
+				// Code auto-mode classifier) so the egress can rebuild it.
+				if len(chunk.Message.SafeguardResults) > 0 {
+					response.SafeguardResults = chunk.Message.SafeguardResults
 				}
 				// Forward input usage from message_start so clients see cache metrics early
 				if chunk.Message.Usage != nil {
@@ -2889,6 +2900,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 // and a tool call opened as thinking both reached clients and aborted their turns.
 func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	events := toAnthropicResponsesStreamEvents(ctx, bifrostResp)
+	// Restore safeguard_results (Claude Code auto-mode classifier) captured from
+	// the upstream event onto the first re-rendered frame, so re-rendering does
+	// not strip it.
+	if len(events) > 0 && events[0] != nil && bifrostResp != nil && len(bifrostResp.SafeguardResults) > 0 {
+		events[0].SafeguardResults = bifrostResp.SafeguardResults
+	}
 	if len(events) == 0 || ctx == nil {
 		return events
 	}
@@ -2949,6 +2966,8 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 	// Map ResponsesStreamResponse types to Anthropic stream events
 	switch bifrostResp.Type {
+	case schemas.ResponsesStreamResponseTypeSafeguardsUpdate:
+		return []*AnthropicStreamEvent{{Type: AnthropicStreamEventTypeSafeguardsUpdate, SafeguardResults: bifrostResp.SafeguardResults}}
 	case schemas.ResponsesStreamResponseTypeCreated:
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
@@ -3008,6 +3027,11 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
 			if bifrostResp.Response != nil && bifrostResp.Response.Diagnostics != nil {
 				streamMessage.Diagnostics = bifrostResp.Response.Diagnostics
+			}
+			// safeguard_results nested in message_start.message (Claude Code
+			// auto-mode classifier) — restore from the created chunk's carry.
+			if bifrostResp.Response != nil && len(bifrostResp.Response.SafeguardResults) > 0 {
+				streamMessage.SafeguardResults = bifrostResp.Response.SafeguardResults
 			}
 			streamResp.Message = streamMessage
 		}
@@ -3829,6 +3853,13 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		// Other code interpreter lifecycle events have no Anthropic equivalent.
 		return nil
 
+	case schemas.ResponsesStreamResponseTypeProviderRawEvent:
+		// Raw-only carrier for an unmodeled provider event; it has no typed
+		// rendering. The integration's passthrough branch forwards the raw frame
+		// before this converter runs, so reaching here means the surface cannot
+		// use it — drop it.
+		return nil
+
 	case schemas.ResponsesStreamResponseTypePing:
 		streamResp.Type = AnthropicStreamEventTypePing
 
@@ -4051,6 +4082,11 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 	if req.Diagnostics != nil {
 		params.ExtraParams["diagnostics"] = req.Diagnostics
+	}
+	// Safeguards (Claude Code auto-mode classifier) — carried opaque so the
+	// Anthropic egress can restore it; stripped fail-closed for other providers.
+	if len(req.Safeguards) > 0 {
+		params.ExtraParams["safeguards"] = req.Safeguards
 	}
 	if req.Container != nil {
 		params.ExtraParams["container"] = req.Container
@@ -4499,6 +4535,21 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				}
 				if parsed {
 					delete(anthropicReq.ExtraParams, "diagnostics")
+				}
+			}
+			if safeguardsRaw, exists := anthropicReq.ExtraParams["safeguards"]; exists {
+				// Always consume the provider-specific key; restore the opaque payload
+				// onto the typed field so the strip gate can apply per-provider support.
+				delete(anthropicReq.ExtraParams, "safeguards")
+				switch v := safeguardsRaw.(type) {
+				case json.RawMessage:
+					anthropicReq.Safeguards = v
+				case []byte:
+					anthropicReq.Safeguards = json.RawMessage(v)
+				default:
+					if data, err := providerUtils.MarshalSorted(v); err == nil {
+						anthropicReq.Safeguards = json.RawMessage(data)
+					}
 				}
 			}
 			if containerRaw, exists := anthropicReq.ExtraParams["container"]; exists {
@@ -4959,6 +5010,12 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		bifrostResp.Diagnostics = response.Diagnostics
 	}
 
+	// Forward safeguard_results (Claude Code auto-mode classifier) opaquely so the
+	// Anthropic egress can restore it byte-for-byte.
+	if len(response.SafeguardResults) > 0 {
+		bifrostResp.SafeguardResults = response.SafeguardResults
+	}
+
 	return bifrostResp
 }
 
@@ -5062,6 +5119,12 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 
 	if bifrostResp.Diagnostics != nil {
 		anthropicResp.Diagnostics = bifrostResp.Diagnostics
+	}
+
+	// Restore safeguard_results (Claude Code auto-mode classifier) forwarded
+	// opaquely from the provider response.
+	if len(bifrostResp.SafeguardResults) > 0 {
+		anthropicResp.SafeguardResults = bifrostResp.SafeguardResults
 	}
 
 	return anthropicResp

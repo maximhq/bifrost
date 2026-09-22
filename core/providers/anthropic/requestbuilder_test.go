@@ -24,6 +24,53 @@ func makeSimpleInput(text string) []schemas.ResponsesMessage {
 	}
 }
 
+func TestSafeguardsRequestBuilders(t *testing.T) {
+	const beta = "dangerous-tool-use-2026-09-03"
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure} {
+		for _, raw := range []bool{false, true} {
+			for _, chat := range []bool{false, true} {
+				for _, streaming := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/raw=%v/chat=%v/stream=%v", provider, raw, chat, streaming), func(t *testing.T) {
+						ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+						payload := json.RawMessage(`{"z":1,"a":{"b":true}}`)
+						extra := map[string]interface{}{"safeguards": payload}
+						body := []byte(`{"model":"claude-opus-4-8","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"safeguards":{"z":1,"a":{"b":true}}}`)
+						cfg := AnthropicRequestBuildConfig{Provider: provider, Model: "claude-opus-4-8", IsStreaming: streaming}
+						var out []byte
+						var err *schemas.BifrostError
+						if chat {
+							out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: "claude-opus-4-8", RawRequestBody: body, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Params: &schemas.ChatParameters{ExtraParams: extra}}, cfg)
+						} else {
+							out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-opus-4-8", RawRequestBody: body, Input: makeSimpleInput("hi"), Params: &schemas.ResponsesParameters{ExtraParams: extra}}, cfg)
+						}
+						if err != nil {
+							t.Fatalf("build: %v", err)
+						}
+						if got := providerUtils.GetJSONField(out, "safeguards").Raw; got != string(payload) {
+							t.Errorf("safeguards = %s; body=%s", got, out)
+						}
+						if _, ok := extra["safeguards"]; !ok {
+							t.Error("conversion consumed safeguards from the input used by fallbacks")
+						}
+						betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+						if !slices.Contains(betas, beta) {
+							t.Errorf("missing required beta: %v", betas)
+						}
+						if provider == schemas.Bedrock || provider == schemas.Vertex {
+							if !strings.Contains(providerUtils.GetJSONField(out, "anthropic_beta").Raw, beta) {
+								t.Errorf("missing body beta: %s", out)
+							}
+						} else if providerUtils.JSONFieldExists(out, "anthropic_beta") {
+							t.Errorf("unexpected body beta: %s", out)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
 func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	t.Run("anthropic_native_uses_resolved_model", func(t *testing.T) {
 		// request.Model is always the alias-resolved value by the time the provider

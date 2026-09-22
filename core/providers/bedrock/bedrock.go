@@ -4383,6 +4383,32 @@ func toolNeedsAnthropicInvokePath(toolType string, deferLoading *bool) bool {
 	return deferLoading != nil && *deferLoading
 }
 
+// safeguardsSurviveStrip reports whether the shared Anthropic strip gate would
+// keep safeguards for this model. Only supported requests need InvokeModel,
+// where the native field and its required beta are assembled together.
+func safeguardsSurviveStrip(ctx *schemas.BifrostContext, model string) bool {
+	capModel := schemas.ResolveCanonicalModel(ctx, model)
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, capModel)
+	return anthropic.ProviderFeatures[schemas.Bedrock].Safeguards &&
+		caps.SupportsSafeguards(anthropic.DefaultSupportsSafeguards(schemas.Bedrock, caps.Model()))
+}
+
+// extraParamsHasSafeguards accepts opaque JSON and programmatic parameter values.
+func extraParamsHasSafeguards(extraParams map[string]interface{}) bool {
+	v, exists := extraParams["safeguards"]
+	if !exists || v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case json.RawMessage:
+		return len(val) > 0
+	case []byte:
+		return len(val) > 0
+	default:
+		return true
+	}
+}
+
 func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) bool {
 	if request == nil || request.Params == nil {
 		return false
@@ -4392,6 +4418,9 @@ func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.B
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
+	}
+	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+		return true
 	}
 	for _, tool := range request.Params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
@@ -4410,6 +4439,9 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
+	}
+	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+		return true
 	}
 	for _, tool := range request.Params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
