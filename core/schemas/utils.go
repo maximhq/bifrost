@@ -2298,10 +2298,29 @@ func IsFable51(model string) bool {
 	return strings.Contains(m, "5-1") || strings.Contains(m, "5.1")
 }
 
+// IsOpus55Plus checks if the model is Claude Opus 5.5 or later, which dropped
+// forced tool use and made thinking always-on: tool_choice "any"/"tool" and
+// thinking:{"type":"disabled"} each return a 400 at every effort level. Matches
+// the Bedrock/Vertex/date-suffixed forms.
+//
+// Only the versions known to have dropped them are matched here; a later model
+// that also drops them is carried by the datasheet rather than this fallback.
+// The sibling thinking:{"type":"enabled"} rejection is already covered by the
+// adaptive-only gate these models share with Opus 4.7+.
+//
+// Source: https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5
+func IsOpus55Plus(model string) bool {
+	m := strings.ToLower(model)
+	if !strings.Contains(m, "opus") {
+		return false
+	}
+	return strings.Contains(m, "5-5") || strings.Contains(m, "5.5")
+}
+
 // DefaultSupportsForcedToolChoice is the name-based fallback for
 // ModelCaps.SupportsForcedToolChoice, used when the datasheet says nothing.
 func DefaultSupportsForcedToolChoice(model string) bool {
-	return !IsFable51(model)
+	return !IsFable51(model) && !IsOpus55Plus(model)
 }
 
 // IsLlamaModel checks if the model is a Meta Llama model.
