@@ -154,6 +154,12 @@ func convertServerToolToAnthropic(tool schemas.ChatTool, caps schemas.ModelCaps,
 			if toolName == "" || toolName != wantName {
 				toolName = wantName
 			}
+			// A toolset is named by its type alone, so it is the one entry that
+			// legitimately carries no name and must skip the guard below.
+			if wantName == "" {
+				atype := AnthropicToolType(typeStr)
+				return AnthropicTool{Type: &atype, CacheControl: tool.CacheControl}, true
+			}
 		}
 	}
 	if toolName == "" {

@@ -1,1 +1,3 @@
+- feat: decision request pricing and "decisions" usage type in the datasheet
+- chore: upgraded core to v1.10.0
 - fix: replace streaming gate replay-buffer size accounting with cached zero-marshal estimates (eliminates per-chunk MarshalJSON on the full-hold path)

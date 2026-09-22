@@ -1387,6 +1387,22 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			}
 		})
 	}
+
+	// Claude Code auto mode sends two betas: dangerous-tool-use-* pairs with the
+	// safeguards body field, and auto-mode-classifier-* rides on the classifier's
+	// follow-up requests. Every surface that forwards safeguards must forward both.
+	t.Run("auto_mode_classifier_follows_safeguards_gate", func(t *testing.T) {
+		const classifierBeta = "auto-mode-classifier-2026-07-16"
+		for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure} {
+			result := FilterBetaHeadersForProvider([]string{classifierBeta}, provider)
+			if !ProviderFeatures[provider].Safeguards {
+				t.Fatalf("precondition: %s is expected to support safeguards", provider)
+			}
+			if !containsHeader(result, classifierBeta) {
+				t.Errorf("expected %q forwarded to %s, got %v", classifierBeta, provider, result)
+			}
+		}
+	})
 }
 
 // TestNetworkConfigBetaOverridesFlow proves the production sequence
@@ -3436,6 +3452,11 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"global.anthropic.claude-opus-4-7", ComputerUseGen20251124},
 		{"global.anthropic.claude-sonnet-4-6", ComputerUseGen20251124},
 		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", ComputerUseGen20250124},
+		// Opus 5.5 rejects every dated computer_* tool, so it resolves to the toolset.
+		{"claude-opus-5-5", ComputerUseGenToolset20260801},
+		{"claude-opus-5.5", ComputerUseGenToolset20260801},
+		{"claude-opus-5-5-20260901", ComputerUseGenToolset20260801},
+		{"global.anthropic.claude-opus-5-5", ComputerUseGenToolset20260801},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
@@ -3444,6 +3465,23 @@ func TestComputerUseGeneration(t *testing.T) {
 				t.Errorf("ComputerUseGeneration(schemas.Anthropic, %q) = %q, want %q", tc.model, got, tc.want)
 			}
 		})
+	}
+}
+
+// The toolset replaced the dated computer_* tools on the Claude API and Google
+// Cloud only; AWS and Microsoft Foundry still serve computer_20251124 for the
+// same model, so the generation is scoped to the surface as well as the model.
+func TestComputerUseGeneration_ToolsetIsProviderScoped(t *testing.T) {
+	const model = "claude-opus-5-5"
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex} {
+		if got := ComputerUseGeneration(schemas.ResolveModelCaps(provider, model)); got != ComputerUseGenToolset20260801 {
+			t.Errorf("%s: got %q, want the toolset — the dated tools are rejected there", provider, got)
+		}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
+		if got := ComputerUseGeneration(schemas.ResolveModelCaps(provider, model)); got != ComputerUseGen20251124 {
+			t.Errorf("%s: got %q, want computer_20251124 — that surface still serves it", provider, got)
+		}
 	}
 }
 
@@ -3462,6 +3500,10 @@ func TestNormalizedToolSpec(t *testing.T) {
 		{ComputerUseGen20250124, "computer", "computer_20250124", "computer"},
 		{ComputerUseGen20250124, "text_editor", "text_editor_20250124", "str_replace_editor"},
 		{ComputerUseGen20250124, "bash", "bash_20250124", "bash"},
+		// A toolset is named by its type alone; a name on the entry is a 400.
+		{ComputerUseGenToolset20260801, "computer", "computer_toolset_20260801", ""},
+		// Toolsets have no text_editor/bash members, so those stay on their own generation.
+		{ComputerUseGenToolset20260801, "bash", "bash_20250124", "bash"},
 		{ComputerUseGen20251124, "web_search", "", ""},
 		{ComputerUseGen20250124, "", "", ""},
 	}

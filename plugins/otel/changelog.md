@@ -1,1 +1,2 @@
-[fix]: emit semconv `http.server.request.duration` metric with `http.request.method`, `http.route` and `http.response.status_code` [@adjohn](https://github.com/adjohn)
+- chore: upgraded core to v1.10.0 and framework to v1.7.3
+- fix: emit OTel semconv `http.server.request.duration` with `http.request.method`, `http.route` and `http.response.status_code` so semconv-driven backends (New Relic APM) can build service views (#7439)
