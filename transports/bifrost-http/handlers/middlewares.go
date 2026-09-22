@@ -1508,7 +1508,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				tracer.ForceCleanupStreamAccumulator(traceID)
 			})
 			// Create root span for the HTTP request
-			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
+			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.Path()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
 				for name, value := range dimensions {
 					// "path" and "method" stay reserved for the standard http.* attributes.

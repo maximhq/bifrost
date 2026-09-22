@@ -55,7 +55,7 @@ func TestRecordHTTPMetricsEmitsSemconvServerDuration(t *testing.T) {
 		switch method.AsString() {
 		case "POST":
 			if status.Type() != attribute.INT64 || status.AsInt64() != 200 {
-				t.Errorf("status = %v, want int 200", status.Emit())
+				t.Errorf("status = %v, want int 200", status.String())
 			}
 			if !hasRoute || route.AsString() != "/v1/chat/completions" {
 				t.Errorf("http.route = %q (present=%v), want /v1/chat/completions", route.AsString(), hasRoute)
@@ -65,7 +65,7 @@ func TestRecordHTTPMetricsEmitsSemconvServerDuration(t *testing.T) {
 			}
 		case "GET":
 			if status.AsInt64() != 404 {
-				t.Errorf("status = %v, want 404", status.Emit())
+				t.Errorf("status = %v, want 404", status.String())
 			}
 			if hasRoute {
 				t.Errorf("unmatched path must not set http.route, got %q", route.AsString())

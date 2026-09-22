@@ -2717,3 +2717,75 @@ func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
 		})
 	}
 }
+
+type rootSpanCapturePlugin struct {
+	done chan struct{}
+	root *schemas.Span
+}
+
+func (p *rootSpanCapturePlugin) GetName() string { return "root-span-capture" }
+func (p *rootSpanCapturePlugin) Cleanup() error  { return nil }
+func (p *rootSpanCapturePlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	if trace != nil {
+		p.root = trace.RootSpan
+	}
+	return nil
+}
+
+// TestTracingMiddleware_RootSpanUsesStableHTTPSemconv asserts the root span carries the
+// stable OTel HTTP attribute names and that the query string never reaches the span.
+func TestTracingMiddleware_RootSpanUsesStableHTTPSemconv(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	plugin := &rootSpanCapturePlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions?api_key=secret")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.SetUserAgent("probe/1.0")
+	NewTracingMiddleware(tracer).Middleware()(func(c *fasthttp.RequestCtx) {
+		c.SetUserValue(string(schemas.BifrostContextKeyHTTPRoute), "/v1/chat/completions")
+	})(ctx)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("trace was not flushed to the observability plugin")
+	}
+	root := plugin.root
+	if root == nil {
+		t.Fatal("no root span captured")
+	}
+
+	if root.Name != "/v1/chat/completions" {
+		t.Errorf("span name = %q, want /v1/chat/completions", root.Name)
+	}
+	want := map[string]any{
+		"http.request.method":       "POST",
+		"url.path":                  "/v1/chat/completions",
+		"http.route":                "/v1/chat/completions",
+		"http.response.status_code": fasthttp.StatusOK,
+		"user_agent.original":       "probe/1.0",
+	}
+	for k, v := range want {
+		if got := root.Attributes[k]; got != v {
+			t.Errorf("attr %q = %v (%T), want %v (%T)", k, got, got, v, v)
+		}
+	}
+	for _, deprecated := range []string{"http.method", "http.url", "http.status_code", "http.user_agent"} {
+		if _, ok := root.Attributes[deprecated]; ok {
+			t.Errorf("deprecated attr %q must not be set", deprecated)
+		}
+	}
+	for k, v := range root.Attributes {
+		if s, ok := v.(string); ok && strings.Contains(s, "api_key") {
+			t.Errorf("attr %q leaks the query string: %q", k, s)
+		}
+	}
+}
