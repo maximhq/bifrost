@@ -13,6 +13,46 @@ func autoInject() *schemas.PromptCacheConfig {
 	return &schemas.PromptCacheConfig{AutoInject: true}
 }
 
+func TestInjectResponses_ToolResultTargets(t *testing.T) {
+	output := schemas.ResponsesMessage{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("result")}},
+	}
+	input := []schemas.ResponsesMessage{strMsg(schemas.ResponsesInputMessageRoleUser, "prefix"), output}
+	points := &schemas.PromptCacheConfig{TTL: schemas.Ptr("1h"), InjectionPoints: []schemas.CacheControlInjectionPoint{{Index: schemas.Ptr(-1)}, {Index: schemas.Ptr(1)}}}
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.Vertex, schemas.BedrockMantle, schemas.OpenAI, schemas.OpenRouter} {
+		t.Run(string(provider), func(t *testing.T) {
+			out := InjectResponsesCacheBreakpointsForProvider(points, input, provider, "claude-sonnet-4-6")
+			if provider == schemas.OpenAI || provider == schemas.OpenRouter {
+				assert.Nil(t, out[1].CacheControl)
+				return
+			}
+			require.NotNil(t, out[1].CacheControl)
+			assert.Equal(t, "1h", *out[1].CacheControl.TTL)
+			assert.Nil(t, out[1].Content)
+			assert.Nil(t, out[0].Content.ContentBlocks)
+			assert.Nil(t, input[1].CacheControl)
+		})
+	}
+	t.Run("default remains first content block", func(t *testing.T) {
+		out := InjectResponsesCacheBreakpointsForProvider(autoInject(), input, schemas.Anthropic, "claude-sonnet-4-6")
+		assert.Nil(t, out[1].CacheControl)
+		require.NotNil(t, out[0].Content.ContentBlocks[0].CacheControl)
+	})
+	t.Run("role filter does not match roleless output", func(t *testing.T) {
+		cfg := &schemas.PromptCacheConfig{InjectionPoints: []schemas.CacheControlInjectionPoint{{Index: schemas.Ptr(-1), Role: schemas.Ptr("user")}}}
+		out := InjectResponsesCacheBreakpointsForProvider(cfg, input, schemas.Anthropic, "claude-sonnet-4-6")
+		assert.Nil(t, out[1].CacheControl)
+	})
+	t.Run("caller wins", func(t *testing.T) {
+		owned := append([]schemas.ResponsesMessage(nil), input...)
+		owned[1].CacheControl = &schemas.CacheControl{Type: "ephemeral"}
+		out := InjectResponsesCacheBreakpointsForProvider(points, owned, schemas.Anthropic, "claude-sonnet-4-6")
+		assert.Same(t, owned[1].CacheControl, out[1].CacheControl)
+		assert.Nil(t, out[1].CacheControl.TTL)
+	})
+}
+
 func blockMsg(role schemas.ResponsesMessageRoleType, blocks ...schemas.ResponsesMessageContentBlock) schemas.ResponsesMessage {
 	return schemas.ResponsesMessage{
 		Role:    schemas.Ptr(role),

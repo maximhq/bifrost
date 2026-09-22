@@ -163152,6 +163152,274 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "108. Prompt cache tool outputs and raw passthrough (prompt-cache-targets)",
+      "description": "Configured index -1 must mark a final Responses function_call_output on the outer Anthropic tool_result. The native Claude CLI cases exercise actual raw-body passthrough, using the existing anthropic prompt_cache opt-in plus a per-request auto-inject override. A unique system prefix is written then read in order, including streaming; without the raw-body patch all cache counters are zero. The custom anthropic_pc_edge fixture is only used for normalized Responses: custom-provider names do not activate the native passthrough ingress guard. Exact raw field/signature preservation and disabled/fallback behavior are pinned by mock-upstream Go tests.",
+      "item": [
+        {
+          "name": "anthropic claude-sonnet-4-6 Responses string function_call_output checkpoint - prompt-cache-targets",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var response = pm.response.json();",
+                  "var wire = (response.extra_fields || {}).raw_request;",
+                  "if (typeof wire === 'string') { wire = JSON.parse(wire); }",
+                  "pm.test('tool-result checkpoint reaches the Anthropic wire', function () {",
+                  "  pm.expect(wire, 'missing raw_request').to.be.an('object');",
+                  "  var results = [];",
+                  "  (wire.messages || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b.type === 'tool_result') { results.push(b); } }); });",
+                  "  pm.expect(results).to.have.length(1);",
+                  "  pm.expect(results[0].cache_control).to.deep.equal({type:'ephemeral',ttl:'1h'});",
+                  "  pm.expect(results[0].tool_use_id).to.equal('call_cache_lookup');",
+                  "  if (Array.isArray(results[0].content)) { results[0].content.forEach(function (b) { pm.expect(b.cache_control).to.equal(undefined); }); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic_pc_edge/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Look up the color and answer in one word.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_cache_lookup\",\n      \"name\": \"lookup\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_cache_lookup\",\n      \"output\": \"The lookup result is blue.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"lookup\",\n      \"description\": \"Look up a color.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 Responses blocks function_call_output checkpoint - prompt-cache-targets",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var response = pm.response.json();",
+                  "var wire = (response.extra_fields || {}).raw_request;",
+                  "if (typeof wire === 'string') { wire = JSON.parse(wire); }",
+                  "pm.test('tool-result checkpoint reaches the Anthropic wire', function () {",
+                  "  pm.expect(wire, 'missing raw_request').to.be.an('object');",
+                  "  var results = [];",
+                  "  (wire.messages || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b.type === 'tool_result') { results.push(b); } }); });",
+                  "  pm.expect(results).to.have.length(1);",
+                  "  pm.expect(results[0].cache_control).to.deep.equal({type:'ephemeral',ttl:'1h'});",
+                  "  pm.expect(results[0].tool_use_id).to.equal('call_cache_lookup');",
+                  "  if (Array.isArray(results[0].content)) { results[0].content.forEach(function (b) { pm.expect(b.cache_control).to.equal(undefined); }); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic_pc_edge/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Look up the color and answer in one word.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_cache_lookup\",\n      \"name\": \"lookup\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_cache_lookup\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"The lookup result is blue.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"lookup\",\n      \"description\": \"Look up a color.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 native raw passthrough cache write - prompt-cache-targets",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var nonce = pm.variables.replaceIn('{{$guid}}');",
+                  "var prefix = 'Cache regression session ' + nonce + '. ';",
+                  "for (var i = 0; i < 600; i++) { prefix += 'This fixed reference describes a blue sky and green grass. '; }",
+                  "pm.collectionVariables.set('pcRawPrefix', prefix);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('configured injection creates the cold prefix', function () { var usage = pm.response.json().usage || {}; pm.expect(usage.cache_creation_input_tokens, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.0"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"system\": \"{{pcRawPrefix}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer with the word ready.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 native raw passthrough cache read - prompt-cache-targets",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the same raw prefix is read from cache', function () { var usage = pm.response.json().usage || {}; pm.expect(usage.cache_read_input_tokens, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.0"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"system\": \"{{pcRawPrefix}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer with the word ready.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6 native raw passthrough streaming cache read - prompt-cache-targets",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var events = [];",
+                  "pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
+                  "pm.test('stream completes without an error event', function () { pm.expect(events.some(function(e) { return e.type === 'error'; }), pm.response.text()).to.equal(false); pm.expect(events.some(function(e) { return e.type === 'message_stop'; })).to.equal(true); });",
+                  "pm.test('stream usage reports the warm raw prefix', function () { var start = events.filter(function(e) { return e.type === 'message_start'; })[0]; pm.expect(start, pm.response.text()).to.be.an('object'); pm.expect(start.message.usage.cache_read_input_tokens).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.0"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"system\": \"{{pcRawPrefix}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer with the word ready.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

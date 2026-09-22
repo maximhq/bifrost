@@ -11,13 +11,185 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/openai"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestPromptCacheFunctionOutput(t *testing.T) {
+	for _, output := range []string{`"result"`, `[{"type":"input_text","text":"result"}]`} {
+		t.Run(output, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, schemas.Unmarshal([]byte(`{"provider":"anthropic","model":"claude-sonnet-4-6","input":[{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":`+output+`}]}`), &req))
+			cfg := &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{InjectionPoints: []schemas.CacheControlInjectionPoint{{Index: schemas.Ptr(-1)}}}}
+			prepared := promptCacheResponsesRequest(ctx, cfg, schemas.Anthropic, &req)
+			require.NotNil(t, prepared.Input[1].CacheControl)
+			assert.Nil(t, prepared.Input[1].Content)
+			assert.Nil(t, req.Input[1].CacheControl)
+			wire, err := anthropic.ToAnthropicResponsesRequest(ctx, prepared)
+			require.NoError(t, err)
+			body, err := schemas.Marshal(wire)
+			require.NoError(t, err)
+			assert.Equal(t, "ephemeral", gjson.GetBytes(body, "messages.1.content.0.cache_control.type").String())
+			assert.False(t, gjson.GetBytes(body, "messages.1.content.0.content.0.cache_control").Exists())
+			bedrockReq := *prepared
+			bedrockReq.Provider = schemas.Bedrock
+			bedrockReq.Model = "anthropic.claude-sonnet-4-6"
+			converse, err := bedrock.ToBedrockResponsesRequest(ctx, &bedrockReq)
+			require.NoError(t, err)
+			body, err = schemas.Marshal(converse)
+			require.NoError(t, err)
+			assert.Equal(t, "default", gjson.GetBytes(body, "messages.1.content.1.cachePoint.type").String())
+		})
+	}
+}
+
+func TestPromptCacheRawPassthrough(t *testing.T) {
+	raw := []byte(`{"model":"anthropic/claude-sonnet-4-6","max_tokens":16,"system":"stable","messages":[{"role":"user","content":"question"},{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"text","text":"context"},{"type":"tool_result","tool_use_id":"call_1","content":"result","is_error":false}]}],"unknown_native_field":{"z":1,"a":2}}`)
+	for _, tc := range []struct {
+		name string
+		cfg  *schemas.PromptCacheConfig
+		path string
+	}{
+		{"default", &schemas.PromptCacheConfig{AutoInject: true}, "system.0.cache_control.type"},
+		{"tool tail", &schemas.PromptCacheConfig{InjectionPoints: []schemas.CacheControlInjectionPoint{{Index: schemas.Ptr(-1)}}}, "messages.2.content.1.cache_control.type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			var native anthropic.AnthropicMessageRequest
+			require.NoError(t, schemas.Unmarshal(raw, &native))
+			req := native.ToBifrostResponsesRequest(ctx)
+			req.RawRequestBody = append([]byte(nil), raw...)
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{PromptCache: tc.cfg}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, prepared, anthropic.AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, "ephemeral", gjson.GetBytes(body, tc.path).String())
+			assert.Contains(t, string(body), `"unknown_native_field":{"z":1,"a":2}`)
+			assert.Equal(t, raw, req.RawRequestBody)
+			assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyUseRawRequestBody))
+		})
+	}
+}
+
+func TestPromptCacheRawAttemptIsolation(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	raw := []byte(`{"messages":[{"role":"user","content":"prefix"}]}`)
+	on := promptCacheOn()
+	first, changed, err := preparePromptCacheRawBody(ctx, on, schemas.Anthropic, "claude-sonnet-4-6", raw)
+	require.Nil(t, err)
+	require.True(t, changed)
+	assert.Contains(t, string(first), "cache_control")
+	for _, tc := range []struct {
+		name     string
+		cfg      *schemas.ProviderConfig
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"disabled fallback", &schemas.ProviderConfig{}, schemas.Anthropic, "claude-sonnet-4-6"},
+		{"openai raw body", on, schemas.OpenAI, "gpt-5.6"},
+		{"non claude", on, schemas.BedrockMantle, "openai.gpt-5.6"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, changed, err := preparePromptCacheRawBody(ctx, tc.cfg, tc.provider, tc.model, raw)
+			require.Nil(t, err)
+			assert.False(t, changed)
+			assert.Equal(t, raw, out)
+		})
+	}
+	ctx.SetValue(schemas.BifrostContextKeyPromptCacheAutoInject, false)
+	out, changed, err := preparePromptCacheRawBody(ctx, on, schemas.Anthropic, "claude-sonnet-4-6", raw)
+	require.Nil(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, raw, out)
+	ctx.ClearValue(schemas.BifrostContextKeyPromptCacheAutoInject)
+	out, _, err = preparePromptCacheRawBody(ctx, on, schemas.Anthropic, "claude-sonnet-4-6", []byte(`{"messages":`))
+	require.NotNil(t, err)
+	assert.Nil(t, out)
+}
+
+func TestPromptCacheRawWire(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, chat := range []bool{false, true} {
+			name := "responses"
+			if chat {
+				name = "chat"
+			}
+			if stream {
+				name += " stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				captured := make(chan []byte, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					captured <- body
+					if stream {
+						anthropicMessagesHandler()(w, r)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":1}}`)
+				}))
+				defer server.Close()
+				account := NewMockAccount()
+				account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+				account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+				account.configs[schemas.Anthropic].PromptCache = &schemas.PromptCacheConfig{InjectionPoints: []schemas.CacheControlInjectionPoint{{Index: schemas.Ptr(-1)}}}
+				account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{ID: "test", Value: *schemas.NewSecretVar("test"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+				client := newStreamTestClient(t, account)
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+				raw := []byte(`{"model":"anthropic/claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":"result"}]}],"native_extension":{"z":1,"a":2}}`)
+				var native anthropic.AnthropicMessageRequest
+				require.NoError(t, schemas.Unmarshal(raw, &native))
+				req := native.ToBifrostResponsesRequest(ctx)
+				req.RawRequestBody = append([]byte(nil), raw...)
+				if stream {
+					var chunks chan *schemas.BifrostStreamChunk
+					var err *schemas.BifrostError
+					if chat {
+						cr := req.ToChatRequest()
+						cr.RawRequestBody = req.RawRequestBody
+						chunks, err = client.ChatCompletionStreamRequest(ctx, cr)
+					} else {
+						chunks, err = client.ResponsesStreamRequest(ctx, req)
+					}
+					require.Nil(t, err)
+					for chunk := range chunks {
+						require.Nil(t, chunk.BifrostError)
+					}
+				} else if chat {
+					cr := req.ToChatRequest()
+					cr.RawRequestBody = req.RawRequestBody
+					_, err := client.ChatCompletionRequest(ctx, cr)
+					require.Nil(t, err)
+				} else {
+					_, err := client.ResponsesRequest(ctx, req)
+					require.Nil(t, err)
+				}
+				select {
+				case body := <-captured:
+					assert.Equal(t, "ephemeral", gjson.GetBytes(body, "messages.1.content.0.cache_control.type").String())
+					assert.Contains(t, string(body), `"native_extension":{"z":1,"a":2}`)
+				case <-time.After(time.Second):
+					t.Fatal("upstream request missing")
+				}
+				assert.Equal(t, raw, req.RawRequestBody)
+			})
+		}
+	}
+}
 
 // These tests cover the seam between provider config and the injector: the dispatch
 // helpers in bifrost.go that decide whether an attempt gets breakpoints, and - more

@@ -7654,7 +7654,7 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 		return r
 	}
 	cp := *r
-	cp.Input = providerUtils.InjectResponsesCacheBreakpoints(promptCache, r.Input)
+	cp.Input = providerUtils.InjectResponsesCacheBreakpointsForProvider(promptCache, r.Input, schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model))
 	return &cp
 }
 
@@ -7672,6 +7672,13 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	r = promptCacheResponsesRequest(ctx, config, provider.GetProviderKey(), r)
 	if r == nil {
 		return nil, nil
+	}
+	if raw, changed, bifrostErr := preparePromptCacheRawBody(ctx, config, provider.GetProviderKey(), r.Model, r.RawRequestBody); bifrostErr != nil {
+		return nil, bifrostErr
+	} else if changed {
+		cp := *r
+		cp.RawRequestBody = raw
+		r = &cp
 	}
 	var supported bool
 	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
@@ -7728,6 +7735,54 @@ func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.Provide
 	return &cp
 }
 
+// preparePromptCacheRawBody patches only native Anthropic bodies, on an owned
+// per-attempt copy. Never disable passthrough to make normalized markers visible:
+// doing so would discard provider-native fields the schema doesn't know about.
+func preparePromptCacheRawBody(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, model string, body []byte) ([]byte, bool, *schemas.BifrostError) {
+	if ctx == nil || config == nil || len(body) == 0 {
+		return body, false, nil
+	}
+	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !raw {
+		return body, false, nil
+	}
+	base := schemas.ResolveBaseProvider(ctx, provider)
+	canonical := schemas.ResolveCanonicalModel(ctx, model)
+	switch base {
+	case schemas.Anthropic, schemas.Vertex, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
+		if !schemas.IsAnthropicModel(canonical) {
+			return body, false, nil
+		}
+	default:
+		return body, false, nil
+	}
+	cfg := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
+	if !providerUtils.PromptCacheInjectionEnabled(cfg, base, canonical) {
+		return body, false, nil
+	}
+	patched, err := anthropic.InjectRawMessageCacheBreakpoints(ctx, cfg, body, base, canonical)
+	if err != nil {
+		return nil, false, providerUtils.NewBifrostBadRequestError("prompt cache injection: " + err.Error())
+	}
+	return patched, true, nil
+}
+
+func prepareChatRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) (*schemas.BifrostChatRequest, *schemas.BifrostError) {
+	r = promptCacheChatRequest(ctx, config, provider, r)
+	if r == nil {
+		return nil, nil
+	}
+	raw, changed, bifrostErr := preparePromptCacheRawBody(ctx, config, provider, r.Model, r.RawRequestBody)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if changed {
+		cp := *r
+		cp.RawRequestBody = raw
+		r = &cp
+	}
+	return r, nil
+}
+
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -7743,7 +7798,10 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				chatRequest = promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest)
+				chatRequest, bifrostError := prepareChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
 				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
 				if bifrostError != nil {
 					return nil, bifrostError
@@ -7773,7 +7831,11 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 				break
 			}
 		}
-		chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
+		chatRequest, bifrostError := prepareChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
@@ -8177,7 +8239,11 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest))
+				prepared, bifrostError := prepareChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
+				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, prepared)
 			}
 		}
 		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
@@ -8192,7 +8258,11 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, responsesRequest)
 			}
 		}
-		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
+		prepared, bifrostError := prepareChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, prepared)
 	case schemas.ResponsesStreamRequest:
 		// Prepared BEFORE the chat-fallback branch: ToChatRequest keeps only function
 		// tools, so a namespace that reached it unflattened would be dropped silently.

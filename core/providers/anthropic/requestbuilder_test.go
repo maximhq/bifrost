@@ -10,9 +10,63 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestRawPromptCacheProjection(t *testing.T) {
+	raw := []byte(`{"model":"anthropic/claude-sonnet-4-6","system":[{"type":"text","text":"same"},{"type":"text","text":"same"}],"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"private","signature":"opaque\\sig"},{"type":"text","text":"same"},{"type":"tool_use","id":"c1","name":"read","input":{"z":1,"a":2}}]},{"role":"user","content":[{"type":"text","text":"same"},{"type":"tool_result","tool_use_id":"c1","content":[{"type":"text","text":"same"}],"is_error":true}]}],"unknown":{"b":1,"a":2}}`)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, tc := range []struct {
+		name   string
+		points []schemas.CacheControlInjectionPoint
+		path   string
+	}{
+		{"system last block", []schemas.CacheControlInjectionPoint{{Role: schemas.Ptr("system")}}, "system.1.cache_control"},
+		{"expanded text index", []schemas.CacheControlInjectionPoint{{Index: schemas.Ptr(2)}}, "messages.0.content.1.cache_control"},
+		{"last tool result", []schemas.CacheControlInjectionPoint{{Index: schemas.Ptr(-1)}}, "messages.1.content.1.cache_control"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := string(raw)
+			out, err := InjectRawMessageCacheBreakpoints(ctx, &schemas.PromptCacheConfig{TTL: schemas.Ptr("1h"), InjectionPoints: tc.points}, raw, schemas.Anthropic, "claude-sonnet-4-6")
+			require.NoError(t, err)
+			assert.Equal(t, "ephemeral", gjson.GetBytes(out, tc.path+".type").String())
+			assert.Equal(t, "1h", gjson.GetBytes(out, tc.path+".ttl").String())
+			withoutMarker, err := providerUtils.DeleteJSONField(out, tc.path)
+			require.NoError(t, err)
+			assert.Equal(t, before, string(withoutMarker), "only the selected field may change")
+			assert.Equal(t, before, string(raw))
+		})
+	}
+	t.Run("string escapes preserved", func(t *testing.T) {
+		body := []byte(`{"system":"prefix\n\u0061","messages":[{"role":"user","content":"hi"}]}`)
+		out, err := InjectRawMessageCacheBreakpoints(ctx, &schemas.PromptCacheConfig{AutoInject: true}, body, schemas.Anthropic, "claude-sonnet-4-6")
+		require.NoError(t, err)
+		assert.Contains(t, string(out), `"text":"prefix\n\u0061"`)
+		assert.Equal(t, "ephemeral", gjson.GetBytes(out, "system.0.cache_control.type").String())
+	})
+	for _, body := range []string{
+		`{"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":"hi"}]}`,
+		`{"tools":[{"name":"read","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hi"}]}`,
+		`{"system":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}`,
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}]}`,
+	} {
+		t.Run("existing marker "+body, func(t *testing.T) {
+			out, err := InjectRawMessageCacheBreakpoints(ctx, &schemas.PromptCacheConfig{AutoInject: true}, []byte(body), schemas.Anthropic, "claude-sonnet-4-6")
+			require.NoError(t, err)
+			assert.Equal(t, body, string(out))
+		})
+	}
+	t.Run("malformed body fails atomically", func(t *testing.T) {
+		out, err := InjectRawMessageCacheBreakpoints(ctx, &schemas.PromptCacheConfig{AutoInject: true}, []byte(`{"messages":`), schemas.Anthropic, "claude-sonnet-4-6")
+		require.Error(t, err)
+		assert.Nil(t, out)
+	})
+}
 
 func makeSimpleInput(text string) []schemas.ResponsesMessage {
 	role := schemas.ResponsesInputMessageRoleUser

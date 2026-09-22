@@ -295,6 +295,19 @@ The matching rules:
 - **At most four markers are emitted**, in the order the points are listed. Points beyond the budget are ignored.
 - **Any point replaces the default strategy.** `auto_inject` is still required to turn the feature on, but once at least one point is present the first-block rule no longer applies.
 
+On Claude-compatible Responses paths, an index can also select a `function_call_output`
+item. For example, `{"location": "message", "index": -1}` marks a final tool result,
+whether its output is a string or content blocks. The marker belongs to the enclosing
+tool result, not its nested content. Do not add a role filter to target a roleless
+Responses tool-output item. OpenAI-style Responses backends that cannot mark tool
+outputs continue to skip that target.
+
+Configured injection also applies to Anthropic-format raw request bodies. Bifrost
+patches the selected cache field without rebuilding the native payload, preserving
+unknown fields and thinking signatures. Indices follow the normalized Responses
+items, including the leading system item and any items expanded from mixed native
+content blocks. Existing caller cache markers take precedence.
+
 **Example: cache the system prompt and the latest user turn**
 
 ```json

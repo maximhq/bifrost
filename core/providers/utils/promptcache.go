@@ -77,11 +77,32 @@ func ResolvePromptCacheConfig(ctx *schemas.BifrostContext, cfg *schemas.PromptCa
 // A caller that supplied any marker of its own is left completely alone. Injection is
 // a default for clients that say nothing, never an override of a client that spoke.
 func InjectResponsesCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	return injectResponsesCacheBreakpoints(cfg, input, false)
+}
+
+// InjectResponsesCacheBreakpointsForProvider also supports item-level tool-result
+// checkpoints on Claude wires. OpenAI/OpenRouter Responses only accept content
+// block breakpoints, so a function_call_output must not be marked on those wires.
+func InjectResponsesCacheBreakpointsForProvider(cfg *schemas.PromptCacheConfig, input []schemas.ResponsesMessage, provider schemas.ModelProvider, model string) []schemas.ResponsesMessage {
+	toolResults := false
+	switch provider {
+	case schemas.Anthropic, schemas.Vertex, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
+		toolResults = schemas.IsAnthropicModel(model)
+	}
+	return injectResponsesCacheBreakpoints(cfg, input, toolResults)
+}
+
+func injectResponsesCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []schemas.ResponsesMessage, toolResults bool) []schemas.ResponsesMessage {
 	if cfg == nil || len(input) == 0 || responsesHasCacheMarker(input) {
 		return input
 	}
 
-	targets := responsesInjectionTargets(cfg, input)
+	var targets []injectionTarget
+	if toolResults && len(cfg.InjectionPoints) > 0 {
+		targets = responsesPointTargetsWithToolResults(cfg.InjectionPoints, input, true)
+	} else {
+		targets = responsesInjectionTargets(cfg, input)
+	}
 	if len(targets) == 0 {
 		return input
 	}
@@ -96,6 +117,10 @@ func InjectResponsesCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []sch
 			copied[t.msg] = true
 		}
 		msg := &out[t.msg]
+		if t.item {
+			msg.CacheControl = marker
+			continue
+		}
 		if t.promoteStr {
 			// A bare string has nowhere to hang a marker, so it becomes a single
 			// text block. Deterministic: the same message always renders the same
@@ -204,6 +229,7 @@ type injectionTarget struct {
 	msg        int
 	block      int
 	promoteStr bool
+	item       bool
 }
 
 // responsesHasCacheMarker reports whether the caller already expressed caching
@@ -300,6 +326,10 @@ func chatInjectionTargets(cfg *schemas.PromptCacheConfig, input []schemas.ChatMe
 // than first here because a point names a message the operator wants cached through
 // to its end, unlike the default strategy which names a prefix boundary.
 func responsesPointTargets(points []schemas.CacheControlInjectionPoint, input []schemas.ResponsesMessage) []injectionTarget {
+	return responsesPointTargetsWithToolResults(points, input, false)
+}
+
+func responsesPointTargetsWithToolResults(points []schemas.CacheControlInjectionPoint, input []schemas.ResponsesMessage, toolResults bool) []injectionTarget {
 	var out []injectionTarget
 	seen := make(map[int]bool)
 	for _, p := range points {
@@ -313,6 +343,12 @@ func responsesPointTargets(points []schemas.CacheControlInjectionPoint, input []
 				continue
 			}
 			msg := input[idx]
+			if toolResults && msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+				msg.ResponsesToolMessage != nil && msg.Output != nil {
+				out = append(out, injectionTarget{msg: idx, item: true})
+				seen[idx] = true
+				continue
+			}
 			if msg.Content == nil {
 				continue
 			}
