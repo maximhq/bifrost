@@ -770,6 +770,9 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 	// Model endpoints
 	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, baseMiddlewares...))
+	// Catch-all so a model can be addressed the way it is everywhere else: "provider/model".
+	modelRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ModelRetrieveRequest)}, middlewares...)
+	r.GET("/v1/models/{model:*}", lib.ChainMiddlewares(h.modelRetrieve, modelRetrieveMW...))
 
 	// Completion endpoints (non-parameterized)
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
@@ -943,6 +946,68 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// modelRetrieve handles GET /v1/models/{model} - retrieve a single model's metadata
+func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
+	rawModel, _ := ctx.UserValue("model").(string)
+	rawModel = strings.Trim(strings.TrimSpace(rawModel), "/")
+	if rawModel == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model is required")
+		return
+	}
+
+	// ?provider= wins: ParseModelString only splits on a known provider, so a custom
+	// provider's name would otherwise be read as part of the model.
+	provider := schemas.ModelProvider(ctx.QueryArgs().Peek("provider"))
+	model := rawModel
+	if provider != "" {
+		model = strings.TrimPrefix(rawModel, string(provider)+"/")
+	} else {
+		provider, model = schemas.ParseModelString(rawModel, "")
+	}
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider is required: prefix the model with it or pass ?provider=")
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel() // Ensure cleanup on function exit
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.ModelRetrieveRequest(bifrostCtx, &schemas.BifrostModelRetrieveRequest{
+		Provider: provider,
+		Model:    model,
+	})
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	enrichModelRetrieveResponse(resp, h.config.ModelCatalog)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	SendJSON(ctx, resp)
+}
+
+// enrichModelRetrieveResponse applies the same catalog metadata list models applies,
+// so one model reads the same either way.
+func enrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse, catalog *modelcatalog.ModelCatalog) {
+	if resp == nil || catalog == nil {
+		return
+	}
+
+	provider, modelName := schemas.ParseModelString(resp.ID, "")
+	pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
+	if pricingEntry == nil && resp.Alias != nil {
+		pricingEntry = catalog.GetPricingEntryForModel(*resp.Alias, provider)
+	}
+	modelcatalog.ApplyModelInfo(&resp.Model, pricingEntry)
 }
 
 func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {

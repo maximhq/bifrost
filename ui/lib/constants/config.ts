@@ -175,6 +175,7 @@ export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	openai: [
 		"list_models",
+		"model_retrieve",
 		"text_completion",
 		"text_completion_stream",
 		"chat_completion",
