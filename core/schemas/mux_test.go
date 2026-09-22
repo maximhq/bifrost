@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1684,5 +1685,126 @@ func TestToResponsesMessages_EncryptedReasoningMarshalsSummaryAsArray(t *testing
 	}
 	if strings.Contains(string(encoded), `"summary":null`) {
 		t.Fatalf("summary must never marshal as null: %s", encoded)
+	}
+}
+
+func TestToChatMessages_PreservesToolTurnReasoning(t *testing.T) {
+	call := `{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}`
+	tests := []struct {
+		name, input  string
+		wantReason   *string
+		wantMessages int
+		wantDetails  int
+	}{
+		{"summary_blocks", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"alpha"},{"type":"summary_text","text":"beta"}]},` + call + `]`, Ptr("alpha\nbeta"), 1, 2},
+		{"content_preferred_to_summary", `[{"type":"reasoning","content":[{"type":"reasoning_text","text":"full text"}],"summary":[{"type":"summary_text","text":"short summary"}]},` + call + `]`, Ptr("full text"), 1, 2},
+		{"encrypted_only_not_plaintext", `[{"type":"reasoning","summary":[],"encrypted_content":"opaque-state"},` + call + `]`, nil, 1, 1},
+		{"encrypted_with_summary_not_full_reasoning", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"short summary"}],"encrypted_content":"opaque-state"},` + call + `]`, nil, 1, 2},
+		{"empty_summary_does_not_invent_reasoning", `[{"type":"reasoning","summary":[]},` + call + `]`, nil, 1, 0},
+		{"reasoning_text_with_narration", `[{"type":"reasoning","content":[{"type":"reasoning_text","text":"alpha"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working."}]},` + call + `]`, Ptr("alpha"), 1, 1},
+		{"more_reasoning_after_narration", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"alpha"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working."}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"beta"}]},` + call + `]`, Ptr("alpha\nbeta"), 1, 2},
+		{"narration_then_terminal_call", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"alpha"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working."}]},` + call + `]`, Ptr("alpha"), 1, 1},
+		{"user_boundary_does_not_borrow_reasoning", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"old reasoning"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Old answer."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"New turn."}]},` + call + `]`, nil, 3, 0},
+		{"tool_result_boundary_does_not_borrow_reasoning", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"old reasoning"}]},{"type":"function_call","call_id":"old_call","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"old_call","output":"old result"},` + call + `]`, nil, 3, 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var input []ResponsesMessage
+			if err := json.Unmarshal([]byte(test.input), &input); err != nil {
+				t.Fatal(err)
+			}
+			original, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := ToChatMessages(input)
+			after, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(original) != string(after) {
+				t.Fatal("conversion mutated input")
+			}
+			if len(messages) != test.wantMessages {
+				t.Errorf("messages=%d want=%d", len(messages), test.wantMessages)
+			}
+			found := false
+			for _, message := range messages {
+				if message.ChatAssistantMessage == nil {
+					continue
+				}
+				for _, tool := range message.ToolCalls {
+					if tool.ID == nil || *tool.ID != "call_1" {
+						continue
+					}
+					found = true
+					if !reflect.DeepEqual(message.Reasoning, test.wantReason) {
+						t.Errorf("canonical reasoning=%v want=%v", message.Reasoning, test.wantReason)
+					}
+					if len(message.ReasoningDetails) != test.wantDetails {
+						t.Errorf("details=%d want=%d", len(message.ReasoningDetails), test.wantDetails)
+					}
+					if test.name == "narration_then_terminal_call" && (message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != "Working.") {
+						t.Error("tool assistant lost narration")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("tool call disappeared")
+			}
+		})
+	}
+}
+
+func TestToChatMessages_PreservesToolReasoningAcrossTurns(t *testing.T) {
+	const history = `[
+		{"role":"user","content":"Inspect the files, then count them."},
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"Inspect two directories."}]},
+		{"role":"assistant","content":"Inspecting."},
+		{"type":"function_call","call_id":"call_a","name":"list_files","arguments":"{}"},
+		{"type":"function_call","call_id":"call_b","name":"list_files","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_a","output":"a.txt"},
+		{"type":"function_call_output","call_id":"call_b","output":"b.txt"},
+		{"type":"reasoning","content":[{"type":"reasoning_text","text":"Now count the files."}]},
+		{"role":"assistant","content":"Counting."},
+		{"type":"function_call","call_id":"call_c","name":"count_files","arguments":"{}"}
+	]`
+	var input []ResponsesMessage
+	if err := json.Unmarshal([]byte(history), &input); err != nil {
+		t.Fatal(err)
+	}
+	messages := ToChatMessages(input)
+	if len(messages) != 5 {
+		t.Fatalf("messages = %d, want user, assistant, two tool results, assistant", len(messages))
+	}
+	for _, test := range []struct {
+		index           int
+		reasoning, text string
+		calls           []string
+	}{
+		{1, "Inspect two directories.", "Inspecting.", []string{"call_a", "call_b"}},
+		{4, "Now count the files.", "Counting.", []string{"call_c"}},
+	} {
+		message := messages[test.index]
+		if message.ChatAssistantMessage == nil || message.Reasoning == nil || *message.Reasoning != test.reasoning {
+			t.Fatalf("assistant %d lost or borrowed another turn's reasoning: %+v", test.index, message)
+		}
+		if message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != test.text {
+			t.Fatalf("assistant %d lost its text", test.index)
+		}
+		if len(message.ToolCalls) != len(test.calls) {
+			t.Fatalf("assistant %d calls = %d, want %d", test.index, len(message.ToolCalls), len(test.calls))
+		}
+		for index, id := range test.calls {
+			if message.ToolCalls[index].ID == nil || *message.ToolCalls[index].ID != id || message.ToolCalls[index].Function.Arguments != "{}" {
+				t.Fatalf("assistant %d tool %d changed: %+v", test.index, index, message.ToolCalls[index])
+			}
+		}
+	}
+	for index, want := range []string{"call_a", "call_b"} {
+		message := messages[index+2]
+		if message.Role != ChatMessageRoleTool || message.ToolCallID == nil || *message.ToolCallID != want {
+			t.Fatalf("tool result %d changed: %+v", index, message)
+		}
 	}
 }

@@ -3,6 +3,10 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -3389,4 +3393,119 @@ func TestToOpenAIResponsesRequest_StripsWebSearchSourceProviderFields(t *testing
 	// The caller's input must not be mutated by the strip.
 	require.NotNil(t, bifrostReq.Input[0].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources[0].Title,
 		"the caller's input must not be mutated")
+}
+
+func TestResponsesChatFallbackPreservesToolTurnReasoning(t *testing.T) {
+	const reasoning = "I should list the files.\nThen count the result."
+	const narration = "Listing the files."
+	for _, stream := range []bool{false, true} {
+		for _, withNarration := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/narration=%t", stream, withNarration), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					if request.URL.Path != "/v1/chat/completions" {
+						t.Errorf("path = %s, want Chat Completions fallback", request.URL.Path)
+					}
+					var payload OpenAIChatRequest
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Errorf("decode upstream request: %v", err)
+						writer.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					valid := len(payload.Messages) == 3
+					if valid {
+						assistant := payload.Messages[1]
+						valid = assistant.OpenAIChatAssistantMessage != nil &&
+							assistant.Reasoning != nil && *assistant.Reasoning == reasoning &&
+							len(assistant.ToolCalls) == 1 &&
+							assistant.ToolCalls[0].ID != nil && *assistant.ToolCalls[0].ID == "call_1" &&
+							assistant.ToolCalls[0].Function.Name != nil && *assistant.ToolCalls[0].Function.Name == "list_files" &&
+							assistant.ToolCalls[0].Function.Arguments == "{}"
+						if withNarration {
+							valid = valid && assistant.Content != nil &&
+								assistant.Content.ContentStr != nil && *assistant.Content.ContentStr == narration
+						}
+						tool := payload.Messages[2]
+						valid = valid && tool.Role == schemas.ChatMessageRoleTool &&
+							tool.ChatToolMessage != nil && tool.ToolCallID != nil && *tool.ToolCallID == "call_1" &&
+							tool.Content != nil && tool.Content.ContentStr != nil && *tool.Content.ContentStr == "a.txt\nb.txt"
+					}
+					if !valid {
+						writer.Header().Set("Content-Type", "application/json")
+						writer.WriteHeader(http.StatusBadRequest)
+						if _, err := io.WriteString(writer, `{"error":{"type":"invalid_request_error","message":"tool-call assistant lost its reasoning or history"}}`); err != nil {
+							t.Errorf("write error response: %v", err)
+						}
+						return
+					}
+					if stream {
+						writer.Header().Set("Content-Type", "text/event-stream")
+						if _, err := io.WriteString(writer, chatChunk("two files", nil)+chatChunkNullDeltaFinish("stop")+"data: [DONE]\n\n"); err != nil {
+							t.Errorf("write stream: %v", err)
+						}
+						return
+					}
+					writer.Header().Set("Content-Type", "application/json")
+					if _, err := io.WriteString(writer, `{"id":"chat_1","object":"chat.completion","created":1,"model":"repro-model","choices":[{"index":0,"message":{"role":"assistant","content":"two files"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`); err != nil {
+						t.Errorf("write response: %v", err)
+					}
+				}))
+				defer server.Close()
+
+				provider := NewOpenAIProvider(&schemas.ProviderConfig{
+					NetworkConfig:      schemas.NetworkConfig{BaseURL: server.URL},
+					SendBackRawRequest: true,
+					CustomProviderConfig: &schemas.CustomProviderConfig{
+						AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true, ChatCompletionStream: true},
+					},
+				}, testNoopLogger{})
+				input := []schemas.ResponsesMessage{
+					{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("List files, then count them.")}},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{
+							{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: reasoning},
+						}},
+					},
+				}
+				if withNarration {
+					input = append(input, schemas.ResponsesMessage{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(narration)},
+					})
+				}
+				input = append(input,
+					schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("list_files"), Arguments: schemas.Ptr("{}"),
+					}},
+					schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("a.txt\nb.txt")},
+					}},
+				)
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				defer cancel()
+				request := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "repro-model", Input: input}
+				if stream {
+					chunks, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, testKey(), request)
+					require.Nil(t, bifrostErr)
+					completed := false
+					for _, chunk := range collectChunks(t, chunks) {
+						require.Nil(t, chunk.BifrostError)
+						if event := chunk.BifrostResponsesStreamResponse; event != nil && event.Type == schemas.ResponsesStreamResponseTypeCompleted {
+							completed = true
+							require.NotNil(t, event.ExtraFields.RawRequest)
+							require.NotNil(t, event.Response)
+							require.NotEmpty(t, event.Response.Output)
+						}
+					}
+					require.True(t, completed, "fallback stream must complete after the tool result")
+				} else {
+					response, bifrostErr := provider.Responses(ctx, testKey(), request)
+					require.Nil(t, bifrostErr)
+					require.NotNil(t, response)
+					require.NotNil(t, response.ExtraFields.RawRequest)
+					require.NotEmpty(t, response.Output)
+				}
+			})
+		}
+	}
 }
