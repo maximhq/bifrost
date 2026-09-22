@@ -245,6 +245,11 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		}
 		defer lock.release(context.Background())
 
+		if err := boundIndexAdvisoryLock(context.Background(), lock.conn); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: failed to bound index build statement timeout: %s (skipping this boot's background maintenance; a future boot will retry)", err))
+			return
+		}
+
 		if err := ensureMetadataGINIndex(context.Background(), lock.conn); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
 		} else {

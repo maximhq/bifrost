@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -51,6 +52,11 @@ func boundDDLLockWait(tx *gorm.DB) error {
 	return tx.Exec("SET LOCAL lock_timeout = '5s'").Error
 }
 
+func boundIndexAdvisoryLock(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, fmt.Sprintf("SET statement_timeout = %d", indexAdvisoryLockTimeout.Milliseconds()))
+	return err
+}
+
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes.
@@ -63,6 +69,10 @@ const (
 	// so that the long-running CREATE INDEX CONCURRENTLY held by one pod's goroutine
 	// does not block other pods from running their (fast) migrations on startup.
 	indexAdvisoryLockKey = 1000012
+
+	// indexAdvisoryLockTimeout bounds every statement run on the connection
+	// holding indexAdvisoryLockKey. See boundIndexAdvisoryLock.
+	indexAdvisoryLockTimeout = 30 * time.Minute
 
 	// matviewRefreshAdvisoryLockKey serializes materialized view maintenance
 	// across cluster nodes. Startup create/repair and periodic refresh both use
@@ -184,6 +194,12 @@ func (l *advisoryLock) release(ctx context.Context) {
 	}
 	// Release lock on the SAME connection that acquired it.
 	_, _ = l.conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", l.lockKey)
+	// Reset session level statement_timeout.
+	if _, err := l.conn.ExecContext(ctx, "RESET statement_timeout"); err != nil {
+		// If failed to reset, mark connection as bad so that pgx doesn't reuse it.
+		_ = l.conn.Raw(func(any) error { return driver.ErrBadConn })
+		return
+	}
 	l.conn.Close()
 }
 
