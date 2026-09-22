@@ -11191,6 +11191,9 @@
             "list_models": {
               "type": "boolean"
             },
+            "model_retrieve": {
+              "type": "boolean"
+            },
             "text_completion": {
               "type": "boolean"
             },

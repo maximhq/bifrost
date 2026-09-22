@@ -347,6 +347,7 @@ export interface ProxyConfig {
 // Request types matching Go's schemas.RequestType
 export type RequestType =
 	| "list_models"
+	| "model_retrieve"
 	| "text_completion"
 	| "text_completion_stream"
 	| "chat_completion"
@@ -428,6 +429,7 @@ export interface AllowedRequests {
 	ocr_stream?: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
+	model_retrieve?: boolean;
 	rerank: boolean;
 	video_generation: boolean;
 	video_edit: boolean;

@@ -3041,6 +3041,11 @@ func HandleAnthropicCountTokensRequest(
 	return response, nil
 }
 
+// ModelRetrieve is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
 // Compaction is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())

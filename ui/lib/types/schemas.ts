@@ -813,6 +813,7 @@ export const allowedRequestsSchema = z.object({
 	video_remix: z.boolean(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
+	model_retrieve: z.boolean().optional(),
 	websocket_responses: z.boolean(),
 	realtime: z.boolean(),
 });
