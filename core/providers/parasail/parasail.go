@@ -164,9 +164,23 @@ func (provider *ParasailProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 	)
 }
 
-// Embedding is not supported by the Parasail provider.
+// Embedding performs an embedding request to the Parasail API.
+// Uses Parasail's OpenAI-compatible embeddings endpoint.
 func (provider *ParasailProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
+	return openai.HandleOpenAIEmbeddingRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
 // Speech is not supported by the Parasail provider.
