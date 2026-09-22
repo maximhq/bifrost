@@ -166861,6 +166861,186 @@
           }
         }
       ]
+    },
+    {
+      "name": "112. OAuth2 Client-Controlled Field Lengths (RFC 6749 state/scope, RFC 7591 client_name/scope)",
+      "description": "Regression for a customer report: GET /oauth2/authorize rejected any state parameter longer than 512 characters with error=server_error (\"failed to create authorization request\"), because oauth2_authorize_requests.state was varchar(512). Postgres enforces that bound (SQLite does not), so a Gemini Enterprise connector sending a 620-char base64 JSON state could never complete per-user authorisation. The same class applied to every other client-controlled column on the OAuth2 AS tables: oauth2_clients.client_name and .scope (RFC 7591 section 2 bounds neither) and the scope columns on oauth2_authorize_requests and oauth2_refresh_tokens (RFC 6749 section 3.3), all varchar(255). All five are now text; the request header block (server.read_buffer_size) is the effective limit. Case 1 registers a public client via DCR with a 1024-char client_name and a 200-token scope, asserts both are echoed, and chains its client_id. Case 2 sends a 620-char state (the reported size) with scope omitted, so the long registered scope is what gets stored. Case 3 sends a 4096-char state plus the full long scope explicitly. Both pin that the authorize step reaches consent (302 to /oauth/consent?flow=) with no error= in the redirect; redirect following is disabled on those items so the 302 itself is asserted. No provider spend. Note: against the default SQLite-backed harness profile these cases are green both before and after the fix; the bounds only ever fired on Postgres. They pin the contract for Postgres-backed profiles and against any future explicit length validation on these fields.",
+      "item": [
+        {
+          "name": "oauth2 register public client with 1024-char client_name and 1693-char scope - oauth2 long fields",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('oauth2 dynamic client registration accepts long client_name and scope - oauth2 long fields', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(201);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.client_id, 'client_id missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.scope, 'scope not echoed verbatim').to.have.lengthOf(1693);",
+                  "  pm.collectionVariables.set('oauth2LongFieldsClientId', body.client_id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\":\"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"redirect_uris\":[\"https://harness.example/cb\"],\"grant_types\":[\"authorization_code\"],\"response_types\":[\"code\"],\"token_endpoint_auth_method\":\"none\",\"scope\":\"mcp read:0 read:1 read:2 read:3 read:4 read:5 read:6 read:7 read:8 read:9 read:10 read:11 read:12 read:13 read:14 read:15 read:16 read:17 read:18 read:19 read:20 read:21 read:22 read:23 read:24 read:25 read:26 read:27 read:28 read:29 read:30 read:31 read:32 read:33 read:34 read:35 read:36 read:37 read:38 read:39 read:40 read:41 read:42 read:43 read:44 read:45 read:46 read:47 read:48 read:49 read:50 read:51 read:52 read:53 read:54 read:55 read:56 read:57 read:58 read:59 read:60 read:61 read:62 read:63 read:64 read:65 read:66 read:67 read:68 read:69 read:70 read:71 read:72 read:73 read:74 read:75 read:76 read:77 read:78 read:79 read:80 read:81 read:82 read:83 read:84 read:85 read:86 read:87 read:88 read:89 read:90 read:91 read:92 read:93 read:94 read:95 read:96 read:97 read:98 read:99 read:100 read:101 read:102 read:103 read:104 read:105 read:106 read:107 read:108 read:109 read:110 read:111 read:112 read:113 read:114 read:115 read:116 read:117 read:118 read:119 read:120 read:121 read:122 read:123 read:124 read:125 read:126 read:127 read:128 read:129 read:130 read:131 read:132 read:133 read:134 read:135 read:136 read:137 read:138 read:139 read:140 read:141 read:142 read:143 read:144 read:145 read:146 read:147 read:148 read:149 read:150 read:151 read:152 read:153 read:154 read:155 read:156 read:157 read:158 read:159 read:160 read:161 read:162 read:163 read:164 read:165 read:166 read:167 read:168 read:169 read:170 read:171 read:172 read:173 read:174 read:175 read:176 read:177 read:178 read:179 read:180 read:181 read:182 read:183 read:184 read:185 read:186 read:187 read:188 read:189 read:190 read:191 read:192 read:193 read:194 read:195 read:196 read:197 read:198 read:199\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "oauth2 authorize with 620-char state redirects to consent, not server_error - oauth2 long fields",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('620-char state accepted: 302 to consent - oauth2 long fields', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(302);",
+                  "  var loc = pm.response.headers.get('Location') || '';",
+                  "  pm.expect(loc, 'Location: ' + loc).to.include('/oauth/consent?flow=');",
+                  "  pm.expect(loc, 'Location: ' + loc).to.not.include('error=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/authorize?client_id={{oauth2LongFieldsClientId}}&redirect_uri=https://harness.example/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "authorize"
+              ],
+              "query": [
+                {
+                  "key": "client_id",
+                  "value": "{{oauth2LongFieldsClientId}}"
+                },
+                {
+                  "key": "redirect_uri",
+                  "value": "https://harness.example/cb"
+                },
+                {
+                  "key": "response_type",
+                  "value": "code"
+                },
+                {
+                  "key": "code_challenge",
+                  "value": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+                },
+                {
+                  "key": "code_challenge_method",
+                  "value": "S256"
+                },
+                {
+                  "key": "state",
+                  "value": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "oauth2 authorize with 4096-char state and 1693-char scope redirects to consent, not server_error - oauth2 long fields",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('4096-char state and 1693-char scope accepted: 302 to consent - oauth2 long fields', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(302);",
+                  "  var loc = pm.response.headers.get('Location') || '';",
+                  "  pm.expect(loc, 'Location: ' + loc).to.include('/oauth/consent?flow=');",
+                  "  pm.expect(loc, 'Location: ' + loc).to.not.include('error=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/authorize?client_id={{oauth2LongFieldsClientId}}&redirect_uri=https://harness.example/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc&scope=mcp read:0 read:1 read:2 read:3 read:4 read:5 read:6 read:7 read:8 read:9 read:10 read:11 read:12 read:13 read:14 read:15 read:16 read:17 read:18 read:19 read:20 read:21 read:22 read:23 read:24 read:25 read:26 read:27 read:28 read:29 read:30 read:31 read:32 read:33 read:34 read:35 read:36 read:37 read:38 read:39 read:40 read:41 read:42 read:43 read:44 read:45 read:46 read:47 read:48 read:49 read:50 read:51 read:52 read:53 read:54 read:55 read:56 read:57 read:58 read:59 read:60 read:61 read:62 read:63 read:64 read:65 read:66 read:67 read:68 read:69 read:70 read:71 read:72 read:73 read:74 read:75 read:76 read:77 read:78 read:79 read:80 read:81 read:82 read:83 read:84 read:85 read:86 read:87 read:88 read:89 read:90 read:91 read:92 read:93 read:94 read:95 read:96 read:97 read:98 read:99 read:100 read:101 read:102 read:103 read:104 read:105 read:106 read:107 read:108 read:109 read:110 read:111 read:112 read:113 read:114 read:115 read:116 read:117 read:118 read:119 read:120 read:121 read:122 read:123 read:124 read:125 read:126 read:127 read:128 read:129 read:130 read:131 read:132 read:133 read:134 read:135 read:136 read:137 read:138 read:139 read:140 read:141 read:142 read:143 read:144 read:145 read:146 read:147 read:148 read:149 read:150 read:151 read:152 read:153 read:154 read:155 read:156 read:157 read:158 read:159 read:160 read:161 read:162 read:163 read:164 read:165 read:166 read:167 read:168 read:169 read:170 read:171 read:172 read:173 read:174 read:175 read:176 read:177 read:178 read:179 read:180 read:181 read:182 read:183 read:184 read:185 read:186 read:187 read:188 read:189 read:190 read:191 read:192 read:193 read:194 read:195 read:196 read:197 read:198 read:199",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "authorize"
+              ],
+              "query": [
+                {
+                  "key": "client_id",
+                  "value": "{{oauth2LongFieldsClientId}}"
+                },
+                {
+                  "key": "redirect_uri",
+                  "value": "https://harness.example/cb"
+                },
+                {
+                  "key": "response_type",
+                  "value": "code"
+                },
+                {
+                  "key": "code_challenge",
+                  "value": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+                },
+                {
+                  "key": "code_challenge_method",
+                  "value": "S256"
+                },
+                {
+                  "key": "state",
+                  "value": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                {
+                  "key": "scope",
+                  "value": "mcp read:0 read:1 read:2 read:3 read:4 read:5 read:6 read:7 read:8 read:9 read:10 read:11 read:12 read:13 read:14 read:15 read:16 read:17 read:18 read:19 read:20 read:21 read:22 read:23 read:24 read:25 read:26 read:27 read:28 read:29 read:30 read:31 read:32 read:33 read:34 read:35 read:36 read:37 read:38 read:39 read:40 read:41 read:42 read:43 read:44 read:45 read:46 read:47 read:48 read:49 read:50 read:51 read:52 read:53 read:54 read:55 read:56 read:57 read:58 read:59 read:60 read:61 read:62 read:63 read:64 read:65 read:66 read:67 read:68 read:69 read:70 read:71 read:72 read:73 read:74 read:75 read:76 read:77 read:78 read:79 read:80 read:81 read:82 read:83 read:84 read:85 read:86 read:87 read:88 read:89 read:90 read:91 read:92 read:93 read:94 read:95 read:96 read:97 read:98 read:99 read:100 read:101 read:102 read:103 read:104 read:105 read:106 read:107 read:108 read:109 read:110 read:111 read:112 read:113 read:114 read:115 read:116 read:117 read:118 read:119 read:120 read:121 read:122 read:123 read:124 read:125 read:126 read:127 read:128 read:129 read:130 read:131 read:132 read:133 read:134 read:135 read:136 read:137 read:138 read:139 read:140 read:141 read:142 read:143 read:144 read:145 read:146 read:147 read:148 read:149 read:150 read:151 read:152 read:153 read:154 read:155 read:156 read:157 read:158 read:159 read:160 read:161 read:162 read:163 read:164 read:165 read:166 read:167 read:168 read:169 read:170 read:171 read:172 read:173 read:174 read:175 read:176 read:177 read:178 read:179 read:180 read:181 read:182 read:183 read:184 read:185 read:186 read:187 read:188 read:189 read:190 read:191 read:192 read:193 read:194 read:195 read:196 read:197 read:198 read:199"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

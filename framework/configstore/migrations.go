@@ -495,6 +495,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
+	{IDs: []string{"widen_oauth2_client_controlled_columns"}, run: migrationWidenOAuth2ClientControlledColumns},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -11386,6 +11387,58 @@ func migrationAddOAuth2IssuanceTables(ctx context.Context, db *gorm.DB, logger s
 	return nil
 }
 
+// migrationWidenOAuth2ClientControlledColumns widens the OAuth2 authorization
+// server columns whose values come from the client, from varchar to text:
+// oauth2_authorize_requests.state and .scope, oauth2_clients.client_name and
+// .scope, and oauth2_refresh_tokens.scope (the registered scope flows unchanged
+// into the latter two). RFC 6749 §4.1.1 puts no bound on state and §3.3 none on
+// scope; RFC 7591 §2 bounds neither client_name nor scope. Clients do pack
+// connector context into state, and on Postgres the varchar(512) bound turned every such
+// /oauth2/authorize call into an opaque server_error — SQLite never enforced it.
+// The request header block (server.read_buffer_size) remains the effective upper
+// bound. Postgres-only: SQLite has no ALTER COLUMN TYPE and needs none. Fresh
+// installs already create these columns as text from the struct tags, so the
+// ALTERs are harmless no-ops there.
+func migrationWidenOAuth2ClientControlledColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_oauth2_client_controlled_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			targets := []struct {
+				model  any
+				table  string
+				column string
+			}{
+				{&tables.TableOAuth2AuthorizeRequest{}, "oauth2_authorize_requests", "state"},
+				{&tables.TableOAuth2AuthorizeRequest{}, "oauth2_authorize_requests", "scope"},
+				{&tables.TableOAuth2Client{}, "oauth2_clients", "client_name"},
+				{&tables.TableOAuth2Client{}, "oauth2_clients", "scope"},
+				{&tables.TableOAuth2RefreshToken{}, "oauth2_refresh_tokens", "scope"},
+			}
+			for _, target := range targets {
+				if !tx.Migrator().HasColumn(target.model, target.column) {
+					continue
+				}
+				stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE TEXT", target.table, target.column)
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("failed to widen column %s.%s: %w", target.table, target.column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
 func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_tool_execution_timeout_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -13591,13 +13644,13 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 
 			// Find all budgets owned directly by a VK (old config.json flow).
 			type standaloneVKBudget struct {
-				ID           string
-				VirtualKeyID string
-				MaxLimit     float64
+				ID            string
+				VirtualKeyID  string
+				MaxLimit      float64
 				ResetDuration string
-				CurrentUsage float64
-				LastReset    time.Time
-				ConfigHash   string
+				CurrentUsage  float64
+				LastReset     time.Time
+				ConfigHash    string
 			}
 			var standaloneBudgets []standaloneVKBudget
 			if err := tx.Raw(`
@@ -13771,4 +13824,3 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	}
 	return nil
 }
-
