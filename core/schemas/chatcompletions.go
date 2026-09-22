@@ -254,12 +254,13 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 	// Alias to avoid recursion
 	type Alias ChatParameters
 
-	// Aux struct adds flat reasoning_* shorthands for decoding
+	// Aux struct accepts both stop forms and flat reasoning_* shorthands.
 	var aux struct {
 		*Alias
-		ReasoningEffort    *string `json:"reasoning_effort"` // only for input
-		ReasoningMaxTokens *int    `json:"reasoning_max_tokens"`
-		ReasoningDisplay   *string `json:"reasoning_display"`
+		Stop               json.RawMessage `json:"stop"`
+		ReasoningEffort    *string         `json:"reasoning_effort"` // only for input
+		ReasoningMaxTokens *int            `json:"reasoning_max_tokens"`
+		ReasoningDisplay   *string         `json:"reasoning_display"`
 	}
 
 	aux.Alias = (*Alias)(cp)
@@ -267,6 +268,19 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 	// Single unmarshal
 	if err := Unmarshal(data, &aux); err != nil {
 		return err
+	}
+
+	// OpenAI accepts a string or string array; providers use the array form internally.
+	if stop := bytes.TrimSpace(aux.Stop); len(stop) > 0 {
+		if stop[0] == '"' {
+			var sequence string
+			if err := Unmarshal(stop, &sequence); err != nil {
+				return fmt.Errorf("invalid stop parameter: %w", err)
+			}
+			cp.Stop = []string{sequence}
+		} else if err := Unmarshal(stop, &cp.Stop); err != nil {
+			return fmt.Errorf("invalid stop parameter: %w", err)
+		}
 	}
 
 	// Now aux.Reasoning (from Alias) and aux.ReasoningEffort are filled

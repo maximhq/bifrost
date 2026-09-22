@@ -1,0 +1,1 @@
+- [fix]: recognize chat completion stop as a known parameter instead of duplicating it into extra parameters (#7219)
