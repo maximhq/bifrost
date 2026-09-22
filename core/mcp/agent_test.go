@@ -960,6 +960,7 @@ func TestExecuteAgentForResponsesRequest_OutputStructured(t *testing.T) {
 	}
 }
 
+// TestCreateResponseWithExecutedToolsPreservesSameNameResults verifies repeated tool-call results remain individually addressable.
 func TestCreateResponseWithExecutedToolsPreservesSameNameResults(t *testing.T) {
 	toolName := "charge"
 	firstCallID := "call-alpha"
