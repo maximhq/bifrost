@@ -1,0 +1,2 @@
+- feat: log decision requests with usage, cost and answers (#7355)
+- chore: upgraded core to v1.10.0 and framework to v1.7.3
