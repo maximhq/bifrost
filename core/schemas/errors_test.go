@@ -394,6 +394,7 @@ func TestModelAddressedRequestTypesExcludeResourceAddressed(t *testing.T) {
 // TestEveryRequestTypeIsCategorized fails on a declared RequestType missing here.
 var modelAddressingByRequestType = map[string]bool{
 	// Only the model is addressable: a 404 can mean nothing else.
+	"ModelRetrieveRequest":         true,
 	"TextCompletionRequest":        true,
 	"TextCompletionStreamRequest":  true,
 	"ChatCompletionRequest":        false,

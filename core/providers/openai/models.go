@@ -53,6 +53,23 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	return bifrostResponse
 }
 
+// ToBifrostModelRetrieveResponse converts an OpenAI model object to a Bifrost model retrieve response
+func (model *OpenAIModel) ToBifrostModelRetrieveResponse(providerKey schemas.ModelProvider) *schemas.BifrostModelRetrieveResponse {
+	if model == nil {
+		return nil
+	}
+
+	return &schemas.BifrostModelRetrieveResponse{
+		Model: schemas.Model{
+			ID:            string(providerKey) + "/" + model.ID,
+			Created:       model.Created,
+			OwnedBy:       schemas.Ptr(model.OwnedBy),
+			ContextLength: model.ContextWindow,
+			ShutdownDate:  model.ShutdownDate,
+		},
+	}
+}
+
 // ToOpenAIListModelsResponse converts a Bifrost list models response to an OpenAI list models response
 func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *OpenAIListModelsResponse {
 	if response == nil {

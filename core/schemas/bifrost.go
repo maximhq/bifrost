@@ -138,6 +138,7 @@ func (r RequestType) Value() (driver.Value, error) {
 
 const (
 	ListModelsRequest              RequestType = "list_models"
+	ModelRetrieveRequest           RequestType = "model_retrieve"
 	TextCompletionRequest          RequestType = "text_completion"
 	TextCompletionStreamRequest    RequestType = "text_completion_stream"
 	ChatCompletionRequest          RequestType = "chat_completion"
@@ -582,6 +583,7 @@ type BifrostRequest struct {
 	RequestType RequestType
 
 	ListModelsRequest            *BifrostListModelsRequest
+	ModelRetrieveRequest         *BifrostModelRetrieveRequest
 	TextCompletionRequest        *BifrostTextCompletionRequest
 	ChatRequest                  *BifrostChatRequest
 	ResponsesRequest             *BifrostResponsesRequest
@@ -640,6 +642,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 	switch {
 	case br.ListModelsRequest != nil:
 		return br.ListModelsRequest.Provider, "", nil
+	case br.ModelRetrieveRequest != nil:
+		return br.ModelRetrieveRequest.Provider, br.ModelRetrieveRequest.Model, nil
 	case br.TextCompletionRequest != nil:
 		return br.TextCompletionRequest.Provider, br.TextCompletionRequest.Model, br.TextCompletionRequest.Fallbacks
 	case br.ChatRequest != nil:
@@ -795,6 +799,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
 	case br.ListModelsRequest != nil:
 		br.ListModelsRequest.Provider = provider
+	case br.ModelRetrieveRequest != nil:
+		br.ModelRetrieveRequest.Provider = provider
 	case br.TextCompletionRequest != nil:
 		br.TextCompletionRequest.Provider = provider
 	case br.ChatRequest != nil:
@@ -860,6 +866,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 
 func (br *BifrostRequest) SetModel(model string) {
 	switch {
+	case br.ModelRetrieveRequest != nil:
+		br.ModelRetrieveRequest.Model = model
 	case br.TextCompletionRequest != nil:
 		br.TextCompletionRequest.Model = model
 	case br.ChatRequest != nil:
@@ -1145,6 +1153,7 @@ func (r *BifrostMCPRequest) GetToolArguments() interface{} {
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
 	ListModelsResponse            *BifrostListModelsResponse
+	ModelRetrieveResponse         *BifrostModelRetrieveResponse
 	TextCompletionResponse        *BifrostTextCompletionResponse
 	ChatResponse                  *BifrostChatResponse
 	ResponsesResponse             *BifrostResponsesResponse
@@ -1199,6 +1208,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
 	case r.ListModelsResponse != nil:
 		return &r.ListModelsResponse.ExtraFields
+	case r.ModelRetrieveResponse != nil:
+		return &r.ModelRetrieveResponse.ExtraFields
 	case r.TextCompletionResponse != nil:
 		return &r.TextCompletionResponse.ExtraFields
 	case r.ChatResponse != nil:
@@ -1439,6 +1450,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.ListModelsResponse.ExtraFields.Provider = provider
 		r.ListModelsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.ListModelsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ModelRetrieveResponse != nil:
+		r.ModelRetrieveResponse.ExtraFields.RequestType = requestType
+		r.ModelRetrieveResponse.ExtraFields.Provider = provider
+		r.ModelRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ModelRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.TextCompletionResponse != nil:
 		r.TextCompletionResponse.ExtraFields.RequestType = requestType
 		r.TextCompletionResponse.ExtraFields.Provider = provider
