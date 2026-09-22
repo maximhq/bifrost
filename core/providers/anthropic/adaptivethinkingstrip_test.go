@@ -220,7 +220,7 @@ func TestAdaptiveOnlyThinkingStrip(t *testing.T) {
 // \"thinking.type.disabled\" is not supported".)
 func TestDisabledThinkingStrip(t *testing.T) {
 	// Models that reject "disabled" regardless of effort.
-	alwaysOn := []string{"claude-fable-5", "claude-mythos-5", "claude-mythos-preview"}
+	alwaysOn := []string{"claude-fable-5", "claude-mythos-5", "claude-mythos-preview", "claude-opus-5-5"}
 
 	// Models that accept "disabled" at any effort.
 	disabledOK := []string{"claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5", "claude-opus-4-6", "claude-sonnet-4-5"}
@@ -388,6 +388,36 @@ func TestDisabledThinkingStrip(t *testing.T) {
 			if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != "disabled" {
 				t.Errorf("%s: thinking.type = %q, want \"disabled\" preserved; body: %s", model, got, string(result))
 			}
+		}
+	})
+
+	// The unconditional half of the gate reads supports_reasoning_disable, so a
+	// row moves this passthrough strip without a release — in both directions.
+	t.Run("datasheet_outranks_the_name_fallback", func(t *testing.T) {
+		yes := true
+		setOverride(t, "claude-opus-5-5", schemas.ModelCapabilities{SupportsReasoningDisable: &yes})
+		body := []byte(`{"model":"claude-opus-5-5","max_tokens":4096,"thinking":{"type":"disabled"}}`)
+
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-opus-5-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != "disabled" {
+			t.Errorf("thinking.type = %q, want \"disabled\" kept by the row; body: %s", got, string(result))
+		}
+	})
+
+	t.Run("datasheet_disables_on_a_model_the_fallback_allows", func(t *testing.T) {
+		no := false
+		setOverride(t, "claude-opus-4-8", schemas.ModelCapabilities{SupportsReasoningDisable: &no})
+		body := []byte(`{"model":"claude-opus-4-8","max_tokens":4096,"thinking":{"type":"disabled"}}`)
+
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-opus-4-8")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.type").String(); got == "disabled" {
+			t.Errorf("thinking.type = \"disabled\" survived a row saying otherwise; body: %s", string(result))
 		}
 	})
 }

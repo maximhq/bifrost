@@ -306,7 +306,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if req.OutputConfig != nil {
 			effort = req.OutputConfig.Effort
 		}
-		if RejectsDisabledThinking(model, effort) {
+		if RejectsDisabledThinking(caps, effort) {
 			req.Thinking.Type = "adaptive"
 			req.Thinking.BudgetTokens = nil
 		}
@@ -704,7 +704,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
 			effort = new(e.String())
 		}
-		if RejectsDisabledThinking(model, effort) {
+		if RejectsDisabledThinking(caps, effort) {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "adaptive")
 			if err != nil {
 				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
@@ -1026,18 +1026,22 @@ func RejectsEnabledThinking(caps schemas.ModelCaps) bool {
 //	to adaptive mode when not specified; use "thinking.type.enabled" with
 //	"budget_tokens" for extended thinking.
 //
-// Fable 5, Mythos 5 and Mythos Preview are always-on and reject it outright.
-// Opus 5 (and later) accept it only at effort "high" or below - pairing it with
+// Fable 5, Mythos 5, Mythos Preview and Opus 5.5 are always-on and reject it
+// outright. Opus 5 accepts it only at effort "high" or below - pairing it with
 // "xhigh" or "max" is rejected, and that is enforced per request, which is why
 // effort has to be passed in rather than inferred from the model alone. Opus
 // 4.7/4.8 and Sonnet 5 accept "disabled" at any effort.
 //
-// effort is nil when the caller did not set output_config.effort; the default
-// sits below "xhigh", so "disabled" is accepted.
+// The unconditional half reads caps.CanDisableReasoning so the datasheet's
+// supports_reasoning_disable drives this passthrough gate and the converter's
+// (chat.go, responses.go) from one value; the effort carve-out stays per
+// request. effort is nil when the caller did not set output_config.effort; the
+// default sits below "xhigh", so "disabled" is accepted.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
-func RejectsDisabledThinking(model string, effort *string) bool {
-	if IsFableFamily(model) {
+func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
+	model := caps.Model()
+	if !caps.CanDisableReasoning(DefaultCanDisableReasoning(model)) {
 		return true
 	}
 	if IsOpus5Plus(model) && effort != nil {
@@ -1103,11 +1107,11 @@ func DefaultAdaptiveOnlyThinking(model string) bool {
 	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
-// DefaultCanDisableReasoning: the Fable/Mythos family rejects
+// DefaultCanDisableReasoning: the Fable/Mythos family and Opus 5.5 reject
 // thinking:{type:"disabled"} — adaptive thinking is always on, so the param must
 // be omitted entirely rather than sent as disabled.
 func DefaultCanDisableReasoning(model string) bool {
-	return !IsFableFamily(model)
+	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model)
 }
 
 // SupportsNativeEffort reports whether the model takes output_config.effort as
