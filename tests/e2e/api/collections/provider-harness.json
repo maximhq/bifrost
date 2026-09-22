@@ -166479,7 +166479,7 @@
           }
         },
         {
-          "name": "Anthropic /v1/responses - dimensionless computer tool dropped for a dated-generation model (anthropic/claude-opus-5) - opus-5-5",
+          "name": "Anthropic /v1/responses - dimensionless computer tool dropped for a model that takes neither form (anthropic/claude-sonnet-4-6) - opus-5-5",
           "event": [
             {
               "listen": "test",
@@ -166492,11 +166492,11 @@
                   "var body = pm.response.json();",
                   "var raw = (body.extra_fields || {}).raw_request;",
                   "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
-                  "pm.test('no geometry means no dated tool - dropped, not a zero-sized display', function () {",
+                  "pm.test('no toolset support and no geometry leaves no shape to send - dropped', function () {",
                   "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
                   "  var tools = raw.tools || [];",
                   "  for (var i = 0; i < tools.length; i++) {",
-                  "    pm.expect(String(tools[i].type || ''), 'a computer tool with no display must be dropped, it 400s as 0x0').to.not.include('computer');",
+                  "    pm.expect(String(tools[i].type || ''), 'this model takes neither the toolset nor a dated tool without geometry').to.not.include('computer');",
                   "  }",
                   "});"
                 ]
@@ -166521,7 +166521,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"anthropic/claude-opus-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"environment\": \"browser\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -166776,7 +166776,7 @@
           }
         },
         {
-          "name": "Vertex /v1/responses - dimensionless computer tool dropped for a dated-generation model (vertex/claude-opus-5) - opus-5-5",
+          "name": "Vertex /v1/responses - dimensionless computer tool dropped for a model that takes neither form (vertex/claude-sonnet-4-6) - opus-5-5",
           "event": [
             {
               "listen": "test",
@@ -166789,11 +166789,11 @@
                   "var body = pm.response.json();",
                   "var raw = (body.extra_fields || {}).raw_request;",
                   "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
-                  "pm.test('no geometry means no dated tool - dropped, not a zero-sized display', function () {",
+                  "pm.test('no toolset support and no geometry leaves no shape to send - dropped', function () {",
                   "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
                   "  var tools = raw.tools || [];",
                   "  for (var i = 0; i < tools.length; i++) {",
-                  "    pm.expect(String(tools[i].type || ''), 'a computer tool with no display must be dropped, it 400s as 0x0').to.not.include('computer');",
+                  "    pm.expect(String(tools[i].type || ''), 'this model takes neither the toolset nor a dated tool without geometry').to.not.include('computer');",
                   "  }",
                   "});"
                 ]
@@ -166818,7 +166818,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/claude-opus-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"environment\": \"browser\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",

@@ -1437,6 +1437,37 @@ func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
 	return provider == schemas.Anthropic || provider == schemas.Vertex
 }
 
+// AcceptsComputerToolset reports whether the (provider, model) pair takes a
+// computer_toolset_20260801 entry on the wire. Wider than ComputerUseGeneration,
+// which answers what to *convert* to: every model here except Opus 5.5 also
+// accepts the dated computer_* tools, so a caller that already sent the toolset
+// must have it forwarded rather than converted into a form it never asked for.
+//
+// Override-aware: the datasheet's supports_computer_toolset decides when set, so
+// a model gaining the toolset is a catalog change. The provider gate stays in
+// code because the toolset is GA on the Claude API and Google Cloud only.
+func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
+	if !toolsetOnlyComputerUseProvider(caps.Provider()) {
+		return false
+	}
+	return caps.SupportsComputerToolset(DefaultSupportsComputerToolset(caps.Model()))
+}
+
+// DefaultSupportsComputerToolset is the name-based fallback for
+// ModelCaps.SupportsComputerToolset, listing the models the computer-use docs
+// publish for the toolset: the Fable/Mythos family, Opus 5.5, Opus 5, Sonnet 5
+// and Opus 4.8. Opus 4.7 and older take the dated tool only.
+//
+// Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
+func DefaultSupportsComputerToolset(model string) bool {
+	m := strings.ToLower(model)
+	if IsFableFamily(m) || schemas.IsOpus55Plus(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) {
+		return true
+	}
+	return strings.Contains(m, "opus") &&
+		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+}
+
 // TextEditorGeneration returns the text_editor tool-version generation for a model.
 // Differs from ComputerUseGeneration because Anthropic's per-tool support matrix
 // is not always uniform - e.g., sonnet-4-5 supports old-gen computer_20250124 but
@@ -2394,6 +2425,12 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		}
 		wantType, wantName := NormalizedToolSpec(generation, baseTool)
 		if wantType == "" {
+			continue
+		}
+		// The caller already sent a form this pair accepts, so leave it alone.
+		// Normalizing it into the generation's dated tool would strip the toolset
+		// the model supports and lose its member-call shape.
+		if toolType == string(AnthropicToolTypeComputerToolset20260801) && AcceptsComputerToolset(caps) {
 			continue
 		}
 		// A dated computer tool validates display_*_px as >= 1 and requires a name;

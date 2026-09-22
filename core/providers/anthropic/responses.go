@@ -8738,13 +8738,20 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 			case ComputerUseGen20251124:
 				computerToolType = AnthropicToolTypeComputer20251124
 			}
-			// The dated shapes validate display_*_px as >= 1, so a tool with no
-			// geometry cannot be expressed as one — a toolset carries none by
-			// design, and an OpenAI-shaped computer_use_preview may omit it. Drop
-			// it like any other tool the target cannot take rather than sending a
-			// zero-sized display the API rejects outright.
+			// No geometry means this cannot become a dated tool: those validate
+			// display_*_px as >= 1. A toolset carries none by design, so when the
+			// target takes a toolset, send that — converting it into a dated tool
+			// the caller never asked for, or dropping a tool the model supports,
+			// both lose capability. Only when neither form is reachable is the tool
+			// dropped, the way any unsupported tool is.
 			if tool.ResponsesToolComputerUsePreview.DisplayWidth <= 0 ||
 				tool.ResponsesToolComputerUsePreview.DisplayHeight <= 0 {
+				if AcceptsComputerToolset(caps) {
+					return &AnthropicTool{
+						Type:         schemas.Ptr(AnthropicToolTypeComputerToolset20260801),
+						CacheControl: tool.CacheControl,
+					}
+				}
 				return nil
 			}
 			return &AnthropicTool{

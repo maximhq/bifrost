@@ -272,29 +272,59 @@ func TestComputerToolset_RawBodyUpgradedToToolset(t *testing.T) {
 }
 
 // A toolset carries no display geometry, and the dated computer tools validate
-// display_*_px as >= 1 and require a name. Converting one into the other is
-// therefore impossible, so the tool is dropped the way any unsupported tool is —
-// the alternative, a zero-sized display, is a hard 400 from the API and turns a
-// cross-provider fallback into a failed request rather than a degraded one.
-func TestComputerToolset_DroppedWhenTargetNeedsGeometry(t *testing.T) {
-	// Every generation that is not the toolset: Opus 5 and Opus 4.8 on the Claude
-	// API, and Opus 5.5 itself on the surfaces that still serve the dated tool.
+// display_*_px as >= 1, so one cannot be rewritten as the other. Where the target
+// takes a toolset the caller's entry is forwarded as sent; where it takes neither
+// form the tool is dropped, because a zero-sized display is a hard 400 and would
+// turn a re-routed request into a failure rather than a degraded one.
+func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
+	// Every model the computer-use docs list for the toolset, on the two surfaces
+	// that serve it. All of these also accept the dated tool, so the generation
+	// says "dated" — forwarding still has to win, or the caller loses the toolset
+	// they explicitly asked for.
 	cases := []struct {
 		provider schemas.ModelProvider
 		model    string
 	}{
 		{schemas.Anthropic, "claude-opus-5"},
+		{schemas.Anthropic, "claude-sonnet-5"},
 		{schemas.Anthropic, "claude-opus-4-8"},
+		{schemas.Anthropic, "claude-fable-5-1"},
 		{schemas.Vertex, "claude-opus-5"},
-		{schemas.Bedrock, "claude-opus-5-5"},
-		{schemas.BedrockMantle, "claude-opus-5-5"},
-		{schemas.Azure, "claude-opus-5-5"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
 			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
-			require.NotEqual(t, ComputerUseGenToolset20260801, ComputerUseGeneration(caps),
-				"case is only meaningful where the target wants a dated tool")
+			tool := convertBifrostToolToAnthropic(caps, &schemas.ResponsesTool{
+				Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+				ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{Environment: "browser"},
+			}, tc.provider, false)
+
+			require.NotNil(t, tool, "the model takes a toolset, so it must not be dropped")
+			require.NotNil(t, tool.Type)
+			assert.Equal(t, AnthropicToolTypeComputerToolset20260801, *tool.Type)
+			assert.Empty(t, tool.Name, "a toolset entry rejects name")
+			assert.Nil(t, tool.AnthropicToolComputerUse, "a toolset entry rejects the display_* geometry")
+		})
+	}
+}
+
+func TestComputerToolset_DroppedWhenTargetTakesNeitherForm(t *testing.T) {
+	// AWS and Foundry serve only the dated tool, and Sonnet 4.6 and older reject
+	// the toolset on every surface — so there is no shape left to send.
+	cases := []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{schemas.Bedrock, "claude-opus-5-5"},
+		{schemas.BedrockMantle, "claude-opus-5-5"},
+		{schemas.Azure, "claude-opus-5-5"},
+		{schemas.Anthropic, "claude-sonnet-4-6"},
+		{schemas.Vertex, "claude-sonnet-4-6"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
+			require.False(t, AcceptsComputerToolset(caps), "case is only meaningful where the toolset is rejected")
 
 			tool := convertBifrostToolToAnthropic(caps, &schemas.ResponsesTool{
 				Type:                            schemas.ResponsesToolTypeComputerUsePreview,
@@ -304,6 +334,32 @@ func TestComputerToolset_DroppedWhenTargetNeedsGeometry(t *testing.T) {
 			assert.Nil(t, tool, "a dimensionless computer tool must be dropped, not sent as a 0x0 display")
 		})
 	}
+}
+
+// supports_computer_toolset moves a model onto or off the toolset without a
+// release, in both directions.
+func TestComputerToolset_AcceptanceDatasheetOutranksFallback(t *testing.T) {
+	t.Run("row grants the toolset to a model the fallback withholds it from", func(t *testing.T) {
+		yes := true
+		setOverride(t, "claude-sonnet-4-6", schemas.ModelCapabilities{SupportsComputerToolset: &yes})
+		assert.True(t, AcceptsComputerToolset(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6")))
+	})
+
+	t.Run("row withholds it from a model the fallback grants", func(t *testing.T) {
+		no := false
+		setOverride(t, "claude-opus-5", schemas.ModelCapabilities{SupportsComputerToolset: &no})
+		assert.False(t, AcceptsComputerToolset(schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-5")))
+	})
+
+	t.Run("a row cannot grant it on a surface that does not serve it", func(t *testing.T) {
+		yes := true
+		providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			return &schemas.ModelCapabilities{SupportsComputerToolset: &yes}
+		})
+		t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+		assert.False(t, AcceptsComputerToolset(schemas.ResolveModelCaps(schemas.Bedrock, "claude-opus-5-5")),
+			"AWS serves only the dated tool regardless of the row")
+	})
 }
 
 // The guard keys off the geometry, not off where the tool came from, so a genuine
@@ -330,12 +386,12 @@ func TestComputerToolset_RealGeometryStillConverts(t *testing.T) {
 // guard: a toolset entry there would otherwise become a dated tool with neither a
 // name nor a display.
 func TestComputerToolset_RawBodyDropsUndowngradableToolset(t *testing.T) {
-	body := []byte(`{"model":"claude-opus-5","max_tokens":64,` +
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,` +
 		`"tools":[{"type":"computer_toolset_20260801"},` +
 		`{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"},` +
 		`{"type":"bash_20250124","name":"bash"}]}`)
 
-	out, err := RemapRawToolVersionsForProvider(body, schemas.Vertex, "claude-opus-5")
+	out, err := RemapRawToolVersionsForProvider(body, schemas.Vertex, "claude-sonnet-4-6")
 	require.NoError(t, err)
 
 	types := []string{}

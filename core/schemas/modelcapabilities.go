@@ -33,6 +33,7 @@ type ModelCapabilities struct {
 	SupportsCodeExecution           *bool `json:"supports_code_execution,omitempty"`
 	SupportsBashTool                *bool `json:"supports_bash_tool,omitempty"`
 	SupportsTextEditorTool          *bool `json:"supports_text_editor_tool,omitempty"`
+	SupportsComputerToolset         *bool `json:"supports_computer_toolset,omitempty"` // accepts the computer_toolset_20260801 client toolset; absent ⇒ name detection
 	SupportsMemoryTool              *bool `json:"supports_memory_tool,omitempty"`
 	SupportsToolSearch              *bool `json:"supports_tool_search,omitempty"`
 	ToolNameMaxLength               *int  `json:"tool_name_max_length,omitempty"`     // longest tool name the wire accepts; absent falls back to the per-provider default in core/providers/utils (64 for OpenAI-compatible wires and Bedrock, 128 for Anthropic and Gemini)
