@@ -120,13 +120,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 					<p className="text-muted-foreground text-sm">Map incoming User-Agent strings to app names and optional logos used in logs.</p>
 				</div>
 				<div className="pt-2">
-					<Button
-						type="button"
-						size="sm"
-						onClick={openAddSheet}
-						disabled={controlsDisabled}
-						data-testid="user-agent-mapping-add-btn"
-					>
+					<Button type="button" size="sm" onClick={openAddSheet} disabled={controlsDisabled} data-testid="user-agent-mapping-add-btn">
 						<Plus className="h-4 w-4" />
 						Add Mapping
 					</Button>

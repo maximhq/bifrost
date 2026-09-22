@@ -199,7 +199,6 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 	return (
 		<ModelCatalogTable
 			rows={filteredRows}
-			providers={(providers ?? []).map((p) => p.name)}
 			providerFilter={providerFilter}
 			onProviderFilterChange={setProviderFilter}
 			totalProviders={(providers ?? []).length}

@@ -437,8 +437,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 													<TooltipContent className="max-w-sm">
 														<p>
 															Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and
-															here, it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their
-															alias name - blocking only the underlying model does not block aliases that point to it.
+															here, it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their alias
+															name - blocking only the underlying model does not block aliases that point to it.
 														</p>
 													</TooltipContent>
 												</Tooltip>

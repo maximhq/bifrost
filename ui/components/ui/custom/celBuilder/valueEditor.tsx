@@ -134,7 +134,7 @@ export function ValueEditor({
 				} else if (typeof parsedValue === "string") {
 					valueToUse = parsedValue;
 				}
-			} catch (error) {}
+			} catch (error) { }
 		}
 
 		// For single operators (=, !=), use single select
@@ -195,7 +195,7 @@ export function ValueEditor({
 					value={selectedValues}
 					onChange={handleMultiselectChange}
 					placeholder="Select providers..."
-					className="!min-h-10 w-[360px]"
+					className="w-[360px]"
 					noPortal
 				/>
 			) : (
@@ -205,7 +205,7 @@ export function ValueEditor({
 					onValueChange={handleMultiselectChange}
 					options={options}
 					placeholder="Select providers..."
-					className="h-10 w-[360px]"
+					className="h-9 w-[360px]"
 					noPortal
 				/>
 			);
@@ -218,7 +218,7 @@ export function ValueEditor({
 				value={value || ""}
 				onChange={(newValue: string) => handleOnChange(newValue)}
 				placeholder={fieldData.placeholder || "Select..."}
-				className="!min-h-10 w-[360px]"
+				className="w-[360px]"
 				noPortal
 			/>
 		) : (
@@ -227,7 +227,7 @@ export function ValueEditor({
 				onValueChange={(newValue) => handleOnChange(newValue ?? "")}
 				options={options}
 				placeholder={fieldData.placeholder || "Select..."}
-				className="h-10 w-[360px]"
+				className="h-9 w-[360px]"
 				noPortal
 			/>
 		);

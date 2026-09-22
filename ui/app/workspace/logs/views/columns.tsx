@@ -237,7 +237,7 @@ export function LogMessageCell({
 				</span>
 			)}
 			{realtimeMessages &&
-				(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
 				<div
 					className={cn(
 						contentClassName,
@@ -278,43 +278,70 @@ export const createColumns = (
 	// corner connector instead so the hierarchy stays readable in any column order.
 	const expandColumn: ColumnDef<LogEntry>[] = groupedView
 		? [
-			{
-				id: "expand",
-				header: "",
-				size: 52,
-				cell: ({ row, table }) => {
-					const meta = table.options.meta as LogsTableMeta | undefined;
-					const log = row.original as DisplayLogEntry;
-					// A session member keeps its own chain chevron, so the tree can be
-					// walked a level deeper. Every other nested row is a leaf.
-					if (log.__chainChild && !(log.__rowKind === "session-member" && (log.child_count ?? 0) > 0)) {
-						return (
-							<div className="flex h-full w-full items-center justify-center">
-								<CornerDownRight className="text-muted-foreground/70 size-3.5 shrink-0" />
-							</div>
-						);
-					}
-					// Session grouping wins on a top-level row: the session chevron
-					// lists the session's other requests and this row's own attempts
-					// together, so nothing becomes unreachable by taking this branch.
-					const sessionCount = log.session_child_count ?? 0;
-					if (!log.__chainChild && sessionCount > 0 && meta) {
-						const isExpanded = meta.expandedSessionIds.has(log.id);
-						const isLoading = meta.loadingSessionIds.has(log.id) || meta.loadingChainIds.has(log.id);
+				{
+					id: "expand",
+					header: "",
+					size: 52,
+					cell: ({ row, table }) => {
+						const meta = table.options.meta as LogsTableMeta | undefined;
+						const log = row.original as DisplayLogEntry;
+						// A session member keeps its own chain chevron, so the tree can be
+						// walked a level deeper. Every other nested row is a leaf.
+						if (log.__chainChild && !(log.__rowKind === "session-member" && (log.child_count ?? 0) > 0)) {
+							return (
+								<div className="flex h-full w-full items-center justify-center">
+									<CornerDownRight className="text-muted-foreground/70 size-3.5 shrink-0" />
+								</div>
+							);
+						}
+						// Session grouping wins on a top-level row: the session chevron
+						// lists the session's other requests and this row's own attempts
+						// together, so nothing becomes unreachable by taking this branch.
+						const sessionCount = log.session_child_count ?? 0;
+						if (!log.__chainChild && sessionCount > 0 && meta) {
+							const isExpanded = meta.expandedSessionIds.has(log.id);
+							const isLoading = meta.loadingSessionIds.has(log.id) || meta.loadingChainIds.has(log.id);
+							return (
+								<button
+									type="button"
+									data-testid="log-session-expand-btn"
+									aria-label={
+										isExpanded
+											? "Collapse this session"
+											: `Expand ${sessionCount} more request${sessionCount === 1 ? "" : "s"} in this session`
+									}
+									aria-expanded={isExpanded}
+									className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
+									onClick={(event) => {
+										event.stopPropagation();
+										meta.onToggleSession(log);
+									}}
+								>
+									{isLoading ? (
+										<Loader2 className="size-3.5 shrink-0 animate-spin" />
+									) : (
+										<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
+									)}
+									<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{sessionCount}</span>
+								</button>
+							);
+						}
+						const childCount = log.child_count ?? 0;
+						if (!childCount || !meta) return null;
+						const isExpanded = meta.expandedChainIds.has(log.id);
+						const isLoading = meta.loadingChainIds.has(log.id);
 						return (
 							<button
 								type="button"
-								data-testid="log-session-expand-btn"
-								aria-label={
-									isExpanded
-										? "Collapse this session"
-										: `Expand ${sessionCount} more request${sessionCount === 1 ? "" : "s"} in this session`
-								}
+								data-testid="log-chain-expand-btn"
+								// Not always a fallback chain: a settled async job nests its cost row
+								// here too, and calling that an "attempt" misreads what it is.
+								aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
 								aria-expanded={isExpanded}
 								className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
 								onClick={(event) => {
 									event.stopPropagation();
-									meta.onToggleSession(log);
+									meta.onToggleChain(log);
 								}}
 							>
 								{isLoading ? (
@@ -322,39 +349,12 @@ export const createColumns = (
 								) : (
 									<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
 								)}
-								<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{sessionCount}</span>
+								<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{childCount}</span>
 							</button>
 						);
-					}
-					const childCount = log.child_count ?? 0;
-					if (!childCount || !meta) return null;
-					const isExpanded = meta.expandedChainIds.has(log.id);
-					const isLoading = meta.loadingChainIds.has(log.id);
-					return (
-						<button
-							type="button"
-							data-testid="log-chain-expand-btn"
-							// Not always a fallback chain: a settled async job nests its cost row
-							// here too, and calling that an "attempt" misreads what it is.
-							aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
-							aria-expanded={isExpanded}
-							className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
-							onClick={(event) => {
-								event.stopPropagation();
-								meta.onToggleChain(log);
-							}}
-						>
-							{isLoading ? (
-								<Loader2 className="size-3.5 shrink-0 animate-spin" />
-							) : (
-								<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
-							)}
-							<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{childCount}</span>
-						</button>
-					);
+					},
 				},
-			},
-		]
+			]
 		: [];
 
 	const baseColumns: ColumnDef<LogEntry>[] = [
@@ -721,20 +721,20 @@ export const createColumns = (
 
 	const actionsColumn: ColumnDef<LogEntry>[] = hasDeleteAccess
 		? [
-			{
-				id: "actions",
-				header: "",
-				size: 56,
-				cell: ({ row }) => {
-					const log = row.original;
-					return (
-						<div className="flex justify-center">
-							<LogActionsMenu log={log} onDelete={onDelete} />
-						</div>
-					);
+				{
+					id: "actions",
+					header: "",
+					size: 56,
+					cell: ({ row }) => {
+						const log = row.original;
+						return (
+							<div className="flex justify-center">
+								<LogActionsMenu log={log} onDelete={onDelete} />
+							</div>
+						);
+					},
 				},
-			},
-		]
+			]
 		: [];
 
 	return [...expandColumn, ...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];

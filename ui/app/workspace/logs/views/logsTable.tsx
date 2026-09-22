@@ -288,9 +288,7 @@ export function LogsDataTable({
 												{cell.column.id === "status" ? (
 													flexRender(cell.column.columnDef.cell, cell.getContext())
 												) : (
-													<div
-														className={cn("relative grid grid-cols-[minmax(0,1fr)] items-center overflow-hidden", ROW_CONTENT_HEIGHT)}
-													>
+													<div className={cn("relative grid grid-cols-[minmax(0,1fr)] items-center overflow-hidden", ROW_CONTENT_HEIGHT)}>
 														{flexRender(cell.column.columnDef.cell, cell.getContext())}
 													</div>
 												)}

@@ -1,17 +1,18 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { ComboboxSelect } from "@/components/ui/combobox";
 import ModelParameters from "@/components/ui/custom/modelParameters";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { resolveProviderIconKey } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
-import { ModelProviderName } from "@/lib/types/config";
+import { ModelProvider } from "@/lib/types/config";
 import type { VirtualKey } from "@/lib/types/governance";
 import { ModelParams } from "@/lib/types/prompts";
 import { cn } from "@/lib/utils";
@@ -75,29 +76,26 @@ export function SettingsPanel() {
 
 	const isInitialLoading = isLoadingProviders;
 
-	const configuredProviders = useMemo(() => {
-		const activeVirtualKeys = virtualKeysData?.virtual_keys?.filter((vk) => vk.is_active) ?? [];
-		if (!hasLoadedAllKeys) {
-			return providers ?? [];
-		}
-		const keyedProviders = new Set((allKeys ?? []).map((k) => k.provider));
-		return (providers ?? []).filter((p) => {
-			if (keyedProviders.has(p.name)) return true;
-			// Include providers that have active virtual keys (wildcard or explicitly targeting this provider)
+	// Only a provider you could actually send a request to: one with a key of its own, or one
+	// an active virtual key covers.
+	const isUsableProvider = useCallback(
+		(p: ModelProvider) => {
+			if (!hasLoadedAllKeys) return true;
+			if ((allKeys ?? []).some((k) => k.provider === p.name)) return true;
+			const activeVirtualKeys = virtualKeysData?.virtual_keys?.filter((vk) => vk.is_active) ?? [];
 			return activeVirtualKeys.some(
 				(vk) => !vk.provider_configs || vk.provider_configs.length === 0 || vk.provider_configs.some((pc) => pc.provider === p.name),
 			);
-		});
-	}, [providers, virtualKeysData, allKeys, hasLoadedAllKeys]);
+		},
+		[virtualKeysData, allKeys, hasLoadedAllKeys],
+	);
 
-	// Ensure current provider always has a label-resolved option (even before providers query loads)
-	const providerOptions = useMemo(() => {
-		const opts = configuredProviders.map((p) => ({ label: getProviderLabel(p.name), value: p.name }));
-		if (provider && !opts.find((o) => o.value === provider)) {
-			opts.unshift({ label: getProviderLabel(provider), value: provider as ModelProviderName });
-		}
-		return opts;
-	}, [configuredProviders, provider]);
+	// A saved provider still names something the filter above drops, or the providers query has
+	// not landed yet. Either way the trigger has to say what the prompt is actually set to.
+	const savedProviderOption = useMemo(() => {
+		if (!provider || (providers ?? []).some((p) => p.name === provider)) return undefined;
+		return [{ value: provider, label: getProviderLabel(provider), iconKey: resolveProviderIconKey(provider) }];
+	}, [providers, provider]);
 
 	const providerKeys = useMemo(() => (allKeys ?? []).filter((k) => k.provider === provider), [allKeys, provider]);
 
@@ -210,13 +208,13 @@ export function SettingsPanel() {
 							<div className="space-y-6">
 								<div className="flex flex-col gap-2" data-testid="settings-provider">
 									<Label className="text-muted-foreground text-xs font-medium uppercase">Provider</Label>
-									<ComboboxSelect
-										options={providerOptions}
+									<ProviderSelector
+										filter={isUsableProvider}
+										extraOptions={savedProviderOption}
 										value={provider}
-										onValueChange={(v) => v && onProviderChange(v)}
+										onChange={(v: string) => v && onProviderChange(v)}
 										placeholder="Select provider"
-										hideClear
-										className="h-9"
+										className="!h-9 !min-h-9"
 									/>
 								</div>
 
