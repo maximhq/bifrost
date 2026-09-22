@@ -43,8 +43,7 @@
 // request: no PreLLMHook/PostLLMHook, and therefore no governance, no logging,
 // no telemetry, no cost tracking for these connections. Session limits and the
 // upstream connection pool are Bifrost's, not ours, so this plugin enforces its
-// own. That is the price of a plugin-side PoC; the production shape is a real
-// RealtimeProvider in core. See README.md.
+// own.
 package main
 
 import (

@@ -7,16 +7,13 @@ Bifrost has no Voice Live support today. This plugin adds it from the outside by
 client socket in `HTTPTransportPreHook`, completing the WebSocket upgrade itself, and relaying frames
 to Voice Live in both directions.
 
-> **Status: proof of concept.** It works, and the tests prove it end to end. It also bypasses
-> governance, logging, telemetry and cost tracking — see [What this costs you](#what-this-costs-you).
-
-## Is this even possible? Yes — here is why
+## Implementational details
 
 An HTTP→WebSocket upgrade is a 101 response plus a hijack of the underlying TCP socket. fasthttp
 exposes that as `RequestCtx.Hijack`, and `HTTPTransportPreHook` runs inside the per-request goroutine
 that owns the connection. So the only question is whether a plugin can reach the `*fasthttp.RequestCtx`.
 
-It can, and not by accident. `TransportInterceptorMiddleware` builds the plugin's context like this:
+`TransportInterceptorMiddleware` builds the plugin's context like this:
 
 ```go
 bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline) // parent IS the *fasthttp.RequestCtx
@@ -62,7 +59,7 @@ this plugin is dead and the fix is a core affordance — see [If this breaks](#i
 
 ### THE ONE RULE
 
-**Never touch the `*fasthttp.RequestCtx` inside the hijack handler.** fasthttp recycles it as soon as
+**Do not touch the `*fasthttp.RequestCtx` inside the hijack handler.** fasthttp recycles it as soon as
 the request handler returns — which is *before* the hijack handler runs. Everything the connection
 needs (model, upstream URL, headers, timeouts) is captured into locals **before** `Upgrade` is called.
 The hijacked `net.Conn`, and the `*ws.Conn` wrapping it, outlive the `RequestCtx` and are safe.
@@ -70,29 +67,6 @@ The hijacked `net.Conn`, and the `*ws.Conn` wrapping it, outlive the `RequestCtx
 This is the same hazard `core/schemas/context.go` guards against when it refuses to read values
 through to a pooled `RequestCtx` parent — that refusal exists because reading a recycled ctx caused a
 real SIGSEGV.
-
-## Why the obvious alternatives don't work
-
-**Why not add Voice Live as a Bifrost provider from the plugin?** `wsrealtime.go` requires
-`GetProviderByKey(provider)` to return a compiled-in provider implementing `schemas.RealtimeProvider`
-(14 methods). The `.so` loader looks up a fixed symbol list; there is no provider-registration symbol.
-A plugin cannot become a provider.
-
-**Why not point Bifrost's existing Azure provider at Voice Live?** Because the URL is hardcoded
-(`core/providers/azure/realtime.go`):
-
-```go
-return fmt.Sprintf("%s/openai/v1/realtime?model=%s", endpoint, url.QueryEscape(model))
-```
-
-Voice Live lives at `/voice-live/realtime` and requires an `api-version` query parameter. And
-`RealtimeWebSocketURL(key, model, intent)` takes **no ctx**, so no plugin can influence it. The only
-input is `key.AzureKeyConfig.Endpoint`, and no endpoint value produces the Voice Live URL — anything
-you smuggle in lands *before* the hardcoded `?`, so `model` can never become its own query parameter.
-
-**Why not buffer a turn over plain HTTP instead?** You can (short-circuit `PreLLMHook`, call Voice
-Live, return the finished turn), but that gives up barge-in, incremental audio, and first-token
-latency — i.e. everything that makes a realtime model worth using. The hijack keeps full duplex.
 
 ## What this costs you
 
@@ -200,22 +174,3 @@ Session config, voices, avatars and noise-suppression settings are passed throug
   It follows from `WithPluginScope` leaving the scoped value map empty. Nothing guarantees that stays
   true.
 - Go loads a `.so` once per path, so package-level state is shared by every plugin entry pointing at it.
-
-## If this breaks
-
-If a future change stamps a value onto the plugin-scoped context before the hook runs,
-`GetParentCtxWithUserValues()` starts returning a `*context.valueCtx` and the hijack becomes
-impossible — silently, because the plugin would just fall through. `TestRequestCtxIsReachableFromPluginScope`
-exists to catch that. The plugin also fails loudly with a `503` at runtime rather than passing the
-request to a handler that cannot serve Voice Live.
-
-The durable fix is a small core affordance, either of:
-
-1. **Expose the connection deliberately** — a documented accessor for the transport's `RequestCtx`
-   (or a narrow `Hijack(func(net.Conn))` on `BifrostContext`), so socket ownership is a supported
-   plugin capability rather than a lucky consequence of context plumbing.
-2. **Add a `RealtimeProvider` for Voice Live in core** — `core/providers/voicelive/`, which makes the
-   whole plugin unnecessary and restores governance, logging, telemetry and cost tracking.
-
-Option 2 is the right production answer. Option 1 is what makes plugin-side realtime experiments like
-this one legitimate rather than incidental.
