@@ -7659,7 +7659,8 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 }
 
 // prepareResponsesRequest returns the Responses request to dispatch for one attempt:
-// prompt-cache breakpoints first, then embedded client tools promoted and namespace
+// billing metadata restored for Anthropic models, prompt-cache breakpoints
+// injected, then embedded client tools promoted and namespace
 // tools flattened when the target wire does not understand them. All steps are copy-on-write, so the shared
 // req.BifrostRequest keeps the caller's namespaces for a later fallback attempt against
 // a wire that does.
@@ -7669,6 +7670,7 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 // the per-provider default in providerUtils applies, keyed on the BASE provider so a
 // custom provider wrapping OpenAI is treated like OpenAI.
 func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.Provider, key schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
+	r = restoreResponsesBillingHeader(ctx, provider.GetProviderKey(), r)
 	r = promptCacheResponsesRequest(ctx, config, provider.GetProviderKey(), r)
 	if r == nil {
 		return nil, nil

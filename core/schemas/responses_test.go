@@ -10,6 +10,86 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAnthropicBillingHeaderExtraction(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli; cch=12345;"
+	for _, tc := range []struct {
+		name, text string
+		strip      bool
+	}{
+		{"metadata", header, true},
+		{"whitespace", " \n" + header + "\n", true},
+		{"future field", "x-anthropic-billing-header: cc_version=2.1.270.abc; future=value;", true},
+		{"ordinary text", "Keep these instructions.", false},
+		{"quoted header", "Discuss " + header, false},
+		{"mixed multiline", header + "\nKeep these instructions.", false},
+		{"mixed same line", header + " Keep these instructions.", false},
+	} {
+		for _, shape := range []string{"string", "blocks"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
+				content := &ResponsesMessageContent{ContentStr: &tc.text}
+				if shape == "blocks" {
+					content = &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeText, Text: &tc.text}}}
+				}
+				r := &BifrostResponsesRequest{Input: []ResponsesMessage{
+					{Role: Ptr(ResponsesInputMessageRoleSystem), Content: content},
+					{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: &tc.text}},
+				}, RawRequestBody: []byte("original raw body")}
+				before, err := MarshalSorted(r)
+				require.NoError(t, err)
+				r.ExtractAnthropicBillingHeader()
+				r.ExtractAnthropicBillingHeader() // Repeated normalization is harmless.
+				if tc.strip {
+					require.Len(t, r.Input, 1)
+					assert.Equal(t, ResponsesInputMessageRoleUser, *r.Input[0].Role)
+					assert.Equal(t, tc.text, *r.Input[0].Content.ContentStr)
+				} else {
+					assert.Nil(t, r.anthropicBillingHeader)
+					require.Len(t, r.Input, 2)
+				}
+				assert.Equal(t, "original raw body", string(r.RawRequestBody))
+				restored := r.WithAnthropicBillingHeader()
+				after, err := MarshalSorted(restored)
+				require.NoError(t, err)
+				assert.Equal(t, string(before), string(after))
+				assert.Same(t, restored, restored.WithAnthropicBillingHeader())
+			})
+		}
+	}
+}
+
+func TestAnthropicBillingHeaderRestoresPositionsAndCacheMarkers(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c;"
+	block := func(text string) ResponsesMessageContentBlock {
+		return ResponsesMessageContentBlock{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr(text)}
+	}
+	for _, onlyHeaders := range []bool{false, true} {
+		blocks := []ResponsesMessageContentBlock{block(header), block(header)}
+		if !onlyHeaders {
+			blocks = []ResponsesMessageContentBlock{block("first"), block(header), block("last"), block(header)}
+		}
+		blocks[1].CacheControl = &CacheControl{Type: CacheControlTypeEphemeral}
+		r := &BifrostResponsesRequest{Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: blocks}},
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hello")}},
+		}}
+		before, err := MarshalSorted(r)
+		require.NoError(t, err)
+		r.ExtractAnthropicBillingHeader()
+		normalized, err := MarshalSorted(r)
+		require.NoError(t, err)
+		assert.NotContains(t, string(normalized), "x-anthropic-billing-header:")
+		// Core fallbacks shallow-copy the request; the private metadata must survive.
+		fallback := *r
+		restored := fallback.WithAnthropicBillingHeader()
+		after, err := MarshalSorted(restored)
+		require.NoError(t, err)
+		assert.Equal(t, string(before), string(after))
+		unchanged, err := MarshalSorted(r)
+		require.NoError(t, err)
+		assert.Equal(t, string(normalized), string(unchanged))
+	}
+}
+
 // TestBifrostResponsesStreamResponseOmitsEmptyItem verifies that events without
 // an item object (response.created, output_text.delta, response.completed, ...)
 // do not serialize "item": null. Strict Responses API clients (e.g. opencode's
