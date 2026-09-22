@@ -181,6 +181,33 @@ For reversible modes such as `logs_only` and `runtime_reversible`, the offloaded
 
 For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
 
+## Migrating existing logs
+
+Enabling `logs_store.object_storage` affects new writes. To offload payloads that
+were already stored in the database, run the one-time backfill command against
+the same application directory as the gateway:
+
+```bash
+bifrost migrate-offload --app-dir /path/to/bifrost-data --dry-run
+bifrost migrate-offload --app-dir /path/to/bifrost-data --older-than 24h
+```
+
+The command uploads each payload before replacing the database row with the
+lightweight hybrid form. It is resumable and skips rows whose `has_object` flag
+is already set. Useful options:
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Count rows and bytes without changing log rows or object-storage payloads. |
+| `--older-than 24h` | Avoid rows that may still be receiving online updates. |
+| `--batch-size 100` | Number of candidate rows read per page. |
+| `--concurrency 10` | Number of parallel object uploads. |
+| `--no-mcp` | Leave historical MCP tool logs in the database. |
+
+Run the dry-run first. For a live deployment, use an `--older-than` window that
+is safely beyond the maximum request/update lifetime, or pause writers while the
+backfill runs. Re-running the command is safe after interruption.
+
 ## Retention policy
 
 Bifrost ships a background log cleaner that deletes old logs on a fixed schedule.
