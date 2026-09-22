@@ -6,9 +6,8 @@
 import { ComboboxSelect, ComboboxSelectOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Textarea } from "@/components/ui/textarea";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { getProviderLabel } from "@/lib/constants/logs";
 import { useEffect, useState } from "react";
 import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
 
@@ -157,13 +156,10 @@ export function ValueEditor({
 			.filter((option) => !("options" in option) && (option as any).name)
 			.map((option) => {
 				const optName = (option as any).name || "";
-				const optLabel = (option as any).label || optName;
-
 				return {
 					value: optName,
-					label: isProviderField ? getProviderLabel(optName) : optLabel,
+					label: (option as any).label || optName,
 					disabled: (option as any).disabled || false,
-					icon: isProviderField ? <RenderProviderIcon provider={optName as ProviderIconType} size="sm" className="h-4 w-4" /> : undefined,
 				};
 			});
 
@@ -191,7 +187,18 @@ export function ValueEditor({
 				handleOnChange(values.length > 0 ? JSON.stringify(values) : "");
 			};
 
-			return (
+			return isProviderField ? (
+				<ProviderSelector
+					multiple
+					source="values"
+					values={options}
+					value={selectedValues}
+					onChange={handleMultiselectChange}
+					placeholder="Select providers..."
+					className="!min-h-10 w-[360px]"
+					noPortal
+				/>
+			) : (
 				<ComboboxSelect
 					multiple
 					value={selectedValues}
@@ -204,7 +211,17 @@ export function ValueEditor({
 			);
 		}
 
-		return (
+		return isProviderField ? (
+			<ProviderSelector
+				source="values"
+				values={options}
+				value={value || ""}
+				onChange={(newValue: string) => handleOnChange(newValue)}
+				placeholder={fieldData.placeholder || "Select..."}
+				className="!min-h-10 w-[360px]"
+				noPortal
+			/>
+		) : (
 			<ComboboxSelect
 				value={value || null}
 				onValueChange={(newValue) => handleOnChange(newValue ?? "")}
