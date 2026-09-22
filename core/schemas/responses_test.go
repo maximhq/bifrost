@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestBifrostResponsesStreamResponseOmitsEmptyItem verifies that events without
@@ -342,6 +345,63 @@ func TestBifrostResponsesResponseUnmarshalTimestamps(t *testing.T) {
 			t.Fatalf("expected CompletedAt 1716000099, got %v", r.CompletedAt)
 		}
 	})
+}
+
+func TestResponsesMessageContentUnmarshalJSONBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want ResponsesMessageContent
+	}{
+		{name: "empty string", data: `""`, want: ResponsesMessageContent{ContentStr: Ptr("")}},
+		{name: "string with whitespace", data: " \t\r\n\"hello\" \t\r\n", want: ResponsesMessageContent{ContentStr: Ptr("hello")}},
+		{name: "escaped string", data: `"line\n\"quote\"\u4e16\u754c"`, want: ResponsesMessageContent{ContentStr: Ptr("line\n\"quote\"\u4e16\u754c")}},
+		{name: "null", data: " \t\r\nnull \t\r\n", want: ResponsesMessageContent{ContentStr: Ptr("")}},
+		{name: "empty array", data: " \t\r\n[] \t\r\n", want: ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{}}},
+		{
+			name: "content blocks",
+			data: `[{"type":"input_text","text":"hello"}]`,
+			want: ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+				{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("hello")},
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got ResponsesMessageContent
+			require.NoError(t, got.UnmarshalJSON([]byte(tt.data)))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	invalid := []struct {
+		name string
+		data string
+	}{
+		{name: "empty", data: ""},
+		{name: "whitespace only", data: " \t\r\n"},
+		{name: "object", data: `{}`},
+		{name: "number", data: `123`},
+		{name: "boolean", data: `true`},
+		{name: "non JSON whitespace", data: "\vnull"},
+		{name: "truncated null", data: `nul`},
+		{name: "truncated string", data: `"unterminated`},
+		{name: "invalid escape", data: `"\q"`},
+		{name: "truncated array", data: `[`},
+		{name: "invalid array item", data: `[{"type":"input_text","text":"new"},42]`},
+		{name: "trailing comma", data: `[{},]`},
+		{name: "trailing value", data: `"text" false`},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			before := ResponsesMessageContent{ContentStr: Ptr("previous")}
+			got := before
+			err := got.UnmarshalJSON([]byte(tt.data))
+			const wantError = "content field is neither a string nor an array of Content blocks"
+			require.EqualError(t, err, wantError)
+			assert.Equal(t, before, got, "failed decode changed receiver")
+		})
+	}
 }
 
 // TestResponsesMessageContentEmptyMarshalsToEmptyString verifies that empty

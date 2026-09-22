@@ -500,58 +500,52 @@ type VideoGenerationHTTPRequest struct {
 
 // UnmarshalJSON unmarshals the responses request input
 func (r *ResponsesRequestInput) UnmarshalJSON(data []byte) error {
-	var str string
-	if err := sonic.Unmarshal(data, &str); err == nil {
-		r.ResponsesRequestInputStr = &str
-		r.ResponsesRequestInputArray = nil
-		return nil
+	// Peek the first non-whitespace byte to select the decode path without a
+	// failed-attempt allocation. Strings and null use the string decode path;
+	// other values use the array path and preserve the original generic error.
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '"':
+			var str string
+			if err := sonic.Unmarshal(data, &str); err != nil {
+				return fmt.Errorf("invalid responses request input")
+			}
+			r.ResponsesRequestInputStr = &str
+			r.ResponsesRequestInputArray = nil
+			return nil
+		case 'n':
+			// null decodes to the empty string, matching what the previous
+			// try-string-first implementation produced.
+			var str string
+			if err := sonic.Unmarshal(data, &str); err != nil {
+				return fmt.Errorf("invalid responses request input")
+			}
+			r.ResponsesRequestInputStr = &str
+			r.ResponsesRequestInputArray = nil
+			return nil
+		}
+		break
 	}
 	var array []schemas.ResponsesMessage
-	if err := sonic.Unmarshal(data, &array); err == nil {
-		r.ResponsesRequestInputStr = nil
-		r.ResponsesRequestInputArray = array
-		return nil
+	if err := sonic.Unmarshal(data, &array); err != nil {
+		return fmt.Errorf("invalid responses request input")
 	}
-	return fmt.Errorf("invalid responses request input")
-}
-
-// UnmarshalJSON implements custom JSON unmarshalling for ResponsesRequest.
-// This is needed because ResponsesParameters has a custom UnmarshalJSON method,
-// which interferes with sonic's handling of the embedded BifrostParams struct.
-func (rr *ResponsesRequest) UnmarshalJSON(data []byte) error {
-	// First, unmarshal BifrostParams fields directly
-	type bifrostAlias BifrostParams
-	var bp bifrostAlias
-	if err := sonic.Unmarshal(data, &bp); err != nil {
-		return err
-	}
-	rr.BifrostParams = BifrostParams(bp)
-
-	// Unmarshal messages
-	var inputStruct struct {
-		Input ResponsesRequestInput `json:"input"`
-	}
-	if err := sonic.Unmarshal(data, &inputStruct); err != nil {
-		return err
-	}
-	rr.Input = inputStruct.Input
-
-	// Unmarshal ResponsesParameters (which has its own custom unmarshaller)
-	if rr.ResponsesParameters == nil {
-		rr.ResponsesParameters = &schemas.ResponsesParameters{}
-	}
-	if err := sonic.Unmarshal(data, rr.ResponsesParameters); err != nil {
-		return err
-	}
-
+	r.ResponsesRequestInputStr = nil
+	r.ResponsesRequestInputArray = array
 	return nil
 }
 
 // ResponsesRequest is a bifrost responses request
+//
+// Plain struct decoding handles all fields in one pass. Embed parameters by
+// value: Sonic's optdec skips null values reached through an embedded pointer,
+// which would retain earlier values when a duplicate parameter is set to null.
 type ResponsesRequest struct {
 	Input ResponsesRequestInput `json:"input"`
 	BifrostParams
-	*schemas.ResponsesParameters
+	schemas.ResponsesParameters
 }
 
 // CompactionHTTPRequest is a bifrost compaction request (subset of responses fields)
@@ -1125,9 +1119,6 @@ func prepareResponsesRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Res
 	if len(req.Input.ResponsesRequestInputArray) == 0 && req.Input.ResponsesRequestInputStr == nil {
 		return nil, nil, fmt.Errorf("input is required for responses")
 	}
-	if req.ResponsesParameters == nil {
-		req.ResponsesParameters = &schemas.ResponsesParameters{}
-	}
 	req.ResponsesParameters.ExtraParams = base.ExtraParams
 
 	input := req.Input.ResponsesRequestInputArray
@@ -1143,7 +1134,7 @@ func prepareResponsesRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Res
 		Provider:  base.Provider,
 		Model:     base.ModelName,
 		Input:     input,
-		Params:    req.ResponsesParameters,
+		Params:    &req.ResponsesParameters,
 		Fallbacks: base.Fallbacks,
 	}, nil
 }
