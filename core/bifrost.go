@@ -6296,7 +6296,10 @@ func executeRequestWithRetries[T any](
 	logger schemas.Logger,
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
-	checkAzurePreamble := providerKey == schemas.Azure && IsStreamRequestType(requestType)
+	isStreamRequest := IsStreamRequestType(requestType)
+	// Whether the previous attempt buffered startup events; its stream-end
+	// markers must be cleared before the next attempt reads a fresh stream.
+	prevCheckedPreamble := false
 
 	// Emit the terminal routing-engine entry on every return path — including
 	// early returns from key-selection failures and tracer-missing — so the
@@ -6631,7 +6634,7 @@ func executeRequestWithRetries[T any](
 		}
 
 		// The previous failed stream has drained before reaching this retry.
-		if checkAzurePreamble && attempts > 0 {
+		if prevCheckedPreamble && attempts > 0 {
 			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
@@ -6641,7 +6644,17 @@ func executeRequestWithRetries[T any](
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
-		// Azure Chat and Responses may emit startup metadata before an error.
+		// Azure and OpenAI upstreams (including custom providers built on them,
+		// whatever their model ids) and OpenAI models on any other host (Bedrock,
+		// Bedrock Mantle, Vertex) may emit startup events (response.created,
+		// in_progress, an empty role delta) before an overload or throttle error.
+		// Checked after requestHandler so the key's resolved alias decides the
+		// model family.
+		baseProvider := schemas.ResolveBaseProvider(ctx, providerKey)
+		checkPreamble := isStreamRequest &&
+			(baseProvider == schemas.Azure || baseProvider == schemas.OpenAI ||
+				schemas.IsOpenAIModelFamily(ctx, model))
+		prevCheckedPreamble = checkPreamble
 		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
@@ -6650,7 +6663,7 @@ func executeRequestWithRetries[T any](
 					drainDone     <-chan struct{}
 					firstChunkErr *schemas.BifrostError
 				)
-				if checkAzurePreamble {
+				if checkPreamble {
 					requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 					checkedStream, drainDone, firstChunkErr = providerUtils.CheckStreamPreambleForError(
 						ctx, requestID, streamChan, azure.IsStreamPreamble,
