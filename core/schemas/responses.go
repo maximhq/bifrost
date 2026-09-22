@@ -1940,6 +1940,10 @@ type ResponsesToolMessage struct {
 	Error     *string                           `json:"error,omitempty"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
+	// ToolsetName is the client toolset a member call belongs to ("computer" for
+	// computer_toolset_20260801). Anthropic requires it on both halves of a
+	// call/result pair or neither, so it rides the call and the output alike.
+	ToolsetName *string `json:"toolset_name,omitempty"`
 
 	// Tool calls and outputs
 	*ResponsesFileSearchToolCall

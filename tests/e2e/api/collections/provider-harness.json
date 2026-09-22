@@ -165126,6 +165126,1713 @@
           }
         }
       ]
+    },
+    {
+      "name": "111. Claude Opus 5.5 request surface (opus-5-5)",
+      "description": "Claude Opus 5.5 changed the request surface in ways that 400 if forwarded unchanged, verified against the live Claude API: thinking:{\"type\":\"disabled\"} and thinking:{\"type\":\"enabled\"} are rejected at every effort level (Opus 5 accepts disabled at effort high or below); forced tool_choice \"any\"/\"tool\" is rejected, on count_tokens too; and computer use accepts only computer_toolset_20260801 - both computer_20251124 and computer_20250124 are rejected on the Claude API and Google Cloud, while AWS and Foundry still serve the dated tool. A toolset entry carries no name and no display_* geometry, its calls return under member names (screenshot, left_click) tagged with toolset_name, and that tag must appear on both halves of a call/result pair or neither - a half-preserved pair is a 400 in either direction. These cases assert the OUTBOUND body via x-bf-send-back-raw-request, so they pin Bifrost's rewrite rather than merely that upstream accepted the request.",
+      "item": [
+        {
+          "name": "Anthropic /v1/messages - thinking disabled is never forwarded (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('thinking:disabled never reaches Opus 5.5 at any effort', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.thinking) {",
+                  "    pm.expect(raw.thinking.type, 'disabled thinking was forwarded and upstream 400s on it').to.not.eql('disabled');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"disabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking disabled dropped at effort max, effort preserved (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('disabled thinking dropped but the requested effort survives', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.thinking) { pm.expect(raw.thinking.type).to.not.eql('disabled'); }",
+                  "  pm.expect(raw.output_config, 'output_config dropped').to.exist;",
+                  "  pm.expect(raw.output_config.effort, 'caller effort must not be lost').to.eql('max');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"disabled\"\n  },\n  \"output_config\": {\n    \"effort\": \"max\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking enabled with budget_tokens becomes adaptive (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('extended thinking is rewritten to adaptive and the budget dropped', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.thinking, 'thinking dropped entirely').to.exist;",
+                  "  pm.expect(raw.thinking.type, 'Opus 5.5 rejects thinking.type.enabled').to.eql('adaptive');",
+                  "  pm.expect(raw.thinking.budget_tokens, 'budget_tokens is inert under adaptive and must not ride along').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - forced tool_choice any is dropped (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('forced tool choice is dropped, tools survive', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.tool_choice) {",
+                  "    pm.expect(['any', 'tool'], 'Opus 5.5 rejects forced tool_choice').to.not.include(raw.tool_choice.type);",
+                  "  }",
+                  "  pm.expect(raw.tools, 'dropping the pin must not drop the tools').to.exist;",
+                  "  pm.expect(raw.tools.length).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"noop\",\n      \"description\": \"does nothing\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - forced named tool_choice is dropped (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('count_tokens applies the same forced tool_choice validation', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.input_tokens, 'count_tokens returned no token count: ' + pm.response.text()).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"noop\",\n      \"description\": \"does nothing\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"tool\",\n    \"name\": \"noop\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - computer toolset sent bare alongside text_editor and bash (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('toolset entry goes out bare - name and display_* are rejected on it', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  var ct = null;",
+                  "  for (var i = 0; i < raw.tools.length; i++) {",
+                  "    if (String(raw.tools[i].type || '').indexOf('computer') === 0) { ct = raw.tools[i]; }",
+                  "  }",
+                  "  pm.expect(ct, 'computer tool dropped from the outbound body').to.exist;",
+                  "  pm.expect(ct.type, 'Opus 5.5 accepts only the toolset form').to.eql('computer_toolset_20260801');",
+                  "  pm.expect(ct.name, 'name is not accepted on a toolset entry').to.be.undefined;",
+                  "  pm.expect(ct.display_width_px, 'display_* is not accepted on a toolset entry').to.be.undefined;",
+                  "  pm.expect(ct.display_height_px).to.be.undefined;",
+                  "});",
+                  "pm.test('member calls come back tagged with their toolset', function () {",
+                  "  var calls = [];",
+                  "  for (var i = 0; i < body.content.length; i++) {",
+                  "    if (body.content[i].type === 'tool_use') { calls.push(body.content[i]); }",
+                  "  }",
+                  "  pm.expect(calls.length, 'model made no tool call: ' + pm.response.text()).to.be.above(0);",
+                  "  for (var j = 0; j < calls.length; j++) {",
+                  "    pm.expect(calls[j].toolset_name, 'member call lost toolset_name: ' + JSON.stringify(calls[j])).to.eql('computer');",
+                  "    pm.expect(calls[j].name, 'member name must be the member, not the family').to.not.eql('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    },\n    {\n      \"type\": \"text_editor_20250728\",\n      \"name\": \"str_replace_based_edit_tool\"\n    },\n    {\n      \"type\": \"bash_20250124\",\n      \"name\": \"bash\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages stream - computer toolset member calls carry toolset_name (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completed without an upstream rejection', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "});",
+                  "pm.test('content_block_start for a member call carries toolset_name', function () {",
+                  "  var lines = pm.response.text().split('\\n');",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (lines[i].indexOf('data: ') !== 0) { continue; }",
+                  "    var payload = lines[i].slice(6).trim();",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+                  "    if (ev.type !== 'content_block_start') { continue; }",
+                  "    var cb = ev.content_block || {};",
+                  "    if (cb.type !== 'tool_use') { continue; }",
+                  "    seen++;",
+                  "    pm.expect(cb.toolset_name, 'streamed member call lost toolset_name: ' + payload).to.eql('computer');",
+                  "  }",
+                  "  pm.expect(seen, 'no tool_use content_block_start in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - dated computer_20251124 upgraded to the toolset (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the dated tool is upgraded, not relayed into a 400', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.tools[0].type, 'Opus 5.5 rejects every dated computer_* type').to.eql('computer_toolset_20260801');",
+                  "  pm.expect(raw.tools[0].name, 'name must be shed when upgrading to a toolset').to.be.undefined;",
+                  "  pm.expect(raw.tools[0].display_width_px, 'display_* must be shed when upgrading to a toolset').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_20251124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1280,\n      \"display_height_px\": 800\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - tool_result toolset_name backfilled for a member call (claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('a member result is tagged even when the caller omits toolset_name', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  var call = null, result = null;",
+                  "  for (var i = 0; i < raw.messages.length; i++) {",
+                  "    var c = raw.messages[i].content;",
+                  "    if (Object.prototype.toString.call(c) !== '[object Array]') { continue; }",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j].type === 'tool_use') { call = c[j]; }",
+                  "      if (c[j].type === 'tool_result') { result = c[j]; }",
+                  "    }",
+                  "  }",
+                  "  pm.expect(call, 'tool_use missing from the outbound body').to.exist;",
+                  "  pm.expect(result, 'tool_result missing from the outbound body').to.exist;",
+                  "  pm.expect(call.toolset_name, 'member call lost toolset_name').to.eql('computer');",
+                  "  pm.expect(result.toolset_name, 'half-preserved pair: upstream 400s when only one side carries toolset_name').to.eql('computer');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01HarnessScreenshotAAA\",\n          \"name\": \"screenshot\",\n          \"input\": {},\n          \"toolset_name\": \"computer\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01HarnessScreenshotAAA\",\n          \"content\": \"ok\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - thinking disabled is never forwarded (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('thinking:disabled never reaches Opus 5.5 at any effort', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.thinking) {",
+                  "    pm.expect(raw.thinking.type, 'disabled thinking was forwarded and upstream 400s on it').to.not.eql('disabled');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"disabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - thinking disabled dropped at effort max, effort preserved (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('disabled thinking dropped but the requested effort survives', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.thinking) { pm.expect(raw.thinking.type).to.not.eql('disabled'); }",
+                  "  pm.expect(raw.output_config, 'output_config dropped').to.exist;",
+                  "  pm.expect(raw.output_config.effort, 'caller effort must not be lost').to.eql('max');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"disabled\"\n  },\n  \"output_config\": {\n    \"effort\": \"max\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - thinking enabled with budget_tokens becomes adaptive (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('extended thinking is rewritten to adaptive and the budget dropped', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.thinking, 'thinking dropped entirely').to.exist;",
+                  "  pm.expect(raw.thinking.type, 'Opus 5.5 rejects thinking.type.enabled').to.eql('adaptive');",
+                  "  pm.expect(raw.thinking.budget_tokens, 'budget_tokens is inert under adaptive and must not ride along').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - forced tool_choice any is dropped (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('forced tool choice is dropped, tools survive', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.tool_choice) {",
+                  "    pm.expect(['any', 'tool'], 'Opus 5.5 rejects forced tool_choice').to.not.include(raw.tool_choice.type);",
+                  "  }",
+                  "  pm.expect(raw.tools, 'dropping the pin must not drop the tools').to.exist;",
+                  "  pm.expect(raw.tools.length).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"noop\",\n      \"description\": \"does nothing\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - computer toolset sent bare alongside text_editor and bash (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('toolset entry goes out bare - name and display_* are rejected on it', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  var ct = null;",
+                  "  for (var i = 0; i < raw.tools.length; i++) {",
+                  "    if (String(raw.tools[i].type || '').indexOf('computer') === 0) { ct = raw.tools[i]; }",
+                  "  }",
+                  "  pm.expect(ct, 'computer tool dropped from the outbound body').to.exist;",
+                  "  pm.expect(ct.type, 'Opus 5.5 accepts only the toolset form').to.eql('computer_toolset_20260801');",
+                  "  pm.expect(ct.name, 'name is not accepted on a toolset entry').to.be.undefined;",
+                  "  pm.expect(ct.display_width_px, 'display_* is not accepted on a toolset entry').to.be.undefined;",
+                  "  pm.expect(ct.display_height_px).to.be.undefined;",
+                  "});",
+                  "pm.test('member calls come back tagged with their toolset', function () {",
+                  "  var calls = [];",
+                  "  for (var i = 0; i < body.content.length; i++) {",
+                  "    if (body.content[i].type === 'tool_use') { calls.push(body.content[i]); }",
+                  "  }",
+                  "  pm.expect(calls.length, 'model made no tool call: ' + pm.response.text()).to.be.above(0);",
+                  "  for (var j = 0; j < calls.length; j++) {",
+                  "    pm.expect(calls[j].toolset_name, 'member call lost toolset_name: ' + JSON.stringify(calls[j])).to.eql('computer');",
+                  "    pm.expect(calls[j].name, 'member name must be the member, not the family').to.not.eql('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    },\n    {\n      \"type\": \"text_editor_20250728\",\n      \"name\": \"str_replace_based_edit_tool\"\n    },\n    {\n      \"type\": \"bash_20250124\",\n      \"name\": \"bash\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages stream - computer toolset member calls carry toolset_name (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completed without an upstream rejection', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "});",
+                  "pm.test('content_block_start for a member call carries toolset_name', function () {",
+                  "  var lines = pm.response.text().split('\\n');",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (lines[i].indexOf('data: ') !== 0) { continue; }",
+                  "    var payload = lines[i].slice(6).trim();",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+                  "    if (ev.type !== 'content_block_start') { continue; }",
+                  "    var cb = ev.content_block || {};",
+                  "    if (cb.type !== 'tool_use') { continue; }",
+                  "    seen++;",
+                  "    pm.expect(cb.toolset_name, 'streamed member call lost toolset_name: ' + payload).to.eql('computer');",
+                  "  }",
+                  "  pm.expect(seen, 'no tool_use content_block_start in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - dated computer_20251124 upgraded to the toolset (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the dated tool is upgraded, not relayed into a 400', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.tools[0].type, 'Opus 5.5 rejects every dated computer_* type').to.eql('computer_toolset_20260801');",
+                  "  pm.expect(raw.tools[0].name, 'name must be shed when upgrading to a toolset').to.be.undefined;",
+                  "  pm.expect(raw.tools[0].display_width_px, 'display_* must be shed when upgrading to a toolset').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_20251124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1280,\n      \"display_height_px\": 800\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - tool_result toolset_name backfilled for a member call (vertex claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('a member result is tagged even when the caller omits toolset_name', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  var call = null, result = null;",
+                  "  for (var i = 0; i < raw.messages.length; i++) {",
+                  "    var c = raw.messages[i].content;",
+                  "    if (Object.prototype.toString.call(c) !== '[object Array]') { continue; }",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j].type === 'tool_use') { call = c[j]; }",
+                  "      if (c[j].type === 'tool_result') { result = c[j]; }",
+                  "    }",
+                  "  }",
+                  "  pm.expect(call, 'tool_use missing from the outbound body').to.exist;",
+                  "  pm.expect(result, 'tool_result missing from the outbound body').to.exist;",
+                  "  pm.expect(call.toolset_name, 'member call lost toolset_name').to.eql('computer');",
+                  "  pm.expect(result.toolset_name, 'half-preserved pair: upstream 400s when only one side carries toolset_name').to.eql('computer');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01HarnessScreenshotAAA\",\n          \"name\": \"screenshot\",\n          \"input\": {},\n          \"toolset_name\": \"computer\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01HarnessScreenshotAAA\",\n          \"content\": \"ok\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/responses - reasoning effort none never becomes thinking disabled (anthropic/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the OpenAI-shaped reasoning-off maps to omitted thinking, not disabled', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.thinking) { pm.expect(raw.thinking.type, 'Opus 5.5 rejects thinking.type.disabled').to.not.eql('disabled'); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/responses - forced tool_choice required is dropped (anthropic/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the OpenAI-shaped forced pin is dropped, tools survive', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.tool_choice) { pm.expect(['any', 'tool'], 'Opus 5.5 rejects forced tool_choice').to.not.include(raw.tool_choice.type); }",
+                  "  pm.expect(raw.tools, 'dropping the pin must not drop the tools').to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"noop\",\n      \"description\": \"does nothing\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/responses - computer_use_preview becomes the bare toolset (anthropic/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the neutral computer tool is sent as a bare toolset', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.tools[0].type, 'Opus 5.5 accepts only the toolset form').to.eql('computer_toolset_20260801');",
+                  "  pm.expect(raw.tools[0].name, 'name is rejected on a toolset entry').to.be.undefined;",
+                  "  pm.expect(raw.tools[0].display_width_px, 'a toolset takes no geometry, so the caller dims are dropped').to.be.undefined;",
+                  "});",
+                  "pm.test('member calls surface with toolset_name on the Responses shape', function () {",
+                  "  var calls = [];",
+                  "  for (var i = 0; i < body.output.length; i++) {",
+                  "    if (body.output[i].type === 'function_call') { calls.push(body.output[i]); }",
+                  "  }",
+                  "  pm.expect(calls.length, 'model made no tool call: ' + pm.response.text()).to.be.above(0);",
+                  "  for (var j = 0; j < calls.length; j++) {",
+                  "    pm.expect(calls[j].toolset_name, 'member call lost toolset_name: ' + JSON.stringify(calls[j])).to.eql('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 512,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/responses stream - computer toolset member calls carry toolset_name (anthropic/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completed without an upstream rejection', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "});",
+                  "pm.test('output_item.added for a member call carries toolset_name', function () {",
+                  "  var lines = pm.response.text().split('\\n');",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (lines[i].indexOf('data: ') !== 0) { continue; }",
+                  "    var payload = lines[i].slice(6).trim();",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+                  "    if (ev.type !== 'response.output_item.added') { continue; }",
+                  "    var item = ev.item || {};",
+                  "    if (item.type !== 'function_call') { continue; }",
+                  "    seen++;",
+                  "    pm.expect(item.toolset_name, 'streamed member call lost toolset_name: ' + payload).to.eql('computer');",
+                  "  }",
+                  "  pm.expect(seen, 'no function_call item in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 512,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/responses - dimensionless computer tool dropped for a dated-generation model (anthropic/claude-opus-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('no geometry means no dated tool - dropped, not a zero-sized display', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  var tools = raw.tools || [];",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    pm.expect(String(tools[i].type || ''), 'a computer tool with no display must be dropped, it 400s as 0x0').to.not.include('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/responses - reasoning effort none never becomes thinking disabled (vertex/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the OpenAI-shaped reasoning-off maps to omitted thinking, not disabled', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.thinking) { pm.expect(raw.thinking.type, 'Opus 5.5 rejects thinking.type.disabled').to.not.eql('disabled'); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/responses - forced tool_choice required is dropped (vertex/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the OpenAI-shaped forced pin is dropped, tools survive', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  if (raw.tool_choice) { pm.expect(['any', 'tool'], 'Opus 5.5 rejects forced tool_choice').to.not.include(raw.tool_choice.type); }",
+                  "  pm.expect(raw.tools, 'dropping the pin must not drop the tools').to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"noop\",\n      \"description\": \"does nothing\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/responses - computer_use_preview becomes the bare toolset (vertex/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the neutral computer tool is sent as a bare toolset', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(raw.tools[0].type, 'Opus 5.5 accepts only the toolset form').to.eql('computer_toolset_20260801');",
+                  "  pm.expect(raw.tools[0].name, 'name is rejected on a toolset entry').to.be.undefined;",
+                  "  pm.expect(raw.tools[0].display_width_px, 'a toolset takes no geometry, so the caller dims are dropped').to.be.undefined;",
+                  "});",
+                  "pm.test('member calls surface with toolset_name on the Responses shape', function () {",
+                  "  var calls = [];",
+                  "  for (var i = 0; i < body.output.length; i++) {",
+                  "    if (body.output[i].type === 'function_call') { calls.push(body.output[i]); }",
+                  "  }",
+                  "  pm.expect(calls.length, 'model made no tool call: ' + pm.response.text()).to.be.above(0);",
+                  "  for (var j = 0; j < calls.length; j++) {",
+                  "    pm.expect(calls[j].toolset_name, 'member call lost toolset_name: ' + JSON.stringify(calls[j])).to.eql('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 512,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/responses stream - computer toolset member calls carry toolset_name (vertex/claude-opus-5-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completed without an upstream rejection', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "});",
+                  "pm.test('output_item.added for a member call carries toolset_name', function () {",
+                  "  var lines = pm.response.text().split('\\n');",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (lines[i].indexOf('data: ') !== 0) { continue; }",
+                  "    var payload = lines[i].slice(6).trim();",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+                  "    if (ev.type !== 'response.output_item.added') { continue; }",
+                  "    var item = ev.item || {};",
+                  "    if (item.type !== 'function_call') { continue; }",
+                  "    seen++;",
+                  "    pm.expect(item.toolset_name, 'streamed member call lost toolset_name: ' + payload).to.eql('computer');",
+                  "  }",
+                  "  pm.expect(seen, 'no function_call item in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 512,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/responses - dimensionless computer tool dropped for a dated-generation model (vertex/claude-opus-5) - opus-5-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('no geometry means no dated tool - dropped, not a zero-sized display', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "  var tools = raw.tools || [];",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    pm.expect(String(tools[i].type || ''), 'a computer tool with no display must be dropped, it 400s as 0x0').to.not.include('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
