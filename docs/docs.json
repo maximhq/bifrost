@@ -328,6 +328,7 @@
               "enterprise/data-access-control",
               "enterprise/virtual-mcps",
               "enterprise/projects",
+              "enterprise/prompt-deployments",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
