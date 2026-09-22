@@ -1021,10 +1021,17 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	// The response envelope carrying service_tier can precede a later usage-only
 	// event, so retain the newest non-nil tier across the stream.
 	tierChunkIndex := -1
+	containerChunkIndex := -1
 	for _, streamChunk := range accumulator.ResponsesStreamChunks {
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
+		}
+		// Same retention rule for the sandbox container: it arrives late, on
+		// message_delta, and a usage-only event can follow it.
+		if streamChunk.Container != nil && streamChunk.ChunkIndex > containerChunkIndex {
+			data.Container = streamChunk.Container
+			containerChunkIndex = streamChunk.ChunkIndex
 		}
 	}
 
@@ -1095,6 +1102,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ResponsesStreamResponse.Response.ServiceTier))
+		}
+		if result.ResponsesStreamResponse.Response != nil &&
+			result.ResponsesStreamResponse.Response.Container != nil {
+			chunk.Container = result.ResponsesStreamResponse.Response.Container
 		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {

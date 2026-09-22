@@ -12,6 +12,12 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+// containerPricingModel is the synthetic model name the datasheet files
+// code-execution sandbox rates under (openai/container, azure/container, and the
+// memory-tiered openai/container-1g … openai/container-64g variants). Both the
+// containers API path and the server-side-tool path price through these rows.
+const containerPricingModel = "container"
+
 // CalculateCost calculates the cost of a Bifrost response.
 // It handles all request types, cache, guardrail, and routing billing, and tiered pricing.
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
@@ -672,7 +678,62 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost.InputCostDetails.RequestCost += *pricing.CostPerRequest
 		cost.TotalCost += *pricing.CostPerRequest
 	}
+
+	// Code-execution sandbox sessions opened through a server-side tool, rather
+	// than through the containers API. The provider decided the session count at
+	// response-conversion time and stamped it on usage; pricing only multiplies.
+	// That split is deliberate: cost is recomputed independently by governance,
+	// telemetry and logging for the same request, so a decision made here could
+	// not be stateful without those callers disagreeing, and RecalculateCosts
+	// replays the stored count instead of deciding again.
+	//
+	// The rate lives on the provider's own "container" row, not the chat model's,
+	// so it needs a second lookup — same shape as computeCacheEmbeddingCost. Added
+	// after the off-peak block above so a flat session fee is never discounted.
+	if sessions := billedContainerSessions(input.usage); sessions > 0 {
+		if sessionCost := s.containerSessionRate(routingInfo, scopes); sessionCost > 0 {
+			total := float64(sessions) * sessionCost
+			if cost == nil {
+				cost = &schemas.BifrostCost{}
+			}
+			if cost.InputCostDetails == nil {
+				cost.InputCostDetails = &schemas.InputCostDetails{}
+			}
+			cost.InputCost += total
+			cost.InputCostDetails.CodeExecutionCost += total
+			cost.TotalCost += total
+		}
+	}
 	return cost
+}
+
+// billedContainerSessions reads the provider-stamped count of code-execution sandbox
+// sessions this response owes. Zero for every response that did not run server-side
+// code, and for one whose provider judged the execution exempt from charge.
+func billedContainerSessions(usage *schemas.BifrostLLMUsage) int {
+	if usage == nil || usage.CompletionTokensDetails == nil || usage.CompletionTokensDetails.NumContainerSessions == nil {
+		return 0
+	}
+	return *usage.CompletionTokensDetails.NumContainerSessions
+}
+
+// containerSessionRate resolves the flat per-session container rate for a provider.
+//
+// The datasheet files these under a synthetic "container" model in chat mode
+// (openai/container, openai/container-1g … azure/container), which is the same row
+// the containers API path bills through. The request type is pinned to chat rather
+// than passed through, so the lookup hits that row directly instead of depending on
+// the chat/responses counterpart fallback. A server-side tool never reports a memory
+// tier, so the base row applies.
+func (s *Store) containerSessionRate(routingInfo schemas.RoutingInfo, scopes LookupScopes) float64 {
+	pricing := s.resolvePricing(schemas.RoutingInfo{
+		Provider: routingInfo.Provider,
+		Model:    containerPricingModel,
+	}, schemas.ChatCompletionRequest, scopes)
+	if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
+		return 0
+	}
+	return *pricing.CodeInterpreterCostPerSession
 }
 
 // ---------------------------------------------------------------------------
@@ -840,6 +901,12 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		}
 		if u.OutputTokensDetails.NumSearchQueries != nil {
 			usage.CompletionTokensDetails.NumSearchQueries = u.OutputTokensDetails.NumSearchQueries
+		}
+		if u.OutputTokensDetails.NumCodeExecutionRequests != nil {
+			usage.CompletionTokensDetails.NumCodeExecutionRequests = u.OutputTokensDetails.NumCodeExecutionRequests
+		}
+		if u.OutputTokensDetails.NumContainerSessions != nil {
+			usage.CompletionTokensDetails.NumContainerSessions = u.OutputTokensDetails.NumContainerSessions
 		}
 	}
 	return usage

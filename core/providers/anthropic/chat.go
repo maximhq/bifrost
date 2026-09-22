@@ -1414,6 +1414,15 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 				NumSearchQueries: &n,
 			}
 		}
+		// Forward code execution call count, and the sandbox sessions it bills for.
+		if billable.ServerToolUse != nil && billable.ServerToolUse.CodeExecutionRequests > 0 {
+			if bifrostResponse.Usage.CompletionTokensDetails == nil {
+				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			}
+			n := billable.ServerToolUse.CodeExecutionRequests
+			bifrostResponse.Usage.CompletionTokensDetails.NumCodeExecutionRequests = &n
+			bifrostResponse.Usage.CompletionTokensDetails.NumContainerSessions = billableContainerSessions(ctx, n)
+		}
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
 		// ReasoningTokens <= CompletionTokens — so no folding is required here.

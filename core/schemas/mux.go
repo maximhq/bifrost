@@ -1054,6 +1054,8 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
+			NumCodeExecutionRequests: cu.CompletionTokensDetails.NumCodeExecutionRequests,
+			NumContainerSessions:     cu.CompletionTokensDetails.NumContainerSessions,
 		}
 	}
 
@@ -1093,6 +1095,8 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
+			NumCodeExecutionRequests: ru.OutputTokensDetails.NumCodeExecutionRequests,
+			NumContainerSessions:     ru.OutputTokensDetails.NumContainerSessions,
 		}
 	}
 

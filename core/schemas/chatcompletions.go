@@ -2036,6 +2036,21 @@ type ChatCompletionTokensDetails struct {
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
 	ImageTokens              *int `json:"image_tokens,omitempty"`
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
+	// NumCodeExecutionRequests is the provider-reported count of server-side
+	// code-execution calls (Anthropic's usage.server_tool_use.code_execution_requests).
+	// It is reported as-is for wire fidelity and observability and is NOT the
+	// billing quantity — see NumContainerSessions.
+	NumCodeExecutionRequests *int `json:"num_code_execution_requests,omitempty"`
+	// NumContainerSessions is the number of code-execution sandbox sessions this
+	// response owes payment for, already net of provider-side exemptions and
+	// deduplication. Providers decide it; pricing only multiplies it by
+	// code_interpreter_cost_per_session. Anthropic sets 1 per turn that ran code
+	// (0 when web_search/web_fetch auto-injects code execution, which Anthropic
+	// bills at no charge); OpenAI sets 1 the first time a given container id is
+	// seen. Keeping the decision here rather than in the cost engine is what makes
+	// it stable across the four independent CalculateCost callers per request and
+	// replayable by RecalculateCosts, which restores this usage verbatim.
+	NumContainerSessions *int `json:"num_container_sessions,omitempty"`
 }
 
 // BifrostCost splits a request's cost into an input side, an output side, and an
@@ -2116,6 +2131,10 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		merged.CompletionTokensDetails.CitationTokens = sumOptionalInts(baseDetails.CitationTokens, addDetails.CitationTokens)
 		merged.CompletionTokensDetails.NumSearchQueries = sumOptionalInts(baseDetails.NumSearchQueries, addDetails.NumSearchQueries)
 		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
+		// Summed, not max-merged: the MCP agent loop merges one usage per provider
+		// call, and each call that ran code owes its own session minimum.
+		merged.CompletionTokensDetails.NumCodeExecutionRequests = sumOptionalInts(baseDetails.NumCodeExecutionRequests, addDetails.NumCodeExecutionRequests)
+		merged.CompletionTokensDetails.NumContainerSessions = sumOptionalInts(baseDetails.NumContainerSessions, addDetails.NumContainerSessions)
 	}
 
 	merged.Cost = base.Cost.Add(add.Cost)
@@ -2162,6 +2181,11 @@ type InputCostDetails struct {
 	// container per-session), folded into the input side since it maps to no
 	// token category.
 	RequestCost float64 `json:"request_cost,omitempty"`
+	// CodeExecutionCost is the flat fee for code-execution sandbox sessions a
+	// chat/responses turn opened through a server-side tool. Kept separate from
+	// RequestCost, which already carries three unrelated flat fees, so a bill can
+	// still be explained line by line.
+	CodeExecutionCost float64 `json:"code_execution_cost,omitempty"`
 }
 
 // OutputCostDetails breaks OutputCost down by category; sub-fields sum to OutputCost.
@@ -2364,6 +2388,8 @@ func (a *InputCostDetails) add(b *InputCostDetails) *InputCostDetails {
 		CachedReadCost:  a.CachedReadCost + b.CachedReadCost,
 		CachedWriteCost: a.CachedWriteCost + b.CachedWriteCost,
 		RequestCost:     a.RequestCost + b.RequestCost,
+
+		CodeExecutionCost: a.CodeExecutionCost + b.CodeExecutionCost,
 	}
 }
 
@@ -2441,6 +2467,8 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		cd.CitationTokens = copyIntPtr(u.CompletionTokensDetails.CitationTokens)
 		cd.NumSearchQueries = copyIntPtr(u.CompletionTokensDetails.NumSearchQueries)
 		cd.ImageTokens = copyIntPtr(u.CompletionTokensDetails.ImageTokens)
+		cd.NumCodeExecutionRequests = copyIntPtr(u.CompletionTokensDetails.NumCodeExecutionRequests)
+		cd.NumContainerSessions = copyIntPtr(u.CompletionTokensDetails.NumContainerSessions)
 		c.CompletionTokensDetails = &cd
 	}
 	if u.SearchUnits != nil {

@@ -1997,6 +1997,8 @@ func HandleOpenAIResponsesRequest(
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
+	stampContainerSessions(response, providerName, logger)
+
 	return response, nil
 }
 
@@ -2313,6 +2315,11 @@ func HandleOpenAIResponsesStreaming(
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				// The terminal event carries the finished response, including every
+				// code_interpreter_call and the usage the accumulator will forward, so it is
+				// the one place in the stream where a sandbox session can be both seen and
+				// billed.
+				stampContainerSessions(response.Response, providerName, logger)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 				return
