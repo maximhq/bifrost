@@ -165110,6 +165110,185 @@
           }
         }
       ]
+    },
+    {
+      "name": "109. Claude Code billing header filtering (billing-header)",
+      "description": "Claude Code billing metadata changes the prompt prefix. Messages ingress must strip standalone billing blocks for non-Anthropic model families while preserving real system text and Anthropic requests. Raw outbound request assertions fail before the fix without relying on nondeterministic cache-hit rates. Streaming and Responses-to-Chat dispatch are covered by Go provider-boundary tests.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini version metadata - billing-header",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli; cc_is_subagent=true;\"\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"Reply briefly.\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Messages request succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('Messages response is valid', function () { pm.expect(body.type, text).to.eql('message'); pm.expect(body.content, text).to.be.an('array').that.is.not.empty; });",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('outbound prompt preserves only the intended system content', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.input, JSON.stringify(raw)).to.be.an('array');",
+                  "  pm.expect(raw.input[0].role).to.eql('system');",
+                  "  pm.expect(raw.input[0].content).to.eql([{ type: 'input_text', text: 'Reply briefly.' }]);",
+                  "  pm.expect(JSON.stringify(raw.input)).not.to.include('x-anthropic-billing-header:');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai gpt-4o-mini nonce metadata - billing-header",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"x-anthropic-billing-header: cc_version=2.1.270.abc; cc_entrypoint=cli; cch=12345;\"\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"Reply briefly.\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Messages request succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('Messages response is valid', function () { pm.expect(body.type, text).to.eql('message'); pm.expect(body.content, text).to.be.an('array').that.is.not.empty; });",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('outbound prompt preserves only the intended system content', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.input, JSON.stringify(raw)).to.be.an('array');",
+                  "  pm.expect(raw.input[0].role).to.eql('system');",
+                  "  pm.expect(raw.input[0].content).to.eql([{ type: 'input_text', text: 'Reply briefly.' }]);",
+                  "  pm.expect(JSON.stringify(raw.input)).not.to.include('x-anthropic-billing-header:');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 preserves metadata - billing-header",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli;\"\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"Reply briefly.\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('Messages request succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('Messages response is valid', function () { pm.expect(body.type, text).to.eql('message'); pm.expect(body.content, text).to.be.an('array').that.is.not.empty; });",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('outbound prompt preserves only the intended system content', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.system, JSON.stringify(raw)).to.be.an('array');",
+                  "  pm.expect(raw.system[0].text).to.eql(\"x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli;\");",
+                  "  pm.expect(raw.system[1].text).to.eql('Reply briefly.');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -52,6 +52,10 @@ type BifrostResponsesRequest struct {
 	// target wire does not support namespace tools, and the response path reads it to
 	// restore function_call items. Never serialized; the shared request never has it.
 	NamespaceToolAliases map[string]NamespaceToolAlias `json:"-"`
+
+	// Removed at Messages ingress, before Input is shared. Shallow fallback copies
+	// retain this private metadata; only Anthropic attempts restore it.
+	anthropicBillingHeader *anthropicBillingHeader
 }
 
 func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {

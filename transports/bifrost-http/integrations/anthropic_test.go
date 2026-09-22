@@ -14,6 +14,34 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestAnthropicMessagesBillingHeaderNormalizedBeforeDispatch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli;"
+	var incoming anthropic.AnthropicMessageRequest
+	raw := []byte(`{"model":"openai/gpt-4o-mini","max_tokens":64,"system":[{"type":"text","text":"` + header + `"},{"type":"text","text":"Stable instructions"}],"messages":[{"role":"user","content":"Hello"}]}`)
+	if err := sonic.Unmarshal(raw, &incoming); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+		request, err := route.RequestConverter(ctx, &incoming)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks := request.ResponsesRequest.Input[0].Content.ContentBlocks
+		if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Stable instructions" {
+			t.Fatalf("billing header survived ingress: %+v", blocks)
+		}
+		restored := request.ResponsesRequest.WithAnthropicBillingHeader()
+		if got := *restored.Input[0].Content.ContentBlocks[0].Text; got != header {
+			t.Fatalf("billing header not retained for Anthropic fallback: %q", got)
+		}
+	}
+	// Normalization only owns the newly converted slices, not the parsed source.
+	if len(incoming.System.ContentBlocks) != 2 || *incoming.System.ContentBlocks[0].Text != header {
+		t.Fatal("parsed Anthropic request was mutated")
+	}
+}
+
 // TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta verifies the codec preserves provider-native event structure.
 func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
 	codec := anthropicRawStreamTextCodec{}
