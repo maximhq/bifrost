@@ -141,6 +141,13 @@ type badRequestError struct{ err error }
 func (e *badRequestError) Error() string { return e.err.Error() }
 func (e *badRequestError) Unwrap() error { return e.err }
 
+// ForbiddenError refuses a request with 403 from inside a transaction, where a handler can only
+// answer with an error. Exported because the hooks that return it are registered from outside this
+// package.
+type ForbiddenError struct{ Message string }
+
+func (e *ForbiddenError) Error() string { return e.Message }
+
 // IsUniqueConstraintError reports whether err looks like a DB unique-constraint violation.
 func IsUniqueConstraintError(err error, identifiers ...string) bool {
 	if err == nil {

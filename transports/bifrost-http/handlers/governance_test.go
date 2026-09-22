@@ -4460,3 +4460,42 @@ func TestApplyAssignees(t *testing.T) {
 		}
 	})
 }
+
+// The governor is what a build with governance registers to put a created key under something. Its
+// refusal has to reach the caller as a 403, and its error has to take the key with it: the point of
+// running inside the create's own transaction is that a refused key is never written.
+func TestVirtualKeyCreateGovernorRunsAndClearsCleanly(t *testing.T) {
+	t.Cleanup(func() { RegisterVirtualKeyCreateGovernor(nil) })
+
+	require.NoError(t, governCreatedVirtualKey(context.Background(), nil, &configstoreTables.TableVirtualKey{ID: "vk-1"}),
+		"a build with nothing to govern keys registers no governor, and creating one is not an error")
+
+	var seen string
+	RegisterVirtualKeyCreateGovernor(func(_ context.Context, _ *gorm.DB, vk *configstoreTables.TableVirtualKey) error {
+		seen = vk.ID
+		return &ForbiddenError{Message: "your role governs the keys you create but you have no access profile"}
+	})
+	err := governCreatedVirtualKey(context.Background(), nil, &configstoreTables.TableVirtualKey{ID: "vk-2"})
+	require.Error(t, err)
+	assert.Equal(t, "vk-2", seen, "the governor is told which key it is deciding about")
+	var forbidden *ForbiddenError
+	require.ErrorAs(t, err, &forbidden, "a refusal is a ForbiddenError, which the handler answers with 403")
+	assert.Equal(t, "your role governs the keys you create but you have no access profile", forbidden.Error())
+
+	RegisterVirtualKeyCreateGovernor(nil)
+	require.NoError(t, governCreatedVirtualKey(context.Background(), nil, &configstoreTables.TableVirtualKey{ID: "vk-3"}),
+		"clearing the governor puts the process back as it was")
+}
+
+// The notifier is told after the commit, so it cannot refuse anything and is not consulted when none
+// is registered.
+func TestVirtualKeyCreatedNotifierIsOptional(t *testing.T) {
+	t.Cleanup(func() { RegisterVirtualKeyCreatedNotifier(nil) })
+
+	notifyVirtualKeyCreated(context.Background(), &configstoreTables.TableVirtualKey{ID: "vk-1"})
+
+	var notified string
+	RegisterVirtualKeyCreatedNotifier(func(_ context.Context, vk *configstoreTables.TableVirtualKey) { notified = vk.ID })
+	notifyVirtualKeyCreated(context.Background(), &configstoreTables.TableVirtualKey{ID: "vk-2"})
+	assert.Equal(t, "vk-2", notified)
+}

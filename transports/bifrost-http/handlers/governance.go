@@ -2025,11 +2025,18 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 			}
 		}
-		return nil
+		// Last inside the transaction: whatever governs a key in this build is written with it, so a
+		// key is never committed ungoverned, and a refusal here rolls the create back entirely.
+		return governCreatedVirtualKey(ctx, tx, &vk)
 	}); err != nil {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
+			return
+		}
+		var forbiddenErr *ForbiddenError
+		if errors.As(err, &forbiddenErr) {
+			SendError(ctx, 403, forbiddenErr.Error())
 			return
 		}
 		if errors.Is(err, configstore.ErrAlreadyExists) {
@@ -2039,6 +2046,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, err.Error())
 		return
 	}
+	notifyVirtualKeyCreated(ctx, &vk)
 	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {
 		logger.Error("failed to reload virtual key: %v", err)
