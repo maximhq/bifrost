@@ -2740,6 +2740,7 @@ const (
 	ResponsesToolTypeFunction           ResponsesToolType = "function"
 	ResponsesToolTypeFileSearch         ResponsesToolType = "file_search"
 	ResponsesToolTypeComputerUsePreview ResponsesToolType = "computer_use_preview"
+	ResponsesToolTypeComputer           ResponsesToolType = "computer" // OpenAI computer tool for GPT-6 Astra / GPT-5.6 (no display or environment fields)
 	ResponsesToolTypeWebSearch          ResponsesToolType = "web_search"
 	ResponsesToolTypeWebFetch           ResponsesToolType = "web_fetch"
 	ResponsesToolTypeMCP                ResponsesToolType = "mcp"
@@ -2780,6 +2781,8 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 		return t
 	case strings.HasPrefix(s, "web_fetch"):
 		return ResponsesToolTypeWebFetch
+	case t == ResponsesToolTypeComputer:
+		return t
 	case strings.HasPrefix(s, "computer") && t != ResponsesToolTypeComputerUsePreview:
 		// Covers "computer_20250124", "computer_20251124", etc.
 		return ResponsesToolTypeComputerUsePreview
