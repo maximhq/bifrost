@@ -133,6 +133,18 @@ func TestUnsignedReasoningReplay_Responses(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, reasoningBlocksInConverse(req.Messages), 2)
 	})
+	t.Run("nova strips a foreign signature from a reasoning content block", func(t *testing.T) {
+		msg := &schemas.ResponsesMessage{Type: &reasoningType,
+			Content:            &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{reasoningTextBlock("thought about it", &signature)}},
+			ResponsesReasoning: &schemas.ResponsesReasoning{},
+		}
+		req, err := ToBedrockResponsesRequest(ctx, responsesReplayWithReasoning(unsignedReasoningNova, msg))
+		require.NoError(t, err)
+		blocks := reasoningBlocksInConverse(req.Messages)
+		require.Len(t, blocks, 1)
+		require.Nil(t, blocks[0].ReasoningContent.ReasoningText.Signature)
+		require.NotNil(t, msg.Content.ContentBlocks[0].Signature, "the caller's request must keep its signature for fallbacks")
+	})
 }
 
 func chatReplayWithReasoning(model string, details []schemas.ChatReasoningDetails) *schemas.BifrostChatRequest {

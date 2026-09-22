@@ -27,15 +27,13 @@ describe("resolveRawJsonNoticeState", () => {
 	});
 
 	it("is storage-disabled when the provider explicitly disables raw storage", () => {
-		expect(
-			resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: false }] }),
-		).toBe("storage-disabled");
+		expect(resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: false }] })).toBe(
+			"storage-disabled",
+		);
 	});
 
 	it("is unknown when the provider has raw storage enabled", () => {
-		expect(
-			resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: true }] }),
-		).toBe("unknown");
+		expect(resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: true }] })).toBe("unknown");
 	});
 
 	it("is unknown when the setting is absent on the provider", () => {
@@ -43,9 +41,7 @@ describe("resolveRawJsonNoticeState", () => {
 	});
 
 	it("is unknown when this log's provider is not in the list", () => {
-		expect(
-			resolveRawJsonNoticeState({ ...base, providers: [{ name: "anthropic", store_raw_request_response: false }] }),
-		).toBe("unknown");
+		expect(resolveRawJsonNoticeState({ ...base, providers: [{ name: "anthropic", store_raw_request_response: false }] })).toBe("unknown");
 	});
 });
 

@@ -1,0 +1,107 @@
+---
+title: "Decisions"
+description: "Evaluate state against named questions with Bifrost Go SDK using client.DecisionRequest."
+icon: "scale-balanced"
+---
+
+Use the Go SDK to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family.
+
+Provider/model examples:
+- TypeSafe: `Provider: schemas.Typesafe`, `Model: "jev-1.13.0"` (aliases: `jev-latest`, `jev-preview`)
+
+## Basic Example
+
+The account must serve keys for `schemas.Typesafe` - the OpenAI-only account from the setup guide returns "provider not supported" for this example. A minimal TypeSafe-capable account:
+
+```go
+type MyAccount struct{}
+
+func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Typesafe}, nil
+}
+
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{
+		{
+			Value:  *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
+			Models: []string{"*"},
+			Weight: 1.0,
+		},
+	}, nil
+}
+
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+```
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func main() {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &MyAccount{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer client.Shutdown()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	response, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Typesafe,
+		Model:    "jev-1.13.0",
+		State:    "Customer message: I was double charged and nobody replied. I want a refund today.",
+		Questions: map[string]schemas.DecisionQuestion{
+			"is_frustrated": {
+				Kind:         schemas.DecisionKindNoul,
+				Instructions: "Is the customer frustrated?",
+			},
+			"category": {
+				Kind:         schemas.DecisionKindChoice,
+				Instructions: "Pick the ticket category",
+				Criteria: map[string]interface{}{
+					"billing": "charges and refunds",
+					"bug":     "product defects",
+					"other":   "anything else",
+				},
+			},
+			"urgency": {
+				Kind:         schemas.DecisionKindScore,
+				Instructions: "Rate how urgently this needs a human reply",
+				Criteria:     []interface{}{"can wait a week", "should be answered soon", "needs a reply today"},
+			},
+		},
+	})
+	if bifrostErr != nil {
+		panic(bifrostErr.Error.Message)
+	}
+
+	for name, answer := range response.Answers {
+		fmt.Printf("%s (%s): %v\n", name, answer.Kind, answer.Value)
+	}
+}
+```
+
+## Answers
+
+Every question produces one `schemas.DecisionAnswer`:
+
+| Field | Meaning |
+|-------|---------|
+| `Kind` | The question's kind (`noul`, `choice`, `score`) |
+| `Value` | `float64` in [0,1] for noul, option `string` for choice, `float64` rubric score for score |
+| `Confidence` | Model confidence, when supplied |
+| `Probabilities` | Distribution over options or levels, when supplied |
+| `Legend` | Level index to description map for score answers, when supplied |
+
+`State` and `Instructions` accept a string, `map[string]interface{}`, or `[]interface{}`, preserved losslessly. Fallbacks work like every other request type via the `Fallbacks` field.

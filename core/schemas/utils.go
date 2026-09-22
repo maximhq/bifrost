@@ -2041,6 +2041,7 @@ func SupportsGrokReasoningEffort(model string) bool {
 // while keeping the request honest about what it asked for.
 var grokModelsWithXHighReasoningEffort = map[string]struct{}{
 	"grok-4.6":              {},
+	"grok-4.7":              {},
 	"grok-4.20-multi-agent": {},
 }
 

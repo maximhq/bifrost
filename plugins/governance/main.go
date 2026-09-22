@@ -40,6 +40,7 @@ type Config struct {
 
 type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
+	GetConfiguredProviderNames() []string
 	GetMCPClientsAllowedByDefault() map[string]string // clientID → clientName
 	GetMCPClientNames() map[string]string             // clientID → clientName, every client
 	// GetMCPClientBySlug resolves a client by its endpoint slug (for serving one client at /mcp/<slug>).
@@ -1670,7 +1671,7 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	if len(usage.ModelUsage) == 0 {
 		return nil
 	}
-	alreadyCharged := make(map[string]bool, len(usage.BudgetIDs)+len(usage.RateLimitIDs))
+	alreadyCharged := make(map[string]bool)
 	for _, id := range usage.BudgetIDs {
 		alreadyCharged["budget:"+id] = true
 	}

@@ -1446,24 +1446,24 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 			if [ -n "$(TESTCASE)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
 				if [[ "$(TESTCASE)" == *::* ]]; then \
-					uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+					uv run --frozen pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 				else \
-					uv run pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+					uv run --frozen pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 				fi; \
 			elif [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		else \
 			if [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
-				uv run pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				$(ECHO) "$(CYAN)Running all integration tests...$(NC)"; \
-				uv run pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		fi; \
 	fi; \

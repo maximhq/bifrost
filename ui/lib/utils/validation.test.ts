@@ -44,10 +44,7 @@ describe("hasCopilotApiToken", () => {
 		expect(hasCopilotApiToken({ value: "", ref: "COPILOT_TOKEN", type: "env" })).toBe(true);
 	});
 
-	it.each([undefined, null, "", "   ", { value: "", ref: "" }, { value: "  ", ref: "  " }, {}])(
-		"treats %p as no token",
-		(input) => {
-			expect(hasCopilotApiToken(input as never)).toBe(false);
-		},
-	);
+	it.each([undefined, null, "", "   ", { value: "", ref: "" }, { value: "  ", ref: "  " }, {}])("treats %p as no token", (input) => {
+		expect(hasCopilotApiToken(input as never)).toBe(false);
+	});
 });
