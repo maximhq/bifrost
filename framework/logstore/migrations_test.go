@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -1113,4 +1114,209 @@ func TestEnsureEmbeddingInputBackfillPostgres_Batching(t *testing.T) {
 	require.NoError(t, ensureEmbeddingInputBackfill(ctx, conn))
 	require.NoError(t, db.Table("logs").Where("embedding_input IS NOT NULL").Count(&filled).Error)
 	require.Equal(t, int64(rows), filled)
+}
+
+// TestBoundIndexAdvisoryLock pins that the SET applied to conn actually takes
+// effect and matches indexAdvisoryLockTimeout, so a hung statement on the
+// background index-build connection can't hold indexAdvisoryLockKey forever.
+func TestBoundIndexAdvisoryLock(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	require.NoError(t, boundIndexAdvisoryLock(context.Background(), conn))
+
+	var raw string
+	require.NoError(t, conn.QueryRowContext(context.Background(), "SHOW statement_timeout").Scan(&raw))
+	assert.Equal(t, fmt.Sprintf("%dmin", int(indexAdvisoryLockTimeout.Minutes())), raw)
+}
+
+// TestAdvisoryLockReleaseResetsStatementTimeout pins that lock.release cannot
+// leak a session-level SET (e.g. boundIndexAdvisoryLock's statement_timeout)
+// into a later, unrelated caller of the same pooled connection. MaxOpenConns
+// is pinned to 1 so the second db.Conn below is guaranteed to be handed the
+// exact same physical connection release just returned to the pool.
+func TestAdvisoryLockReleaseResetsStatementTimeout(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+
+	ctx := context.Background()
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+
+	const testLockKey = 999999001
+	require.NoError(t, boundIndexAdvisoryLock(ctx, conn))
+	var acquired bool
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(testLockKey)).Scan(&acquired))
+	require.True(t, acquired)
+
+	lock := &advisoryLock{conn: conn, lockKey: testLockKey}
+	lock.release(ctx)
+
+	// With MaxOpenConns(1), this must be the same physical connection
+	// release() just closed and returned to the pool.
+	reused, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reused.Close() })
+
+	var raw string
+	require.NoError(t, reused.QueryRowContext(ctx, "SHOW statement_timeout").Scan(&raw))
+	assert.NotEqual(t, fmt.Sprintf("%dmin", int(indexAdvisoryLockTimeout.Minutes())), raw,
+		"a later caller of the same pooled connection must not inherit the advisory-lock goroutine's statement_timeout")
+}
+
+// TestAdvisoryLockReleaseSurvivesAlreadyBrokenConnection pins that release
+// neither panics nor wedges the pool when the connection is already dead by
+// the time it runs (e.g. the goroutine's DB session was killed mid-flight):
+// both statements fail, and the caller must still get a genuinely fresh,
+// working connection afterward. This exercises the realistic failure mode -
+// pg_advisory_unlock fails for the same underlying reason RESET would - which
+// database/sql's own driver.ErrBadConn detection already discards on its own;
+// see TestSQLConnRawErrBadConnDiscardsConnection below for the narrower case
+// this fix actually adds coverage for (RESET fails without the earlier
+// statement already having triggered a discard).
+func TestAdvisoryLockReleaseSurvivesAlreadyBrokenConnection(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+
+	ctx := context.Background()
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+
+	const testLockKey = 999999003
+	require.NoError(t, boundIndexAdvisoryLock(ctx, conn))
+	var acquired bool
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(testLockKey)).Scan(&acquired))
+	require.True(t, acquired)
+
+	var pid int
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid))
+
+	// An already-cancelled context makes every subsequent ExecContext on conn
+	// fail immediately with a driver-level bad-connection error - simulating
+	// the connection having died before release runs at all.
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	lock := &advisoryLock{conn: conn, lockKey: testLockKey}
+	require.NotPanics(t, func() { lock.release(cancelledCtx) })
+
+	reused, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reused.Close() })
+
+	var newPid int
+	require.NoError(t, reused.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&newPid))
+	assert.NotEqual(t, pid, newPid, "a broken connection must never be handed to the next caller")
+}
+
+// TestAdvisoryLockReleaseDiscardsConnectionOnAbortedTransaction exercises
+// release through a trigger that is a genuine SQL-level error rather than a
+// connection-level one: once a transaction hits an error, Postgres rejects
+// every statement in it except ROLLBACK/COMMIT with 25P02 ("current
+// transaction is aborted"), while the connection itself stays healthy.
+//
+// This does NOT actually isolate release's own Raw(driver.ErrBadConn)
+// fallback - verified empirically: even a plain Close() with no explicit
+// discard logic at all gets a different backend PID on the next checkout
+// here, because pgx's stdlib driver implements driver.SessionResetter and
+// already refuses to pool a connection left in a non-idle transaction state
+// on its own. So this pins the end-to-end outcome (a connection with a
+// dangling aborted transaction never reaches a future caller through
+// release), not the specific code path added for RESET failures; see
+// TestSQLConnRawErrBadConnDiscardsConnection below for that in isolation.
+func TestAdvisoryLockReleaseDiscardsConnectionOnAbortedTransaction(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+
+	ctx := context.Background()
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+
+	const testLockKey = 999999004
+	require.NoError(t, boundIndexAdvisoryLock(ctx, conn))
+	var acquired bool
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(testLockKey)).Scan(&acquired))
+	require.True(t, acquired)
+
+	var pid int
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid))
+
+	_, err = conn.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, "SELECT 1/0")
+	require.Error(t, err, "division by zero should abort the transaction")
+
+	lock := &advisoryLock{conn: conn, lockKey: testLockKey}
+	require.NotPanics(t, func() { lock.release(ctx) })
+
+	reused, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reused.Close() })
+
+	var newPid int
+	require.NoError(t, reused.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&newPid))
+	assert.NotEqual(t, pid, newPid, "a connection left in an aborted transaction must be discarded, not handed to the next caller")
+
+	var raw string
+	require.NoError(t, reused.QueryRowContext(ctx, "SHOW statement_timeout").Scan(&raw))
+	assert.NotEqual(t, fmt.Sprintf("%dmin", int(indexAdvisoryLockTimeout.Minutes())), raw,
+		"the next caller must not inherit the discarded connection's statement_timeout")
+}
+
+// TestSQLConnRawErrBadConnDiscardsConnection pins the exact mechanism
+// advisoryLock.release falls back to when RESET statement_timeout fails on an
+// otherwise-healthy connection (a plain SQL-level error, not one database/sql
+// already auto-detects as a bad connection): signalling driver.ErrBadConn via
+// Conn.Raw must make database/sql discard the connection rather than return
+// it to the pool via a later Close(). Without this, a RESET failure that
+// isn't independently classified as a bad connection would silently hand a
+// connection with the leftover statement_timeout back to the shared pool.
+func TestSQLConnRawErrBadConnDiscardsConnection(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+
+	ctx := context.Background()
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+
+	var pid int
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid))
+
+	// Exactly the call advisoryLock.release makes on RESET failure.
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+
+	reused, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reused.Close() })
+
+	var newPid int
+	require.NoError(t, reused.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&newPid))
+	assert.NotEqual(t, pid, newPid, "conn.Raw signalling driver.ErrBadConn must cause database/sql to discard the connection")
 }
