@@ -1367,13 +1367,16 @@ const (
 )
 
 // Computer-use tool generations.
+//   - "20260801" — the client toolset, the only form Opus 5.5 accepts
 //   - "20251124" — Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, Sonnet 4.6, Opus 4.5
 //   - "20250124" — everything else (Sonnet 4.5, Haiku 4.5, Opus 4.1, Sonnet 4, Opus 4, Sonnet 3.7)
 //
-// The bash tool is generation-invariant (always bash_20250124).
+// The bash tool is generation-invariant (always bash_20250124). The toolset
+// generation has no text_editor member, so TextEditorGeneration never returns it.
 const (
-	ComputerUseGen20251124 = "20251124"
-	ComputerUseGen20250124 = "20250124"
+	ComputerUseGenToolset20260801 = "20260801"
+	ComputerUseGen20251124        = "20251124"
+	ComputerUseGen20250124        = "20250124"
 )
 
 // ComputerUseGeneration returns the tool-version generation a Claude model
@@ -1382,16 +1385,29 @@ const (
 //   - Which computer_*/text_editor_* type the upstream API will accept.
 //   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
 //
-// Prefers the datasheet's server_tools["computer_use"] ("computer_20251124" →
-// new gen, anything else → old gen), falling back to substring detection.
+// Prefers the datasheet's server_tools["computer_use"], which names the exact
+// tool type, falling back to substring detection.
+//
+// The fallback only moves a model to the toolset when the dated tools are
+// actually rejected, which today is Opus 5.5 and only on the surfaces that
+// dropped them (the Claude API and Google Cloud; AWS and Foundry still serve
+// computer_20251124). Opus 4.8 through Fable 5.1 accept both forms, so they stay
+// on computer_20251124 and a row moves them when their surface is ready.
 func ComputerUseGeneration(caps schemas.ModelCaps) string {
 	if computerUse, ok := caps.ServerTool(ServerToolComputerUse); ok {
-		if computerUse == string(AnthropicToolTypeComputer20251124) {
+		switch computerUse {
+		case string(AnthropicToolTypeComputerToolset20260801):
+			return ComputerUseGenToolset20260801
+		case string(AnthropicToolTypeComputer20251124):
 			return ComputerUseGen20251124
+		default:
+			return ComputerUseGen20250124
 		}
-		return ComputerUseGen20250124
 	}
 	m := strings.ToLower(caps.Model())
+	if schemas.IsOpus55Plus(m) && toolsetOnlyComputerUseProvider(caps.Provider()) {
+		return ComputerUseGenToolset20260801
+	}
 	// Opus 4.7+, Sonnet 5+, and the Fable/Mythos family use the new generation.
 	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
 		return ComputerUseGen20251124
@@ -1409,6 +1425,16 @@ func ComputerUseGeneration(caps schemas.ModelCaps) string {
 		}
 	}
 	return ComputerUseGen20250124
+}
+
+// toolsetOnlyComputerUseProvider reports whether a surface has dropped the dated
+// computer_* tools in favour of the toolset. AWS and Microsoft Foundry still
+// serve computer_20251124 on the same models, so the split is per surface rather
+// than per model.
+//
+// Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
+func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
+	return provider == schemas.Anthropic || provider == schemas.Vertex
 }
 
 // TextEditorGeneration returns the text_editor tool-version generation for a model.
@@ -1457,7 +1483,11 @@ func TextEditorGeneration(caps schemas.ModelCaps) string {
 func NormalizedToolSpec(generation, baseTool string) (toolType, toolName string) {
 	switch baseTool {
 	case "computer":
-		if generation == ComputerUseGen20251124 {
+		switch generation {
+		case ComputerUseGenToolset20260801:
+			// Toolsets take no name — the member names are fixed by the type.
+			return string(AnthropicToolTypeComputerToolset20260801), ""
+		case ComputerUseGen20251124:
 			return string(AnthropicToolTypeComputer20251124), "computer"
 		}
 		return string(AnthropicToolTypeComputer20250124), "computer"
@@ -2348,6 +2378,7 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 	// request per tool, making this O(tools × body).
 	// Pinned by TestRemapRawToolVersionsForProvider_AllocationScaling.
 	normalized := make([][]byte, len(tools))
+	dropped := make([]bool, len(tools))
 	anyNormalized := false
 	for i, tool := range tools {
 		normalized[i] = []byte(tool.Raw)
@@ -2364,12 +2395,41 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		if wantType == "" {
 			continue
 		}
+		// A dated computer tool validates display_*_px as >= 1 and requires a name;
+		// a toolset entry has neither, by design. Rewriting its type would emit an
+		// entry the API rejects outright, so drop it the way any unsupported tool is
+		// dropped. Scoped to the computer family: text_editor and bash carry no
+		// geometry and are valid without it.
+		if baseTool == "computer" && wantName != "" {
+			width := providerUtils.GetJSONField(normalized[i], "display_width_px")
+			height := providerUtils.GetJSONField(normalized[i], "display_height_px")
+			if !width.Exists() || !height.Exists() || width.Int() <= 0 || height.Int() <= 0 {
+				dropped[i] = true
+				anyNormalized = true
+				continue
+			}
+		}
 		if toolType != wantType {
 			normalized[i], err = providerUtils.SetJSONField(normalized[i], "type", wantType)
 			if err != nil {
 				return nil, fmt.Errorf("failed to normalize tool type: %w", err)
 			}
 			anyNormalized = true
+		}
+		if wantName == "" {
+			// Toolset form: name and the display_* geometry are rejected outright,
+			// so a dated entry being upgraded has to shed them.
+			for _, field := range []string{"name", "display_width_px", "display_height_px", "display_number", "enable_zoom"} {
+				if !providerUtils.JSONFieldExists(normalized[i], field) {
+					continue
+				}
+				normalized[i], err = providerUtils.DeleteJSONField(normalized[i], field)
+				if err != nil {
+					return nil, fmt.Errorf("failed to strip %s for toolset: %w", field, err)
+				}
+				anyNormalized = true
+			}
+			continue
 		}
 		// Only set name if the tool has one (custom tools use input_schema; computer-use family always has a name).
 		if existingName := tool.Get("name").String(); existingName != "" && existingName != wantName {
@@ -2381,7 +2441,13 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		}
 	}
 	if anyNormalized {
-		jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "tools", rawJSONArrayOf(normalized))
+		kept := normalized[:0:0]
+		for i, tool := range normalized {
+			if !dropped[i] {
+				kept = append(kept, tool)
+			}
+		}
+		jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "tools", rawJSONArrayOf(kept))
 		if err != nil {
 			return nil, fmt.Errorf("failed to normalize tool versions: %w", err)
 		}
