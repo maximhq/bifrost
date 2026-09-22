@@ -1454,6 +1454,12 @@ type ResponsesResponseOutputTokens struct {
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
 	// Deprecated: use ResponsesResponseUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
 	NumSearchQueries *int `json:"num_search_queries,omitempty"`
+	// NumCodeExecutionRequests mirrors ChatCompletionTokensDetails.NumCodeExecutionRequests:
+	// the provider-reported call count, for fidelity, not for billing.
+	NumCodeExecutionRequests *int `json:"num_code_execution_requests,omitempty"`
+	// NumContainerSessions mirrors ChatCompletionTokensDetails.NumContainerSessions:
+	// the billable sandbox session count, decided by the provider.
+	NumContainerSessions *int `json:"num_container_sessions,omitempty"`
 }
 
 // =============================================================================

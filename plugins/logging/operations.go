@@ -2167,6 +2167,10 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 					RejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
 					CitationTokens:           usage.CompletionTokensDetails.CitationTokens,
 					NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
+					// Restore the code-execution session count, or recalculating a log row
+					// silently drops every container-session charge it was billed live.
+					NumCodeExecutionRequests: usage.CompletionTokensDetails.NumCodeExecutionRequests,
+					NumContainerSessions:     usage.CompletionTokensDetails.NumContainerSessions,
 				}
 			}
 			respUsage.ToolUsage = usage.ToolUsage.DeepCopy()
