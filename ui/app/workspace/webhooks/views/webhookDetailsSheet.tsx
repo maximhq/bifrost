@@ -10,7 +10,7 @@ import { WEBHOOK_TUNING_DEFAULTS, WebhookEndpoint, WebhookEvent } from "@/lib/ty
 import i18n from "@/lib/i18n";
 import { useNavigate } from "@tanstack/react-router";
 import { format, formatDistanceToNow } from "date-fns";
-import { zhCN } from "date-fns/locale";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { ArrowRight, ChevronDown, ChevronRight, Info, Loader2, RefreshCcw, Send } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -28,11 +28,11 @@ const DetailEntry = ({ label, value }: { label: string; value: React.ReactNode }
 	</div>
 );
 
-const dateFnsLocale = () => (i18n.language?.startsWith("zh") ? zhCN : undefined);
+const webhookDateLocale = () => dateFnsLocale(i18n.language);
 
 const relativeTime = (timestamp?: string) =>
 	timestamp
-		? formatDistanceToNow(new Date(timestamp), { addSuffix: true, locale: dateFnsLocale() })
+		? formatDistanceToNow(new Date(timestamp), { addSuffix: true, locale: webhookDateLocale() })
 		: i18n.t("webhooks.details.never", { ns: "governance" });
 
 // Why the redeliver control is (or is not) available. Ordered by precedence:
@@ -141,7 +141,10 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 								</div>
 							}
 						/>
-						<DetailEntry label={t("webhooks.details.includeResponse")} value={endpoint?.include_response ? t("webhooks.details.yes") : t("webhooks.details.no")} />
+						<DetailEntry
+							label={t("webhooks.details.includeResponse")}
+							value={endpoint?.include_response ? t("webhooks.details.yes") : t("webhooks.details.no")}
+						/>
 						<DetailEntry
 							label={t("webhooks.details.privateNetwork")}
 							value={endpoint?.allow_private_network ? t("webhooks.details.allowed") : t("webhooks.details.blocked")}
@@ -227,16 +230,32 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 										<TooltipContent className="max-w-xs">
 											<div className="space-y-1">
 												<p>
-													<Trans t={t} i18nKey="webhooks.details.statusTooltipDelivered" components={{ medium0: <span className="font-medium" /> }} />
+													<Trans
+														t={t}
+														i18nKey="webhooks.details.statusTooltipDelivered"
+														components={{ medium0: <span className="font-medium" /> }}
+													/>
 												</p>
 												<p>
-													<Trans t={t} i18nKey="webhooks.details.statusTooltipRetrying" components={{ medium0: <span className="font-medium" /> }} />
+													<Trans
+														t={t}
+														i18nKey="webhooks.details.statusTooltipRetrying"
+														components={{ medium0: <span className="font-medium" /> }}
+													/>
 												</p>
 												<p>
-													<Trans t={t} i18nKey="webhooks.details.statusTooltipFailed" components={{ medium0: <span className="font-medium" /> }} />
+													<Trans
+														t={t}
+														i18nKey="webhooks.details.statusTooltipFailed"
+														components={{ medium0: <span className="font-medium" /> }}
+													/>
 												</p>
 												<p>
-													<Trans t={t} i18nKey="webhooks.details.statusTooltipExhausted" components={{ medium0: <span className="font-medium" /> }} />
+													<Trans
+														t={t}
+														i18nKey="webhooks.details.statusTooltipExhausted"
+														components={{ medium0: <span className="font-medium" /> }}
+													/>
 												</p>
 											</div>
 										</TooltipContent>
@@ -385,7 +404,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 																	/>
 																	<span className="text-sm font-medium">{send.label}</span>
 																	<span className="text-muted-foreground text-xs tabular-nums">
-																		{format(new Date(sendLatest.created_at), "MMM d, yyyy hh:mm:ss aa", { locale: dateFnsLocale() })}
+																		{format(new Date(sendLatest.created_at), "MMM d, yyyy hh:mm:ss aa", { locale: webhookDateLocale() })}
 																	</span>
 																</div>
 															</TableCell>

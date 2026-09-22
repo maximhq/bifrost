@@ -9,6 +9,15 @@ export const LOCALE_STORAGE_KEY = "bifrost.locale";
 export const SUPPORTED_LOCALES = [
 	{ code: "en", label: "English" },
 	{ code: "zh-CN", label: "简体中文" },
+	{ code: "zh-TW", label: "繁體中文" },
+	{ code: "ja", label: "日本語" },
+	{ code: "ko", label: "한국어" },
+	{ code: "es", label: "Español" },
+	{ code: "pt", label: "Português" },
+	{ code: "fr", label: "Français" },
+	{ code: "de", label: "Deutsch" },
+	{ code: "it", label: "Italiano" },
+	{ code: "ru", label: "Русский" },
 ] as const;
 
 export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number]["code"];

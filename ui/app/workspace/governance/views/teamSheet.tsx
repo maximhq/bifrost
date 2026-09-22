@@ -28,7 +28,7 @@ import { budgetSignature, formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
-import { zhCN } from "date-fns/locale";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import isEqual from "lodash.isequal";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -379,9 +379,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						{isEditing ? t("teams.sheet.editTitle") : t("teams.sheet.createTitle")}
 						{team?.id && <CopyableId id={team.id} entityLabel="Team" />}
 					</SheetTitle>
-					<SheetDescription>
-						{isEditing ? t("teams.sheet.editDescription") : t("teams.sheet.createDescription")}
-					</SheetDescription>
+					<SheetDescription>{isEditing ? t("teams.sheet.editDescription") : t("teams.sheet.createDescription")}</SheetDescription>
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit} className="flex h-full flex-col gap-6">
@@ -450,9 +448,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 									{t("sheet.addBudget")}
 								</button>
 							</div>
-							{formData.budgets.length === 0 && (
-								<p className="text-muted-foreground text-xs">{t("sheet.noBudgets")}</p>
-							)}
+							{formData.budgets.length === 0 && <p className="text-muted-foreground text-xs">{t("sheet.noBudgets")}</p>}
 							{formData.budgets.map((row, idx) => (
 								<div key={row.id} className="space-y-2 rounded-md border p-3" data-testid={`team-budget-row-${idx}`}>
 									<div className="flex items-start gap-2">
@@ -602,7 +598,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 												{t("sheet.lastReset")}{" "}
 												{formatDistanceToNow(new Date(b.last_reset), {
 													addSuffix: true,
-													locale: i18n.language.startsWith("zh") ? zhCN : undefined,
+													locale: dateFnsLocale(i18n.language),
 												})}
 											</p>
 										</div>
@@ -632,7 +628,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 												{t("sheet.lastReset")}{" "}
 												{formatDistanceToNow(new Date(team.rate_limit.token_last_reset), {
 													addSuffix: true,
-													locale: i18n.language.startsWith("zh") ? zhCN : undefined,
+													locale: dateFnsLocale(i18n.language),
 												})}
 											</p>
 										</div>
@@ -663,7 +659,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 												{t("sheet.lastReset")}{" "}
 												{formatDistanceToNow(new Date(team.rate_limit.request_last_reset), {
 													addSuffix: true,
-													locale: i18n.language.startsWith("zh") ? zhCN : undefined,
+													locale: dateFnsLocale(i18n.language),
 												})}
 											</p>
 										</div>

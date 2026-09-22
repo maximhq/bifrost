@@ -1,4 +1,4 @@
-import { zhCN } from "date-fns/locale";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import { AttributionCell } from "@/components/logAttributionCell";
 import { Badge } from "@/components/ui/badge";
@@ -404,10 +404,10 @@ export const createColumns = (
 				return (
 					<div className="flex flex-col leading-tight">
 						<span className="font-mono text-xs tabular-nums">
-							{format(date, "MMM dd  HH:mm:ss", { locale: i18n.resolvedLanguage === "zh-CN" ? zhCN : undefined })}
+							{format(date, "MMM dd  HH:mm:ss", { locale: dateFnsLocale(i18n.resolvedLanguage) })}
 						</span>
 						<span className="text-muted-foreground text-[10.5px] tabular-nums">
-							{formatDistanceToNow(date, { addSuffix: true, locale: i18n.resolvedLanguage === "zh-CN" ? zhCN : undefined })}
+							{formatDistanceToNow(date, { addSuffix: true, locale: dateFnsLocale(i18n.resolvedLanguage) })}
 						</span>
 					</div>
 				);
