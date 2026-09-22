@@ -1017,6 +1017,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							})
 						} else if block.ImageURLStruct != nil {
 							content = append(content, ConvertToAnthropicImageBlock(block))
+						} else if block.Type == schemas.ChatContentBlockTypeInputAudio || block.InputAudio != nil {
+							return nil, fmt.Errorf("input_audio content blocks are not supported by Anthropic")
 						} else if block.File != nil {
 							content = append(content, ConvertToAnthropicDocumentBlock(block))
 						}

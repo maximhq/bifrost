@@ -4923,9 +4923,10 @@ func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock,
 			}, nil
 		}
 
-	case schemas.ResponsesInputMessageContentBlockTypeFile:
-		if block.ResponsesInputMessageContentBlockFile != nil {
-			fileBlock := block.ResponsesInputMessageContentBlockFile
+	case schemas.ResponsesInputMessageContentBlockTypeFile,
+		schemas.ResponsesInputMessageContentBlockTypeContainer:
+		fileBlock := block.ResponsesInputMessageContentBlockFile
+		if fileBlock != nil {
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
@@ -4964,6 +4965,18 @@ func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock,
 					return part, nil
 				}
 			}
+		}
+
+		// File IDs are provider-managed references. Gemini accepts the reference
+		// as the fileData URI, including when it came from an input_container block.
+		if block.FileID != nil && *block.FileID != "" {
+			fileData := &FileData{FileURI: *block.FileID}
+			if fileBlock != nil && fileBlock.FileType != nil {
+				fileData.MIMEType = *fileBlock.FileType
+			} else {
+				fileData.MIMEType = mimeTypeFromURI(*block.FileID)
+			}
+			return &Part{FileData: fileData}, nil
 		}
 	}
 

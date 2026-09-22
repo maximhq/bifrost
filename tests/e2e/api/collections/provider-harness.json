@@ -163152,6 +163152,330 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "108. Managed file references survive provider conversion (#7345)",
+      "description": "Regression coverage for #7345. The Anthropic Messages route can carry container_upload blocks into the Responses conversion path, while OpenAI-compatible file references arrive as file_id fields. These cases upload provider-owned fixtures first, then assert the outbound Gemini fileData.fileUri and OpenAI input_file.file_id through x-bf-send-back-raw-request. The OpenAI-to-Anthropic input_audio case asserts a descriptive 400 instead of an empty Anthropic message.",
+      "item": [
+        {
+          "name": "108.01 OpenAI: upload sample.pdf for #7345",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('108.01: upload succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.collectionVariables.set('issue7345OpenAIFileId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "openai",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "108.02 Gemini: upload sample.pdf for #7345",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('108.02: upload succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.collectionVariables.set('issue7345GeminiFileId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "gemini",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "108.03 gemini/gemini-3.7-flash /anthropic/v1/messages container_upload preserves file_id - #7345",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('108.03: Gemini conversion succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code < 400) {",
+                  "  var body = pm.response.json() || {};",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  pm.test('108.03: raw_request captured', function () { pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object'); });",
+                  "  if (rr && typeof rr === 'object') {",
+                  "    var parts = []; (rr.contents || []).forEach(function (c) { (c.parts || []).forEach(function (p) { if (p && p.fileData) { parts.push(p); } }); });",
+                  "    pm.test('108.03: fileData part was not dropped', function () { pm.expect(parts.length, 'contents: ' + JSON.stringify(rr.contents || rr)).to.eql(1); });",
+                  "    if (parts.length === 1) { pm.test('108.03: managed file id reached Gemini', function () { pm.expect(parts[0].fileData.fileUri).to.eql(pm.collectionVariables.get('issue7345GeminiFileId')); }); }",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"container_upload\",\"file_id\":\"{{issue7345GeminiFileId}}\"},{\"type\":\"text\",\"text\":\"Reply with one word.\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "108.04 openai/gpt-4o-mini /anthropic/v1/messages container_upload becomes input_file - #7345",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('108.04: OpenAI conversion succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code < 400) {",
+                  "  var body = pm.response.json() || {};",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  pm.test('108.04: raw_request captured', function () { pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object'); });",
+                  "  if (rr && typeof rr === 'object') {",
+                  "    var files = []; (rr.input || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b && b.type === 'input_file') { files.push(b); } }); });",
+                  "    pm.test('108.04: input_file was not dropped', function () { pm.expect(files.length, 'input: ' + JSON.stringify(rr.input || rr)).to.eql(1); });",
+                  "    if (files.length === 1) { pm.test('108.04: file_id reached OpenAI', function () { pm.expect(files[0].file_id).to.eql(pm.collectionVariables.get('issue7345OpenAIFileId')); }); }",
+                  "    pm.test('108.04: Anthropic-only input_container was normalized', function () { pm.expect(JSON.stringify(rr.input || rr)).to.not.include('input_container'); });",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"container_upload\",\"file_id\":\"{{issue7345OpenAIFileId}}\"},{\"type\":\"text\",\"text\":\"Reply with one word.\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 108.05 openai -> anthropic input_audio identifies unsupported content - #7345",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('108.05: unsupported audio returns 400', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); });",
+                  "pm.test('108.05: error identifies input_audio', function () { pm.expect(pm.response.text()).to.include('input_audio'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Describe this audio.\"},{\"type\":\"input_audio\",\"input_audio\":{\"data\":\"AQ==\",\"format\":\"wav\"}}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "108.06 OpenAI: delete #7345 fixture",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('108.06: cleanup succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{issue7345OpenAIFileId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{issue7345OpenAIFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "108.07 Gemini: delete #7345 fixture",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('108.07: cleanup succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{issue7345GeminiFileId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{issue7345GeminiFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

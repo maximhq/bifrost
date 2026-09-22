@@ -123,3 +123,44 @@ func TestGenerateContentRoundTrip_NoMimeInjectionForFileData(t *testing.T) {
 	assert.Equal(t, testFileURI, found.FileURI)
 	assert.Empty(t, found.MIMEType, "no MIME should be injected when the caller didn't provide one")
 }
+
+func TestConvertContentBlockToGeminiPart_PreservesFileID(t *testing.T) {
+	fileID := "files/abc123"
+
+	for _, blockType := range []schemas.ResponsesMessageContentBlockType{
+		schemas.ResponsesInputMessageContentBlockTypeFile,
+		schemas.ResponsesInputMessageContentBlockTypeContainer,
+	} {
+		t.Run(string(blockType), func(t *testing.T) {
+			part, err := convertContentBlockToGeminiPart(schemas.ResponsesMessageContentBlock{
+				Type:   blockType,
+				FileID: &fileID,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, part)
+			require.NotNil(t, part.FileData)
+			assert.Equal(t, fileID, part.FileData.FileURI)
+			assert.Empty(t, part.FileData.MIMEType)
+		})
+	}
+}
+
+func TestConvertBifrostMessagesToGemini_PreservesFileID(t *testing.T) {
+	fileID := "files/abc123"
+	msgs := []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{
+			ContentBlocks: []schemas.ChatContentBlock{{
+				Type: schemas.ChatContentBlockTypeFile,
+				File: &schemas.ChatInputFile{FileID: &fileID},
+			}},
+		},
+	}}
+
+	contents, _, err := convertBifrostMessagesToGemini(msgs)
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+	require.Len(t, contents[0].Parts, 1)
+	require.NotNil(t, contents[0].Parts[0].FileData)
+	assert.Equal(t, fileID, contents[0].Parts[0].FileData.FileURI)
+}
