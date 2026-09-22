@@ -212,6 +212,12 @@ func (e *SecretVar) IsFromEnv() bool {
 	return e.SecretType == SecretTypeEnv
 }
 
+// IsRedactionSentinel reports whether value is a fixed redaction placeholder.
+// Matching is case-insensitive for compatibility with existing serialized forms.
+func IsRedactionSentinel(value string) bool {
+	return strings.EqualFold(value, "<redacted>") || strings.EqualFold(value, "[redacted]")
+}
+
 // IsRedacted returns true if the value is redacted.
 func (e *SecretVar) IsRedacted() bool {
 	if e == nil {
@@ -234,15 +240,7 @@ func (e *SecretVar) IsRedacted() bool {
 			return true
 		}
 	}
-	// Check for <redacted> sentinel (case-insensitive for compatibility)
-	if strings.EqualFold(e.Val, "<redacted>") {
-		return true
-	}
-	// Check for [REDACTED] sentinel produced by MarshalJSON in scim config serialization
-	if strings.EqualFold(e.Val, "[REDACTED]") {
-		return true
-	}
-	return false
+	return IsRedactionSentinel(e.Val)
 }
 
 // Equals checks if two SecretVars are equal.
