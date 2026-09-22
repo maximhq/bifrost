@@ -185,19 +185,35 @@ func TestStreamFallbackAfterFirstChunkError(t *testing.T) {
 }
 
 func TestAzureChatFallbackAfterPreamble(t *testing.T) {
-	testAzureFallbackAfterPreamble(t, false)
+	testFallbackAfterPreamble(t, schemas.Azure, false,
+		`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`)
 }
 
 func TestAzureResponsesFallbackAfterPreamble(t *testing.T) {
-	testAzureFallbackAfterPreamble(t, true)
+	testFallbackAfterPreamble(t, schemas.Azure, true,
+		`{"type":"response.failed","response":{"id":"failed-attempt","error":{"code":"rate_limit_exceeded","message":"rate limit exceeded"}}}`)
 }
 
-func testAzureFallbackAfterPreamble(t *testing.T, responses bool) {
+// Direct OpenAI under overload: the stream opens, emits startup events, then
+// fails with server_is_overloaded (no HTTP status). The fallback must serve it.
+func TestOpenAIChatFallbackAfterPreamble(t *testing.T) {
+	testFallbackAfterPreamble(t, schemas.OpenAI, false,
+		`{"error":{"message":"The server is overloaded. Please try again later.","type":"server_error","code":"server_is_overloaded"}}`)
+}
+
+func TestOpenAIResponsesFallbackAfterPreamble(t *testing.T) {
+	testFallbackAfterPreamble(t, schemas.OpenAI, true,
+		`{"type":"response.failed","response":{"id":"failed-attempt","status":"failed","error":{"code":"server_is_overloaded","message":"The server is overloaded. Please try again later."}}}`)
+}
+
+// testFallbackAfterPreamble serves startup events followed by failure from the
+// primary and asserts the Anthropic fallback serves the whole stream.
+func testFallbackAfterPreamble(t *testing.T, primaryProvider schemas.ModelProvider, responses bool, failure string) {
 	t.Helper()
 	payloads := []string{
 		`{"choices":[],"prompt_filter_results":[]}`,
 		`{"id":"failed-attempt","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
-		`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`,
+		failure,
 	}
 	if responses {
 		payloads = []string{
@@ -205,7 +221,7 @@ func testAzureFallbackAfterPreamble(t *testing.T, responses bool) {
 			`{"type":"response.in_progress","response":{"id":"failed-attempt","status":"in_progress","output":[]}}`,
 			`{"type":"response.output_item.added","item":{"id":"failed-item","type":"message","role":"assistant","status":"in_progress","content":[]}}`,
 			`{"type":"response.content_part.added","part":{"type":"output_text","text":"","annotations":[]}}`,
-			`{"type":"response.failed","response":{"id":"failed-attempt","error":{"code":"rate_limit_exceeded","message":"rate limit exceeded"}}}`,
+			failure,
 		}
 	}
 	primary := httptest.NewServer(sseHandler(payloads...))
@@ -218,17 +234,20 @@ func testAzureFallbackAfterPreamble(t *testing.T, responses bool) {
 	defer fallback.Close()
 
 	account := NewMockAccount()
-	account.AddProviderWithBaseURL(schemas.Azure, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(primaryProvider, 1, 1, primary.URL)
 	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
-	account.configs[schemas.Azure].NetworkConfig.MaxRetries = 0
+	account.configs[primaryProvider].NetworkConfig.MaxRetries = 0
 	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
-	account.SetKeysForProvider(schemas.Azure, []schemas.Key{{
-		ID: "azure-key", Value: *schemas.NewSecretVar("test-key"),
+	primaryKey := schemas.Key{
+		ID: "primary-key", Value: *schemas.NewSecretVar("test-key"),
 		Models: schemas.WhiteList{"*"}, Weight: 100,
-		AzureKeyConfig: &schemas.AzureKeyConfig{
+	}
+	if primaryProvider == schemas.Azure {
+		primaryKey.AzureKeyConfig = &schemas.AzureKeyConfig{
 			Endpoint: *schemas.NewSecretVar(primary.URL),
-		},
-	}})
+		}
+	}
+	account.SetKeysForProvider(primaryProvider, []schemas.Key{primaryKey})
 	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
 		ID: "fallback-key", Value: *schemas.NewSecretVar("test-key"),
 		Models: schemas.WhiteList{"*"}, Weight: 100,
@@ -237,7 +256,7 @@ func testAzureFallbackAfterPreamble(t *testing.T, responses bool) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
 	request := &schemas.BifrostChatRequest{
-		Provider: schemas.Azure,
+		Provider: primaryProvider,
 		Model:    "gpt-4o-mini",
 		Input: []schemas.ChatMessage{{
 			Role: schemas.ChatMessageRoleUser,

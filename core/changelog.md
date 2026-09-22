@@ -11,6 +11,7 @@
 - fix: Bedrock tool results with empty-string JSON keys sent as text (#7396)
 - fix: deep copy extended Responses fields in DeepCopyResponsesMessage (#7422)
 - fix: frame bundled OpenAI chat stream raw frames with a data prefix each (#7440)
+- fix: stream errors after startup events (response.created, in_progress, empty role delta) now reach retry and fallback for OpenAI models on every host (OpenAI, Bedrock, Bedrock Mantle, Vertex, custom providers), not only Azure; an overloaded stream no longer reaches the client as an error when a fallback is configured
 - [perf]: avoid redundant JSON decoding in Responses request preparation
 - [fix]: preserve xhigh reasoning effort for Grok 4.7 [@nettee](https://github.com/nettee)
 - [fix]: Bedrock InvokeModel keeps cache_control when any message's content is a plain string. BedrockMessage.Content is typed as content blocks, so one bare string anywhere in messages[] failed the standard unmarshal and diverted the whole request into the AI21 string fallback, which rebuilt the messages without calling applyMessageContentCacheControl. Every cache_control in the request was dropped rather than only the one on the string message, so prompt caching went off silently with just the system cachePoint surviving. The fallback now makes the same translation the standard path does (#7336) [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)
