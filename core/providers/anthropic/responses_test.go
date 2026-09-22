@@ -2,9 +2,11 @@ package anthropic
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -609,5 +611,60 @@ func TestToAnthropicResponsesResponse_IncompleteReportsTruncationStopReason(t *t
 				t.Errorf("usage.output_tokens not carried: %+v", resp.Usage)
 			}
 		})
+	}
+}
+
+// Claude Code auto-mode classifier: safeguards must survive the typed
+// (non-passthrough) ingress→egress request conversion for Anthropic direct.
+func TestAnthropicSafeguardsRequestRoundTrip(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"claude-opus-4-8","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"safeguards":{"check":"auto_mode"}}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	if bifrostReq == nil || bifrostReq.Params == nil {
+		t.Fatal("nil bifrost request from ingress")
+	}
+
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("egress conversion: %v", err)
+	}
+	body, err := sonic.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal egress request: %v", err)
+	}
+	if want := `"safeguards":{"check":"auto_mode"}`; !strings.Contains(string(body), want) {
+		t.Fatalf("safeguards dropped on typed request round trip: %s", string(body))
+	}
+}
+
+// Claude Code auto-mode classifier: safeguard_results must survive the typed
+// unary response conversion (provider decode → Bifrost → Anthropic client shape).
+func TestAnthropicSafeguardResultsUnaryRoundTrip(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	var resp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1},"safeguard_results":[{"id":"sg_1","verdict":"allow"}]}`), &resp); err != nil {
+		t.Fatalf("unmarshal provider response: %v", err)
+	}
+
+	bifrostResp := resp.ToBifrostResponsesResponse(ctx)
+	if bifrostResp == nil {
+		t.Fatal("nil bifrost response")
+	}
+
+	out := ToAnthropicResponsesResponse(ctx, bifrostResp)
+	body, err := sonic.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal client response: %v", err)
+	}
+	if want := `"safeguard_results":[{"id":"sg_1","verdict":"allow"}]`; !strings.Contains(string(body), want) {
+		t.Fatalf("safeguard_results dropped on typed unary round trip: %s", string(body))
 	}
 }

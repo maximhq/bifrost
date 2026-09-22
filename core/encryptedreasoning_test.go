@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2225,4 +2227,60 @@ func TestStripResponsesEncryptedContent_KeepsMessageItemWithSurvivingContent(t *
 		*kept.Content.ContentBlocks[0].Text != "On it." {
 		t.Errorf("expected only the text block to survive, got %+v", kept.Content.ContentBlocks)
 	}
+}
+
+// TestStripRawAnthropicChatThinking_AllocationScaling pins the allocation shape of the
+// raw Anthropic thinking strip.
+//
+// The loop writes messages.<i>.content through the whole request body, once per message
+// it changes, and each sjson write reserialises the entire request. A long agentic
+// conversation is exactly the shape that makes that expensive.
+func TestStripRawAnthropicChatThinking_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(turns int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","messages":[`)
+		for i := range turns {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// A signed thinking block (stripped) alongside a text block that survives
+			// and carries the bulk of the bytes, so both N and payload size scale.
+			b.WriteString(`{"role":"assistant","content":[`)
+			b.WriteString(`{"type":"thinking","thinking":"reasoning","signature":"sig"},`)
+			b.WriteString(`{"type":"text","text":"`)
+			b.WriteString(strings.Repeat("x", 400))
+			b.WriteString(`"}]}`)
+		}
+		b.WriteString(`]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		scratch := append([]byte(nil), body...)
+		stripRawAnthropicChatThinking(&scratch)
+	})
+}
+
+// TestStripRawResponsesEncryptedContent_AllocationScaling pins the allocation shape of
+// the Responses encrypted-content strip.
+//
+// Its inner loop deletes content.<i>.<field> from the item being rewritten, once per
+// content block per reasoning carrier field, and each delete reserialises that whole
+// item. An item carrying many reasoning blocks pays that repeatedly.
+func TestStripRawResponsesEncryptedContent_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(blocks int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"gpt-5","input":[{"type":"message","role":"assistant","content":[`)
+		for i := range blocks {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"type":"reasoning_text","text":"`)
+			b.WriteString(strings.Repeat("r", 400))
+			b.WriteString(`","encrypted_content":"enc"}`)
+		}
+		b.WriteString(`]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		scratch := append([]byte(nil), body...)
+		stripRawResponsesEncryptedContent(&scratch, false)
+	})
 }

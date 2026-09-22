@@ -1,0 +1,31 @@
+decisions:
+  post:
+    operationId: createDecision
+    summary: Evaluate a decision
+    description: |
+      Evaluates state against a map of named questions and returns one typed
+      answer per question, with per-answer confidence, probabilities, and
+      legend metadata. Served by decision providers such as Typesafe's jev models.
+    tags:
+    - Decisions
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/decisions.yaml#/DecisionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/decisions.yaml#/DecisionResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

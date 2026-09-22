@@ -1,4 +1,4 @@
-import { Database, Landmark, Network, Shuffle, Workflow } from "lucide-react";
+import { Database, Landmark, Link2, Network, Shuffle, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
 
@@ -845,6 +845,30 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// TypeSafe's geometric logomark, extracted from their brand wordmark SVG. The
+	// source art uses currentColor, so the icon follows the surrounding text in
+	// both themes without a theme branch. The wordmark's remaining letterforms are
+	// dropped: at icon sizes only the mark stays legible.
+	typesafe: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 15.54 22"
+				fill="currentColor"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>TypeSafe</title>
+				<path
+					fillRule="evenodd"
+					clipRule="evenodd"
+					d="M7.53132 0.0628384C7.67654 -0.0208911 7.85538 -0.0210011 8.00055 0.0628384C8.0035 0.064546 8.0063 0.0665761 8.0092 0.0683403L11.6499 2.16876C11.7951 2.2526 11.8846 2.40765 11.8846 2.57537V6.51657L15.2966 8.48782C15.4417 8.57172 15.5311 8.72659 15.5311 8.89418V17.3029C15.5313 17.3081 15.5316 17.3134 15.5316 17.3186C15.5315 17.4025 15.5089 17.4832 15.4682 17.5534C15.4277 17.6236 15.369 17.6833 15.2963 17.7253C15.2955 17.7257 15.2945 17.7261 15.2937 17.7266L7.99793 21.9371C7.85248 22.021 7.67294 22.021 7.52765 21.9368L3.88513 19.8251C3.87432 19.8189 3.86385 19.812 3.85369 19.805C3.84339 19.7979 3.83345 19.7903 3.82382 19.7824C3.72347 19.7005 3.66076 19.58 3.65221 19.4494L3.65117 19.4183V15.4831L0.234486 13.5066C0.216315 13.4961 0.198969 13.4844 0.182611 13.4718C0.174501 13.4655 0.166671 13.4589 0.159031 13.4521C0.143107 13.4381 0.128788 13.4225 0.115016 13.4065C0.0424231 13.3225 4.67016e-05 13.2146 0 13.1002V4.67579C2.76699e-05 4.50801 0.0896788 4.35301 0.23501 4.26917L7.53132 0.0628384ZM5.05861 19.4198L7.76345 20.9879L14.1223 17.3181L11.4154 15.7545L5.05861 19.4198ZM8.23582 9.16508V13.1008C8.23582 13.1025 8.23556 13.1043 8.23556 13.106L8.23451 13.1372C8.22414 13.2927 8.13698 13.434 8.00081 13.5126C7.98207 13.5235 7.96265 13.5326 7.94291 13.5407L4.59016 15.4828V18.6061L10.9462 14.9408V7.60071L8.23582 9.16508ZM11.8854 14.9413L14.5921 16.5049V9.16508L11.8854 7.60123V14.9413ZM1.40875 13.1013L4.11988 14.6696L6.82288 13.1034L4.19271 11.5836L4.11988 11.5416L1.40875 13.1013ZM0.938991 4.94696V12.2883L3.6509 10.7284V6.78223C3.6509 6.61438 3.74049 6.4592 3.88591 6.37535L7.29605 4.41013V1.2819L0.938991 4.94696ZM4.59016 10.7287L7.29657 12.2881V9.16456L4.59016 7.60123V10.7287ZM5.05913 6.78328L7.76633 8.35158L10.4722 6.78538L7.7658 5.22362L5.05913 6.78328ZM8.2353 4.41013L10.9456 5.97005V2.84654L8.2353 1.28243V4.41013Z"
+				/>
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons
@@ -853,6 +877,7 @@ export const RoutingEngineUsedIcons = {
 	governance: ({ className = "h-5 w-5 text-green-800" }: { className?: string } = {}) => <Landmark className={className} />,
 	loadbalancing: ({ className = "h-5 w-5 text-orange-800" }: { className?: string } = {}) => <Shuffle className={className} />,
 	"model-catalog": ({ className = "h-5 w-5 text-purple-800" }: { className?: string } = {}) => <Database className={className} />,
+	"session-affinity": ({ className = "h-5 w-5 text-teal-800" }: { className?: string } = {}) => <Link2 className={className} />,
 	core: ({ className = "h-5 w-5 text-sky-800" }: { className?: string } = {}) => <Workflow className={className} />,
 } as const;
 

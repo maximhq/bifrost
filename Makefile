@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -853,6 +853,29 @@ test-plugins: install-gotestsum ## Run plugin tests
 		SUMMARY_STRIP="plugin-" \
 		SUMMARY_FILES="$(TEST_REPORTS_DIR)/plugin-*.xml"
 
+test-memory: install-gotestsum ## Run memory-regression tests (allocation scaling + coverage gate)
+	@$(ECHO) "$(GREEN)Running memory regression tests...$(NC)"
+	@$(ECHO) "$(CYAN)Asserts allocation grows with input size, not its square, and that every$(NC)"
+	@$(ECHO) "$(CYAN)loop-bound raw-JSON mutation in core/providers has been classified.$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@rc=0; \
+	for mod in core transports; do \
+		pkgs=$$(cd $$mod && grep -rl "_AllocationScaling\|_Retention" --include="*_test.go" . 2>/dev/null | xargs -n1 dirname | sort -u); \
+		if [ "$$mod" = "core" ]; then pkgs="./internal/memtest $$(echo "$$pkgs" | grep -v '^./internal/memtest$$')"; fi; \
+		[ -z "$$(echo $$pkgs)" ] && continue; \
+		$(ECHO) "$(CYAN)$$mod:$(NC)"; \
+		for p in $$pkgs; do $(ECHO) "  $$p"; done; \
+		( cd $$mod && gotestsum \
+			--format=$(GOTESTSUM_FORMAT) \
+			--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/memory-$$mod.xml \
+			-- -timeout 15m -count=1 \
+			-run '_AllocationScaling|_Retention|TestEveryLoopBoundJSONMutationIsReviewed|TestCoveredSitesHaveARealTest' \
+			$$pkgs ) || rc=1; \
+	done; \
+	exit $$rc
+	@$(ECHO) ""
+	@$(ECHO) "$(CYAN)JUnit XML report saved to $(TEST_REPORTS_DIR)/memory-*.xml$(NC)"
+
 test-framework: install-gotestsum ## Run framework tests
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running framework tests...$(NC)"; \
@@ -1446,24 +1469,24 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 			if [ -n "$(TESTCASE)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
 				if [[ "$(TESTCASE)" == *::* ]]; then \
-					uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+					uv run --frozen pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 				else \
-					uv run pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+					uv run --frozen pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 				fi; \
 			elif [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		else \
 			if [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
-				uv run pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				$(ECHO) "$(CYAN)Running all integration tests...$(NC)"; \
-				uv run pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		fi; \
 	fi; \

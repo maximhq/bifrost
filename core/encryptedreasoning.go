@@ -1,7 +1,7 @@
 package bifrost
 
 import (
-	"fmt"
+	"bytes"
 	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -428,11 +428,18 @@ func stripRawAnthropicChatThinking(rawBody *[]byte) bool {
 	// with tool_use present and thinking still enabled; measured against the live API on
 	// claude-sonnet-4-5, claude-haiku-4-5 and claude-opus-5.
 	// https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks
+	// Each message is rewritten in its own JSON and the messages array is written back
+	// once. Addressing through the whole body (messages.<i>.content) would reserialise
+	// the entire request per changed message, making this O(messages x body).
+	// Pinned by TestStripRawAnthropicChatThinking_AllocationScaling.
 	changed := false
-	for messageIndex, message := range messages.Array() {
+	var rebuilt [][]byte
+	for _, message := range messages.Array() {
+		messageRaw := []byte(message.Raw)
 		content := message.Get("content")
 		// The shorthand string form carries no blocks, so there is nothing to rewrite.
 		if !content.IsArray() {
+			rebuilt = append(rebuilt, messageRaw)
 			continue
 		}
 
@@ -455,21 +462,44 @@ func stripRawAnthropicChatThinking(rawBody *[]byte) bool {
 		}
 
 		if !messageChanged || len(kept) == 0 {
+			rebuilt = append(rebuilt, messageRaw)
 			continue
 		}
-		updated, err := sjson.SetRawBytes(body, fmt.Sprintf("messages.%d.content", messageIndex), []byte("["+strings.Join(kept, ",")+"]"))
+		updated, err := sjson.SetRawBytes(messageRaw, "content", []byte("["+strings.Join(kept, ",")+"]"))
 		if err != nil {
+			rebuilt = append(rebuilt, messageRaw)
 			continue
 		}
-		body = updated
+		rebuilt = append(rebuilt, updated)
 		changed = true
 	}
 
 	if !changed {
 		return false
 	}
-	*rawBody = body
+	updated, err := sjson.SetRawBytes(body, "messages", joinRawJSONArray(rebuilt, len(body)))
+	if err != nil {
+		return false
+	}
+	*rawBody = updated
 	return true
+}
+
+// joinRawJSONArray concatenates pre-encoded JSON values into one array, so a batch of
+// element-local edits costs a single write of the enclosing document instead of one per
+// element.
+func joinRawJSONArray(parts [][]byte, sizeHint int) []byte {
+	var buf bytes.Buffer
+	buf.Grow(sizeHint)
+	buf.WriteByte('[')
+	for i, p := range parts {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(p)
+	}
+	buf.WriteByte(']')
+	return buf.Bytes()
 }
 
 // stripContentBlockReasoningPayloads returns the message's content blocks with every
@@ -683,16 +713,31 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs bool) bool {
 		// Deleting a field inside a block never reorders the content array, so the indices
 		// read before the deletes stay valid. A string-valued content yields a one-element
 		// array carrying neither field, and falls through untouched.
-		for blockIndex, block := range gjson.Get(rest, "content").Array() {
-			for _, field := range contentBlockReasoningCarriers {
-				if !gjson.Get(block.Raw, field).Exists() {
-					continue
+		// Each carrier is dropped from the block's own JSON and the content array is
+		// written back once. Deleting content.<i>.<field> through the whole item would
+		// reserialise it per block per carrier, making this O(blocks x item).
+		// Pinned by TestStripRawResponsesEncryptedContent_AllocationScaling.
+		if contentResult := gjson.Get(rest, "content"); contentResult.IsArray() {
+			var rebuiltBlocks [][]byte
+			contentChanged := false
+			for _, block := range contentResult.Array() {
+				blockRaw := []byte(block.Raw)
+				for _, field := range contentBlockReasoningCarriers {
+					if !gjson.GetBytes(blockRaw, field).Exists() {
+						continue
+					}
+					updated, err := sjson.DeleteBytes(blockRaw, field)
+					if err != nil {
+						continue
+					}
+					blockRaw, contentChanged = updated, true
 				}
-				updated, err := sjson.Delete(rest, fmt.Sprintf("content.%d.%s", blockIndex, field))
-				if err != nil {
-					continue
+				rebuiltBlocks = append(rebuiltBlocks, blockRaw)
+			}
+			if contentChanged {
+				if updated, err := sjson.SetRawBytes([]byte(rest), "content", joinRawJSONArray(rebuiltBlocks, len(rest))); err == nil {
+					rest, itemChanged = string(updated), true
 				}
-				rest, itemChanged = updated, true
 			}
 		}
 

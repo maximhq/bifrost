@@ -1211,6 +1211,8 @@ func TestNormalizeResponsesToolType(t *testing.T) {
 		{"web_fetch_20260209", ResponsesToolTypeWebFetch},
 		{"web_fetch_20260309", ResponsesToolTypeWebFetch},
 
+		// bare "computer" is OpenAI's own tool (GPT-6 Astra / GPT-5.6) and must not fold into the preview type
+		{ResponsesToolTypeComputer, ResponsesToolTypeComputer},
 		// computer versioned aliases
 		{"computer_20250124", ResponsesToolTypeComputerUsePreview},
 		{"computer_20251124", ResponsesToolTypeComputerUsePreview},

@@ -3334,3 +3334,95 @@ func TestToOpenAIResponsesRequest_MantleGPTOSSReplaysAssistantTextAsInput(t *tes
 		})
 	}
 }
+
+// Web search action sources are sanitized for OpenAI: provider-specific fields
+// (title, encrypted_content, page_age) are stripped, while the OpenAI-native
+// fields survive. That includes the name of specialized API sources
+// ({"type":"api","name":"oai-weather"}), which carry no URL and must not gain a
+// fabricated empty one.
+func TestToOpenAIResponsesRequest_StripsWebSearchSourceProviderFields(t *testing.T) {
+	history := `{
+		"id": "ws_1",
+		"type": "web_search_call",
+		"status": "completed",
+		"action": {
+			"type": "search",
+			"queries": ["weather in paris"],
+			"sources": [
+				{"type": "url", "url": "https://example.com", "title": "Example"},
+				{"type": "api", "name": "oai-weather"}
+			]
+		}
+	}`
+	var webSearchCall schemas.ResponsesMessage
+	require.NoError(t, schemas.Unmarshal([]byte(history), &webSearchCall))
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{webSearchCall},
+	}
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+
+	body, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	var wire struct {
+		Input []struct {
+			Action struct {
+				Sources []map[string]any `json:"sources"`
+			} `json:"action"`
+		} `json:"input"`
+	}
+	require.NoError(t, json.Unmarshal(body, &wire))
+	require.Len(t, wire.Input, 1, "body: %s", body)
+	require.Len(t, wire.Input[0].Action.Sources, 2, "body: %s", body)
+
+	urlSource, apiSource := wire.Input[0].Action.Sources[0], wire.Input[0].Action.Sources[1]
+
+	require.NotContains(t, urlSource, "title", "provider-specific title must be stripped: %s", body)
+	require.Equal(t, "https://example.com", urlSource["url"], "url source keeps its url: %s", body)
+
+	require.Equal(t, "api", apiSource["type"], "api source keeps its type: %s", body)
+	require.Equal(t, "oai-weather", apiSource["name"], "api source keeps its name: %s", body)
+	require.NotContains(t, apiSource, "url", "api source must not gain a fabricated empty url: %s", body)
+
+	// The caller's input must not be mutated by the strip.
+	require.NotNil(t, bifrostReq.Input[0].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources[0].Title,
+		"the caller's input must not be mutated")
+}
+
+// TestToOpenAIResponsesRequest_ForwardsComputerTool locks in issue #7425: the
+// bare `computer` tool (GPT-6 Astra / GPT-5.6 computer use) must pass the
+// OpenAI tool whitelist unchanged, not be dropped or rewritten to
+// computer_use_preview.
+func TestToOpenAIResponsesRequest_ForwardsComputerTool(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-astra",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Click Settings."),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputer}},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+	}
+	if result.Tools[0].Type != schemas.ResponsesToolTypeComputer {
+		t.Fatalf("expected tool type %q, got %q", schemas.ResponsesToolTypeComputer, result.Tools[0].Type)
+	}
+	if result.Tools[0].ResponsesToolComputerUsePreview != nil {
+		t.Fatal("expected no computer_use_preview fields on the bare computer tool")
+	}
+}

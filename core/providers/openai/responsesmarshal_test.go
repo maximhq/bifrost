@@ -179,6 +179,8 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"gpt-6-astra keeps max", "gpt-6-astra", "max", "max"},
 		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
 		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
+		{"grok-4.7 keeps xhigh", "grok-4.7", "xhigh", "xhigh"},
+		{"grok-4.7 maps max to xhigh", "grok-4.7", "max", "xhigh"},
 		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
 		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
 		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},

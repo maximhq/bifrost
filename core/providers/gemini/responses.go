@@ -16,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // thoughtSignatureFromEncryptedContent converts a Responses-API
@@ -950,6 +951,8 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	// Skip lifecycle events that don't have corresponding Gemini equivalents
 	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypePing,
+		schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+		schemas.ResponsesStreamResponseTypeProviderRawEvent,
 		schemas.ResponsesStreamResponseTypeCreated,
 		schemas.ResponsesStreamResponseTypeInProgress,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded,
@@ -2581,16 +2584,41 @@ func stripFunctionResponseMediaRefs(response json.RawMessage) string {
 		return string(response)
 	}
 
-	cleaned := []byte(response)
+	// Rebuild the object in one pass rather than deleting key by key: every
+	// providerUtils.DeleteJSONField reserialises the whole document, so N media refs
+	// cost N copies of it. Pinned by TestStripFunctionResponseMediaRefs_AllocationScaling.
+	//
+	// ForEach, not Map(): Map() returns a Go map whose iteration order is randomised,
+	// which would make the surviving keys come out in a different order on every call
+	// and break byte stability for anything downstream that hashes or caches this.
+	// ForEach walks the document in source order, so survivors keep their positions
+	// exactly as the per-key delete left them.
+	var rebuilt bytes.Buffer
+	rebuilt.Grow(len(response))
+	rebuilt.WriteByte('{')
 	remaining := 0
-	for key, value := range root.Map() {
+	dropped := 0
+	root.ForEach(func(key, value gjson.Result) bool {
 		if value.IsObject() && value.Get("$ref").Exists() {
-			if updated, err := providerUtils.DeleteJSONField(cleaned, key); err == nil {
-				cleaned = updated
-			}
-			continue
+			dropped++
+			return true
 		}
+		if remaining > 0 {
+			rebuilt.WriteByte(',')
+		}
+		rebuilt.WriteString(key.Raw)
+		rebuilt.WriteByte(':')
+		rebuilt.WriteString(value.Raw)
 		remaining++
+		return true
+	})
+	rebuilt.WriteByte('}')
+
+	// Nothing dropped means the per-key delete would have been a no-op, so hand back
+	// the caller's bytes untouched rather than a re-serialised equivalent.
+	cleaned := []byte(response)
+	if dropped > 0 {
+		cleaned = rebuilt.Bytes()
 	}
 
 	if remaining == 0 {

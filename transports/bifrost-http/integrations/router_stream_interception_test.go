@@ -60,7 +60,7 @@ func newStreamInterceptionError(message string) *schemas.StreamInterceptionError
 	}
 }
 
-func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interceptErr error) (string, bool) {
+func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interceptErr error) (string, *cancelRecorder) {
 	t.Helper()
 
 	stream := make(chan *schemas.BifrostStreamChunk, 1)
@@ -73,14 +73,12 @@ func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interce
 	}
 	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
-	cancelCalled := false
-	router.handleStreaming(ctx, nil, config, stream, func() {
-		cancelCalled = true
-	})
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, nil, config, stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
-	return string(body), cancelCalled
+	return string(body), rec
 }
 
 // A StreamInterceptionError must be emitted through the integration's error
@@ -100,7 +98,7 @@ func Test_handleStreamingInterceptionErrorUsesErrorConverter(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(newStreamInterceptionError("Response blocked by content policy")))
 
 	assert.Contains(t, body, `data: `)
@@ -108,7 +106,7 @@ func Test_handleStreamingInterceptionErrorUsesErrorConverter(t *testing.T) {
 	assert.Contains(t, body, `"type":"guardrail_intervention"`)
 	assert.NotContains(t, body, "failed to intercept chunk",
 		"structured interception errors must not leak the internal plugin wrap")
-	assert.True(t, cancelCalled, "stream must be terminated after an interception error")
+	rec.requireCancelled(t, "stream must be terminated after an interception error")
 }
 
 // On Anthropic-style routes the converter returns a complete SSE string with
@@ -123,14 +121,14 @@ func Test_handleStreamingInterceptionErrorAnthropicSSEFraming(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(newStreamInterceptionError("Response blocked by content policy")))
 
 	assert.True(t, strings.HasPrefix(body, "event: error\ndata: "),
 		"Anthropic streaming errors use the provider's native SSE framing, got: %q", body)
 	assert.Contains(t, body, `"Response blocked by content policy"`)
 	assert.NotContains(t, body, "failed to intercept chunk")
-	assert.True(t, cancelCalled)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }
 
 // Structured interception errors must be sanitized like upstream provider
@@ -165,7 +163,7 @@ func Test_handleStreamingInterceptionErrorBedrockEventStream(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(newStreamInterceptionError("Response blocked by content policy")))
 
 	require.NotEmpty(t, body)
@@ -178,7 +176,7 @@ func Test_handleStreamingInterceptionErrorBedrockEventStream(t *testing.T) {
 	assert.Equal(t, "guardrail_intervention", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
 	assert.JSONEq(t, `{"__type":"guardrail_intervention","message":"Response blocked by content policy"}`, string(msg.Payload))
 	assert.NotContains(t, string(msg.Payload), "failed to intercept chunk")
-	assert.True(t, cancelCalled)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }
 
 // Plain (non-structured) interceptor errors keep the existing flat behavior.
@@ -192,12 +190,12 @@ func Test_handleStreamingPlainInterceptionErrorKeepsFlatFormat(t *testing.T) {
 		},
 	}
 
-	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+	body, rec := runHandleStreamingWithInterceptor(t, config,
 		wrapInterceptionError(fmt.Errorf("plugin exploded")))
 
 	assert.Contains(t, body, "event: error\ndata: ")
 	assert.Contains(t, body, `{"error":"failed to intercept chunk with plugin test-plugin: plugin exploded"}`)
-	assert.True(t, cancelCalled)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }
 
 // A route configuration bug must produce a stream error instead of calling a
@@ -222,11 +220,11 @@ func Test_handleStreamingMissingSpeechConverterReturnsError(t *testing.T) {
 	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	cancelCalled := false
-	router.handleStreaming(ctx, bifrostCtx, config, stream, func() { cancelCalled = true })
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, bifrostCtx, config, stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
 	assert.Contains(t, string(body), lib.ClientSafeInternalErrorMessage)
-	assert.True(t, cancelCalled)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }

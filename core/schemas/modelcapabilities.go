@@ -33,6 +33,7 @@ type ModelCapabilities struct {
 	SupportsCodeExecution           *bool `json:"supports_code_execution,omitempty"`
 	SupportsBashTool                *bool `json:"supports_bash_tool,omitempty"`
 	SupportsTextEditorTool          *bool `json:"supports_text_editor_tool,omitempty"`
+	SupportsComputerToolset         *bool `json:"supports_computer_toolset,omitempty"` // accepts the computer_toolset_20260801 client toolset; absent ⇒ name detection
 	SupportsMemoryTool              *bool `json:"supports_memory_tool,omitempty"`
 	SupportsToolSearch              *bool `json:"supports_tool_search,omitempty"`
 	ToolNameMaxLength               *int  `json:"tool_name_max_length,omitempty"`     // longest tool name the wire accepts; absent falls back to the per-provider default in core/providers/utils (64 for OpenAI-compatible wires and Bedrock, 128 for Anthropic and Gemini)
@@ -53,6 +54,7 @@ type ModelCapabilities struct {
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`
 	SupportsAdvisorTool             *bool `json:"supports_advisor_tool,omitempty"`
 	SupportsInferenceGeo            *bool `json:"supports_inference_geo,omitempty"`
+	SupportsSafeguards              *bool `json:"supports_safeguards,omitempty"` // Claude Code auto-mode classifier (safeguards/safeguard_results), model-gated on Anthropic and cloud surfaces (Sonnet 5, Opus 4.7+, Fable).
 	SupportsPromptCachingScope      *bool `json:"supports_prompt_caching_scope,omitempty"`
 	SupportsExtendedCacheTTL        *bool `json:"supports_extended_cache_ttl,omitempty"`
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`

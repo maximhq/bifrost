@@ -370,121 +370,121 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					)}
 				/>
 			)}
-				<>
-					<FormField
-						control={control}
-						name={`key.models`}
-						render={({ field }) => (
-							<FormItem>
-								<FormControl>
-									<ModelAccessSelector
-										mode="allow"
-										data-testid="api-keys-models-multiselect"
-										provider={providerName}
-										unfiltered
-										value={field.value || []}
-										onChange={field.onChange}
-										label={
-											<>
-												<FormLabel>Allowed Models</FormLabel>
-												<TooltipProvider>
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<span>
-																<Info className="text-muted-foreground h-3 w-3" />
-															</span>
-														</TooltipTrigger>
-														<TooltipContent className="max-w-sm">
-															<p>
-																Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny
-																all. Aliases must be added by their alias name - listing only the underlying model does not allow the alias
-																(an alias best-model → gpt-4o requires "best-model" here, not just "gpt-4o").
-															</p>
-														</TooltipContent>
-													</Tooltip>
-												</TooltipProvider>
-											</>
-										}
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.blacklisted_models`}
-						render={({ field }) => (
-							<FormItem data-testid="apikey-blacklisted-models-field">
-								<FormControl>
-									<ModelAccessSelector
-										mode="block"
-										data-testid="api-keys-blocked-models-multiselect"
-										provider={providerName}
-										unfiltered
-										value={field.value || []}
-										onChange={field.onChange}
-										label={
-											<>
-												<FormLabel>Blocked Models</FormLabel>
-												<TooltipProvider>
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<span>
-																<Info className="text-muted-foreground h-3 w-3" />
-															</span>
-														</TooltipTrigger>
-														<TooltipContent className="max-w-sm">
-															<p>
-																Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and
-																here, it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their
-																alias name - blocking only the underlying model does not block aliases that point to it.
-															</p>
-														</TooltipContent>
-													</Tooltip>
-												</TooltipProvider>
-											</>
-										}
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.aliases`}
-						render={({ field }) => (
-							<FormItem data-testid="apikey-deployments-field">
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>
-									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, etc.). Expand a row for
-									canonical name, model family, and provider overrides - these drive cost logs and family-based routing.
-									{isReplicate && (
+			<>
+				<FormField
+					control={control}
+					name={`key.models`}
+					render={({ field }) => (
+						<FormItem>
+							<FormControl>
+								<ModelAccessSelector
+									mode="allow"
+									data-testid="api-keys-models-multiselect"
+									provider={providerName}
+									unfiltered
+									value={field.value || []}
+									onChange={field.onChange}
+									label={
 										<>
-											{" "}
-											Replicate deployments are listed only while &quot;Use Deployments Endpoint&quot; is on - otherwise type the owner/name
-											and press Enter.
+											<FormLabel>Allowed Models</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent className="max-w-sm">
+														<p>
+															Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny
+															all. Aliases must be added by their alias name - listing only the underlying model does not allow the alias
+															(an alias best-model → gpt-4o requires "best-model" here, not just "gpt-4o").
+														</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
 										</>
-									)}
-								</FormDescription>
-								<FormControl>
-									<div data-testid="apikey-deployments-table">
-										<DeploymentsTable
-											providerName={providerName}
-											value={field.value}
-											onChange={(next) => {
-												form.clearErrors("key.aliases");
-												field.onChange(Object.keys(next).length > 0 ? next : {});
-											}}
-										/>
-									</div>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-				</>
+									}
+								/>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.blacklisted_models`}
+					render={({ field }) => (
+						<FormItem data-testid="apikey-blacklisted-models-field">
+							<FormControl>
+								<ModelAccessSelector
+									mode="block"
+									data-testid="api-keys-blocked-models-multiselect"
+									provider={providerName}
+									unfiltered
+									value={field.value || []}
+									onChange={field.onChange}
+									label={
+										<>
+											<FormLabel>Blocked Models</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent className="max-w-sm">
+														<p>
+															Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and
+															here, it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their alias
+															name - blocking only the underlying model does not block aliases that point to it.
+														</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</>
+									}
+								/>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.aliases`}
+					render={({ field }) => (
+						<FormItem data-testid="apikey-deployments-field">
+							<FormLabel>Deployments (Optional)</FormLabel>
+							<FormDescription>
+								Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, etc.). Expand a row for
+								canonical name, model family, and provider overrides - these drive cost logs and family-based routing.
+								{isReplicate && (
+									<>
+										{" "}
+										Replicate deployments are listed only while &quot;Use Deployments Endpoint&quot; is on - otherwise type the owner/name
+										and press Enter.
+									</>
+								)}
+							</FormDescription>
+							<FormControl>
+								<div data-testid="apikey-deployments-table">
+									<DeploymentsTable
+										providerName={providerName}
+										value={field.value}
+										onChange={(next) => {
+											form.clearErrors("key.aliases");
+											field.onChange(Object.keys(next).length > 0 ? next : {});
+										}}
+									/>
+								</div>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			</>
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">

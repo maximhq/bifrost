@@ -172,9 +172,9 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 								<div className="flex items-start gap-2">
 									<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-700" />
 									<p className="text-xs text-blue-900">
-										This listing stays in your organization&apos;s library. It is not published to the global Bifrost MCP catalog. It is also a
-										catalog entry, not a live MCP connection: credentials are never stored on the listing, each person who installs it
-										supplies their own.
+										This listing stays in your organization&apos;s library. It is not published to the global Bifrost MCP catalog. It is
+										also a catalog entry, not a live MCP connection: credentials are never stored on the listing, each person who installs
+										it supplies their own.
 									</p>
 								</div>
 							</div>
