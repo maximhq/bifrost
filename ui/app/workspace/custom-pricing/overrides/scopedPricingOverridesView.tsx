@@ -1,7 +1,7 @@
-import PageTitle from "@/components/pageTitle";
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import FullPageLoader from "@/components/fullPageLoader";
+import PageTitle from "@/components/pageTitle";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -17,13 +17,13 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage, useDeletePricingOverrideMutation, useGetPricingOverridesQuery, useGetProvidersQuery } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { useLocation } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -391,17 +391,15 @@ export default function ScopedPricingOverridesView() {
 
 				{/* The label is hidden below sm, leaving an icon with no accessible
 				    name, so the name is carried on the button itself. */}
-				{hasCreateAccess && (
-					<Button
-						data-testid="pricing-override-create-btn"
-						onClick={openCreateDrawer}
-						className="gap-2 sm:ml-auto"
-						aria-label="New pricing override"
-					>
-						<Plus className="h-4 w-4" />
-						<span className="hidden sm:inline">New Override</span>
-					</Button>
-				)}
+				{hasCreateAccess && (<Button
+					data-testid="pricing-override-create-btn"
+					onClick={openCreateDrawer}
+					className="gap-2 sm:ml-auto"
+					aria-label="Add pricing override"
+				>
+					<Plus className="h-4 w-4" />
+					<span className="hidden sm:inline">Add Override</span>
+				</Button>)}
 			</div>
 
 			<div className="mb-2 overflow-hidden rounded-sm border">
