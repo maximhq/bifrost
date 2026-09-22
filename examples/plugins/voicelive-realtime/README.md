@@ -122,6 +122,15 @@ make build     # -> build/voicelive-realtime.so
 go test ./...  # proves the hijack, the relay, and the fall-through
 ```
 
+> **Build against the same core as the `bifrost-http` binary you will load this into.**
+> Like every example here, `go.mod` carries `replace github.com/maximhq/bifrost/core => ../../../core`,
+> which resolves to your checkout. Go's plugin loader requires the plugin and the host to agree on
+> the exact version of every shared package, so a plugin built from a checkout that has drifted from
+> the deployed binary fails to load with `different version of package`. Build both from the same
+> source tree — ideally in the same CI job — or pin the plugin to the core version the target binary
+> reports (`go version -m ./bifrost-http | grep bifrost/core`). See
+> [Writing Go Plugins → Version Mismatch Errors](https://docs.getbifrost.ai/plugins/writing-go-plugin).
+
 The tests run a real WebSocket client against a fake Voice Live server through a faithful replica of
 `TransportInterceptorMiddleware`, and cover: claiming `gpt-realtime`, claiming `phi4-mm-realtime`
 with a `azure/` prefix, text **and binary** frame relay, the upstream URL and `api-key` shape, and
@@ -153,7 +162,7 @@ unclaimed models falling through to Bifrost.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `endpoint` | string | — | **Required.** Azure AI resource root. `http(s)` is rewritten to `ws(s)`. |
+| `endpoint` | string | — | **Required.** Azure AI resource root. `http(s)` is rewritten to `ws(s)`. Cleartext (`http://`/`ws://`) is rejected at startup outside loopback, since the `api-key` travels on this connection. A bare host defaults to `wss://`. |
 | `api_key` | SecretVar | — | **Required.** Literal, `env.NAME`, or `vault.path/to/secret`. Sent as the `api-key` header. |
 | `api_version` | string | `2025-10-01` | Voice Live `api-version`. **Check this against your resource** — Azure revises it, and a stale value fails the handshake. |
 | `models` | string[] | `["gpt-realtime", "phi4-mm-realtime"]` | Models this plugin claims. Everything else falls through to Bifrost. |

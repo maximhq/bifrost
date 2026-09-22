@@ -277,6 +277,40 @@ func TestVoiceLiveRealtimeProxy(t *testing.T) {
 	})
 }
 
+// TestRejectsCleartextEndpointOutsideLoopback covers the config guard: the
+// api-key travels in a header on the upstream hop, so an unencrypted endpoint
+// would hand it to anyone on the path. Loopback stays allowed because that is
+// what local fakes and these tests use.
+func TestRejectsCleartextEndpointOutsideLoopback(t *testing.T) {
+	cases := []struct {
+		endpoint   string
+		wantReject bool
+	}{
+		{"https://demo.services.ai.azure.com", false},
+		{"demo.services.ai.azure.com", false}, // bare host defaults to wss://
+		{"wss://demo.services.ai.azure.com", false},
+		{"http://127.0.0.1:8080", false},
+		{"http://localhost:8080", false},
+		{"ws://[::1]:8080", false},
+		{"http://demo.services.ai.azure.com", true},
+		{"ws://demo.services.ai.azure.com", true},
+		{"http://10.0.0.5:8080", true},
+	}
+
+	for _, tc := range cases {
+		err := Init(map[string]any{"endpoint": tc.endpoint, "api_key": "sk-test"})
+		if err == nil {
+			Cleanup()
+		}
+		if tc.wantReject && err == nil {
+			t.Errorf("endpoint %q: want rejection, got none", tc.endpoint)
+		}
+		if !tc.wantReject && err != nil {
+			t.Errorf("endpoint %q: want accepted, got %v", tc.endpoint, err)
+		}
+	}
+}
+
 func TestUpstreamURLShape(t *testing.T) {
 	c := &Config{Endpoint: "https://demo.services.ai.azure.com", APIVersion: "2025-10-01"}
 

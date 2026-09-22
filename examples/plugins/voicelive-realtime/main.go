@@ -50,6 +50,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -76,6 +77,15 @@ const (
 	clientPingInterval  = 30 * time.Second
 	upstreamCloseGrace  = 2 * time.Second
 	realtimeSubprotocol = "realtime"
+
+	// writeTimeout bounds a single relayed frame. Without it a peer that stops
+	// reading while it keeps sending blocks the write forever: the source read
+	// deadline is refreshed by every successful read, so nothing ever unblocks
+	// the relay, and it holds its activeConns slot for the life of the process.
+	// Matches realtimeWSWriteTimeout in Bifrost's own realtime handler, and is
+	// deliberately much shorter than idleTimeout — an idle connection is normal,
+	// a write that cannot drain for 30s is not.
+	writeTimeout = 30 * time.Second
 )
 
 // Config is this plugin's typed configuration.
@@ -170,6 +180,12 @@ func Init(raw any) error {
 	}
 	if c.APIKey.GetValue() == "" {
 		return fmt.Errorf("%s: plugin config api_key must resolve to a non-empty value", pluginName)
+	}
+	// The api-key rides in a header on the upstream hop, so a cleartext endpoint
+	// hands it to anyone on the path. Loopback stays allowed so tests and local
+	// fakes work; a bare host with no scheme already defaults to wss://.
+	if isCleartextEndpoint(c.Endpoint) && !isLoopbackEndpoint(c.Endpoint) {
+		return fmt.Errorf("%s: plugin config endpoint must use https:// outside loopback — the api-key is sent on this connection", pluginName)
 	}
 	config.Store(c)
 
@@ -361,6 +377,12 @@ func pump(src, dst *ws.Conn, idleTimeout time.Duration, stop func()) {
 		if err != nil {
 			return
 		}
+		// Bound the write too. fasthttp/websocket applies this deadline to the
+		// underlying conn inside WriteMessage, so a peer that has stopped reading
+		// fails the relay instead of parking it forever.
+		if err := dst.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			return
+		}
 		if err := dst.WriteMessage(messageType, message); err != nil {
 			return
 		}
@@ -421,6 +443,35 @@ func buildUpstreamURL(c *Config, model, intent string) string {
 		query.Set("intent", intent)
 	}
 	return endpoint + "/voice-live/realtime?" + query.Encode()
+}
+
+// isCleartextEndpoint reports whether the configured endpoint would produce an
+// unencrypted upstream connection. A bare host is not cleartext: buildUpstreamURL
+// defaults it to wss://.
+func isCleartextEndpoint(endpoint string) bool {
+	lower := strings.ToLower(strings.TrimSpace(endpoint))
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "ws://")
+}
+
+// isLoopbackEndpoint reports whether the endpoint points at this machine, which
+// is the one case where cleartext carries no exposure — and the case the tests
+// and local Voice Live fakes rely on.
+func isLoopbackEndpoint(endpoint string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // isRealtimeUpgrade reports whether this is a realtime WebSocket upgrade. The
