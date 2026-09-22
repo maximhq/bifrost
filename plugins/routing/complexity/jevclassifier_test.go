@@ -37,12 +37,12 @@ func confidentTierAnswer(tier string) SystemOneAnswer {
 }
 
 func hardComplexityAnswer() SystemOneAnswer {
-	score := 0.9
+	score := 1.6 // raw wire scale 0..2 → normalized 0.8, above the 0.5 gate
 	return SystemOneAnswer{Type: SystemOneQuestionScore, Score: &score, Confidence: 0.9}
 }
 
 func simpleComplexityAnswer() SystemOneAnswer {
-	score := 0.1
+	score := 0.1 // raw 0.1 → normalized 0.05
 	return SystemOneAnswer{Type: SystemOneQuestionScore, Score: &score, Confidence: 0.9}
 }
 
@@ -65,7 +65,7 @@ func TestJevClassifierPublishesConfidentTier(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, TierSimple, result.Tier)
 	assert.Equal(t, JevReasonConfident, result.Reason)
-	assert.InDelta(t, 0.1, result.Complexity, 1e-9)
+	assert.InDelta(t, 0.05, result.Complexity, 1e-9) // raw 0.1 normalized
 	assert.InDelta(t, 0.95, result.Confidence, 1e-9)
 }
 

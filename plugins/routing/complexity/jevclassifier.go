@@ -123,6 +123,22 @@ func jevTierCriteria() map[string]string {
 	}
 }
 
+// jevComplexityCriteria are the levels of the complexity score question. The
+// decision API answers with a weighted level index over these — raw 0..n-1
+// (measured 0..2 on the wire) — so the gates compare the score normalized
+// onto the 0..1 scale the config thresholds speak.
+var jevComplexityCriteria = []string{
+	"Mechanical: single location, known pattern, no design decision",
+	"Moderate: several locations, or requires some judgment",
+	"Hard: architectural, ambiguous, or getting it wrong is expensive",
+}
+
+// normalizeJevComplexity maps a raw weighted level index onto the 0..1 scale
+// used by the gate thresholds and the logged complexity value.
+func normalizeJevComplexity(raw float64) float64 {
+	return raw / float64(len(jevComplexityCriteria)-1)
+}
+
 // jevDecisionQuestions builds the two-question fan-out sent in ONE call: the
 // choice says which tier suffices, the score independently says how hard the
 // request is. Requiring both to agree before publishing a tier is what keeps
@@ -138,11 +154,7 @@ func jevDecisionQuestions() map[string]SystemOneQuestion {
 		"complexity": {
 			Type:         SystemOneQuestionScore,
 			Instructions: "How demanding is this request to carry out correctly?",
-			Criteria: []string{
-				"Mechanical: single location, known pattern, no design decision",
-				"Moderate: several locations, or requires some judgment",
-				"Hard: architectural, ambiguous, or getting it wrong is expensive",
-			},
+			Criteria:     jevComplexityCriteria,
 		},
 	}
 }
@@ -270,11 +282,12 @@ func (c *JevClassifier) Classify(ctx context.Context, input ComplexityInput) (*J
 // non-nil result with an empty Tier; the caller records the reason.
 func decideJev(answers map[string]SystemOneAnswer, jev *configstore.ComplexityJevConfig) *JevResult {
 	// An absent complexity score counts as maximum complexity: unsure must
-	// never read as easy.
+	// never read as easy. Present scores are raw weighted level indices
+	// (0..n-1) and are normalized before the gates compare them.
 	complexity := 1.0
 	complexityConfidence := 0.0
 	if answer, ok := answers["complexity"]; ok && answer.Score != nil {
-		complexity = *answer.Score
+		complexity = normalizeJevComplexity(*answer.Score)
 		complexityConfidence = answer.Confidence
 	}
 

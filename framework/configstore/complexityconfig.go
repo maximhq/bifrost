@@ -614,8 +614,10 @@ type ComplexityJevConfig struct {
 	// MinConfidenceToDegrade is the confidence the tier choice must carry
 	// before its tier is published. Zero means the default.
 	MinConfidenceToDegrade float64 `json:"min_confidence_to_degrade,omitempty"`
-	// MaxComplexityForDegrade is the complexity score at or below which the
-	// tier verdict may be published. Zero means the default.
+	// MaxComplexityForDegrade is the normalized (0..1) complexity score at or
+	// below which the tier verdict may be published. Decision scores arrive as
+	// raw weighted level indices (0..n-1) and are normalized first. Zero means
+	// the default.
 	MaxComplexityForDegrade float64 `json:"max_complexity_for_degrade,omitempty"`
 	// MinComplexityConfidence is the confidence required on the complexity
 	// score before it may allow publishing a tier. Zero means the default.
