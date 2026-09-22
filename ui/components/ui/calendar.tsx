@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { zhCN } from "date-fns/locale";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import * as React from "react";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { DayButton, DayPicker, getDefaultClassNames } from "react-day-picker";
@@ -21,7 +21,7 @@ function Calendar({
 	buttonVariant?: React.ComponentProps<typeof Button>["variant"];
 }) {
 	const { i18n } = useTranslation();
-	const calendarLocale = locale ?? (i18n.resolvedLanguage === "zh-CN" ? zhCN : undefined);
+	const calendarLocale = locale ?? dateFnsLocale(i18n.resolvedLanguage);
 	const defaultClassNames = getDefaultClassNames();
 
 	return (

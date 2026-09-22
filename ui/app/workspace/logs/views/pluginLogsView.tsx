@@ -2,7 +2,7 @@ import { PluginLogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { format } from "date-fns";
-import { zhCN } from "date-fns/locale";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -51,7 +51,8 @@ function PluginSection({ name, entries, minLevel }: { name: string; entries: Plu
 		[entries, minLevel],
 	);
 	// At the debug floor nothing is hidden, so the plain total reads better than "N of N".
-	const count = minLevel === "debug" ? `(${entries.length})` : t("logs.pluginLogsView.countOf", { visible: visible.length, total: entries.length });
+	const count =
+		minLevel === "debug" ? `(${entries.length})` : t("logs.pluginLogsView.countOf", { visible: visible.length, total: entries.length });
 
 	return (
 		<div className="rounded-md border">
@@ -76,7 +77,7 @@ function PluginSection({ name, entries, minLevel }: { name: string; entries: Plu
 						visible.map((entry, idx) => (
 							<div key={idx} className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0">
 								<span className="text-muted-foreground shrink-0">
-									{format(new Date(entry.timestamp), "HH:mm:ss.SSS", { locale: i18n.resolvedLanguage === "zh-CN" ? zhCN : undefined })}
+									{format(new Date(entry.timestamp), "HH:mm:ss.SSS", { locale: dateFnsLocale(i18n.resolvedLanguage) })}
 								</span>
 								<span
 									className={cn(

@@ -17,7 +17,7 @@ import type { NotificationSeverity } from "@/lib/types/notifications";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
-import { zhCN } from "date-fns/locale";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { Check, CheckCircle2, CircleAlert, Inbox, Info, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -169,7 +169,9 @@ export default function NotificationCenter() {
 											<span className="min-w-0 flex-1 pr-5">
 												<span className="flex items-start gap-2">
 													<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{notification.title}</span>
-													{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label={t("notifications.unread")} />}
+													{!isRead && (
+														<span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label={t("notifications.unread")} />
+													)}
 												</span>
 												<span className="text-muted-foreground mt-0.5 line-clamp-3 block text-xs leading-relaxed">
 													{notification.message}
@@ -178,7 +180,7 @@ export default function NotificationCenter() {
 													<span>
 														{formatDistanceToNow(new Date(notification.created_at), {
 															addSuffix: true,
-															locale: i18n.language.startsWith("zh") ? zhCN : undefined,
+															locale: dateFnsLocale(i18n.language),
 														})}
 													</span>
 													{notification.action_label && <span className="text-primary font-medium">{notification.action_label}</span>}

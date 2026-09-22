@@ -138,7 +138,19 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error(t("promptRepo.toastSaveSessionFailed"), { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, onSessionSaved, hasChanges, t]);
+	}, [
+		selectedPrompt?.id,
+		messages,
+		buildSaveParams,
+		provider,
+		model,
+		variables,
+		createSession,
+		setUrlState,
+		onSessionSaved,
+		hasChanges,
+		t,
+	]);
 
 	const handleRenameSession = useCallback(
 		async (sessionId: number, name: string) => {
@@ -249,8 +261,12 @@ export default function PromptsViewHeader() {
 													v{version.version_number}
 													{version.is_latest && <span className="text-primary ml-1.5 text-xs">{t("promptRepo.latest")}</span>}
 												</span>
-												<span className="text-muted-foreground truncate text-xs">{version.commit_message || t("promptRepo.noCommitMessage")}</span>
-												<span className="text-muted-foreground text-xs">{formatSessionDate(version.created_at, i18n.resolvedLanguage)}</span>
+												<span className="text-muted-foreground truncate text-xs">
+													{version.commit_message || t("promptRepo.noCommitMessage")}
+												</span>
+												<span className="text-muted-foreground text-xs">
+													{formatSessionDate(version.created_at, i18n.resolvedLanguage)}
+												</span>
 											</div>
 											{selectedVersionId === version.id && <Check className="text-primary h-4 w-4 shrink-0" />}
 										</DropdownMenuItem>
@@ -279,8 +295,14 @@ export default function PromptsViewHeader() {
 
 function formatSessionDate(dateStr: string, language?: string): string {
 	const date = new Date(dateStr);
-	if (language === "zh-CN") {
-		return date.toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
+	if (language && language !== "en") {
+		return date.toLocaleString(language, {
+			month: "short",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+			hour12: language.startsWith("zh"),
+		});
 	}
 	const month = date.toLocaleString("en-US", { month: "short" });
 	const day = date.getDate();
