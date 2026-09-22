@@ -38,10 +38,11 @@ const (
 // team and customer update handlers, and the config reconcile that applies governance.budgets from
 // config.json. In the OSS build nothing is registered, so nothing is refused.
 const (
-	// LegacyLimitHolderTeam and LegacyLimitHolderCustomer name the two kinds of entity that can hold
-	// budgets and a rate limit of their own.
-	LegacyLimitHolderTeam     = "team"
-	LegacyLimitHolderCustomer = "customer"
+	// The kinds of entity that can hold budgets and a rate limit of their own. A team or customer may
+	// hold several budgets; a business unit holds at most one.
+	LegacyLimitHolderTeam         = "team"
+	LegacyLimitHolderCustomer     = "customer"
+	LegacyLimitHolderBusinessUnit = "business_unit"
 )
 
 // LegacyLimitGuard names what already governs an entity's spend, or "" when nothing does. An error
