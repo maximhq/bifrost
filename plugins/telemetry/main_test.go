@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -600,6 +601,67 @@ func TestApplyCustomLabels(t *testing.T) {
 				if got[k] != v {
 					t.Errorf("label %q = %q, want %q", k, got[k], v)
 				}
+			}
+		})
+	}
+}
+
+// TestSpliceLabelValues pins the final label-value ordering produced for the latency,
+// error, and cache-hit metrics: default labels first, then the metric's extra values
+// (is_success / status_code+error_type / cache_type), then the custom labels. Metric
+// vectors match values to label names purely by position, so any reordering here
+// silently attributes values to the wrong labels.
+func TestSpliceLabelValues(t *testing.T) {
+	defaults := []string{"openai", "gpt-4o", "chat"} // provider, model, method
+	custom := []string{"team-a", "env-prod"}         // custom dimension labels
+	base := append(append([]string{}, defaults...), custom...)
+
+	tests := []struct {
+		name   string
+		in     []string
+		extras []string
+		want   []string
+	}{
+		{
+			name:   "latency is_success between defaults and custom labels",
+			in:     base,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true", "team-a", "env-prod"},
+		},
+		{
+			name:   "error status_code and error_type keep their order",
+			in:     base,
+			extras: []string{"429", "rate_limit"},
+			want:   []string{"openai", "gpt-4o", "chat", "429", "rate_limit", "team-a", "env-prod"},
+		},
+		{
+			name:   "cache_type between defaults and custom labels",
+			in:     base,
+			extras: []string{"semantic"},
+			want:   []string{"openai", "gpt-4o", "chat", "semantic", "team-a", "env-prod"},
+		},
+		{
+			name:   "no custom labels appends extras at the end",
+			in:     defaults,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true"},
+		},
+		{
+			name:   "no extras returns the input unchanged",
+			in:     base,
+			extras: nil,
+			want:   []string{"openai", "gpt-4o", "chat", "team-a", "env-prod"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := slices.Clone(tt.in)
+			got := spliceLabelValues(tt.in, len(defaults), tt.extras...)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("spliceLabelValues() = %v, want %v", got, tt.want)
+			}
+			if !slices.Equal(tt.in, before) {
+				t.Errorf("input mutated: %v, was %v", tt.in, before)
 			}
 		})
 	}

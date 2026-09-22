@@ -32,8 +32,8 @@ export default function FirstPartyProviderAvailableDialog({ show, customProvider
 						Official {label} integration available
 					</AlertDialogTitle>
 					<AlertDialogDescription>
-						We noticed you have a custom provider named <span className="text-foreground font-medium">{customProviderName}</span>.
-						Bifrost now supports {label} natively. You can delete the custom provider and add the official {label} integration from{" "}
+						We noticed you have a custom provider named <span className="text-foreground font-medium">{customProviderName}</span>. Bifrost
+						now supports {label} natively. You can delete the custom provider and add the official {label} integration from{" "}
 						<span className="text-foreground font-medium">Add Provider</span>, or keep using your custom provider as is.
 					</AlertDialogDescription>
 				</AlertDialogHeader>

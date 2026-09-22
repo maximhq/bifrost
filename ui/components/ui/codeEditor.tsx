@@ -211,9 +211,14 @@ export function CodeEditor(props: CodeEditorProps) {
 		padding: { top: 2, bottom: 2 },
 		wordWrap: props.wrap ? ("on" as const) : ("off" as const),
 		folding: isFoldingEnabled,
-		glyphMargin: isFoldingEnabled,
-		lineNumbersMinChars: props.options?.lineNumbersMinChars ?? 4,
-		lineDecorationsWidth: isFoldingEnabled ? 18 : 8,
+		// Folding arrows render in the lineDecorations column (Monaco adds 16px
+		// for them automatically) - the glyph margin is a separate breakpoint
+		// column we never use, and enabling it doubles the left gutter.
+		glyphMargin: false,
+		// With line numbers off, Monaco still reserves the number column at its
+		// minimum width - a phantom left gutter on every read-only viewer.
+		lineNumbersMinChars: props.options?.lineNumbersMinChars ?? ((props.options?.lineNumbers || "off") === "off" ? 0 : 4),
+		lineDecorationsWidth: isFoldingEnabled ? 2 : 8,
 		showFoldingControls: isFoldingEnabled ? ("always" as const) : ("mouseover" as const),
 		overviewRulerLanes: props.options?.overviewRulerLanes ?? 0,
 		renderLineHighlight: "none" as const,

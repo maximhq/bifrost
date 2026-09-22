@@ -590,6 +590,10 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		usage = result.CompactionResponse.Usage.ToBifrostLLMUsage()
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		usage = result.EmbeddingResponse.Usage
+	case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
+		usage = result.RerankResponse.Usage
+	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
+		usage = result.DecisionResponse.Usage
 	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
 		usage = &schemas.BifrostLLMUsage{}
 		if result.TranscriptionResponse.Usage.InputTokens != nil {
@@ -703,6 +707,17 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		}
 		if result.RerankResponse != nil && len(result.RerankResponse.Results) > 0 {
 			entry.RerankOutputParsed = result.RerankResponse.Results
+		}
+		if result.DecisionResponse != nil && len(result.DecisionResponse.Answers) > 0 {
+			if answersJSON, err := sonic.Marshal(result.DecisionResponse.Answers); err == nil {
+				answers := string(answersJSON)
+				entry.OutputMessageParsed = &schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: &answers,
+					},
+				}
+			}
 		}
 		if result.OCRResponse != nil {
 			entry.OCROutputParsed = result.OCRResponse
@@ -2166,6 +2181,13 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 	case schemas.RerankRequest:
 		return &schemas.BifrostResponse{
 			RerankResponse: &schemas.BifrostRerankResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.DecisionRequest:
+		return &schemas.BifrostResponse{
+			DecisionResponse: &schemas.BifrostDecisionResponse{
 				Usage:       usage,
 				ExtraFields: extra,
 			},

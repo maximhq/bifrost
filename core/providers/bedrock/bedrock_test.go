@@ -3002,6 +3002,46 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			expectedContentType: "json",
 			expectedJSON:        mustMarshalJSON(map[string]any{"results": []any{}}),
 		},
+		// Converse rejects a json document containing an empty-string object key with
+		// "The format of the value at ...toolResult.content.N.json is invalid" (verified
+		// live against us.anthropic.claude-haiku-4-5). Cursor's list_directory results
+		// carry such keys for extensionless files, so these payloads must fall back to a
+		// text block holding the original JSON string.
+		{
+			name:                "EmptyKeyObjectFallsBackToText",
+			toolResultContent:   `{"success":{"fullSubtreeExtensionCounts":{"":2,".md":1},"numFiles":3}}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"success":{"fullSubtreeExtensionCounts":{"":2,".md":1},"numFiles":3}}`),
+		},
+		{
+			name:                "EmptyKeyInsideArrayFallsBackToText",
+			toolResultContent:   `[{"path":"/repo","counts":{"":1}}]`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`[{"path":"/repo","counts":{"":1}}]`),
+		},
+		{
+			// An empty string as a VALUE is fine; only empty keys are rejected.
+			name:                "EmptyStringValueStaysJSON",
+			toolResultContent:   `{"a":""}`,
+			expectedContentType: "json",
+			expectedJSON:        mustMarshalJSON(map[string]any{"a": ""}),
+		},
+		{
+			// Empty string value followed by an empty key: the detector must not
+			// confuse a value in key position with a key.
+			name:                "EmptyValueThenEmptyKeyFallsBackToText",
+			toolResultContent:   `{"a":"","":1}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":"","":1}`),
+		},
+		{
+			// Empty key appearing after a nested container in the same object: the
+			// detector must keep checking sibling keys after descending.
+			name:                "EmptyKeyAfterNestedContainerFallsBackToText",
+			toolResultContent:   `{"a":{"b":[1,2]},"":2}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":{"b":[1,2]},"":2}`),
+		},
 	}
 
 	for _, tt := range tests {
