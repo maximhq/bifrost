@@ -32,6 +32,14 @@ export interface WarpConfig {
 	 */
 	history_retention_days: number;
 	system_prompt_suffix?: string;
+	/**
+	 * Absent (not 0) means unset: the provider's own default applies. 0 is a
+	 * real, fully deterministic value some operators specifically want, so it
+	 * has to round-trip distinctly from "never configured".
+	 */
+	temperature?: number;
+	/** One of WARP_REASONING_EFFORTS, or absent to leave reasoning unset. */
+	reasoning_effort?: string;
 	embedding_provider: string;
 	embedding_model: string;
 	embedding_api_key_id?: string;
@@ -54,6 +62,8 @@ export interface WarpConfigInput {
 	/** Zero means "use the default". There is no maximum. */
 	history_retention_days?: number;
 	system_prompt_suffix?: string;
+	temperature?: number;
+	reasoning_effort?: string;
 	embedding_provider: string;
 	embedding_model: string;
 	embedding_api_key_id?: string;
@@ -62,6 +72,15 @@ export interface WarpConfigInput {
 	semantic_search_threshold?: number;
 	semantic_search_limit?: number;
 }
+
+/**
+ * Every value reasoning_effort accepts, in the order the settings page lists
+ * them. Mirrors schemas.WarpReasoningEfforts.
+ */
+export const WARP_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export const WARP_MIN_TEMPERATURE = 0;
+export const WARP_MAX_TEMPERATURE = 2;
 
 /**
  * Why Warp cannot answer. The two cases need opposite UI treatment: an

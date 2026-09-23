@@ -106,7 +106,7 @@ describe("warpToolLabel", () => {
 			"query_usage_by",
 			"query_model_performance",
 			"describe_filter_space",
-			"describe_scope",
+			"describe_virtual_key",
 			"ask_user",
 		];
 		for (const tool of tools) {
@@ -623,12 +623,22 @@ describe("isTypingInto", () => {
 // finished turn, never two at once.
 describe("shouldDrainQueue", () => {
 	it("sends only on the streaming-to-idle transition", () => {
-		expect(shouldDrainQueue(true, false, 2)).toBe(true);
-		expect(shouldDrainQueue(false, false, 2)).toBe(false);
-		expect(shouldDrainQueue(true, true, 2)).toBe(false);
-		expect(shouldDrainQueue(true, false, 0)).toBe(false);
+		expect(shouldDrainQueue(true, false, 2, false)).toBe(true);
+		expect(shouldDrainQueue(false, false, 2, false)).toBe(false);
+		expect(shouldDrainQueue(true, true, 2, false)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, false)).toBe(false);
+	});
+
+	// A queued follow-up was written expecting the turn ahead of it to have
+	// actually answered. Auto-firing it the instant a *failed* turn finishes
+	// showed "Thinking" directly under an error card, for a request sent
+	// against a conversation whose last turn never actually completed.
+	it("holds the queue back when the turn that just finished failed", () => {
+		expect(shouldDrainQueue(true, false, 2, false, true)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, false, true)).toBe(false);
 	});
 });
+
 // isInternalWarpLink decides whether a link Warp produced is followed with the
 // router (same tab) or opened as an external link. WHATWG URL parsing folds a
 // backslash into a forward slash for special schemes, so "/\host" resolves the

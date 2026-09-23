@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestWarpScopeFromContext(t *testing.T) {
 // the default - the question people usually mean, and the one they can check.
 func TestWarpScopeDefaultsToCaller(t *testing.T) {
 	filters := &logstore.SearchFilters{}
-	applyScope(filters, Scope{HasIdentity: true, UserID: "user-7"}, ScopeModeUnset)
+	applyScope(filters, Scope{HasIdentity: true, UserID: "user-7"}, false)
 	require.Equal(t, []string{"user-7"}, filters.UserIDs)
 }
 
@@ -37,7 +38,7 @@ func TestWarpScopeDefaultsToCaller(t *testing.T) {
 // deployment would answer a different question with a confident number.
 func TestWarpScopeDoesNotDefaultWithoutIdentity(t *testing.T) {
 	filters := &logstore.SearchFilters{}
-	applyScope(filters, Scope{}, ScopeModeUnset)
+	applyScope(filters, Scope{}, false)
 	require.Empty(t, filters.UserIDs)
 }
 
@@ -58,7 +59,7 @@ func TestWarpScopeNeverOverridesAnExplicitScope(t *testing.T) {
 		"virtual key": {VirtualKeyIDs: []string{"vk-1"}},
 	} {
 		before := *filters
-		applyScope(filters, scope, ScopeModeUnset)
+		applyScope(filters, scope, false)
 		require.Equal(t, before.TeamIDs, filters.TeamIDs, name)
 		require.Equal(t, before.CustomerIDs, filters.CustomerIDs, name)
 		require.Equal(t, before.BusinessUnitIDs, filters.BusinessUnitIDs, name)
@@ -88,22 +89,22 @@ func TestWarpFilterArgKeepsExplicitScope(t *testing.T) {
 }
 
 // The model cannot report a scope it was never told about, so every result
-// carries a note describing what it covers.
+// carries a tag describing what it covers. The tag is compact on purpose -
+// the prompt carries the phrasing advice once, not repeated per result - so
+// this only has to prove the right one of the three comes back, not that a
+// sentence explaining it does.
 func TestWarpScopeNoteDescribesWhatTheResultCovers(t *testing.T) {
 	scope := Scope{HasIdentity: true, UserID: "user-7"}
 
-	require.Contains(t,
-		scopeNote(&logstore.SearchFilters{UserIDs: []string{"user-7"}}, scope),
-		"person asking")
-	require.Contains(t,
-		scopeNote(&logstore.SearchFilters{TeamIDs: []string{"team-1"}}, scope),
-		"named in the filters")
-	// Not "the whole deployment": queryscope still filters the rows, so the
-	// note describes what the caller is permitted to see rather than promising
-	// coverage the data behind it does not have.
-	require.Contains(t,
-		scopeNote(&logstore.SearchFilters{}, Scope{}),
-		"permitted to see")
+	require.Equal(t, "self",
+		scopeNote(&logstore.SearchFilters{UserIDs: []string{"user-7"}}, scope))
+	require.Equal(t, "named",
+		scopeNote(&logstore.SearchFilters{TeamIDs: []string{"team-1"}}, scope))
+	// The caller plus a project is a named scope, not "self".
+	require.Equal(t, "named",
+		scopeNote(&logstore.SearchFilters{UserIDs: []string{"user-7"}, ProjectIDs: []string{"proj-1"}}, scope))
+	require.Equal(t, "all",
+		scopeNote(&logstore.SearchFilters{}, Scope{}))
 }
 
 // Every scoped flow must return the note, or the instruction to report scope
@@ -133,7 +134,78 @@ func TestWarpFlowsReportScope(t *testing.T) {
 // The prompt has to actually carry the rules, or the mechanism is inert.
 func TestWarpSystemPromptExplainsScoping(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
-	require.Contains(t, content, "describe_scope")
+	require.Contains(t, content, "describe_filter_space")
 	require.Contains(t, content, "their own traffic is the default")
-	require.Contains(t, content, "Ask which team, customer or business unit is meant")
+	require.Contains(t, content, "you must ask before querying")
+}
+
+// userFilteringLogReader applies the one filter scoping touches - UserIDs - to
+// a seeded set of rows, so a test can check who actually ends up in a result
+// rather than only which filter was passed.
+type userFilteringLogReader struct {
+	fakeLogReader
+	rows []logstore.Log
+}
+
+func (r *userFilteringLogReader) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	r.searchFilters = filters
+	matched := []logstore.Log{}
+	for _, row := range r.rows {
+		if len(filters.UserIDs) == 0 || (row.UserID != nil && slices.Contains(filters.UserIDs, *row.UserID)) {
+			matched = append(matched, row)
+		}
+	}
+	return &logstore.SearchResult{Logs: matched, Pagination: logstore.PaginationOptions{TotalCount: int64(len(matched))}}, nil
+}
+
+// An identified caller who asks about everyone - "across everyone", or the
+// "whole deployment" option on ask_user - has to get everyone. Without an
+// explicit marker the request is indistinguishable from one that named no
+// scope, and the caller default quietly answered about them alone.
+func TestWarpScopeAllReachesEveryUser(t *testing.T) {
+	user := func(id string) *string { return &id }
+	reader := &userFilteringLogReader{rows: []logstore.Log{
+		{ID: "a", UserID: user("user-7"), Timestamp: time.Now().UTC()},
+		{ID: "b", UserID: user("user-9"), Timestamp: time.Now().UTC()},
+		{ID: "c", UserID: user("user-12"), Timestamp: time.Now().UTC()},
+	}}
+	deps := &ToolDeps{logManager: reader, scope: Scope{HasIdentity: true, UserID: "user-7"}}
+
+	usersIn := func(result any) []string {
+		out := []string{}
+		for _, row := range result.(map[string]any)["rows"].([]logRow) {
+			out = append(out, row.UserID)
+		}
+		return out
+	}
+
+	t.Run("default narrows to the caller", func(t *testing.T) {
+		result, err := runTool(t, "query_logs", deps, map[string]any{"filters": map[string]any{}})
+		require.NoError(t, err)
+		require.Equal(t, []string{"user-7"}, reader.searchFilters.UserIDs)
+		require.Equal(t, "self", result.(map[string]any)["scope"])
+		require.ElementsMatch(t, []string{"user-7"}, usersIn(result))
+	})
+
+	t.Run("scope all reaches every user", func(t *testing.T) {
+		result, err := runTool(t, "query_logs", deps, map[string]any{"filters": map[string]any{"scope": "all"}})
+		require.NoError(t, err)
+		require.Empty(t, reader.searchFilters.UserIDs, "all must not carry the caller default")
+		require.Equal(t, "all", result.(map[string]any)["scope"])
+		require.ElementsMatch(t, []string{"user-7", "user-9", "user-12"}, usersIn(result))
+	})
+
+	t.Run("scope all still honours a named dimension", func(t *testing.T) {
+		_, err := runTool(t, "query_logs", deps, map[string]any{"filters": map[string]any{"scope": "all", "team_ids": []any{"team-1"}}})
+		require.NoError(t, err)
+		require.Equal(t, []string{"team-1"}, reader.searchFilters.TeamIDs)
+		require.Empty(t, reader.searchFilters.UserIDs)
+	})
+
+	t.Run("an unknown scope is rejected, not read as the default", func(t *testing.T) {
+		for _, bad := range []any{"caller", "everyone", "", 1, nil} {
+			_, err := runTool(t, "query_logs", deps, map[string]any{"filters": map[string]any{"scope": bad}})
+			require.ErrorContains(t, err, `scope must be "all"`, "%v", bad)
+		}
+	})
 }

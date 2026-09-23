@@ -131,9 +131,9 @@ type Agent struct {
 // The fields stay unexported and the tool set is fixed here rather than passed
 // in: a caller that could swap the tools could also widen what Warp is able to
 // read, and the whole read surface is meant to be reviewable from LogReader
-// alone. What a caller does supply is the inference function, the pricing
-// function, the scope, and the asker's UTC offset - the things that genuinely
-// vary per request.
+// (and, for describe_virtual_key, GovernanceReader) alone. What a caller does
+// supply is the inference function, the pricing function, the scope, and the
+// asker's UTC offset - the things that genuinely vary per request.
 //
 // scope comes from the caller because it must be lifted off the request context
 // before the agent's goroutine starts. queryscope treats a missing scope as no
@@ -143,7 +143,7 @@ type Agent struct {
 // sanitizeUTCOffsetMinutes and sanitizeTimezone); this constructor trusts them
 // rather than re-validating, since Turn is the one place a raw client value
 // exists.
-func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, semantic ...*SemanticSearcher) *Agent {
+func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, semantic ...*SemanticSearcher) *Agent {
 	var searcher *SemanticSearcher
 	if len(semantic) > 0 {
 		searcher = semantic[0]
@@ -152,7 +152,7 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, scope Scope, config 
 		chat:             chat,
 		cost:             cost,
 		tools:            buildToolsFor(searcher),
-		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope},
+		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,
@@ -370,7 +370,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		}
 	}
 
-	declared, err := responsesTools(a.tools)
+	// a.tools is buildToolsFor's fixed output for this deployment's semantic
+	// search availability (see NewAgent), so this is the matching memoized
+	// declaration set - parsed once for the process, not once per turn.
+	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil)
 	if err != nil {
 		emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
 		return
@@ -420,6 +423,18 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		params := &schemas.ResponsesParameters{Instructions: &instructions, Tools: declared}
 		if finalStep {
 			params = &schemas.ResponsesParameters{Instructions: &finalInstructions}
+		}
+		// Both unset by default, same as before either existed: an operator who
+		// has not configured one gets the provider's own default, not a value
+		// Warp picked for them. Applied to every step, including the answer-only
+		// final one - a reasoning model changing mode mid-loop, or a deployment
+		// running warmer for the finding step than the summarizing one, is not
+		// something either field is configured per-step to express here.
+		if a.config.Temperature != nil {
+			params.Temperature = a.config.Temperature
+		}
+		if a.config.ReasoningEffort != "" {
+			params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: new(a.config.ReasoningEffort)}
 		}
 
 		response, bifrostErr := a.chat(ctx, &schemas.BifrostResponsesRequest{

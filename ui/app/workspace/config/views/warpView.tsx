@@ -21,7 +21,13 @@ import {
 	useUpdateWarpConfigMutation,
 } from "@/lib/store/apis/warpApi";
 import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
-import type { WarpBackfillJob, WarpConfigInput } from "@/lib/types/warp";
+import {
+	WARP_MAX_TEMPERATURE,
+	WARP_MIN_TEMPERATURE,
+	WARP_REASONING_EFFORTS,
+	type WarpBackfillJob,
+	type WarpConfigInput,
+} from "@/lib/types/warp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle, CheckCircle2, Database, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -57,13 +63,21 @@ const defaultBaseUrl = () => (typeof window === "undefined" ? "" : `${window.loc
  */
 const WARP_ANY_KEY = "__any__";
 
+/** Same idea as WARP_ANY_KEY: Radix rejects an empty-string item value, so
+ * "leave reasoning effort unset" needs its own stand-in. */
+const WARP_REASONING_UNSET = "__unset__";
+
 const DEFAULT_MAX_ITERATIONS = 8;
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const DEFAULT_HISTORY_RETENTION_DAYS = 30;
+const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
 const DEFAULT_SEARCH_THRESHOLD = 0.8;
 const DEFAULT_SEARCH_LIMIT = 10;
+
+/** "xhigh" -> "Xhigh". Good enough for a Select item; these are short, plain words. */
+const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
 const localDateTimeValue = (date: Date) => {
 	const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -80,6 +94,18 @@ interface WarpFormState {
 	maxIterations: number;
 	requestTimeoutSeconds: number;
 	historyRetentionDays: number;
+	// temperatureEnabled decides whether temperature is sent at all - the value
+	// itself is meaningless while disabled, but is kept around rather than
+	// reset, so toggling back on restores what was there instead of resetting
+	// to the default.
+	temperatureEnabled: boolean;
+	// "" is a cleared input, distinct from 0 - WARP_MIN_TEMPERATURE is 0, so
+	// coercing a blank field straight to a number would silently read as a
+	// valid, deliberately-chosen 0 instead of "still typing".
+	temperature: number | "";
+	// "" leaves reasoning_effort unset, same meaning as WARP_REASONING_UNSET on
+	// the select item - this is the value actually sent, that one is UI-only.
+	reasoningEffort: string;
 	systemPromptSuffix: string;
 	embeddingProvider: string;
 	embeddingModel: string;
@@ -99,6 +125,9 @@ const EMPTY_FORM: WarpFormState = {
 	maxIterations: DEFAULT_MAX_ITERATIONS,
 	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
 	historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
+	temperatureEnabled: false,
+	temperature: DEFAULT_TEMPERATURE,
+	reasoningEffort: "",
 	systemPromptSuffix: "",
 	embeddingProvider: "",
 	embeddingModel: "",
@@ -251,6 +280,12 @@ export default function WarpView() {
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
 			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
 			historyRetentionDays: config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS,
+			// config.temperature is absent for "unset", not 0 - undefined and null
+			// both read as "not configured" here, since JSON only sends one of them
+			// but either could arrive depending on what wrote the row.
+			temperatureEnabled: config.temperature !== undefined && config.temperature !== null,
+			temperature: config.temperature ?? DEFAULT_TEMPERATURE,
+			reasoningEffort: config.reasoning_effort ?? "",
 			systemPromptSuffix: config.system_prompt_suffix ?? "",
 			embeddingProvider: config.embedding_provider ?? "",
 			embeddingModel: config.embedding_model ?? "",
@@ -277,6 +312,8 @@ export default function WarpView() {
 			form.maxIterations !== (config.max_iterations || DEFAULT_MAX_ITERATIONS) ||
 			form.requestTimeoutSeconds !== (config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS) ||
 			form.historyRetentionDays !== (config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS) ||
+			(form.temperatureEnabled ? form.temperature : undefined) !== (config.temperature ?? undefined) ||
+			form.reasoningEffort !== (config.reasoning_effort ?? "") ||
 			form.systemPromptSuffix !== (config.system_prompt_suffix ?? "") ||
 			form.embeddingProvider !== (config.embedding_provider ?? "") ||
 			form.embeddingModel !== (config.embedding_model ?? "") ||
@@ -300,6 +337,9 @@ export default function WarpView() {
 	// typed a number, with no way back to default retention from the form.
 	const retentionError = validateWarpRetentionDays(form.historyRetentionDays);
 	const retentionInvalid = retentionError !== true;
+	const temperatureInvalid =
+		form.temperatureEnabled &&
+		(form.temperature === "" || form.temperature < WARP_MIN_TEMPERATURE || form.temperature > WARP_MAX_TEMPERATURE);
 	const embeddingFields: WarpEmbeddingFields = form;
 	const embeddingValidation = validateWarpEmbedding(embeddingFields, form.enabled, config?.vector_store_connected ?? false);
 	const savedEmbeddingFields: WarpEmbeddingFields = {
@@ -320,6 +360,7 @@ export default function WarpView() {
 		iterationsInvalid ||
 		timeoutInvalid ||
 		retentionInvalid ||
+		temperatureInvalid ||
 		!!embeddingValidation ||
 		needsNewNamespace;
 
@@ -336,6 +377,11 @@ export default function WarpView() {
 			max_iterations: form.maxIterations,
 			request_timeout_seconds: form.requestTimeoutSeconds,
 			history_retention_days: form.historyRetentionDays,
+			// invalid (checked above) already blocks a cleared field from reaching
+			// here, but the type still allows "" - narrow it explicitly rather than
+			// send a value the API layer has to reject on its own.
+			temperature: form.temperatureEnabled && form.temperature !== "" ? form.temperature : undefined,
+			reasoning_effort: form.reasoningEffort || undefined,
 			system_prompt_suffix: form.systemPromptSuffix,
 			embedding_provider: form.embeddingProvider.trim(),
 			embedding_model: form.embeddingModel.trim(),
@@ -882,6 +928,76 @@ export default function WarpView() {
 								disabled={!hasSettingsUpdateAccess}
 							/>
 							{timeoutInvalid && <p className="text-destructive text-sm">Must be at least 1 second</p>}
+						</div>
+
+						<div className="space-y-2 rounded-sm border p-4">
+							<div className="flex items-start justify-between gap-4">
+								<div className="space-y-0.5">
+									<Label htmlFor="warp-temperature">Temperature</Label>
+									<p className="text-muted-foreground text-sm">
+										Overrides the model&apos;s sampling temperature. Off leaves it unset, so the provider applies its own default - most
+										providers default near 1. Lower is more consistent answer to answer; a tool that reports numbers often wants that.
+									</p>
+								</div>
+								<Switch
+									id="warp-temperature-enabled"
+									data-testid="warp-temperature-enabled-switch"
+									checked={form.temperatureEnabled}
+									onCheckedChange={(checked) => update("temperatureEnabled", checked)}
+									disabled={!hasSettingsUpdateAccess}
+								/>
+							</div>
+							{form.temperatureEnabled && (
+								<>
+									<Input
+										id="warp-temperature"
+										type="number"
+										min={WARP_MIN_TEMPERATURE}
+										max={WARP_MAX_TEMPERATURE}
+										step={0.1}
+										data-testid="warp-temperature-input"
+										className={temperatureInvalid ? "border-destructive" : ""}
+										value={form.temperature}
+										onChange={(event) => {
+											const raw = event.target.value;
+											update("temperature", raw === "" ? "" : Number(raw));
+										}}
+										disabled={!hasSettingsUpdateAccess}
+									/>
+									{temperatureInvalid && (
+										<p className="text-destructive text-sm">
+											Must be between {WARP_MIN_TEMPERATURE} and {WARP_MAX_TEMPERATURE}
+										</p>
+									)}
+								</>
+							)}
+						</div>
+
+						<div className="space-y-2 rounded-sm border p-4">
+							<div className="space-y-0.5">
+								<Label htmlFor="warp-reasoning-effort">Reasoning Effort</Label>
+								<p className="text-muted-foreground text-sm">
+									Only meaningful for a reasoning-capable model. Provider default leaves it unset - sending an effort to a model without
+									reasoning is a parameter some providers simply reject.
+								</p>
+							</div>
+							<Select
+								value={form.reasoningEffort || WARP_REASONING_UNSET}
+								onValueChange={(value) => update("reasoningEffort", value === WARP_REASONING_UNSET ? "" : value)}
+								disabled={!hasSettingsUpdateAccess}
+							>
+								<SelectTrigger id="warp-reasoning-effort" data-testid="warp-reasoning-effort-select">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value={WARP_REASONING_UNSET}>Provider default</SelectItem>
+									{WARP_REASONING_EFFORTS.map((effort) => (
+										<SelectItem key={effort} value={effort}>
+											{capitalize(effort)}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
