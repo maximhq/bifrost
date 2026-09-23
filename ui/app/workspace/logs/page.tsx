@@ -333,6 +333,7 @@ export default function LogsPage() {
 			filters,
 			pagination,
 			rootsOnly: grouped,
+			groupSessions: grouped,
 		},
 		{
 			pollingInterval: showEmptyState || polling ? 10000 : 0,
@@ -465,13 +466,64 @@ export default function LogsPage() {
 	const [loadingChainIds, setLoadingChainIds] = useState<Set<string>>(new Set());
 	const [triggerGetChainChildren] = useLazyGetLogsQuery();
 
+	// Grouped view also collapses sessions: the earliest request in a session
+	// stands for it, and expanding lists the session's other requests. Kept
+	// separate from the chain state because a session member can expand its own
+	// fallback chain a level deeper, so the two nest rather than replace.
+	const [expandedSessionIds, setExpandedSessionIds] = useState<Set<string>>(new Set());
+	const [sessionMembers, setSessionMembers] = useState<Record<string, LogEntry[]>>({});
+	const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(new Set());
+	const [triggerGetSessionMembers] = useLazyGetLogsQuery();
+
+	// Bumped by the reset below, and captured by every expansion request. A request
+	// in flight when the filters change resolves against the cleared caches, so
+	// without this its old-filter rows would land in the new page's cache — and the
+	// "already cached" guard would then serve them for as long as the row stays put.
+	const expansionGeneration = useRef(0);
+
 	// Collapse everything when the page of roots changes — expanded ids from the
 	// previous page are meaningless and cached children may be stale.
 	useEffect(() => {
+		expansionGeneration.current++;
 		setExpandedChainIds(new Set());
 		setChainChildren({});
 		setLoadingChainIds(new Set());
+		setExpandedSessionIds(new Set());
+		setSessionMembers({});
+		setLoadingSessionIds(new Set());
 	}, [filters, pagination, grouped]);
+
+	// Shared by both expanders: a session root loads its own attempts alongside
+	// its session peers, and a peer loads its attempts when expanded in place.
+	const loadChainChildren = useCallback(
+		(log: LogEntry) => {
+			if (chainChildren[log.id] || loadingChainIds.has(log.id)) return;
+			const generation = expansionGeneration.current;
+			setLoadingChainIds((prev) => new Set(prev).add(log.id));
+			triggerGetChainChildren({
+				filters: { ...filters, parent_request_id: log.id },
+				pagination: { ...pagination, limit: chainChildrenPageLimit, offset: 0, sort_by: "timestamp", order: "asc" },
+			}).then((result) => {
+				if (generation !== expansionGeneration.current) return;
+				setLoadingChainIds((prev) => {
+					const next = new Set(prev);
+					next.delete(log.id);
+					return next;
+				});
+				if (result.data) {
+					setChainChildren((prevCache) => ({ ...prevCache, [log.id]: result.data!.logs }));
+				} else if (result.error) {
+					setExpandedChainIds((prev) => {
+						const next = new Set(prev);
+						next.delete(log.id);
+						return next;
+					});
+					setError(getErrorMessage(result.error));
+				}
+			});
+		},
+		[chainChildren, loadingChainIds, triggerGetChainChildren, filters, pagination],
+	);
 
 	const handleToggleChain = useCallback(
 		(log: LogEntry) => {
@@ -485,23 +537,56 @@ export default function LogsPage() {
 				}
 				return next;
 			});
-			if (isExpanded || chainChildren[log.id] || loadingChainIds.has(log.id)) return;
+			if (isExpanded) return;
+			loadChainChildren(log);
+		},
+		[expandedChainIds, loadChainChildren],
+	);
 
-			setLoadingChainIds((prev) => new Set(prev).add(log.id));
-			triggerGetChainChildren({
-				filters: { ...filters, parent_request_id: log.id },
+	// Expanding a session lists the session's other root requests, and the
+	// session root's own fallback attempts alongside them — the session chevron
+	// replaces the chain chevron on that row, so this is the only way to reach
+	// them. Members come from the list endpoint under the active filters, with
+	// session collapsing off so every request in the session is listed, and with
+	// chain collapsing still on so each member keeps its own expandable chain.
+	const handleToggleSession = useCallback(
+		(log: LogEntry) => {
+			const isExpanded = expandedSessionIds.has(log.id);
+			setExpandedSessionIds((prev) => {
+				const next = new Set(prev);
+				if (next.has(log.id)) {
+					next.delete(log.id);
+				} else {
+					next.add(log.id);
+				}
+				return next;
+			});
+			if (isExpanded || !log.session_id) return;
+
+			if ((log.child_count ?? 0) > 0) loadChainChildren(log);
+
+			if (sessionMembers[log.id] || loadingSessionIds.has(log.id)) return;
+			const generation = expansionGeneration.current;
+			setLoadingSessionIds((prev) => new Set(prev).add(log.id));
+			triggerGetSessionMembers({
+				filters: { ...filters, session_id: log.session_id },
 				pagination: { ...pagination, limit: chainChildrenPageLimit, offset: 0, sort_by: "timestamp", order: "asc" },
+				rootsOnly: true,
+				groupSessions: false,
 			}).then((result) => {
-				setLoadingChainIds((prev) => {
+				if (generation !== expansionGeneration.current) return;
+				setLoadingSessionIds((prev) => {
 					const next = new Set(prev);
 					next.delete(log.id);
 					return next;
 				});
 				if (result.data) {
-					const children = result.data.logs;
-					setChainChildren((prevCache) => ({ ...prevCache, [log.id]: children }));
+					// The root is one of the session's roots, and it is already on
+					// screen as the row being expanded.
+					const members = result.data.logs.filter((member) => member.id !== log.id);
+					setSessionMembers((prevCache) => ({ ...prevCache, [log.id]: members }));
 				} else if (result.error) {
-					setExpandedChainIds((prev) => {
+					setExpandedSessionIds((prev) => {
 						const next = new Set(prev);
 						next.delete(log.id);
 						return next;
@@ -510,7 +595,7 @@ export default function LogsPage() {
 				}
 			});
 		},
-		[expandedChainIds, chainChildren, loadingChainIds, triggerGetChainChildren, filters, pagination],
+		[expandedSessionIds, sessionMembers, loadingSessionIds, triggerGetSessionMembers, loadChainChildren, filters, pagination],
 	);
 
 	const handleDelete = useCallback(
@@ -583,8 +668,8 @@ export default function LogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
-		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped),
-		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped],
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped, handleFilterBySessionId),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped, handleFilterBySessionId],
 	);
 
 	const columnIds = useMemo(
@@ -603,6 +688,7 @@ export default function LogsPage() {
 			latency: "Latency",
 			tokens: "Tokens",
 			cost: "Cost",
+			session: "Session",
 			service_tier: "Service Tier",
 			virtual_key: "Virtual Key",
 			routing_rule: "Routing Rule",
@@ -615,7 +701,7 @@ export default function LogsPage() {
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
+		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
 		[],
 	);
 
@@ -646,22 +732,38 @@ export default function LogsPage() {
 	// Grouped view: splice loaded children in below their expanded root. Children
 	// are marked so the table can indent them; they don't affect pagination.
 	const displayLogs: DisplayLogEntry[] = useMemo(() => {
-		if (!grouped || expandedChainIds.size === 0) return logs;
+		if (!grouped || (expandedChainIds.size === 0 && expandedSessionIds.size === 0)) return logs;
 		const out: DisplayLogEntry[] = [];
+		const pushChain = (log: LogEntry, depth: 1 | 2) => {
+			for (const child of chainChildren[log.id] ?? []) {
+				out.push({ ...child, __chainChild: true, __rowKind: "chain-child", __depth: depth });
+			}
+		};
 		for (const log of logs) {
 			out.push(log);
-			if (expandedChainIds.has(log.id)) {
-				for (const child of chainChildren[log.id] ?? []) {
-					out.push({ ...child, __chainChild: true });
+			if (expandedSessionIds.has(log.id)) {
+				pushChain(log, 1);
+				for (const member of sessionMembers[log.id] ?? []) {
+					out.push({ ...member, __chainChild: true, __rowKind: "session-member", __depth: 1 });
+					if (expandedChainIds.has(member.id)) pushChain(member, 2);
 				}
+			} else if (expandedChainIds.has(log.id)) {
+				pushChain(log, 1);
 			}
 		}
 		return out;
-	}, [logs, grouped, expandedChainIds, chainChildren]);
+	}, [logs, grouped, expandedChainIds, chainChildren, expandedSessionIds, sessionMembers]);
 
 	const tableMeta = useMemo(
-		() => ({ expandedChainIds, loadingChainIds, onToggleChain: handleToggleChain }),
-		[expandedChainIds, loadingChainIds, handleToggleChain],
+		() => ({
+			expandedChainIds,
+			loadingChainIds,
+			onToggleChain: handleToggleChain,
+			expandedSessionIds,
+			loadingSessionIds,
+			onToggleSession: handleToggleSession,
+		}),
+		[expandedChainIds, loadingChainIds, handleToggleChain, expandedSessionIds, loadingSessionIds, handleToggleSession],
 	);
 	// Resolve the selected log from data already on screen — the page of roots
 	// first, then the children of any expanded chain. Children live outside
@@ -677,8 +779,12 @@ export default function LogsPage() {
 			const child = children.find((l) => l.id === selectedLogId);
 			if (child) return child;
 		}
+		for (const members of Object.values(sessionMembers)) {
+			const member = members.find((l) => l.id === selectedLogId);
+			if (member) return member;
+		}
 		return null;
-	}, [selectedLogId, logs, chainChildren]);
+	}, [selectedLogId, logs, chainChildren, sessionMembers]);
 
 	useEffect(() => {
 		if (!selectedLogId || selectedLogFromData) {
@@ -719,6 +825,7 @@ export default function LogsPage() {
 						filters,
 						pagination: { ...pagination, offset: newOffset },
 						rootsOnly: grouped,
+						groupSessions: grouped,
 					}).then((result) => {
 						if (result.data?.logs?.length) {
 							const lastLog = result.data.logs[result.data.logs.length - 1];
@@ -745,6 +852,7 @@ export default function LogsPage() {
 						filters,
 						pagination: { ...pagination, offset: newOffset },
 						rootsOnly: grouped,
+						groupSessions: grouped,
 					}).then((result) => {
 						if (result.data?.logs?.length) {
 							const firstLog = result.data.logs[0];
@@ -857,6 +965,17 @@ export default function LogsPage() {
 								onPaginationChange={setPagination}
 								onRowClick={(row, columnId) => {
 									if (columnId === "actions") return;
+									// The expander column is the control, not a way into the sheet:
+									// clicking anywhere in it toggles the group that row stands for.
+									if (columnId === "expand") {
+										const display = row as DisplayLogEntry;
+										if ((row.session_child_count ?? 0) > 0 && !display.__chainChild) {
+											handleToggleSession(row);
+										} else if ((row.child_count ?? 0) > 0) {
+											handleToggleChain(row);
+										}
+										return;
+									}
 									setUrlState({ selected_log: row.id }, { history: "replace" });
 									setSelectedSessionId(null);
 									setSessionHighlightedLogId(null);
