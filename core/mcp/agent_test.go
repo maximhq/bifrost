@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -956,5 +957,108 @@ func TestExecuteAgentForResponsesRequest_OutputStructured(t *testing.T) {
 		t.Error("Expected output blocks for structured content")
 	} else if len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) != 2 {
 		t.Errorf("Expected 2 output blocks, got %d", len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
+	}
+}
+
+// TestCreateResponseWithExecutedToolsPreservesSameNameResults verifies repeated tool-call results remain individually addressable.
+func TestCreateResponseWithExecutedToolsPreservesSameNameResults(t *testing.T) {
+	toolName := "charge"
+	firstCallID := "call-alpha"
+	secondCallID := "call-beta"
+	executedToolCalls := []schemas.ChatAssistantMessageToolCall{
+		{
+			ID: &firstCallID,
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name: &toolName,
+			},
+		},
+		{
+			ID: &secondCallID,
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name: &toolName,
+			},
+		},
+	}
+	executedToolResults := []*schemas.ChatMessage{
+		{
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("receipt alpha")},
+			ChatToolMessage: &schemas.ChatToolMessage{
+				ToolCallID: &firstCallID,
+			},
+		},
+		{
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("receipt beta")},
+			ChatToolMessage: &schemas.ChatToolMessage{
+				ToolCallID: &secondCallID,
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		content func([]schemas.ChatAssistantMessageToolCall) string
+	}{
+		{
+			name: "chat completions",
+			content: func(toolCalls []schemas.ChatAssistantMessageToolCall) string {
+				response := createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
+					&schemas.BifrostChatResponse{},
+					executedToolResults,
+					toolCalls,
+					nil,
+				)
+				return *response.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr
+			},
+		},
+		{
+			name: "responses",
+			content: func(toolCalls []schemas.ChatAssistantMessageToolCall) string {
+				response := createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
+					&schemas.BifrostResponsesResponse{},
+					executedToolResults,
+					toolCalls,
+					nil,
+				)
+				return *response.Output[0].Content.ContentBlocks[0].Text
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			summaryJSON := func(content string) string {
+				t.Helper()
+				const prefix = "The Output from allowed tools calls is - "
+				jsonSummary, found := strings.CutPrefix(content, prefix)
+				if !found {
+					t.Fatalf("missing executed tool results prefix: %s", content)
+				}
+				jsonSummary, _, found = strings.Cut(jsonSummary, "\n\n")
+				if !found {
+					t.Fatalf("missing executed tool results delimiter: %s", content)
+				}
+				return jsonSummary
+			}
+
+			jsonSummary := summaryJSON(test.content(executedToolCalls))
+			var got map[string]interface{}
+			if err := json.Unmarshal([]byte(jsonSummary), &got); err != nil {
+				t.Fatalf("invalid executed tool result summary: %v; summary: %s", err, jsonSummary)
+			}
+			resultsByCallID, ok := got[toolName].(map[string]interface{})
+			if !ok {
+				t.Fatalf("repeated tool results are not grouped by call ID: %s", jsonSummary)
+			}
+			if len(resultsByCallID) != 2 || resultsByCallID[firstCallID] != "receipt alpha" || resultsByCallID[secondCallID] != "receipt beta" {
+				t.Errorf("repeated tool results = %#v, want both call IDs and outputs", resultsByCallID)
+			}
+
+			uniqueToolCalls := append([]schemas.ChatAssistantMessageToolCall(nil), executedToolCalls...)
+			uniqueToolCalls[1].Function.Name = schemas.Ptr("credit")
+			uniqueSummary := summaryJSON(test.content(uniqueToolCalls))
+			if uniqueSummary != `{"charge":"receipt alpha","credit":"receipt beta"}` {
+				t.Errorf("unique-name summary changed: %s", uniqueSummary)
+			}
+		})
 	}
 }
