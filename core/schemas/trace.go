@@ -455,18 +455,20 @@ func redactSpanAttributes(span *Span, inputReplacements map[string]string, outpu
 
 // Span represents a single operation within a trace
 type Span struct {
-	SpanID     string         // Unique identifier for this span
-	ParentID   string         // Parent span ID (empty for root span)
-	TraceID    string         // The trace this span belongs to
-	Name       string         // Name of the operation
-	Kind       SpanKind       // Type of span (LLM call, plugin, etc.)
-	StartTime  time.Time      // When the span started
-	EndTime    time.Time      // When the span completed
-	Status     SpanStatus     // Status of the operation
-	StatusMsg  string         // Optional status message (for errors)
-	Attributes map[string]any // Additional attributes for the span
-	Events     []SpanEvent    // Events that occurred during the span
-	mu         sync.Mutex     // Mutex for thread-safe attribute operations
+	SpanID     string          // Unique identifier for this span
+	ParentID   string          // Parent span ID (empty for root span)
+	TraceID    string          // The trace this span belongs to
+	Name       string          // Name of the operation
+	Kind       SpanKind        // Type of span (LLM call, plugin, etc.)
+	StartTime  time.Time       // When the span started
+	EndTime    time.Time       // When the span completed
+	Status     SpanStatus      // Status of the operation
+	StatusMsg  string          // Optional status message (for errors)
+	Attributes map[string]any  // Additional attributes for the span
+	LLM        *LLMSpanData    // Typed payload; set on LLM-call spans only
+	Enrichment *SpanEnrichment // Governance/identity dimensions read off the request context
+	Events     []SpanEvent     // Events that occurred during the span
+	mu         sync.Mutex      // Mutex for thread-safe attribute operations
 }
 
 // SetAttribute sets an attribute on the span in a thread-safe manner
@@ -533,6 +535,8 @@ func (s *Span) snapshotForExport() *Span {
 		Status:     s.Status,
 		StatusMsg:  s.StatusMsg,
 		Attributes: maps.Clone(s.Attributes),
+		LLM:        s.LLM,
+		Enrichment: s.Enrichment,
 	}
 	if len(s.Events) > 0 {
 		cp.Events = make([]SpanEvent, len(s.Events))
@@ -637,6 +641,8 @@ func (s *Span) Reset() {
 	s.EndTime = time.Time{}
 	s.Status = SpanStatusUnset
 	s.StatusMsg = ""
+	s.LLM = nil
+	s.Enrichment = nil
 	// Reuse the attribute map across pool cycles: tracing/store.go clears and
 	// refills it, so nil-ing here forced a fresh map alloc per pooled span every
 	// request. Drop only an outlier-sized map so one huge request can't pin it.
@@ -776,7 +782,6 @@ const (
 	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
 	AttrCompletionTokenDetailsAudio     = "gen_ai.usage.completion_token_details.audio_tokens"
 	AttrCompletionTokenDetailsImage     = "gen_ai.usage.completion_token_details.image_tokens"
-	AttrCompletionTokenDetailsReason    = "gen_ai.usage.completion_token_details.reasoning_tokens"
 	AttrCompletionTokenDetailsAccept    = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
 	AttrCompletionTokenDetailsReject    = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
 	AttrCompletionTokenDetailsCite      = "gen_ai.usage.completion_token_details.citation_tokens"
@@ -878,14 +883,12 @@ const (
 
 	// Responses API usage detail attributes
 	AttrInputTokenDetailsImage         = "gen_ai.usage.input_token_details.image_tokens"
-	AttrInputTokenDetailsCachedRead    = "gen_ai.usage.input_token_details.cached_read_tokens"
 	AttrInputTokenDetailsCachedWrite   = "gen_ai.usage.input_token_details.cached_write_tokens"
 	AttrInputTokenDetailsCachedWrite5m = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
 	AttrInputTokenDetailsCachedWrite1h = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
 	AttrOutputTokenDetailsText         = "gen_ai.usage.output_token_details.text_tokens"
 	AttrOutputTokenDetailsAudio        = "gen_ai.usage.output_token_details.audio_tokens"
 	AttrOutputTokenDetailsImage        = "gen_ai.usage.output_token_details.image_tokens"
-	AttrOutputTokenDetailsReason       = "gen_ai.usage.output_token_details.reasoning_tokens"
 	AttrOutputTokenDetailsAccept       = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
 	AttrOutputTokenDetailsReject       = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
 	AttrOutputTokenDetailsCite         = "gen_ai.usage.output_token_details.citation_tokens"
@@ -1019,6 +1022,17 @@ const (
 	AttrFileLimit          = "gen_ai.file.limit"
 	AttrFileAfter          = "gen_ai.file.after"
 	AttrFileOrder          = "gen_ai.file.order"
+)
+
+// Attribute keys that are declared but never emitted or read. Kept so external
+// importers keep compiling; remove in a future major.
+const (
+	// Deprecated: use AttrUsageReasoningOutputTokens.
+	AttrCompletionTokenDetailsReason = "gen_ai.usage.completion_token_details.reasoning_tokens"
+	// Deprecated: use AttrUsageReasoningOutputTokens.
+	AttrOutputTokenDetailsReason = "gen_ai.usage.output_token_details.reasoning_tokens"
+	// Deprecated: use AttrUsageCacheReadInputTokens.
+	AttrInputTokenDetailsCachedRead = "gen_ai.usage.input_token_details.cached_read_tokens"
 )
 
 // RedactedAttrValue is the placeholder recorded in place of a sensitive header

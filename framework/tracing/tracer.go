@@ -140,6 +140,7 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 		}
 	}
 	t.cachedHdrPatterns.Store(&patterns)
+
 }
 
 // ShouldCaptureRequestHeaders reports whether any observability plugin has opted into
@@ -403,7 +404,14 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 		return
 	}
 
-	attrs := PopulateRequestAttributes(req)
+	// The typed record is the source of truth; the attribute map is rendered
+	// from it so both paths cannot drift. Connectors read span.LLM directly as
+	// they migrate off the map.
+	// The typed record is the source of truth; the attribute map is rendered
+	// from it so both paths cannot drift. Connectors read span.LLM directly as
+	// they migrate off the map.
+	span.LLM = BuildLLMSpanData(req, nil, nil, SpanBuildOptions{WantContent: true})
+	attrs := span.LLM.Attributes()
 	span.SetAttributes(attrs)
 
 	// Propagate input messages and request model to root span so observability backends (e.g. Langfuse)
@@ -450,7 +458,13 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if span == nil {
 		return
 	}
-	respAttrs := PopulateResponseAttributes(resp)
+	if span.LLM == nil {
+		span.LLM = &schemas.LLMSpanData{}
+	}
+	ApplyResponse(span.LLM, resp, err, SpanBuildOptions{WantContent: true})
+	// Re-rendered in full: the request keys resolve to the values already on the
+	// span, so rewriting them is a no-op.
+	respAttrs := span.LLM.Attributes()
 	// A cancelled stream arrives here with an accumulated response whose usage
 	// is missing the final chunk, so its aggregate token counts read zero. When
 	// the error carries the authoritative BilledUsage, drop those zeros from
@@ -479,8 +493,15 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 
 	// Not in PopulateErrorAttributes: that sees only the error, whose
 	// ExtraFields.RequestType is empty until the request settles.
-	if raw, ok := span.GetAttribute(schemas.AttrLegacyRequestType); ok {
-		requestType, _ := raw.(string)
+	// Prefer the typed record; fall back to the attribute for spans whose request
+	// side was never populated (a failure before dispatch).
+	requestType := string(span.LLM.RequestType)
+	if requestType == "" {
+		if raw, ok := span.GetAttribute(schemas.AttrLegacyRequestType); ok {
+			requestType, _ = raw.(string)
+		}
+	}
+	if requestType != "" {
 		if errorType := schemas.ClassifyErrorType(err, schemas.RequestType(requestType)); errorType != "" {
 			// Plain string: readers assert .(string); a defined type is dropped.
 			span.SetAttribute(schemas.AttrBifrostErrorType, string(errorType))
@@ -499,16 +520,22 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 			span.SetAttribute(schemas.AttrBifrostAlias, ef.OriginalModelRequested)
 		}
 	}
+	// Recorded on the typed dimensions as well as the attribute keys, so a
+	// connector reading span.Enrichment sees the same post-response values.
 	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok && len(engines) > 0 {
+		span.EnsureEnrichment().RoutingEnginesUsed = engines
 		span.SetAttribute(schemas.AttrBifrostRoutingEngineUsed, strings.Join(engines, ","))
 	}
 	if tier, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier).(string); ok && tier != "" {
+		span.EnsureEnrichment().ComplexityTier = tier
 		span.SetAttribute(schemas.AttrBifrostComplexityTier, tier)
 	}
 	if mechanism, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string); ok && mechanism != "" {
+		span.EnsureEnrichment().ComplexityMechanism = mechanism
 		span.SetAttribute(schemas.AttrBifrostComplexityMechanism, mechanism)
 	}
 	if score, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64); ok {
+		span.EnsureEnrichment().ComplexityScore = &score
 		span.SetAttribute(schemas.AttrBifrostComplexityScore, score)
 	}
 
