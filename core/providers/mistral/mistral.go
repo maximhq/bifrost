@@ -2,6 +2,7 @@
 package mistral
 
 import (
+	"github.com/maximhq/bifrost/core/jsonx"
 	"context"
 	"errors"
 	"io"
@@ -582,7 +583,7 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 	}
 
 	// Quick check for error field (allocation-free using sonic.GetFromString)
-	if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
+	if errorNode, _ := jsonx.GetFromString(jsonData, "error"); errorNode.Exists() {
 		// Only unmarshal when we know there's an error
 		var bifrostErr schemas.BifrostError
 		if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
