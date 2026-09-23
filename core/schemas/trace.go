@@ -37,6 +37,30 @@ const (
 	TraceAttrDimensions = "bifrost.dimensions"
 )
 
+// TraceSessionID returns the session ID trace attribute, or "" when absent.
+func TraceSessionID(attrs map[string]any) string {
+	v, _ := attrs[TraceAttrSessionID].(string)
+	return v
+}
+
+// TraceDimensions returns the x-bf-dim-* dimensions, or nil when absent.
+// Accepts map[string]any too: a trace decoded from JSON arrives that way.
+func TraceDimensions(attrs map[string]any) map[string]string {
+	switch m := attrs[TraceAttrDimensions].(type) {
+	case map[string]string:
+		return m
+	case map[string]any:
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 // AddSpan adds a span to the trace in a thread-safe manner
 func (t *Trace) AddSpan(span *Span) {
 	if t == nil || span == nil {
