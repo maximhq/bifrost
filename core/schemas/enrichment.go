@@ -1,105 +1,100 @@
 package schemas
 
-// EnrichmentDim describes one identity/context dimension that connectors attach
-// to the telemetry they emit for a request (which team/customer/business unit/
-// virtual key/etc. the request belongs to).
+// EnrichmentDim describes one identity/context dimension connectors attach to a
+// request's telemetry — which team, customer, virtual key it belongs to.
 //
-// It is the single source of truth that keeps the CURATED emitters from drifting
-// apart — the ones that hand-pick a dimension list:
-//   - Prometheus labels   (OSS plugins/telemetry)
-//   - Datadog metric tags (enterprise plugins/datadog, buildMetricTags)
-//   - BigQuery columns    (enterprise plugins/bigquery, traceColumns)
-//
-// Each of those derives its list from this registry, and a per-connector
-// conformance test asserts the derived list matches — so adding a dimension in
-// one place can't silently leave the others behind.
-//
-// The GENERIC emitters (otel, kafka, pubsub) project the entire span attribute
-// map and therefore already carry every dimension; they need no derivation and
-// no conformance test here.
-//
-// `alias` and `routing_engine_used` are in the metric tier but derived only
-// post-response (once model resolution/routing has run). They are attached to
-// the span in framework/tracing and carry a normal (non-empty) SpanAttr, so a
-// record/trace-tier connector can read them like any other dimension.
+// The curated emitters derive their lists from this registry and a per-connector
+// conformance test pins each one to it: Prometheus labels (plugins/telemetry),
+// Datadog and Splunk metric tags, BigQuery columns. The generic emitters (otel,
+// kafka, pubsub) project the whole attribute map and need no derivation.
 type EnrichmentDim struct {
-	// Name is the canonical short identifier, used verbatim as the Prometheus
-	// label and the Datadog metric tag key. The BigQuery column name also equals
-	// it unless Column overrides (see below).
+	// Name is used verbatim as the Prometheus label and Datadog tag key.
 	Name string
-	// Column is the BigQuery column name when it differs from Name. BigQuery
-	// predates the "method" naming and stores it as "request_type"; empty means
-	// the column name equals Name.
+	// Column overrides the BigQuery column name; empty means it equals Name.
 	Column string
-	// SpanAttr is the canonical bifrost.* span-attribute key the dimension is
-	// stored under. It is what the record/trace-tier emitters read and what a
-	// connector derives its projection from.
+	// SpanAttr is the span-attribute key connectors read the dimension from.
 	SpanAttr string
-	// MetricSafe marks a LOW-cardinality dimension eligible to become a Prometheus
-	// label / Datadog metric tag. High-cardinality dims (per-user, arrays) are
-	// false and live only on records/traces (BigQuery columns, span attributes).
-	MetricSafe bool
-	// Multi marks an array-valued dimension — governance can attach several teams/
-	// customers/business units to a single request. Array dims are never
-	// MetricSafe (they would explode metric series cardinality).
+	Tier     DimensionTier
+	// Multi marks an array-valued dimension: governance can attach several teams
+	// or customers to one request. Never metric-safe.
 	Multi bool
 }
 
-// EnrichmentDims is the canonical, ordered registry of identity/context
-// dimensions. Order is stable so derived lists (labels/tags/columns) are
-// deterministic. Add a dimension here once and every curated connector picks it
-// up via its derivation + conformance test.
+// DimensionTier says where a dimension may be emitted.
+type DimensionTier int
+
+const (
+	// tierUnset is the zero value, so a dimension that omits Tier is detectable
+	// rather than silently classified. TestTierIsExplicit rejects it.
+	tierUnset DimensionTier = iota
+	// TierRecord never becomes a metric label.
+	TierRecord
+	// TierMetric is bounded and safe as a metric label everywhere.
+	TierMetric
+	// TierHighCardinalityMetric is unbounded, so it multiplies series rather than
+	// adding a dimension. Datadog and Splunk emit it (a costly tag can be dropped
+	// server-side); Prometheus cannot drop a label after the fact, so it keeps
+	// these behind user_labels_enabled.
+	TierHighCardinalityMetric
+)
+
+// MetricSafe reports whether the dimension may be a metric label anywhere.
+func (d EnrichmentDim) MetricSafe() bool { return d.Tier == TierMetric }
+
+// MetricAllowedHighCardinality reports whether a backend tolerating unbounded
+// label values may emit the dimension.
+func (d EnrichmentDim) MetricAllowedHighCardinality() bool {
+	return d.Tier == TierMetric || d.Tier == TierHighCardinalityMetric
+}
+
+// EnrichmentDims is the ordered registry. Order is stable so derived lists are
+// deterministic; adding an entry here reaches every curated connector.
 var EnrichmentDims = []EnrichmentDim{
-	// --- Metric tier: low-cardinality, safe as Prometheus labels / Datadog tags,
-	//     and also present on records/traces. ---
-	{Name: "provider", SpanAttr: AttrBifrostProviderName, MetricSafe: true},
-	{Name: "model", SpanAttr: AttrRequestModel, MetricSafe: true},
-	{Name: "method", Column: "request_type", SpanAttr: AttrLegacyRequestType, MetricSafe: true},
-	// alias and routing_engine_used are derived post-response and attached to the
-	// span in framework/tracing (they have no meaning until the model is resolved
-	// and routing has run), so connectors read them like any other dimension.
-	{Name: "alias", SpanAttr: AttrBifrostAlias, MetricSafe: true},
-	{Name: "routing_engine_used", SpanAttr: AttrBifrostRoutingEngineUsed, MetricSafe: true},
-	{Name: "virtual_key_id", SpanAttr: AttrBifrostVirtualKeyID, MetricSafe: true},
-	{Name: "virtual_key_name", SpanAttr: AttrBifrostVirtualKeyName, MetricSafe: true},
-	{Name: "selected_key_id", SpanAttr: AttrBifrostSelectedKeyID, MetricSafe: true},
-	{Name: "selected_key_name", SpanAttr: AttrBifrostSelectedKeyName, MetricSafe: true},
-	{Name: "routing_rule_id", SpanAttr: AttrBifrostRoutingRuleID, MetricSafe: true},
-	{Name: "routing_rule_name", SpanAttr: AttrBifrostRoutingRuleName, MetricSafe: true},
+	// --- Metric tier: bounded, safe as labels on any backend. ---
+	{Name: "provider", SpanAttr: AttrBifrostProviderName, Tier: TierMetric},
+	{Name: "model", SpanAttr: AttrRequestModel, Tier: TierMetric},
+	{Name: "method", Column: "request_type", SpanAttr: AttrLegacyRequestType, Tier: TierMetric},
+	// Derived post-response in framework/tracing, then read like any other dimension.
+	{Name: "alias", SpanAttr: AttrBifrostAlias, Tier: TierMetric},
+	{Name: "routing_engine_used", SpanAttr: AttrBifrostRoutingEngineUsed, Tier: TierMetric},
+	{Name: "virtual_key_id", SpanAttr: AttrBifrostVirtualKeyID, Tier: TierMetric},
+	{Name: "virtual_key_name", SpanAttr: AttrBifrostVirtualKeyName, Tier: TierMetric},
+	{Name: "selected_key_id", SpanAttr: AttrBifrostSelectedKeyID, Tier: TierMetric},
+	{Name: "selected_key_name", SpanAttr: AttrBifrostSelectedKeyName, Tier: TierMetric},
+	{Name: "routing_rule_id", SpanAttr: AttrBifrostRoutingRuleID, Tier: TierMetric},
+	{Name: "routing_rule_name", SpanAttr: AttrBifrostRoutingRuleName, Tier: TierMetric},
 	// complexity_tier and complexity_mechanism are set by the governance plugin only
 	// when a routing rule references complexity_tier. Both are closed value sets
 	// (tiers: SIMPLE/MEDIUM/COMPLEX; mechanisms: semantic/llm/session/skipped), so
 	// they are metric-safe. The raw complexity score is deliberately NOT a
 	// dimension — unbounded cardinality; it lives only in the logstore columns.
-	{Name: "complexity_tier", SpanAttr: AttrBifrostComplexityTier, MetricSafe: true},
-	{Name: "complexity_mechanism", SpanAttr: AttrBifrostComplexityMechanism, MetricSafe: true},
-	{Name: "team_id", SpanAttr: AttrBifrostTeamID, MetricSafe: true},
-	{Name: "team_name", SpanAttr: AttrBifrostTeamName, MetricSafe: true},
-	{Name: "customer_id", SpanAttr: AttrBifrostCustomerID, MetricSafe: true},
-	{Name: "customer_name", SpanAttr: AttrBifrostCustomerName, MetricSafe: true},
-	{Name: "business_unit_id", SpanAttr: AttrBifrostBusinessUnitID, MetricSafe: true},
-	{Name: "business_unit_name", SpanAttr: AttrBifrostBusinessUnitName, MetricSafe: true},
+	{Name: "complexity_tier", SpanAttr: AttrBifrostComplexityTier, Tier: TierMetric},
+	{Name: "complexity_mechanism", SpanAttr: AttrBifrostComplexityMechanism, Tier: TierMetric},
+	{Name: "team_id", SpanAttr: AttrBifrostTeamID, Tier: TierMetric},
+	{Name: "team_name", SpanAttr: AttrBifrostTeamName, Tier: TierMetric},
+	{Name: "customer_id", SpanAttr: AttrBifrostCustomerID, Tier: TierMetric},
+	{Name: "customer_name", SpanAttr: AttrBifrostCustomerName, Tier: TierMetric},
+	{Name: "business_unit_id", SpanAttr: AttrBifrostBusinessUnitID, Tier: TierMetric},
+	{Name: "business_unit_name", SpanAttr: AttrBifrostBusinessUnitName, Tier: TierMetric},
 	// A request is scoped to at most one project, so unlike team/customer/business
 	// unit there is no array form of this dimension.
-	{Name: "project_id", SpanAttr: AttrBifrostProjectID, MetricSafe: true},
-	{Name: "project_name", SpanAttr: AttrBifrostProjectName, MetricSafe: true},
-	{Name: "fallback_index", SpanAttr: AttrBifrostFallbackIndex, MetricSafe: true},
+	{Name: "project_id", SpanAttr: AttrBifrostProjectID, Tier: TierMetric},
+	{Name: "project_name", SpanAttr: AttrBifrostProjectName, Tier: TierMetric},
+	{Name: "fallback_index", SpanAttr: AttrBifrostFallbackIndex, Tier: TierMetric},
 
-	// --- Record/trace tier only: high cardinality, NOT metric-safe. Present on
-	//     BigQuery columns and span attributes, never as metric labels/tags. ---
-	{Name: "user_id", SpanAttr: AttrBifrostUserID},
-	{Name: "user_name", SpanAttr: AttrBifrostUserName},
-	{Name: "user_email", SpanAttr: AttrBifrostUserEmail},
-	{Name: "team_ids", SpanAttr: AttrBifrostTeamIDs, Multi: true},
-	{Name: "team_names", SpanAttr: AttrBifrostTeamNames, Multi: true},
-	{Name: "customer_ids", SpanAttr: AttrBifrostCustomerIDs, Multi: true},
-	{Name: "customer_names", SpanAttr: AttrBifrostCustomerNames, Multi: true},
-	{Name: "business_unit_ids", SpanAttr: AttrBifrostBusinessUnitIDs, Multi: true},
-	{Name: "business_unit_names", SpanAttr: AttrBifrostBusinessUnitNames, Multi: true},
+	// --- High cardinality. ---
+	{Name: "user_id", SpanAttr: AttrBifrostUserID, Tier: TierHighCardinalityMetric},
+	{Name: "user_name", SpanAttr: AttrBifrostUserName, Tier: TierHighCardinalityMetric},
+	{Name: "user_email", SpanAttr: AttrBifrostUserEmail, Tier: TierRecord},
+	{Name: "team_ids", SpanAttr: AttrBifrostTeamIDs, Multi: true, Tier: TierRecord},
+	{Name: "team_names", SpanAttr: AttrBifrostTeamNames, Multi: true, Tier: TierRecord},
+	{Name: "customer_ids", SpanAttr: AttrBifrostCustomerIDs, Multi: true, Tier: TierRecord},
+	{Name: "customer_names", SpanAttr: AttrBifrostCustomerNames, Multi: true, Tier: TierRecord},
+	{Name: "business_unit_ids", SpanAttr: AttrBifrostBusinessUnitIDs, Multi: true, Tier: TierRecord},
+	{Name: "business_unit_names", SpanAttr: AttrBifrostBusinessUnitNames, Multi: true, Tier: TierRecord},
 }
 
-// ColumnName returns the BigQuery column name for the dimension — Column when
-// set, otherwise Name.
+// ColumnName returns Column when set, otherwise Name.
 func (d EnrichmentDim) ColumnName() string {
 	if d.Column != "" {
 		return d.Column
@@ -107,8 +102,7 @@ func (d EnrichmentDim) ColumnName() string {
 	return d.Name
 }
 
-// EnrichmentDimColumnNames returns the BigQuery column name for every dimension,
-// in registry order (the record/trace-tier set).
+// EnrichmentDimColumnNames returns every dimension's column name, in registry order.
 func EnrichmentDimColumnNames() []string {
 	out := make([]string, len(EnrichmentDims))
 	for i, d := range EnrichmentDims {
@@ -117,20 +111,41 @@ func EnrichmentDimColumnNames() []string {
 	return out
 }
 
-// MetricSafeEnrichmentDims returns the low-cardinality dimensions eligible to be
-// Prometheus labels / Datadog metric tags, in registry order.
+// MetricSafeEnrichmentDims returns the bounded dimensions, in registry order.
 func MetricSafeEnrichmentDims() []EnrichmentDim {
 	out := make([]EnrichmentDim, 0, len(EnrichmentDims))
 	for _, d := range EnrichmentDims {
-		if d.MetricSafe {
+		if d.MetricSafe() {
 			out = append(out, d)
 		}
 	}
 	return out
 }
 
-// EnrichmentDimNames returns every dimension name, in registry order (the
-// record/trace-tier set).
+// HighCardinalityMetricEnrichmentDims returns the metric-safe dimensions plus the
+// unbounded ones, in registry order.
+func HighCardinalityMetricEnrichmentDims() []EnrichmentDim {
+	out := make([]EnrichmentDim, 0, len(EnrichmentDims))
+	for _, d := range EnrichmentDims {
+		if d.MetricAllowedHighCardinality() {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// HighCardinalityMetricEnrichmentDimNames is HighCardinalityMetricEnrichmentDims by name.
+func HighCardinalityMetricEnrichmentDimNames() []string {
+	out := make([]string, 0, len(EnrichmentDims))
+	for _, d := range EnrichmentDims {
+		if d.MetricAllowedHighCardinality() {
+			out = append(out, d.Name)
+		}
+	}
+	return out
+}
+
+// EnrichmentDimNames returns every dimension name, in registry order.
 func EnrichmentDimNames() []string {
 	out := make([]string, len(EnrichmentDims))
 	for i, d := range EnrichmentDims {
@@ -139,12 +154,11 @@ func EnrichmentDimNames() []string {
 	return out
 }
 
-// MetricSafeEnrichmentDimNames returns the names of the metric-tier dimensions,
-// in registry order.
+// MetricSafeEnrichmentDimNames is MetricSafeEnrichmentDims by name.
 func MetricSafeEnrichmentDimNames() []string {
 	out := make([]string, 0, len(EnrichmentDims))
 	for _, d := range EnrichmentDims {
-		if d.MetricSafe {
+		if d.MetricSafe() {
 			out = append(out, d.Name)
 		}
 	}

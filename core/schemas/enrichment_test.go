@@ -2,23 +2,53 @@ package schemas
 
 import "testing"
 
-// TestArrayDimsAreNeverMetricSafe is the structural guard that keeps array
-// (Multi) dimensions out of the metric tier — i.e. out of Prometheus labels and
-// Datadog metric tags. An array value like "team-a,team-b,team-c" would become a
-// distinct label/tag value per team combination and explode series cardinality,
-// so a Multi dimension must never be MetricSafe. The curated connectors derive
-// their metric-tier lists from MetricSafeEnrichmentDims(), so this invariant is
-// what actually prevents arrays from ever being shared as Prometheus labels.
+// TestArrayDimsAreNeverMetricSafe keeps arrays out of both metric tiers: a value
+// like "team-a,team-b" is one label value per combination.
 func TestArrayDimsAreNeverMetricSafe(t *testing.T) {
 	for _, d := range EnrichmentDims {
-		if d.Multi && d.MetricSafe {
-			t.Errorf("dimension %q is Multi (array) AND MetricSafe — arrays must never be metric labels/tags (cardinality explosion)", d.Name)
+		if d.Multi && d.MetricAllowedHighCardinality() {
+			t.Errorf("dimension %q is Multi (array) and permitted as a metric label — arrays must stay record-tier (cardinality explosion)", d.Name)
 		}
 	}
 }
 
-// TestEnrichmentDimNamesUnique guards against a copy-paste duplicate slipping into
-// the registry, which would double-emit a label/column.
+// TestTierIsExplicit guards the silent failure: the zero value is TierRecord, so
+// a metric dimension left untiered never appears as a label and nothing errors.
+func TestTierIsExplicit(t *testing.T) {
+	for _, d := range EnrichmentDims {
+		if d.SpanAttr == "" {
+			t.Errorf("dimension %q has no SpanAttr; connectors cannot read it", d.Name)
+		}
+		switch d.Tier {
+		case TierRecord, TierMetric, TierHighCardinalityMetric:
+		case tierUnset:
+			t.Errorf("dimension %q omits Tier; classify it explicitly rather than "+
+				"relying on the zero value", d.Name)
+		default:
+			t.Errorf("dimension %q has an unknown tier %d", d.Name, d.Tier)
+		}
+	}
+}
+
+// TestHighCardinalityTierIsSupersetOfMetric: bounded dimensions are also allowed
+// where unbounded ones are, so that list can never be the smaller.
+func TestHighCardinalityTierIsSupersetOfMetric(t *testing.T) {
+	allowed := map[string]bool{}
+	for _, n := range HighCardinalityMetricEnrichmentDimNames() {
+		allowed[n] = true
+	}
+	for _, n := range MetricSafeEnrichmentDimNames() {
+		if !allowed[n] {
+			t.Errorf("dimension %q is metric-safe but absent from the high-cardinality set", n)
+		}
+	}
+	if len(HighCardinalityMetricEnrichmentDimNames()) < len(MetricSafeEnrichmentDimNames()) {
+		t.Error("high-cardinality metric set is smaller than the metric-safe set")
+	}
+}
+
+// TestEnrichmentDimNamesUnique catches a copy-paste duplicate, which would
+// double-emit a label or column.
 func TestEnrichmentDimNamesUnique(t *testing.T) {
 	seen := map[string]bool{}
 	for _, d := range EnrichmentDims {
