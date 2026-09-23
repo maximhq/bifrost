@@ -88,6 +88,12 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	// Typesafe landed in StandardProviders (2026-09-21, typesafe.go) but was not added
+	// here, so no custom provider could wrap it under a second name (e.g. to front a
+	// second gateway/base_url for the same wire format). Decision() and ListModels()
+	// on TypesafeProvider read config.NetworkConfig.BaseURL like every other base
+	// provider, so wrapping it works the same way OpenAI/Anthropic/Gemini already do.
+	Typesafe,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.

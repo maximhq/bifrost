@@ -1,3 +1,4 @@
+- fix: typesafe usable as base_provider_type for custom providers; GetProviderKey resolves the custom name ([@Ptah-CT](https://github.com/Ptah-CT))
 - feat: typesafe provider, /v1/decisions endpoint, and decision emulation via forced tool-calling for providers without native decision support (#7355, #7361, #7384, #7440)
 - feat: provider-level session affinity through the SessionAffinity seam, bound on request outcome
 - feat: Claude Opus 5.5 computer_toolset_20260801 support with toolset_name round-trip, and disabled-thinking/forced-tool-choice gating overridable from the datasheet (#7433, #7434, #7441)
