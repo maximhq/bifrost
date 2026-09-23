@@ -3,6 +3,8 @@ package otel
 import (
 	"bytes"
 	"strings"
+
+	"github.com/bytedance/sonic"
 	"testing"
 	"time"
 
@@ -459,5 +461,104 @@ func TestKVMapKeysUnique(t *testing.T) {
 	kvs := convertAttributesToKeyValues(attrs, false)
 	if len(kvs) != len(kvMap(kvs)) {
 		t.Errorf("duplicate keys emitted: %d kvs collapsed to %d unique", len(kvs), len(kvMap(kvs)))
+	}
+}
+
+// TestExportNoContentLeakWithSharedFixture asserts the serialized ResourceSpan
+// carries no content when content logging is disabled. Unlike
+// TestConvertAttributesStripsContentAllSpans, which checks one attribute map,
+// this covers the whole export against the fixture every connector shares.
+func TestExportNoContentLeakWithSharedFixture(t *testing.T) {
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
+	p := &OtelPlugin{}
+
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, true, false, false)
+	payload, err := sonic.Marshal(resourceSpan)
+	if err != nil {
+		t.Fatalf("marshal ResourceSpan: %v", err)
+	}
+	for _, problem := range schemas.AssertNoContentLeak(payload) {
+		t.Error(problem)
+	}
+}
+
+// TestExportContentPresentWhenEnabled is the negative control: without it the
+// test above could pass on an empty payload.
+func TestExportContentPresentWhenEnabled(t *testing.T) {
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
+	p := &OtelPlugin{}
+
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	payload, err := sonic.Marshal(resourceSpan)
+	if err != nil {
+		t.Fatalf("marshal ResourceSpan: %v", err)
+	}
+	if !strings.Contains(string(payload), schemas.ExportFixtureSecret) {
+		t.Error("content sentinel absent with content logging enabled; the leak test proves nothing")
+	}
+}
+
+// TestExportSpanFilterDropsExcludedPlugins asserts no filtered span reaches the
+// serialized payload, in either filter mode.
+func TestExportSpanFilterDropsExcludedPlugins(t *testing.T) {
+	names := []string{"governance", "semanticcache", "logging"}
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{PluginNames: names})
+
+	for _, tc := range []struct {
+		name          string
+		filter        *schemas.PluginSpanFilter
+		dropped, kept []string
+	}{
+		{
+			name:    "exclude one plugin",
+			filter:  &schemas.PluginSpanFilter{Mode: schemas.PluginSpanFilterModeExclude, Plugins: []string{"governance"}},
+			dropped: schemas.ExportFixturePluginSpanNames("governance"),
+			kept: append(schemas.ExportFixturePluginSpanNames("semanticcache"),
+				schemas.ExportFixturePluginSpanNames("logging")...),
+		},
+		{
+			name:   "include one plugin",
+			filter: &schemas.PluginSpanFilter{Mode: schemas.PluginSpanFilterModeInclude, Plugins: []string{"logging"}},
+			dropped: append(schemas.ExportFixturePluginSpanNames("governance"),
+				schemas.ExportFixturePluginSpanNames("semanticcache")...),
+			kept: schemas.ExportFixturePluginSpanNames("logging"),
+		},
+		{
+			name:   "exclude all plugins",
+			filter: &schemas.PluginSpanFilter{Mode: schemas.PluginSpanFilterModeExclude, Plugins: names},
+			dropped: append(append(schemas.ExportFixturePluginSpanNames("governance"),
+				schemas.ExportFixturePluginSpanNames("semanticcache")...),
+				schemas.ExportFixturePluginSpanNames("logging")...),
+			kept: []string{"chat gpt-4o"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &OtelPlugin{pluginSpanFilter: tc.filter}
+			resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+			payload, err := sonic.Marshal(resourceSpan)
+			if err != nil {
+				t.Fatalf("marshal ResourceSpan: %v", err)
+			}
+			for _, problem := range schemas.AssertSpanFilterApplied(payload, tc.dropped, tc.kept) {
+				t.Error(problem)
+			}
+		})
+	}
+}
+
+// TestExportWithholdsOverheadSpans asserts internal phase spans stay out of the
+// payload unless the connector opts in via OverheadSpanConsumer.
+func TestExportWithholdsOverheadSpans(t *testing.T) {
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{IncludeOverheadSpans: true})
+	p := &OtelPlugin{}
+
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	payload, err := sonic.Marshal(resourceSpan)
+	if err != nil {
+		t.Fatalf("marshal ResourceSpan: %v", err)
+	}
+	overhead := []string{"queue-wait", "request-marshal", "response-parse"}
+	for _, problem := range schemas.AssertSpanFilterApplied(payload, overhead, []string{"chat gpt-4o"}) {
+		t.Error(problem)
 	}
 }

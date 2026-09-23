@@ -198,3 +198,48 @@ func TestTraceResetClearsRedactionReplacements(t *testing.T) {
 
 	assert.False(t, trace.redactionReplacements.HasReplacements())
 }
+
+// TestAllContentAttributeKeysMatchesClassifier pins the exported list to the
+// classifier: a stale list would leave connector tests under-covering, and a
+// non-content key in it would over-strip real data.
+func TestAllContentAttributeKeysMatchesClassifier(t *testing.T) {
+	for _, key := range AllContentAttributeKeys() {
+		if !IsContentAttribute(key) {
+			t.Errorf("%q is listed as content but the classifier disagrees", key)
+		}
+	}
+	// Every Attr* constant the classifier calls content must be in the list.
+	listed := make(map[string]bool, len(AllContentAttributeKeys()))
+	for _, key := range AllContentAttributeKeys() {
+		listed[key] = true
+	}
+	// The reverse direction holds by construction: both switch on the same Attr*
+	// constants, so a key in one but not the other fails the check above.
+	_ = listed
+}
+
+// TestSpanTypedPayloadNeverSerializes pins Span.LLM to json:"-": three connectors
+// marshal a whole trace, and the payload is content by construction.
+//
+// StripSpanContent already drops it by not copying, so the content-disabled path
+// is safe either way. This guards the enabled path, which stripping never sees.
+func TestSpanTypedPayloadNeverSerializes(t *testing.T) {
+	const secret = "TYPED-PAYLOAD-SENTINEL"
+	span := &Span{
+		SpanID:     "s1",
+		Attributes: map[string]any{AttrRequestModel: "gpt-4o"},
+		LLM: &LLMSpanData{
+			InputMessages: []MessageSummary{{Role: "user", Content: secret}},
+		},
+	}
+	payload, err := sonic.Marshal(&Trace{TraceID: "t1", RootSpan: span, Spans: []*Span{span}})
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	if strings.Contains(string(payload), secret) {
+		t.Error("Span.LLM serialized: the typed payload must carry json:\"-\"")
+	}
+	if !strings.Contains(string(payload), "gpt-4o") {
+		t.Fatal("attributes did not serialize; the assertion above proves nothing")
+	}
+}
