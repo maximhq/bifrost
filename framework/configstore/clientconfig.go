@@ -246,6 +246,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPEnableTempTokenAuth {
 		hash.Write([]byte("mcpEnableTempTokenAuth:true"))
 	}
@@ -480,6 +482,8 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	} else {
 		h.Write([]byte("toolMgrDisableAutoInject:false"))
 	}
+	// Only hash a non-default value, so a config written before this field existed keeps
+	// producing the same hash on upgrade.
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 

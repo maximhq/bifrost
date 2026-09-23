@@ -384,6 +384,12 @@ const (
 	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
 
+// MCPServerInstructions is one upstream's instructions, labeled with the client it came from.
+type MCPServerInstructions struct {
+	ClientName   string `json:"client_name"`
+	Instructions string `json:"instructions"`
+}
+
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
 
@@ -573,6 +579,9 @@ type MCPClientConfig struct {
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
+	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
+	DiscoveredInstructions string `json:"-"`
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -980,11 +989,14 @@ type MCPClientState struct {
 	ToolMap         map[string]ChatTool      // Available tools mapped by name
 	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
-	LastFailure     *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
-	ConnGeneration  uint64                   `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash   string                   `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
+	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
+	ServerInstructions string                `json:"server_instructions,omitempty"`
+	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
+	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.

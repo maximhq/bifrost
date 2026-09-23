@@ -356,6 +356,7 @@ func TestSetClientTools_ReplacesStaleTools(t *testing.T) {
 	m.SetClientTools(config.ID,
 		map[string]schemas.ChatTool{"replace-tools-client-kept": {}},
 		map[string]string{"replace-tools-client-kept": "kept"},
+		"",
 	)
 
 	m.mu.RLock()
@@ -948,4 +949,63 @@ func TestMCPProxySelectorPassthrough(t *testing.T) {
 	require.NoError(t, err)
 	_, err = sel(req)
 	require.ErrorIs(t, err, wantErr)
+}
+
+// SetClientTools carries the instructions from the same handshake that found the tools,
+// and records them on the config so a per-call client can restore them after a restart.
+func TestSetClientToolsRecordsInstructionsForRestart(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "per-call", Name: "per-call", ToolsToExecute: []string{"*"}}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.mu.Unlock()
+
+	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"t": {Type: "function"}}, map[string]string{"t": "t"}, "Use me carefully.")
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	assert.Equal(t, "Use me carefully.", m.clientMap[config.ID].ServerInstructions)
+	assert.Equal(t, "Use me carefully.", m.clientMap[config.ID].ExecutionConfig.DiscoveredInstructions)
+}
+
+// Instructions ride the change hash, so a server that rewrote only its instructions still
+// counts as a change. Without this the callback never fires and the new text is never
+// persisted or re-served.
+func TestInstructionsOnlyChangeStillFiresToolsChangeCallback(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.mu.Unlock()
+
+	var seen []string
+	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, instructions string) {
+		seen = append(seen, instructions)
+	})
+
+	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
+	mapping := map[string]string{"echo": "echo"}
+	m.SetClientTools(config.ID, tools, mapping, "v1")
+	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo"}, "v2")
+
+	assert.Equal(t, []string{"v1", "v2"}, seen)
+}
+
+// A tools-only refresh (tools/list over a live connection) learns nothing about
+// instructions and must not clear the installed value.
+func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name: config.Name, ExecutionConfig: config,
+		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "keep me",
+	}
+	m.mu.Unlock()
+
+	require.True(t, m.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{"a": {Type: "function"}}, map[string]string{"a": "a"}, nil))
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	assert.Equal(t, "keep me", m.clientMap[config.ID].ServerInstructions)
 }
