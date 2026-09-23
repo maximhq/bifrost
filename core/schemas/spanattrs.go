@@ -32,6 +32,20 @@ func (d *LLMSpanData) Attributes() map[string]any {
 	return attrs
 }
 
+// ResponseAttributes renders only the keys that become known once the response
+// settles. The request keys are already on the span from the earlier pass, and
+// re-rendering them would marshal the input messages a second time.
+func (d *LLMSpanData) ResponseAttributes() map[string]any {
+	if d == nil {
+		return map[string]any{}
+	}
+	attrs := make(map[string]any, 24)
+	d.appendResponseEnvelope(attrs)
+	d.appendUsage(attrs)
+	d.appendError(attrs)
+	return attrs
+}
+
 func (d *LLMSpanData) appendIdentity(attrs map[string]any) {
 	attrs[AttrProviderName] = OTelProviderName(d.Provider)
 	attrs[AttrBifrostProviderName] = string(d.Provider)

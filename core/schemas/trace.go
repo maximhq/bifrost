@@ -524,31 +524,75 @@ func (s *Span) SetAttributes(attrs map[string]any) {
 func (s *Span) snapshotForExport() *Span {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := &Span{
-		SpanID:     s.SpanID,
-		ParentID:   s.ParentID,
-		TraceID:    s.TraceID,
-		Name:       s.Name,
-		Kind:       s.Kind,
-		StartTime:  s.StartTime,
-		EndTime:    s.EndTime,
-		Status:     s.Status,
-		StatusMsg:  s.StatusMsg,
-		Attributes: maps.Clone(s.Attributes),
-		LLM:        s.LLM,
-		Enrichment: s.Enrichment,
+	cp := snapshotSpanPool.Get().(*Span)
+	cp.SpanID = s.SpanID
+	cp.ParentID = s.ParentID
+	cp.TraceID = s.TraceID
+	cp.Name = s.Name
+	cp.Kind = s.Kind
+	cp.StartTime = s.StartTime
+	cp.EndTime = s.EndTime
+	cp.Status = s.Status
+	cp.StatusMsg = s.StatusMsg
+	cp.LLM = s.LLM
+	cp.Enrichment = s.Enrichment
+	clear(cp.Attributes)
+	for k, v := range s.Attributes {
+		cp.Attributes[k] = v
 	}
-	if len(s.Events) > 0 {
-		cp.Events = make([]SpanEvent, len(s.Events))
-		for i := range s.Events {
-			cp.Events[i] = SpanEvent{
-				Name:       s.Events[i].Name,
-				Timestamp:  s.Events[i].Timestamp,
-				Attributes: maps.Clone(s.Events[i].Attributes),
-			}
-		}
+	cp.Events = cp.Events[:0]
+	for i := range s.Events {
+		cp.Events = append(cp.Events, SpanEvent{
+			Name:       s.Events[i].Name,
+			Timestamp:  s.Events[i].Timestamp,
+			Attributes: maps.Clone(s.Events[i].Attributes),
+		})
 	}
 	return cp
+}
+
+// snapshotSpanPool backs the export snapshots. A snapshot's lifetime is bounded
+// by the flush's wg.Wait(), so it can be recycled once every connector has
+// returned - see Trace.ReleaseSnapshot.
+var snapshotSpanPool = sync.Pool{
+	New: func() any {
+		return &Span{
+			Attributes: make(map[string]any, 32),
+			Events:     make([]SpanEvent, 0, 4),
+		}
+	},
+}
+
+// ReleaseSnapshot returns a snapshot's spans to the pool. Call it only after
+// every connector has finished reading, and only on a snapshot - never on the
+// live trace. Attribute maps are retained for reuse; an outlier-sized one is
+// dropped so a single huge request cannot pin it.
+func (t *Trace) ReleaseSnapshot() {
+	if t == nil {
+		return
+	}
+	for _, span := range t.Spans {
+		if span == nil {
+			continue
+		}
+		// Reuse the maps and the event backing array, but drop every value: a
+		// pooled span otherwise holds message content live until its next use.
+		attrs := span.Attributes
+		if len(attrs) > 256 {
+			attrs = make(map[string]any, 32)
+		} else {
+			clear(attrs)
+		}
+		for i := range span.Events {
+			span.Events[i] = SpanEvent{}
+		}
+		events := span.Events[:0]
+		// Whole-struct reset, so a field added to Span later cannot be missed here.
+		*span = Span{Attributes: attrs, Events: events}
+		snapshotSpanPool.Put(span)
+	}
+	t.Spans = nil
+	t.RootSpan = nil
 }
 
 // AddEvent adds an event to the span in a thread-safe manner
