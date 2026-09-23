@@ -22,6 +22,11 @@ func (store memoryStore) Set(profileID string, kind secrets.Kind, value string) 
 	return nil
 }
 
+func (store memoryStore) Delete(profileID string, kind secrets.Kind) error {
+	delete(store, profileID+":"+string(kind))
+	return nil
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -80,5 +85,63 @@ func TestRefreshReusesPairRotatedByAnotherProcess(t *testing.T) {
 	}
 	if token != "ck-bf-agent-new" {
 		t.Fatalf("token = %q", token)
+	}
+}
+
+func TestAuthenticatorStoresProfileSession(t *testing.T) {
+	store := memoryStore{}
+	authenticator := Authenticator{Store: store, ProfileID: "test"}
+	response := browserauth.TokenResponse{
+		AccessToken: "ck-bf-agent-new", RefreshToken: "refresh-new",
+		User: browserauth.User{ID: "user-1", Email: "developer@example.com"},
+	}
+	if err := authenticator.storeResponse(response); err != nil {
+		t.Fatal(err)
+	}
+	if store["test:agent-token"] != "ck-bf-agent-new" || store["test:agent-refresh-token"] != "refresh-new" {
+		t.Fatalf("stored session = %#v", store)
+	}
+	if label, err := StoredUserLabel(store, "test"); err != nil || label != "developer@example.com" {
+		t.Fatalf("stored identity label = %q, err=%v", label, err)
+	}
+	deviceID, err := EnsureDeviceID(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(deviceID, "cli-") {
+		t.Fatalf("device ID = %q", deviceID)
+	}
+}
+
+func TestAuthenticatorLogoutClearsLocalSessionAfterGatewayFailure(t *testing.T) {
+	store := memoryStore{
+		"test:agent-token":          "ck-bf-agent-test",
+		"test:agent-refresh-token":  "refresh-test",
+		"test:agent-user":           `{"email":"developer@example.com"}`,
+		"test:agent-virtual-key-id": "vk-assigned",
+	}
+	authenticator := Authenticator{
+		Store: store, ProfileID: "test",
+		Client: &browserauth.Client{
+			BaseURL: "https://gateway.example",
+			HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusServiceUnavailable, Header: make(http.Header),
+					Body: io.NopCloser(strings.NewReader(`{"error":"unavailable"}`)), Request: request,
+				}, nil
+			})},
+		},
+	}
+
+	err := authenticator.Logout(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "local session removed") {
+		t.Fatalf("logout error = %v", err)
+	}
+	for _, kind := range []secrets.Kind{
+		secrets.AgentToken, secrets.AgentRefreshToken, secrets.AgentUser, secrets.AgentVirtualKeyID,
+	} {
+		if got := store["test:"+string(kind)]; got != "" {
+			t.Fatalf("%s was retained after failed revocation", kind)
+		}
 	}
 }
