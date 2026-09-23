@@ -27,6 +27,7 @@ import {
 	useGetCoreConfigQuery,
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
+	useReregisterMCPClientMutation,
 	useReconnectMCPClientMutation,
 	useRefreshMCPClientToolsMutation,
 	useUpdateMCPClientMutation,
@@ -36,6 +37,7 @@ import {
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
+import { supportsClientReregistration } from "@/lib/utils/mcpCredential";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -52,6 +54,7 @@ import {
 	PencilIcon,
 	Plus,
 	RefreshCcw,
+	RotateCcwKey,
 	Search,
 	Trash2,
 	X,
@@ -82,6 +85,7 @@ function MCPClientActionsMenu({
 	onRefreshTools,
 	onAuthorize,
 	onReauthorize,
+	onReregister,
 	onRefreshHeaders,
 	onVerifyExchange,
 	onDelete,
@@ -100,6 +104,7 @@ function MCPClientActionsMenu({
 	onRefreshTools: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
 	onReauthorize: (client: MCPClient) => void;
+	onReregister: (client: MCPClient) => void;
 	onRefreshHeaders: (client: MCPClient) => void;
 	onVerifyExchange: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
@@ -212,6 +217,27 @@ function MCPClientActionsMenu({
 						>
 							<KeyRound className="h-4 w-4" />
 							{client.config.auth_type === "per_user_oauth" ? "Refresh admin credential" : "Reauthorize"}
+						</DropdownMenuItem>
+					)}
+				{hasUpdateAccess &&
+					client.state !== "pending_verification" &&
+					client.state !== "disabled" &&
+					supportsClientReregistration(client.config.auth_type) && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							disabled={isReauthorizing}
+							data-testid={`mcp-client-reregister-${client.config.client_id}-menu-item`}
+							onSelect={(e) => {
+								e.preventDefault();
+								onReregister(client);
+								setIsOpen(false);
+							}}
+						>
+							{/* Not KeyRound like the item above it: this one replaces the
+							    credential rather than redoing consent with it, and the two
+							    sat side by side with identical icons. */}
+							<RotateCcwKey className="h-4 w-4" />
+							Reauthorize with a new client
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
@@ -340,6 +366,11 @@ export default function MCPClientsTable({
 	// get from OAuth2Authorizer/MCPHeadersAuthorizer before we exchange their
 	// identity token.
 	const [exchangeVerifyClient, setExchangeVerifyClient] = useState<MCPClient | null>(null);
+	// Drives the "Reauthorize with a new client" confirm dialog. Confirmed
+	// rather than fired straight from the menu because registering a
+	// replacement client discards the current one, which signs out every
+	// credential bound to this server, not just the admin's.
+	const [reregisterTarget, setReregisterTarget] = useState<MCPClient | null>(null);
 	const [showDetailSheet, setShowDetailSheet] = useState(false);
 	const { toast } = useToast();
 
@@ -383,6 +414,7 @@ export default function MCPClientsTable({
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
 	const [refreshMCPClientTools] = useRefreshMCPClientToolsMutation();
 	const [reauthorizeMCPClient] = useReauthorizeMCPClientMutation();
+	const [reregisterMCPClient] = useReregisterMCPClientMutation();
 	const [verifyMCPClientExchange] = useVerifyMCPClientExchangeMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
@@ -474,10 +506,15 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const handleReauthorize = async (client: MCPClient) => {
+	// registerNewClient picks the endpoint: the plain one reuses the stored
+	// client_id, the other registers a replacement first. Both return the same
+	// pending_oauth payload and drive the same popup, so only the call differs.
+	const handleReauthorize = async (client: MCPClient, registerNewClient = false) => {
 		try {
 			setReauthorizingClients((prev) => [...prev, client.config.client_id]);
-			const response = await reauthorizeMCPClient(client.config.client_id).unwrap();
+			const response = registerNewClient
+				? await reregisterMCPClient(client.config.client_id).unwrap()
+				: await reauthorizeMCPClient(client.config.client_id).unwrap();
 			if (response.status === "pending_oauth" && response.authorize_url) {
 				setReauthorizeFlow({
 					authorizeUrl: response.authorize_url,
@@ -675,6 +712,35 @@ export default function MCPClientsTable({
 					hasNext={(selectedMCPClientIndex >= 0 && selectedMCPClientIndex < mcpClients.length - 1) || offset + limit < totalCount}
 				/>
 			)}
+			<AlertDialog open={!!reregisterTarget} onOpenChange={(open) => !open && setReregisterTarget(null)}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Reauthorize {reregisterTarget?.config.name} with a new client</AlertDialogTitle>
+						<AlertDialogDescription>
+							Bifrost will register a new OAuth client with this server&apos;s provider and run the consent flow against it, replacing the
+							client it currently uses. Use this when the provider no longer recognises the client it issued, which shows up as
+							&quot;invalid_client&quot; on refresh and leaves a plain reauthorize unable to recover the connection.
+							{reregisterTarget?.config.auth_type === "per_user_oauth"
+								? " Every user of this server will be signed out and will have to authenticate again."
+								: " Every credential currently issued for this server will be signed out."}{" "}
+							Otherwise use Reauthorize, which keeps the current client.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							data-testid="mcp-client-reregister-confirm"
+							onClick={() => {
+								const target = reregisterTarget;
+								setReregisterTarget(null);
+								if (target) void handleReauthorize(target, true);
+							}}
+						>
+							Register and reauthorize
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
@@ -1197,6 +1263,7 @@ export default function MCPClientsTable({
 													onRefreshTools={(client) => void handleRefreshTools(client)}
 													onAuthorize={(client) => void handleStartBootstrap(client)}
 													onReauthorize={(client) => void handleReauthorize(client)}
+													onReregister={(client) => setReregisterTarget(client)}
 													onRefreshHeaders={handleRefreshHeaders}
 													onVerifyExchange={handleRequestVerifyExchange}
 													onDelete={setClientToDelete}

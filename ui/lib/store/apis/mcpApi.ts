@@ -23,6 +23,10 @@ type InitiateMCPClientVerificationResponse = Omit<OAuthFlowResponse, "message"> 
 	status_url?: string;
 	complete_url?: string;
 	next_steps?: string[];
+	// Set only by /reregister, so the caller can report which
+	// client the consent it is about to run belongs to.
+	registered_client_id?: string;
+	previous_client_id?: string;
 };
 
 export const mcpApi = baseApi.injectEndpoints({
@@ -292,6 +296,22 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 		}),
 
+		// reauthorizeMCPClient's counterpart for a provider that no longer
+		// recognises the client_id it issued through dynamic registration:
+		// registers a replacement client, then runs the same consent flow
+		// against it. Separate endpoint rather than a flag, because it
+		// invalidates every token bound to the config — on a per_user_oauth
+		// server, every end user's — and that is not something to hide in a
+		// request body. Same response shape, so the caller drives the same
+		// OAuth2Authorizer dialog.
+		reregisterMCPClient: builder.mutation<InitiateMCPClientVerificationResponse, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/reregister`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
+
 		// Verify a pending_verification per_user_headers MCP client by submitting
 		// admin sample header values. Backend runs verify + discover synchronously,
 		// persists DiscoveredTools, and reconnects.
@@ -338,6 +358,7 @@ export const {
 	useCompleteOAuthFlowMutation,
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
+	useReregisterMCPClientMutation,
 	useVerifyMCPClientHeadersMutation,
 	useVerifyMCPClientExchangeMutation,
 } = mcpApi;
