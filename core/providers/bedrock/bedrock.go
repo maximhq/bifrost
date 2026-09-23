@@ -2304,6 +2304,13 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		bifrostResponse.Model = request.Model
 	}
 
+	// Titan admits only float/binary and Cohere v3 has no base64 at all, so a base64 request
+	// is served by re-encoding the float vector here rather than by asking AWS for a
+	// representation it would reject. The bytes match what Cohere v4 returns natively.
+	if shouldEncodeEmbeddingsAsBase64(request) {
+		encodeEmbeddingsAsBase64(bifrostResponse)
+	}
+
 	// Bedrock Cohere embed models omit token usage from the response body and instead
 	// return it in the X-Amzn-Bedrock-Input-Token-Count response header. Backfill Usage
 	// from that header when the body did not provide it. (#3917)
