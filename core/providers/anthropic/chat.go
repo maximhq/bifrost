@@ -1009,7 +1009,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					})
 				} else if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
+						if block.Type == schemas.ChatContentBlockTypeInputAudio || block.InputAudio != nil {
+							return nil, fmt.Errorf("input_audio content blocks are not supported by Anthropic")
+						} else if block.Text != nil && *block.Text != "" {
 							content = append(content, AnthropicContentBlock{
 								Type:         AnthropicContentBlockTypeText,
 								Text:         block.Text,
@@ -1017,8 +1019,6 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							})
 						} else if block.ImageURLStruct != nil {
 							content = append(content, ConvertToAnthropicImageBlock(block))
-						} else if block.Type == schemas.ChatContentBlockTypeInputAudio || block.InputAudio != nil {
-							return nil, fmt.Errorf("input_audio content blocks are not supported by Anthropic")
 						} else if block.File != nil {
 							content = append(content, ConvertToAnthropicDocumentBlock(block))
 						}

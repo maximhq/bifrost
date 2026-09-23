@@ -298,7 +298,11 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiChatCompletionRequest(ctx, request)
+			preparedRequest, err := provider.prepareChatRequestWithResolvedFiles(ctx, key, request)
+			if err != nil {
+				return nil, err
+			}
+			return ToGeminiChatCompletionRequest(ctx, preparedRequest)
 		})
 	if err != nil {
 		return nil, err
@@ -358,7 +362,11 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiChatCompletionRequest(ctx, request)
+			preparedRequest, err := provider.prepareChatRequestWithResolvedFiles(ctx, key, request)
+			if err != nil {
+				return nil, err
+			}
+			reqBody, err := ToGeminiChatCompletionRequest(ctx, preparedRequest)
 			if err != nil {
 				return nil, err
 			}
@@ -686,7 +694,11 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := ToGeminiResponsesRequest(ctx, request)
+				preparedRequest, err := provider.prepareResponsesRequestWithResolvedFiles(ctx, key, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := ToGeminiResponsesRequest(ctx, preparedRequest)
 				if err != nil {
 					return nil, err
 				}
@@ -887,7 +899,11 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiResponsesRequest(ctx, request)
+			preparedRequest, err := provider.prepareResponsesRequestWithResolvedFiles(ctx, key, request)
+			if err != nil {
+				return nil, err
+			}
+			reqBody, err := ToGeminiResponsesRequest(ctx, preparedRequest)
 			if err != nil {
 				return nil, err
 			}
@@ -4034,7 +4050,11 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToGeminiResponsesRequest(ctx, request)
+				preparedRequest, err := provider.prepareResponsesRequestWithResolvedFiles(ctx, key, request)
+				if err != nil {
+					return nil, err
+				}
+				return ToGeminiResponsesRequest(ctx, preparedRequest)
 			},
 		)
 		if bifrostErr != nil {

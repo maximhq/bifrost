@@ -2257,13 +2257,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 								})
 							}
 						} else if block.File.FileID != nil && *block.File.FileID != "" {
-							fileData := &FileData{FileURI: *block.File.FileID}
-							if block.File.FileType != nil {
-								fileData.MIMEType = *block.File.FileType
-							} else {
-								fileData.MIMEType = mimeTypeFromURI(*block.File.FileID)
-							}
-							parts = append(parts, &Part{FileData: fileData})
+							return nil, nil, fmt.Errorf("Gemini file ID %q must be resolved to a file URI before conversion", *block.File.FileID)
 						}
 					} else if block.ImageURLStruct != nil {
 						// Handle image blocks

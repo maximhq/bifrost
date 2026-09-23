@@ -124,7 +124,7 @@ func TestGenerateContentRoundTrip_NoMimeInjectionForFileData(t *testing.T) {
 	assert.Empty(t, found.MIMEType, "no MIME should be injected when the caller didn't provide one")
 }
 
-func TestConvertContentBlockToGeminiPart_PreservesFileID(t *testing.T) {
+func TestConvertContentBlockToGeminiPart_RejectsUnresolvedFileID(t *testing.T) {
 	fileID := "files/abc123"
 
 	for _, blockType := range []schemas.ResponsesMessageContentBlockType{
@@ -132,20 +132,17 @@ func TestConvertContentBlockToGeminiPart_PreservesFileID(t *testing.T) {
 		schemas.ResponsesInputMessageContentBlockTypeContainer,
 	} {
 		t.Run(string(blockType), func(t *testing.T) {
-			part, err := convertContentBlockToGeminiPart(schemas.ResponsesMessageContentBlock{
+			_, err := convertContentBlockToGeminiPart(schemas.ResponsesMessageContentBlock{
 				Type:   blockType,
 				FileID: &fileID,
 			})
-			require.NoError(t, err)
-			require.NotNil(t, part)
-			require.NotNil(t, part.FileData)
-			assert.Equal(t, fileID, part.FileData.FileURI)
-			assert.Empty(t, part.FileData.MIMEType)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be resolved to a file URI")
 		})
 	}
 }
 
-func TestConvertBifrostMessagesToGemini_PreservesFileID(t *testing.T) {
+func TestConvertBifrostMessagesToGemini_RejectsUnresolvedFileID(t *testing.T) {
 	fileID := "files/abc123"
 	msgs := []schemas.ChatMessage{{
 		Role: schemas.ChatMessageRoleUser,
@@ -157,10 +154,7 @@ func TestConvertBifrostMessagesToGemini_PreservesFileID(t *testing.T) {
 		},
 	}}
 
-	contents, _, err := convertBifrostMessagesToGemini(msgs)
-	require.NoError(t, err)
-	require.Len(t, contents, 1)
-	require.Len(t, contents[0].Parts, 1)
-	require.NotNil(t, contents[0].Parts[0].FileData)
-	assert.Equal(t, fileID, contents[0].Parts[0].FileData.FileURI)
+	_, _, err := convertBifrostMessagesToGemini(msgs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be resolved to a file URI")
 }
