@@ -38,7 +38,8 @@ func TestAnthropicStreamPrefersResponsesChunkWhenChatResponseAlsoPresent(t *test
 }
 
 func TestAnthropicStreamConvertsChatOnlyChunks(t *testing.T) {
-	stream := make(chan *schemas.BifrostStreamChunk, 2)
+	stream := make(chan *schemas.BifrostStreamChunk, 3)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "msg_test", Model: "claude-sonnet-4-5"}}
 	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
 		ID: "msg_test", Model: "claude-sonnet-4-5",
 		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr("assistant")}}}},
@@ -63,4 +64,5 @@ func TestAnthropicStreamConvertsChatOnlyChunks(t *testing.T) {
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
 	require.Contains(t, string(body), "event: message_stop")
+	require.NotContains(t, string(body), "data: \n\n")
 }

@@ -3106,6 +3106,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 						}
 						fmt.Fprintf(&events, "data: %s\n\n", payload)
 					}
+					if events.Len() == 0 {
+						continue
+					}
 					convertedResponse = events.String()
 				case chunk.BifrostChatResponse != nil:
 					if config.StreamConfig.ChatStreamResponseConverter == nil {
