@@ -607,6 +607,10 @@ bifrost:
         # (overhead latency split by the overhead_component label). Requires tracing to be active,
         # since the breakdown is computed from completed trace spans (default: false)
         # overhead_breakdown_enabled: false
+        # Add user_id and user_name labels to every bifrost_* metric. Off by default:
+        # unbounded values multiply metric series by end-user count, and Prometheus
+        # cannot drop a label afterwards (default: false)
+        # user_labels_enabled: false
         # push_gateway:
         #   enabled: false
         #   push_gateway_url: ""
