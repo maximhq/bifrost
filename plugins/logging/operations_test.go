@@ -1941,6 +1941,55 @@ func assertMCPLogGovernanceFields(t *testing.T, logEntry *logstore.MCPToolLog, u
 	}
 }
 
+// TestUpdateLogEntryHonorsStoreRawRequestResponse covers issue #7458. Every other
+// raw write in this plugin gates on BifrostContextKeyShouldStoreRawInLogs; the two
+// in updateLogEntry gated only on content logging, so a provider with
+// store_raw_request_response=false still wrote both columns, duplicating
+// input_history for every request.
+func TestUpdateLogEntryHonorsStoreRawRequestResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		shouldStore   bool
+		wantPersisted bool
+	}{
+		{name: "store disabled", shouldStore: false, wantPersisted: false},
+		{name: "store enabled", shouldStore: true, wantPersisted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin := &LoggerPlugin{store: store, logger: testLogger{}}
+
+			requestID := "req-raw-" + tc.name
+			initial := &InitialLogData{Object: "chat.completion", Provider: "openai", Model: "gpt-4o-mini"}
+			if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", time.Now().UTC(), 0, nil, initial); err != nil {
+				t.Fatalf("insertInitialLogEntry() error = %v", err)
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, tc.shouldStore)
+			update := &UpdateLogData{
+				Status:      "success",
+				RawRequest:  map[string]any{"messages": "RAW_REQUEST_MARKER"},
+				RawResponse: map[string]any{"choices": "RAW_RESPONSE_MARKER"},
+			}
+			if err := plugin.updateLogEntry(ctx, requestID, "", "", 10, "", "", "", "", 0, nil, "", update, true); err != nil {
+				t.Fatalf("updateLogEntry() error = %v", err)
+			}
+
+			logEntry, err := store.FindByID(context.Background(), requestID)
+			if err != nil {
+				t.Fatalf("FindByID() error = %v", err)
+			}
+			gotReq := strings.Contains(logEntry.RawRequest, "RAW_REQUEST_MARKER")
+			gotResp := strings.Contains(logEntry.RawResponse, "RAW_RESPONSE_MARKER")
+			if gotReq != tc.wantPersisted || gotResp != tc.wantPersisted {
+				t.Fatalf("raw persisted req=%v resp=%v, want %v for both (raw_request=%q raw_response=%q)",
+					gotReq, gotResp, tc.wantPersisted, logEntry.RawRequest, logEntry.RawResponse)
+			}
+		})
+	}
+}
+
 func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
