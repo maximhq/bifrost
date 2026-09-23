@@ -316,9 +316,10 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 	}
 
 	// Cohere embedding: text-only (texts), image-only (images), or mixed (inputs).
+	// Titan multimodal embedding sends inputImage, with inputText optional.
 	// Use model ID to identify embed models, then check for any non-empty payload field.
 	if strings.Contains(strings.ToLower(modelID), "embed") {
-		for _, field := range []string{"texts", "images", "inputs"} {
+		for _, field := range []string{"texts", "images", "inputs", "inputImage"} {
 			if node, _ := sonic.Get(body, field); node.Exists() {
 				if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 					return schemas.EmbeddingRequest
@@ -552,11 +553,19 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	}
 
 	var contents []schemas.EmbeddingInputItem
-	if r.InputText != "" {
-		inputText := r.InputText
-		contents = append(contents, schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{
-			{Type: schemas.EmbeddingContentPartTypeText, Text: &inputText},
-		}})
+	if r.InputText != "" || r.InputImage != "" {
+		// Titan's single-item shape: inputText and inputImage describe one input, so they
+		// aggregate into one content list rather than two separate items.
+		var content schemas.EmbeddingContent
+		if r.InputText != "" {
+			inputText := r.InputText
+			content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeText, Text: &inputText})
+		}
+		if r.InputImage != "" {
+			inputImage := r.InputImage
+			content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &inputImage}})
+		}
+		contents = append(contents, schemas.EmbeddingInputItem{Content: content})
 	} else if len(r.Texts) > 0 {
 		for _, t := range r.Texts {
 			text := t
@@ -630,10 +639,14 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 		extraParams[k] = v
 	}
 
-	// output_dimension maps to Dimensions; prefer OutputDimension over Dimensions
+	// output_dimension maps to Dimensions; prefer OutputDimension over Dimensions.
+	// Titan's multimodal models carry the same value under embeddingConfig instead.
 	dimensions := r.Dimensions
 	if r.OutputDimension != nil {
 		dimensions = r.OutputDimension
+	}
+	if r.EmbeddingConfig != nil && r.EmbeddingConfig.OutputEmbeddingLength != nil {
+		dimensions = r.EmbeddingConfig.OutputEmbeddingLength
 	}
 	params := &schemas.EmbeddingParameters{
 		Dimensions: dimensions,
@@ -1296,10 +1309,24 @@ func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas
 		}
 	}
 
-	if schemas.IsCohereModelFamily(ctx, model) {
+	// The Titan envelope holds a single input's vectors. A response covering several
+	// inputs — reachable when the invoke route fronts a non-Titan provider — only fits
+	// the multi-embedding envelope; forcing it into Titan's drops all but one vector.
+	if schemas.IsCohereModelFamily(ctx, model) || bedrockDistinctEmbeddingInputs(resp.Data) > 1 {
 		return toBedrockCohereEmbeddingInvokeResponse(resp), nil
 	}
 	return toBedrockTitanEmbeddingInvokeResponse(resp, tokenCount), nil
+}
+
+// bedrockDistinctEmbeddingInputs counts the inputs a response covers. Titan's typed
+// responses carry several entries for one input (float plus binary), so the index — not
+// the entry count — decides whether the Titan envelope fits.
+func bedrockDistinctEmbeddingInputs(data []schemas.EmbeddingData) int {
+	seen := make(map[int]struct{}, len(data))
+	for _, d := range data {
+		seen[d.Index] = struct{}{}
+	}
+	return len(seen)
 }
 
 // toBedrockTitanEmbeddingInvokeResponse rebuilds the Titan invoke envelope from the

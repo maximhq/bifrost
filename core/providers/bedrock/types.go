@@ -972,11 +972,19 @@ type BedrockMetadataEvent struct {
 
 // BedrockTitanEmbeddingRequest represents a Bedrock Titan embedding request
 type BedrockTitanEmbeddingRequest struct {
-	InputText      string                 `json:"inputText"`                // Required: Text to embed
-	Dimensions     *int                   `json:"dimensions,omitempty"`     // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
-	Normalize      *bool                  `json:"normalize,omitempty"`      // Optional: normalize the embedding
-	EmbeddingTypes []string               `json:"embeddingTypes,omitempty"` // Optional: "float" and/or "binary" (titan-embed-text-v2 only)
-	ExtraParams    map[string]interface{} `json:"-"`
+	InputText       string                       `json:"inputText,omitempty"`       // Text to embed; optional only for an image-only multimodal request
+	InputImage      *string                      `json:"inputImage,omitempty"`      // Raw base64 image (titan-embed-image-v1 only)
+	Dimensions      *int                         `json:"dimensions,omitempty"`      // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
+	EmbeddingConfig *BedrockTitanEmbeddingConfig `json:"embeddingConfig,omitempty"` // Output length (titan-embed-image-v1 only)
+	Normalize       *bool                        `json:"normalize,omitempty"`       // Optional: normalize the embedding
+	EmbeddingTypes  []string                     `json:"embeddingTypes,omitempty"`  // Optional: "float" and/or "binary" (titan-embed-text-v2 only)
+	ExtraParams     map[string]interface{}       `json:"-"`
+}
+
+// BedrockTitanEmbeddingConfig carries the output vector length for titan-embed-image-v1,
+// which has no top-level dimensions field.
+type BedrockTitanEmbeddingConfig struct {
+	OutputEmbeddingLength *int `json:"outputEmbeddingLength,omitempty"` // 256, 384, or 1024
 }
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
@@ -1441,6 +1449,8 @@ type BedrockInvokeRequest struct {
 	// ==================== EMBEDDINGS ====================
 
 	InputText           string                        `json:"inputText,omitempty"`        // Titan embed
+	InputImage          string                        `json:"inputImage,omitempty"`       // Titan multimodal embed (titan-embed-image-v1), raw base64
+	EmbeddingConfig     *BedrockTitanEmbeddingConfig  `json:"embeddingConfig,omitempty"`  // Titan multimodal embed output length
 	Texts               []string                      `json:"texts,omitempty"`            // Cohere embed
 	InputType           *string                       `json:"input_type,omitempty"`       // Cohere embed
 	Normalize           *bool                         `json:"normalize,omitempty"`        // Titan embed v2
