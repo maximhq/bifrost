@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -316,5 +317,68 @@ func TestCostAttributesOmitsZeroCategories(t *testing.T) {
 	}
 	if got := CostAttributes(nil); len(got) != 0 {
 		t.Errorf("nil cost rendered %d attributes, want none", len(got))
+	}
+}
+
+// TestAssertCostBreakdownCatchesMistakes checks the shared assertion itself: it
+// must pass on a faithful export and fail on each way a connector can get the
+// breakdown wrong. An assertion used by six connectors has to be trustworthy.
+func TestAssertCostBreakdownCatchesMistakes(t *testing.T) {
+	faithful := CostAttributes(ExportFixtureCost())
+	if problems := AssertCostBreakdown(CostAttributeLookup(faithful)); len(problems) != 0 {
+		t.Errorf("faithful export reported problems: %v", problems)
+	}
+
+	t.Run("missing category", func(t *testing.T) {
+		attrs := CostAttributes(ExportFixtureCost())
+		delete(attrs, AttrBifrostCostOutputReasoning)
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a dropped category was not reported")
+		}
+	})
+
+	t.Run("wrong value", func(t *testing.T) {
+		attrs := CostAttributes(ExportFixtureCost())
+		attrs[AttrBifrostCostGuardrail] = 0.99
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a wrong value was not reported")
+		}
+	})
+
+	t.Run("cross-wired category", func(t *testing.T) {
+		// The BigQuery pickDetail mistake: two categories fed from one key.
+		attrs := CostAttributes(ExportFixtureCost())
+		attrs[AttrBifrostCostInputAudio] = attrs[AttrBifrostCostInputText]
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a cross-wired category was not reported")
+		}
+	})
+
+	t.Run("sides do not reconcile", func(t *testing.T) {
+		attrs := CostAttributes(ExportFixtureCost())
+		attrs[AttrUsageCost] = 2.00
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a total that does not match its sides was not reported")
+		}
+	})
+}
+
+// NaN fails every relational comparison, so a naked tolerance check accepted it:
+// a connector exporting NaN for every cost category passed the whole assertion.
+func TestAssertCostBreakdownRejectsNonFinite(t *testing.T) {
+	for name, v := range map[string]float64{
+		"NaN":  math.NaN(),
+		"+Inf": math.Inf(1),
+		"-Inf": math.Inf(-1),
+	} {
+		lookup := CostLookup(func(CostCategory) (float64, bool) { return v, true })
+		if problems := AssertCostBreakdown(lookup); len(problems) == 0 {
+			t.Errorf("%s passed the cost assertion; non-finite costs must be rejected", name)
+		}
+	}
+	// Control: the real fixture breakdown still reconciles cleanly.
+	ok := CostAttributeLookup(CostAttributes(ExportFixtureCost()))
+	if problems := AssertCostBreakdown(ok); len(problems) != 0 {
+		t.Errorf("fixture breakdown reported problems: %v", problems)
 	}
 }

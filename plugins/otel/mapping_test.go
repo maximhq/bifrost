@@ -2,6 +2,7 @@ package otel
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -563,36 +564,49 @@ func TestExportWithholdsOverheadSpans(t *testing.T) {
 	}
 }
 
-// TestExportCarriesCostBreakdown pins the connector-visible outcome: the pricing
-// engine computes the input/output/sidecar split on the same call as the total,
-// and it now reaches the wire instead of being flattened to one float.
+// TestExportCarriesCostBreakdown holds OTEL to the shared cost contract: the
+// exported span must carry every category with the right value, and the sums
+// must reconcile.
 func TestExportCarriesCostBreakdown(t *testing.T) {
-	span := &schemas.Span{
-		SpanID: "span-llm", Name: "chat gpt-4o", Kind: schemas.SpanKindLLMCall,
-		Attributes: map[string]any{},
-	}
-	span.SetAttributes(schemas.CostAttributes(&schemas.BifrostCost{
-		InputCost: 0.30, OutputCost: 0.50, AdditionalCost: 0.20, TotalCost: 1.00,
-		OutputCostDetails:     &schemas.OutputCostDetails{ReasoningCost: 0.40, TextCost: 0.10},
-		AdditionalCostDetails: &schemas.AdditionalCostDetails{GuardrailCost: 0.20},
-	}))
-	trace := &schemas.Trace{TraceID: "t1", RootSpan: span, Spans: []*schemas.Span{span}}
-
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
 	p := &OtelPlugin{}
-	payload, err := sonic.Marshal(p.convertTraceToResourceSpan("svc", trace, nil, false, false, false))
-	if err != nil {
-		t.Fatalf("marshal ResourceSpan: %v", err)
-	}
-	for _, key := range []string{
-		schemas.AttrUsageCost,
-		schemas.AttrBifrostCostInput,
-		schemas.AttrBifrostCostOutput,
-		schemas.AttrBifrostCostAdditional,
-		schemas.AttrBifrostCostOutputReasoning,
-		schemas.AttrBifrostCostGuardrail,
-	} {
-		if !strings.Contains(string(payload), key) {
-			t.Errorf("cost attribute %q did not reach the exported payload", key)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+
+	// Read the cost attributes off the LLM span specifically. Merging every span
+	// would accept cost split across spans, or attached to the wrong one.
+	var llmSpanID string
+	for _, sp := range trace.Spans {
+		if sp.Kind == schemas.SpanKindLLMCall {
+			llmSpanID = sp.SpanID
+			break
 		}
+	}
+	if llmSpanID == "" {
+		t.Fatal("fixture has no LLM span")
+	}
+
+	exported := map[string]any{}
+	var strays []string
+	for _, span := range resourceSpan.ScopeSpans[0].Spans {
+		isLLM := string(span.SpanId) == string(hexToBytes(llmSpanID, 8))
+		for _, kv := range span.Attributes {
+			dv, ok := kv.Value.Value.(*DoubleValue)
+			if !ok {
+				continue
+			}
+			if isLLM {
+				exported[kv.Key] = dv.DoubleValue
+				continue
+			}
+			if kv.Key == schemas.AttrUsageCost || strings.HasPrefix(kv.Key, "bifrost.cost.") {
+				strays = append(strays, fmt.Sprintf("%s on span %q", kv.Key, span.Name))
+			}
+		}
+	}
+	for _, stray := range strays {
+		t.Errorf("cost attribute on a non-LLM span: %s", stray)
+	}
+	for _, problem := range schemas.AssertCostBreakdown(schemas.CostAttributeLookup(exported)) {
+		t.Error(problem)
 	}
 }
