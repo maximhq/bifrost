@@ -1,0 +1,179 @@
+# Warp Agent Configuration Schemas
+
+WarpConfig:
+  type: object
+  description: |
+    Warp's deployment-wide settings, as returned by the read API.
+
+    The stored provider credential is never included. `api_key_id` names which
+    of the provider's configured keys Warp uses - a reference, not a secret, so
+    the settings form can render "configured" without the key itself ever
+    leaving the server: a dashboard session is a weaker credential than the
+    provider key it would otherwise reveal.
+  properties:
+    configured:
+      type: boolean
+      description: |
+        Whether Warp has everything it needs to answer a question — enabled,
+        with a provider and a model. A credential is deliberately not part of
+        this test, since a provider reached over a trusted network through
+        `base_url` legitimately needs none.
+    enabled:
+      type: boolean
+      description: Whether the operator has switched Warp on.
+    provider:
+      type: string
+      description: The model provider that runs the agent loop, e.g. `openai`.
+      example: openai
+    model:
+      type: string
+      example: gpt-4o
+    base_url:
+      type: string
+      description: |
+        Where Warp reaches its model. Overrides the provider's default endpoint,
+        which is what an empty value means. Required for self-hosted and proxied
+        deployments, empty otherwise.
+
+        Must not contain URL userinfo. This value is stored and returned
+        unredacted, so a credential embedded in it would be readable by anyone
+        who can read the configuration; a URL carrying one is rejected with
+        `400`. Name a configured provider key with `api_key_id` instead.
+      example: https://bifrost.internal.example.com
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys Warp uses. A reference, not a
+        credential, so it round-trips in the clear - there is nothing here worth
+        redacting. Empty when the provider needs no key.
+    max_iterations:
+      type: integer
+      description: |
+        How many times Warp may call tools and feed the results back before it
+        must answer with what it has. Resolved value, so a row that never set
+        one reports the default rather than zero.
+      minimum: 1
+      maximum: 20
+      default: 8
+    request_timeout_seconds:
+      type: integer
+      description: Bound on a single upstream call. Resolved value.
+      default: 120
+    system_prompt_suffix:
+      type: string
+      description: |
+        Appended to Warp's built-in system prompt. Additive only: an operator
+        can teach Warp local naming conventions, but cannot remove the tool-use
+        and scoping instructions the built-in prompt establishes.
+  required:
+    - configured
+    - enabled
+    - provider
+    - model
+    - max_iterations
+    - request_timeout_seconds
+
+WarpConfigInput:
+  type: object
+  description: |
+    The write body. Only a config that claims to be usable has to be complete:
+    when `enabled` is false, `provider` and `model` may be empty, so an operator
+    can fill the form in over more than one sitting.
+  # Stated as a constraint, not only in prose. ValidateConfigInput rejects an
+  # enabled config with no provider or model, so leaving them merely optional
+  # meant `{"enabled": true}` validated against the published contract and then
+  # came back 400 - a generated client would have checked the payload and still
+  # been wrong. OpenAPI 3.1 is JSON Schema 2020-12, so if/then applies.
+  if:
+    required:
+      - enabled
+    properties:
+      enabled:
+        const: true
+  then:
+    required:
+      - provider
+      - model
+    properties:
+      # `required` only checks presence. ValidateConfigInput trims both and
+      # rejects an empty result, so minLength alone would still let "   "
+      # through - the pattern is what makes whitespace-only fail here rather
+      # than at the API.
+      provider:
+        minLength: 1
+        pattern: '\S'
+      model:
+        minLength: 1
+        pattern: '\S'
+  properties:
+    enabled:
+      type: boolean
+      default: false
+    provider:
+      type: string
+      description: |
+        Required when `enabled` is true, and must name a provider registered in
+        this Bifrost deployment - the built-in providers plus any custom ones it
+        has registered. There is deliberately no fixed enum: the registry is
+        per-deployment, so an enum would reject valid custom provider names.
+        An unregistered name is rejected with `400`.
+      example: openai
+    model:
+      type: string
+      description: Required when `enabled` is true.
+      example: gpt-4o
+    base_url:
+      type: string
+      # Empty is valid and means "the provider's default endpoint". A non-empty
+      # value must be an absolute http(s) URL whose authority carries no
+      # userinfo, which is what ValidateConfigInput enforces - so a client can
+      # check the payload here instead of learning it from a 400.
+      # No whitespace anywhere: url.Parse rejects a space in the authority, so a
+      # character class that allowed it described something the server refuses.
+      pattern: '^$|^https?://[^/?#@\s]+([/?#]\S*)?$'
+      # A pattern cannot express "parses as a URI" - url.Parse also rejects a
+      # malformed percent escape such as "https://%", which the character class
+      # happily admits. format carries that half of the rule.
+      format: uri-reference
+      description: |
+        Must not contain URL userinfo: this value is stored and returned
+        unredacted, so a URL carrying a credential is rejected with `400`. Use
+        `api_key_id` to name a configured provider key.
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys Warp should use. Empty is valid
+        and common: a provider on a trusted network, or one using ambient IAM
+        credentials, needs no key at all.
+    max_iterations:
+      type: integer
+      minimum: 0
+      maximum: 20
+      description: Zero means "use the default".
+    request_timeout_seconds:
+      type: integer
+      minimum: 0
+      description: Zero means "use the default".
+    system_prompt_suffix:
+      type: string
+
+WarpUnavailable:
+  type: object
+  description: |
+    The 503 body. `reason` exists because the two causes need opposite
+    treatment in the dashboard: an unconfigured Warp is fixable by the operator
+    and must stay visible with a link to its settings, while a deployment with
+    no log store has nothing for Warp to read and no in-panel remedy. Without a
+    machine-readable field the client would have to pattern-match the message,
+    which breaks silently the first time it is reworded.
+  properties:
+    reason:
+      type: string
+      enum:
+        - not_configured
+        - no_log_store
+    message:
+      type: string
+  required:
+    - reason
+    - message
