@@ -59,6 +59,18 @@ WarpConfig:
       type: integer
       description: Bound on a single upstream call. Resolved value.
       default: 120
+    history_retention_days:
+      type: integer
+      description: |
+        How long a saved chat is kept after its last turn. Resolved value, so a
+        row that never set one reports the default rather than zero.
+
+        Deliberately separate from `logs_store.retention_days`: how long request
+        telemetry is worth storing and how long someone's conversations stay
+        theirs to reopen are different questions, and one number cannot answer
+        both without either discarding transcripts early or keeping logs late.
+      minimum: 1
+      default: 30
     system_prompt_suffix:
       type: string
       description: |
@@ -72,6 +84,7 @@ WarpConfig:
     - model
     - max_iterations
     - request_timeout_seconds
+    - history_retention_days
 
 WarpConfigInput:
   type: object
@@ -154,6 +167,14 @@ WarpConfigInput:
       type: integer
       minimum: 0
       description: Zero means "use the default".
+    history_retention_days:
+      type: integer
+      minimum: 0
+      description: |
+        How long a saved chat is kept after its last turn. Zero means "use the
+        default"; there is no maximum, because the per-owner conversation cap
+        already bounds the table and how long a transcript stays readable is a
+        policy question with no technically correct ceiling.
     system_prompt_suffix:
       type: string
 

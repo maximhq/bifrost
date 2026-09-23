@@ -235,3 +235,75 @@ func TestWarpNewTurnRefusesWhenTheLogReaderIsGone(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnavailable,
 		"a turn with no reader cannot answer anything, so it must be refused rather than panic in a tool")
 }
+
+// The done frame carries the thread id, so a client that started a new thread
+// learns what to send next without a second request. The buffered response
+// carries the same id.
+func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
+	store := newMemoryConversations()
+	model := &scriptedModel{turns: []*schemas.BifrostChatResponse{textTurn("42 requests.")}}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
+			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		}}),
+		WithLogReader(&fakeLogReader{}),
+		WithChatFunc(model.respond),
+		WithConversationStore(store),
+	)
+	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}, 64)
+	require.NoError(t, err)
+
+	var doneID string
+	response := service.RunTurn(ownerCtx("u1"), turn, func(event Event) bool {
+		if event.Type == EventDone {
+			doneID = event.ConversationID
+		}
+		return true
+	})
+	require.NotEmpty(t, doneID)
+	require.Equal(t, doneID, response.ConversationID)
+	require.Len(t, store.threads[doneID].Messages, 2)
+}
+
+// A streamed error must carry the thread id, like a streamed done does.
+//
+// An error-terminal run is still filed - what was asked and how it failed - but
+// only after the event loop ends, so the error frame had already reached the
+// client with an empty ConversationID. A streaming client that hits an error
+// therefore never learns which thread it was in: the next question opens a new
+// one and the failed exchange is orphaned in the history it cannot reach.
+func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
+	store := newMemoryConversations()
+	failing := func(context.Context, *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider is down"}}
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
+			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		}}),
+		WithConversationStore(store),
+		// A reader, because CanChat requires one and the route will not dispatch
+		// without it - the model failing before any tool runs is what this test is
+		// about, not running without a log store.
+		WithLogReader(&fakeLogReader{}),
+		WithChatFunc(failing))
+
+	turn, err := service.NewTurn(ownerCtx("u1"), &ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "how much did we spend?"}},
+	}, 64)
+	require.NoError(t, err)
+
+	var errorEvents []Event
+	response := service.RunTurn(ownerCtx("u1"), turn, func(event Event) bool {
+		if event.Type == EventError {
+			errorEvents = append(errorEvents, event)
+		}
+		return true
+	})
+
+	require.NotEmpty(t, errorEvents, "the run must end on an error frame")
+	require.NotEmpty(t, response.ConversationID, "the failed exchange is filed")
+	require.Equal(t, response.ConversationID, errorEvents[len(errorEvents)-1].ConversationID,
+		"the streamed error must name the thread it was filed under")
+	require.Len(t, store.threads, 1, "and it must be filed exactly once")
+}

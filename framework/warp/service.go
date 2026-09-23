@@ -11,6 +11,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/logstore"
 )
 
 var (
@@ -31,6 +32,9 @@ type Service struct {
 	// method treats that as "not configured" rather than a fault.
 	store  configstore.WarpStore
 	logger schemas.Logger
+	// conversations is nil on a deployment with no log store. Chat still works;
+	// it just does not file anything.
+	conversations logstore.WarpConversationStore
 	// logs is nil on deployments with no logging plugin. Warp's tools have
 	// nothing to read there, so chat is reported unavailable rather than
 	// registered and always failing.
@@ -49,6 +53,12 @@ type Service struct {
 	// closed records that Shutdown ran, so a later rebind cannot revive a
 	// service whose lifecycle is over.
 	closed bool
+	// cleanupOnce/stopCleanup/cleanupStopOnce own the history retention loop.
+	// The service is rebuilt once at route registration, so start and stop both
+	// have to tolerate being called on an instance that never ran one.
+	cleanupOnce     sync.Once
+	cleanupStopOnce sync.Once
+	stopCleanup     chan struct{}
 }
 
 // Option configures a Service.
@@ -72,6 +82,17 @@ func WithChatFunc(chat ChatFunc) Option {
 	return func(s *Service) { s.chatOverride = chat }
 }
 
+// WithConversationStore gives the service somewhere to file chats.
+//
+// History comes from the log store, which the server only has after plugins
+// load, so this is a real wiring option rather than the test seam it was while
+// transcripts lived alongside configuration. A service built without one serves
+// chat and drops the transcript, which is the right behaviour for a deployment
+// that runs with logging off.
+func WithConversationStore(store logstore.WarpConversationStore) Option {
+	return func(s *Service) { s.conversations = store }
+}
+
 // WithConfigStore sets the configuration store directly, bypassing the
 // ConfigStore narrowing NewService does. Tests use it to inject a double.
 func WithConfigStore(store configstore.WarpStore) Option {
@@ -93,6 +114,11 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 		service.client = NewClient(service.logger)
 	}
 	return service
+}
+
+// HasHistory reports whether conversations can be listed and filed.
+func (s *Service) HasHistory() bool {
+	return s.conversations != nil
 }
 
 // CanChat reports whether the chat endpoint can be served: there is data to
@@ -150,8 +176,12 @@ func (s *Service) chatFuncFrom(ctx context.Context, config *schemas.WarpConfig, 
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	s.closed = true
+	// Takes no lock of its own, so it is safe inside this one.
+	s.stopHistoryCleanup()
 	client := s.client
 	s.mu.Unlock()
+	// Outside the lock: the instance's own Shutdown drains queued requests, and
+	// closed is already set, so nothing can build a replacement meanwhile.
 	if client != nil {
 		client.Shutdown()
 	}
@@ -209,5 +239,12 @@ func (s *Service) HasConfigStore() bool {
 func (s *Service) warnf(format string, args ...any) {
 	if s.logger != nil {
 		s.logger.Warn(format, args...)
+	}
+}
+
+// infof logs when a logger is present. See warnf.
+func (s *Service) infof(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Info(format, args...)
 	}
 }
