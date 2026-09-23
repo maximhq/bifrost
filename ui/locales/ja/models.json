@@ -933,7 +933,7 @@
 		"modelNameRequired": "モデル名は必須です",
 		"mcpClientNameRequired": "MCP クライアント名は必須です",
 		"nameRequired": "仮想キー名は必須です",
-		"assignmentInvalid": "割り当てタイプが選択されている場合は、有効なチーム、顧客、またはユーザーを選択してください",
+		"assignmentInvalid": "割り当てタイプを選んだ場合は、有効なチーム、ビジネスユニット、顧客、またはユーザーを選択してください",
 		"expiresIn": "このキーは{{when}}に期限切れになります。",
 		"neverExpires": "このキーは期限切れになりません。",
 		"never": "決して",
@@ -1040,7 +1040,15 @@
 		"providerScope": "{{provider}} プロバイダー",
 		"budgetOverLimit": "{{scope}} {{duration}} の予算は {{usage}} の使用量があり、新しい {{limit}} 制限に達しているかそれを超えています。",
 		"budgetQuarterShift": "{{scope}} の四半期予算には {{usage}} の使用があります。会計四半期を変更すると、リセット日が移動し、その支出が新しい四半期に繰り越されます。",
-		"budgetInheritOverLimit": "{{scope}} {{duration}} の予算は、{{fromDuration}} 予算から {{usage}} を継承し、新しい {{limit}} の上限を満たすかそれを超えています。"
+		"budgetInheritOverLimit": "{{scope}} {{duration}} の予算は、{{fromDuration}} 予算から {{usage}} を継承し、新しい {{limit}} の上限を満たすかそれを超えています。",
+		"businessUnit": "ビジネスユニット",
+		"ownerLockedHelp": "{{kind}} <name>{{name}}</name> の下にこの仮想キーを作成しています。{{kind}} の割り当ては事前設定済みで、その他の項目は編集できます。",
+		"ownerLockedGovernedHelp": "{{kind}} <name>{{name}}</name> の下にこの仮想キーを作成しています。{{kind}} の割り当ては事前設定済みです。この{{kind}}のアクセスプロファイルが、所有する各キーのプロバイダー、予算、レート制限、MCP アクセスを管理します。",
+		"ownerProfileCheckFailed": "この所有者のアクセスプロファイルがキーを管理しているか確認できませんでした",
+		"ownerProfileChecking": "この所有者のアクセスプロファイルがキーを管理しているか確認しています…",
+		"ownerProfileError": "この{{owner}}のアクセスプロファイルがキーを管理しているか確認できないため、保存を保留しています。適用されるプロバイダー、予算、レート制限はアクセスプロファイルが決めます。",
+		"ownerFallback": "所有者",
+		"retry": "再試行"
 	},
 	"modelLimits": {
 		"title": "予算と制限",

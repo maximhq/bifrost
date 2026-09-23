@@ -866,7 +866,9 @@
 		"rename": "Umbenennen",
 		"audio": "Audio",
 		"file": "Datei",
-		"attachmentAlt": "Anhang"
+		"attachmentAlt": "Anhang",
+		"noChangePermission": "Du hast keine Berechtigung, Prompts zu ändern",
+		"noChangeFolderPermission": "Du hast keine Berechtigung, Prompt-Ordner zu ändern"
 	},
 	"docs": {
 		"title": "Dokumentation",

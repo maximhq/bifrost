@@ -630,7 +630,7 @@
 		"noChangesInTab": "このタブでは変更は行われませんでした",
 		"fixValidationErrors": "検証エラーを修正してください",
 		"fixBeforeSave": "保存する前に検証エラーを修正してください",
-		"configurePluginTracing": "プラグイントレースを設定する",
+		"configurePluginTracing": "トレースを設定",
 		"addProfile": "プロフィールを追加",
 		"enabled": "有効",
 		"enableProfile": "プロフィールを有効にする",

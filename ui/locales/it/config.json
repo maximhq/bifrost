@@ -866,7 +866,9 @@
 		"rename": "Rinomina",
 		"audio": "Audio",
 		"file": "File",
-		"attachmentAlt": "allegato"
+		"attachmentAlt": "allegato",
+		"noChangePermission": "Non hai il permesso di modificare i prompt",
+		"noChangeFolderPermission": "Non hai il permesso di modificare le cartelle dei prompt"
 	},
 	"docs": {
 		"title": "Documentazione",

@@ -933,7 +933,7 @@
 		"modelNameRequired": "模型名稱為必填項",
 		"mcpClientNameRequired": "MCP 客戶端名稱為必填項",
 		"nameRequired": "虛擬金鑰名稱為必填項",
-		"assignmentInvalid": "選擇了分配型別時，請選擇有效的團隊、客戶或使用者",
+		"assignmentInvalid": "選擇了分配類型時，請選擇有效的團隊、業務單位、客戶或使用者",
 		"expiresIn": "此金鑰將於 {{when}}過期。",
 		"neverExpires": "此金鑰永不過期。",
 		"never": "永不",
@@ -1040,7 +1040,15 @@
 		"providerScope": "{{provider}} 供應商",
 		"budgetOverLimit": "{{scope}} {{duration}} 預算已有 {{usage}} 用量，達到或超過新的 {{limit}} 上限。",
 		"budgetQuarterShift": "{{scope}} 季度預算已有 {{usage}} 用量。更改財季會移動重置日期，並將該用量結轉到新季度。",
-		"budgetInheritOverLimit": "{{scope}} {{duration}} 預算將從 {{fromDuration}} 預算繼承 {{usage}} 用量，達到或超過新的 {{limit}} 上限。"
+		"budgetInheritOverLimit": "{{scope}} {{duration}} 預算將從 {{fromDuration}} 預算繼承 {{usage}} 用量，達到或超過新的 {{limit}} 上限。",
+		"businessUnit": "業務單位",
+		"ownerLockedHelp": "正在 {{kind}} <name>{{name}}</name> 下建立此虛擬金鑰。{{kind}} 分配已預設，其餘欄位都可以編輯。",
+		"ownerLockedGovernedHelp": "正在 {{kind}} <name>{{name}}</name> 下建立此虛擬金鑰。{{kind}} 分配已預設；該{{kind}}的存取設定會管轄其名下每個金鑰的供應商、預算、速率限制和 MCP 存取。",
+		"ownerProfileCheckFailed": "無法確認此擁有者的存取設定是否管轄該金鑰",
+		"ownerProfileChecking": "正在確認此擁有者的存取設定是否管轄該金鑰…",
+		"ownerProfileError": "無法確認此{{owner}}的存取設定是否管轄該金鑰，因此暫停儲存。存取設定決定適用的供應商、預算和速率限制。",
+		"ownerFallback": "擁有者",
+		"retry": "重試"
 	},
 	"modelLimits": {
 		"title": "預算與限額",

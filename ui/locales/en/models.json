@@ -933,7 +933,7 @@
 		"modelNameRequired": "Model name is required",
 		"mcpClientNameRequired": "MCP client name is required",
 		"nameRequired": "Virtual key name is required",
-		"assignmentInvalid": "Please select a valid team, customer, or user when assignment type is chosen",
+		"assignmentInvalid": "Please select a valid team, business unit, customer, or user when assignment type is chosen",
 		"expiresIn": "This key expires {{when}}.",
 		"neverExpires": "This key never expires.",
 		"never": "Never",
@@ -1045,7 +1045,15 @@
 		"providerScope": "{{provider}} provider",
 		"budgetOverLimit": "{{scope}} {{duration}} budget has {{usage}} usage, which meets or exceeds the new {{limit}} limit.",
 		"budgetQuarterShift": "{{scope}} quarterly budget has {{usage}} of usage. Changing the fiscal quarter moves the reset date and carries that spend into the new quarter.",
-		"budgetInheritOverLimit": "{{scope}} {{duration}} budget will inherit {{usage}} from the {{fromDuration}} budget, which meets or exceeds the new {{limit}} limit."
+		"budgetInheritOverLimit": "{{scope}} {{duration}} budget will inherit {{usage}} from the {{fromDuration}} budget, which meets or exceeds the new {{limit}} limit.",
+		"businessUnit": "Business unit",
+		"ownerLockedHelp": "Creating this virtual key under {{kind}} <name>{{name}}</name>. The {{kind}} assignment is pre-set; all other fields are editable.",
+		"ownerLockedGovernedHelp": "Creating this virtual key under {{kind}} <name>{{name}}</name>. The {{kind}} assignment is pre-set; this {{kind}}'s access profile governs the providers, budgets, rate limits and MCP access of every key it owns.",
+		"ownerProfileCheckFailed": "Couldn't check whether this owner's access profile governs the key",
+		"ownerProfileChecking": "Checking whether this owner's access profile governs the key...",
+		"ownerProfileError": "Couldn't check whether this {{owner}}'s access profile governs the key, so saving is held back - the profile decides which providers, budgets and rate limits apply.",
+		"ownerFallback": "owner",
+		"retry": "Retry"
 	},
 	"modelLimits": {
 		"title": "Budgets & Limits",

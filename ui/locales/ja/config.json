@@ -866,7 +866,9 @@
 		"rename": "名前を変更",
 		"audio": "音声",
 		"file": "ファイル",
-		"attachmentAlt": "添付"
+		"attachmentAlt": "添付",
+		"noChangePermission": "プロンプトを変更する権限がありません",
+		"noChangeFolderPermission": "プロンプトフォルダーを変更する権限がありません"
 	},
 	"docs": {
 		"title": "ドキュメント",

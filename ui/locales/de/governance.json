@@ -433,7 +433,11 @@
 		"budgetNLabel": "Budget #{{n}}: Maximale Ausgaben (USD)",
 		"noBudgets": "Keine Budgets. Klicke auf „Budget hinzufügen“, um ein Ausgabenlimit festzulegen.",
 		"budgetDuration": "Budget ({{duration}})",
-		"noLimit": "Kein Limit"
+		"noLimit": "Kein Limit",
+		"reset": "Zurücksetzen",
+		"addBudgetButton": "Budget hinzufügen",
+		"maximumSpend": "Höchstausgaben (USD)",
+		"noBudgetLimits": "Keine Budgetgrenzen konfiguriert."
 	},
 	"filters": {
 		"filters": "Filter",

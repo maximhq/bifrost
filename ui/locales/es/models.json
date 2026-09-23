@@ -933,7 +933,7 @@
 		"modelNameRequired": "Nombre del modelo es necesario",
 		"mcpClientNameRequired": "Se requiere el nombre del cliente MCP",
 		"nameRequired": "Se requiere el nombre de clave virtual",
-		"assignmentInvalid": "Por favor selecciona un equipo válido, cliente o usuario cuando se elija el tipo de asignación",
+		"assignmentInvalid": "Selecciona un equipo, una unidad de negocio, un cliente o un usuario válido cuando se elija el tipo de asignación",
 		"expiresIn": "Esta llave expira{{when}}.",
 		"neverExpires": "Esta llave nunca caduca.",
 		"never": "Nunca.",
@@ -1040,7 +1040,15 @@
 		"providerScope": "Proveedor {{provider}}",
 		"budgetOverLimit": "El presupuesto{{scope}}{{duration}}tiene el uso{{usage}}, que cumple o supera el nuevo límite{{limit}}.",
 		"budgetQuarterShift": "{{scope}}presupuesto trimestral tiene{{usage}}de uso. Cambiar el trimestre fiscal mueve la fecha de reajuste y lleva que pasan en el nuevo trimestre.",
-		"budgetInheritOverLimit": "El presupuesto{{scope}}{{duration}}heredará{{usage}}del presupuesto{{fromDuration}}, que cumple o supera el nuevo límite{{limit}}."
+		"budgetInheritOverLimit": "El presupuesto{{scope}}{{duration}}heredará{{usage}}del presupuesto{{fromDuration}}, que cumple o supera el nuevo límite{{limit}}.",
+		"businessUnit": "Unidad de negocio",
+		"ownerLockedHelp": "Creando esta clave virtual en {{kind}} <name>{{name}}</name>. La asignación de {{kind}} ya está fijada; el resto de los campos se pueden editar.",
+		"ownerLockedGovernedHelp": "Creando esta clave virtual en {{kind}} <name>{{name}}</name>. La asignación de {{kind}} ya está fijada; el perfil de acceso de este {{kind}} gobierna los proveedores, presupuestos, límites de frecuencia y el acceso MCP de cada clave que posee.",
+		"ownerProfileCheckFailed": "No se pudo comprobar si el perfil de acceso de este propietario gobierna la clave",
+		"ownerProfileChecking": "Comprobando si el perfil de acceso de este propietario gobierna la clave…",
+		"ownerProfileError": "No se pudo comprobar si el perfil de acceso de este {{owner}} gobierna la clave, así que el guardado queda en espera. El perfil decide qué proveedores, presupuestos y límites de frecuencia se aplican.",
+		"ownerFallback": "propietario",
+		"retry": "Reintentar"
 	},
 	"modelLimits": {
 		"title": "Presupuestos y límites",

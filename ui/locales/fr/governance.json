@@ -433,7 +433,11 @@
 		"budgetNLabel": "Budget n°{{n}} : dépense maximale (USD)",
 		"noBudgets": "Aucun budget. Cliquez sur « Ajouter un budget » pour imposer une limite de dépense.",
 		"budgetDuration": "Budget alloué ({{duration}})",
-		"noLimit": "Aucune limite"
+		"noLimit": "Aucune limite",
+		"reset": "Réinitialiser",
+		"addBudgetButton": "Ajouter un budget",
+		"maximumSpend": "Dépense maximale (USD)",
+		"noBudgetLimits": "Aucune limite de budget configurée."
 	},
 	"filters": {
 		"filters": "Filtres",

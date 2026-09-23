@@ -86,7 +86,9 @@
 			"reauthorize": "再承認する",
 			"refreshAdminCredential": "管理者資格情報を更新",
 			"reverifyAsMe": "私として再確認する",
-			"delete": "削除"
+			"delete": "削除",
+			"refreshTools": "ツールを更新",
+			"reauthorizeNewClient": "新しいクライアントで再認可"
 		},
 		"toast": {
 			"reconnected": "再接続された",
@@ -102,7 +104,11 @@
 			"serverDisabled": "サーバーは正常に無効化されました",
 			"adminCredentialRefreshed": "管理者の検出資格情報が正常に更新されました。",
 			"reauthorized": "MCP クライアントの再認証が成功しました",
-			"unexpectedResponse": "サーバーから予期しない応答がありました。もう一度お試しください。"
+			"unexpectedResponse": "サーバーから予期しない応答がありました。もう一度お試しください。",
+			"reauthorizationDidNotComplete": "再認可は完了しませんでした",
+			"toolsRefreshed": "ツールを更新しました",
+			"toolsRefreshedDesc_one": "クライアント {{name}} は現在 {{count}} 件のツールを提供しています。",
+			"toolsRefreshedDesc_other": "クライアント {{name}} は現在 {{count}} 件のツールを提供しています。"
 		},
 		"filter": {
 			"connectionType": "接続タイプ",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} 提出物",
 			"viewSessions": "セッションを見る",
 			"viewSubmissions": "投稿を見る",
-			"refreshed": "リフレッシュされた {{time}}"
+			"refreshed": "リフレッシュされた {{time}}",
+			"clientRejected": "プロバイダーが拒否したのはこのトークンだけでなく Bifrost のクライアント自体です。同じクライアントで同意をやり直しても同じように失敗します。先にサーバーの操作メニューから「新しいクライアントで再認可」を選び、置き換えるクライアントを登録してください。"
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "確認は完了しませんでした。",
 				"checkValues": "ヘッダーの値を確認して、もう一度お試しください。"
 			}
+		},
+		"reregister": {
+			"title": "{{name}} を新しいクライアントで再認可",
+			"description": "Bifrost はこのサーバーのプロバイダーに新しい OAuth クライアントを登録し、そのクライアントで同意フローを実行して、現在使用中のクライアントを置き換えます。プロバイダーが以前発行したクライアントを認識しなくなったときに使います。更新時に “invalid_client” と表示され、通常の再認可では接続を回復できません。",
+			"perUser": "このサーバーのすべてのユーザーがサインアウトし、再度認証する必要があります。",
+			"shared": "このサーバーに現在発行されているすべての資格情報がサインアウトされます。",
+			"otherwise": "それ以外の場合は再認可を使ってください。現在のクライアントは維持されます。",
+			"confirm": "登録して再認可"
 		}
 	},
 	"library": {

@@ -933,7 +933,7 @@
 		"modelNameRequired": "O nome do modelo é obrigatório",
 		"mcpClientNameRequired": "O nome do cliente MCP é obrigatório",
 		"nameRequired": "O nome da chave virtual é obrigatório",
-		"assignmentInvalid": "Selecione uma equipa, cliente ou utilizador válido quando o tipo de atribuição for escolhido",
+		"assignmentInvalid": "Selecione uma equipa, uma unidade de negócio, um cliente ou um utilizador válido quando o tipo de atribuição estiver escolhido",
 		"expiresIn": "Esta chave expira {{when}}.",
 		"neverExpires": "Esta chave nunca expira.",
 		"never": "Nunca",
@@ -1040,7 +1040,15 @@
 		"providerScope": "fornecedor {{provider}}",
 		"budgetOverLimit": "O orçamento {{duration}} de {{scope}} tem {{usage}} de utilização, o que atinge ou excede o novo limite {{limit}}.",
 		"budgetQuarterShift": "O orçamento trimestral de {{scope}} tem {{usage}} de utilização. Alterar o trimestre fiscal move a data de reposição e transporta esse gasto para o novo trimestre.",
-		"budgetInheritOverLimit": "O orçamento {{duration}} de {{scope}} herdará {{usage}} do orçamento {{fromDuration}}, o que atinge ou excede o novo limite {{limit}}."
+		"budgetInheritOverLimit": "O orçamento {{duration}} de {{scope}} herdará {{usage}} do orçamento {{fromDuration}}, o que atinge ou excede o novo limite {{limit}}.",
+		"businessUnit": "Unidade de negócio",
+		"ownerLockedHelp": "A criar esta chave virtual em {{kind}} <name>{{name}}</name>. A atribuição de {{kind}} já está definida; os restantes campos podem ser editados.",
+		"ownerLockedGovernedHelp": "A criar esta chave virtual em {{kind}} <name>{{name}}</name>. A atribuição de {{kind}} já está definida; o perfil de acesso desta {{kind}} governa os fornecedores, orçamentos, limites de taxa e o acesso MCP de cada chave que possui.",
+		"ownerProfileCheckFailed": "Não foi possível verificar se o perfil de acesso deste proprietário governa a chave",
+		"ownerProfileChecking": "A verificar se o perfil de acesso deste proprietário governa a chave…",
+		"ownerProfileError": "Não foi possível verificar se o perfil de acesso deste {{owner}} governa a chave, por isso a gravação fica em espera. O perfil decide que fornecedores, orçamentos e limites de taxa se aplicam.",
+		"ownerFallback": "proprietário",
+		"retry": "Tentar novamente"
 	},
 	"modelLimits": {
 		"title": "Orçamentos e limites",

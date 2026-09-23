@@ -630,7 +630,7 @@
 		"noChangesInTab": "Nenhuma alteração feita nesta aba",
 		"fixValidationErrors": "Corrigir erros de validação",
 		"fixBeforeSave": "Corrigir erros de validação antes de guardar",
-		"configurePluginTracing": "Configurar o Rastreamento do Plugin",
+		"configurePluginTracing": "Configurar o rastreio",
 		"addProfile": "Adicionar um Perfil",
 		"enabled": "Activado",
 		"enableProfile": "Habilitar perfil",

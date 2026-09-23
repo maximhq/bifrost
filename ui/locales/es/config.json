@@ -866,7 +866,9 @@
 		"rename": "Renombrar",
 		"audio": "Audio",
 		"file": "Archivo",
-		"attachmentAlt": "adjunto"
+		"attachmentAlt": "adjunto",
+		"noChangePermission": "No tienes permiso para cambiar los prompts",
+		"noChangeFolderPermission": "No tienes permiso para cambiar las carpetas de prompts"
 	},
 	"docs": {
 		"title": "Documentación",

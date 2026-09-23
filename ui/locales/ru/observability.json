@@ -642,7 +642,7 @@
 		"noChangesInTab": "В этой вкладке нет изменений",
 		"fixValidationErrors": "Исправьте ошибки проверки",
 		"fixBeforeSave": "Исправьте ошибки проверки перед сохранением",
-		"configurePluginTracing": "Настроить трассировку плагинов",
+		"configurePluginTracing": "Настроить трассировку",
 		"addProfile": "Добавить профиль",
 		"enabled": "Включён",
 		"enableProfile": "Включить профиль",

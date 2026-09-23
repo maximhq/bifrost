@@ -630,7 +630,7 @@
 		"noChangesInTab": "이 탭에는 변경사항이 없어요.",
 		"fixValidationErrors": "유효성 검사 오류를 수정하세요.",
 		"fixBeforeSave": "저장하기 전에 유효성 검사 오류 수정",
-		"configurePluginTracing": "플러그인 추적 구성",
+		"configurePluginTracing": "추적 구성",
 		"addProfile": "프로필 추가",
 		"enabled": "활성화됨",
 		"enableProfile": "프로필 활성화",

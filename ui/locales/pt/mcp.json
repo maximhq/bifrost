@@ -86,7 +86,9 @@
 			"reauthorize": "Voltar a autorizar",
 			"refreshAdminCredential": "Atualizar credencial de administrador",
 			"reverifyAsMe": "Voltar a verificar como eu",
-			"delete": "Eliminar"
+			"delete": "Eliminar",
+			"refreshTools": "Atualizar ferramentas",
+			"reauthorizeNewClient": "Reautorizar com um novo cliente"
 		},
 		"toast": {
 			"reconnected": "Religado",
@@ -102,7 +104,11 @@
 			"serverDisabled": "Servidor desativado com sucesso",
 			"adminCredentialRefreshed": "Credencial de descoberta de administrador atualizada com sucesso.",
 			"reauthorized": "Cliente MCP reautorizado com sucesso",
-			"unexpectedResponse": "Resposta inesperada do servidor. Tente novamente."
+			"unexpectedResponse": "Resposta inesperada do servidor. Tente novamente.",
+			"reauthorizationDidNotComplete": "A reautorização não foi concluída",
+			"toolsRefreshed": "Ferramentas atualizadas",
+			"toolsRefreshedDesc_one": "O cliente {{name}} disponibiliza agora {{count}} ferramenta.",
+			"toolsRefreshedDesc_other": "O cliente {{name}} disponibiliza agora {{count}} ferramentas."
 		},
 		"filter": {
 			"connectionType": "Tipo de ligação",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} submissões",
 			"viewSessions": "Ver sessões",
 			"viewSubmissions": "Ver submissões",
-			"refreshed": "atualizado {{time}}"
+			"refreshed": "atualizado {{time}}",
+			"clientRejected": "O fornecedor rejeitou o cliente do Bifrost, não apenas este token, por isso repetir o consentimento com ele falha da mesma forma. Use primeiro «Reautorizar com um novo cliente» no menu de ações do servidor para registar um substituto."
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "A verificação não foi concluída.",
 				"checkValues": "Verifique os valores dos cabeçalhos e tente novamente."
 			}
+		},
+		"reregister": {
+			"title": "Reautorizar {{name}} com um novo cliente",
+			"description": "O Bifrost vai registar um novo cliente OAuth junto do fornecedor deste servidor e executar o fluxo de consentimento com ele, substituindo o cliente atualmente usado. Use isto quando o fornecedor já não reconhecer o cliente que emitiu. Na atualização aparece “invalid_client” e uma reautorização normal não recupera a ligação.",
+			"perUser": "Cada utilizador deste servidor termina a sessão e tem de se autenticar novamente.",
+			"shared": "Cada credencial atualmente emitida para este servidor termina a sessão.",
+			"otherwise": "Caso contrário, use Reautorizar, que mantém o cliente atual.",
+			"confirm": "Registar e reautorizar"
 		}
 	},
 	"library": {

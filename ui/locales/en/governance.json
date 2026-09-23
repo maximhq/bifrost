@@ -433,7 +433,11 @@
 		"budgetNLabel": "Budget #{{n}}: Maximum Spend (USD)",
 		"noBudgets": "No budgets. Click \"Add budget\" to enforce a spend limit.",
 		"budgetDuration": "Budget ({{duration}})",
-		"noLimit": "No limit"
+		"noLimit": "No limit",
+		"reset": "Reset",
+		"addBudgetButton": "Add Budget",
+		"maximumSpend": "Maximum Spend (USD)",
+		"noBudgetLimits": "No budget limits configured."
 	},
 	"filters": {
 		"filters": "Filters",

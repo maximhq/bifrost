@@ -86,7 +86,9 @@
 			"reauthorize": "重新授權",
 			"refreshAdminCredential": "重新整理管理員憑證",
 			"reverifyAsMe": "以我的身份重新驗證",
-			"delete": "刪除"
+			"delete": "刪除",
+			"refreshTools": "重新整理工具",
+			"reauthorizeNewClient": "使用新用戶端重新授權"
 		},
 		"toast": {
 			"reconnected": "已重新連線",
@@ -102,7 +104,11 @@
 			"serverDisabled": "伺服器已停用",
 			"adminCredentialRefreshed": "管理員發現憑證已重新整理。",
 			"reauthorized": "MCP 客戶端已重新授權",
-			"unexpectedResponse": "伺服器返回異常，請重試。"
+			"unexpectedResponse": "伺服器返回異常，請重試。",
+			"reauthorizationDidNotComplete": "重新授權未完成",
+			"toolsRefreshed": "工具已重新整理",
+			"toolsRefreshedDesc_one": "用戶端 {{name}} 現在提供 {{count}} 個工具。",
+			"toolsRefreshedDesc_other": "用戶端 {{name}} 現在提供 {{count}} 個工具。"
 		},
 		"filter": {
 			"connectionType": "連線型別",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} 次提交",
 			"viewSessions": "檢視會話",
 			"viewSubmissions": "檢視提交",
-			"refreshed": "已重新整理 {{time}}"
+			"refreshed": "已重新整理 {{time}}",
+			"clientRejected": "提供方拒絕的是 Bifrost 的用戶端本身，而不只是這個權杖，因此用它重新同意會以同樣的方式失敗。請先從伺服器的操作選單選擇「使用新用戶端重新授權」，註冊一個替換用戶端。"
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "驗證未完成。",
 				"checkValues": "請檢查請求頭值後重試。"
 			}
+		},
+		"reregister": {
+			"title": "使用新用戶端重新授權 {{name}}",
+			"description": "Bifrost 會向此伺服器的提供方註冊一個新的 OAuth 用戶端，並用它完成同意流程，以取代目前使用的用戶端。當提供方不再識別先前核發的用戶端時使用此操作。重新整理時會出現 “invalid_client”，一般重新授權無法恢復連線。",
+			"perUser": "此伺服器的每位使用者都會登出，並需要重新驗證。",
+			"shared": "目前為此伺服器核發的每份憑證都會登出。",
+			"otherwise": "否則請使用重新授權，它會保留目前的用戶端。",
+			"confirm": "註冊並重新授權"
 		}
 	},
 	"library": {

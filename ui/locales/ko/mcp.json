@@ -86,7 +86,9 @@
 			"reauthorize": "재승인",
 			"refreshAdminCredential": "관리자 자격 증명 새로 고침",
 			"reverifyAsMe": "나로 다시 인증하세요.",
-			"delete": "삭제"
+			"delete": "삭제",
+			"refreshTools": "도구 새로고침",
+			"reauthorizeNewClient": "새 클라이언트로 다시 인증"
 		},
 		"toast": {
 			"reconnected": "다시 연결됨",
@@ -102,7 +104,11 @@
 			"serverDisabled": "서버가 비활성화되었어요.",
 			"adminCredentialRefreshed": "관리자 검색 자격 증명이 성공적으로 새로 고쳐졌어요.",
 			"reauthorized": "MCP 클라이언트가 성공적으로 재승인되었어요.",
-			"unexpectedResponse": "서버에서 예상치 못한 응답이 발생했어요. 다시 시도해 주세요."
+			"unexpectedResponse": "서버에서 예상치 못한 응답이 발생했어요. 다시 시도해 주세요.",
+			"reauthorizationDidNotComplete": "다시 인증이 완료되지 않았습니다",
+			"toolsRefreshed": "도구를 새로고침했습니다",
+			"toolsRefreshedDesc_one": "클라이언트 {{name}}이(가) 이제 도구 {{count}}개를 제공합니다.",
+			"toolsRefreshedDesc_other": "클라이언트 {{name}}이(가) 이제 도구 {{count}}개를 제공합니다."
 		},
 		"filter": {
 			"connectionType": "연결 유형",
@@ -271,7 +277,7 @@
 			"basicInformationDesc": "이 서버를 식별하고 연결 세부정보를 검토하세요.",
 			"clientNamePlaceholder": "클라이언트 이름",
 			"connection": "연결",
-			"copyEndpointAria": "엔드포인트 복사 URL",
+			"copyEndpointAria": "엔드포인트 URL 복사",
 			"syncTimeouts": "동기화 및 시간 초과",
 			"syncTimeoutsDesc": "이 서버에 대한 전역 도구 동기화 간격 및 실행 시간 초과를 재정의해요.",
 			"toolSyncInterval": "도구 동기화 간격(분)",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} 제출물",
 			"viewSessions": "세션 보기",
 			"viewSubmissions": "제출물 보기",
-			"refreshed": "새로고침 {{time}}"
+			"refreshed": "새로고침 {{time}}",
+			"clientRejected": "공급자가 거부한 것은 이 토큰만이 아니라 Bifrost 클라이언트 자체입니다. 같은 클라이언트로 동의를 다시 해도 같은 방식으로 실패합니다. 먼저 서버 작업 메뉴에서 「새 클라이언트로 다시 인증」을 선택해 대체 클라이언트를 등록하세요."
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "확인이 완료되지 않았어요.",
 				"checkValues": "헤더 값을 확인하고 다시 시도하세요."
 			}
+		},
+		"reregister": {
+			"title": "{{name}}을(를) 새 클라이언트로 다시 인증",
+			"description": "Bifrost가 이 서버의 공급자에 새 OAuth 클라이언트를 등록하고 그 클라이언트로 동의 절차를 진행해, 현재 사용 중인 클라이언트를 바꿉니다. 공급자가 이전에 발급한 클라이언트를 더 이상 인식하지 않을 때 사용합니다. 새로고침 시 “invalid_client”가 표시되며 일반 다시 인증으로는 연결을 복구할 수 없습니다.",
+			"perUser": "이 서버의 모든 사용자가 로그아웃되며 다시 인증해야 합니다.",
+			"shared": "이 서버에 현재 발급된 모든 자격 증명이 로그아웃됩니다.",
+			"otherwise": "그렇지 않으면 다시 인증을 사용하세요. 현재 클라이언트는 유지됩니다.",
+			"confirm": "등록하고 다시 인증"
 		}
 	},
 	"library": {

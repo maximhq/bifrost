@@ -433,7 +433,11 @@
 		"budgetNLabel": "預算 #{{n}}：最高支出（USD）",
 		"noBudgets": "暫無預算。點選「新增預算」以設定支出上限。",
 		"budgetDuration": "預算（{{duration}}）",
-		"noLimit": "無限制"
+		"noLimit": "無限制",
+		"reset": "重設",
+		"addBudgetButton": "新增預算",
+		"maximumSpend": "最高支出（美元）",
+		"noBudgetLimits": "尚未設定預算上限。"
 	},
 	"filters": {
 		"filters": "篩選",

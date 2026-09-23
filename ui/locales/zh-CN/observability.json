@@ -630,7 +630,7 @@
 		"noChangesInTab": "此标签页未做更改",
 		"fixValidationErrors": "请修复校验错误",
 		"fixBeforeSave": "保存前请先修复校验错误",
-		"configurePluginTracing": "配置插件追踪",
+		"configurePluginTracing": "配置追踪",
 		"addProfile": "添加配置文件",
 		"enabled": "已启用",
 		"enableProfile": "启用配置文件",

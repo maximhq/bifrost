@@ -866,7 +866,9 @@
 		"rename": "Rename",
 		"audio": "Audio",
 		"file": "File",
-		"attachmentAlt": "attachment"
+		"attachmentAlt": "attachment",
+		"noChangePermission": "You do not have permission to change prompts",
+		"noChangeFolderPermission": "You do not have permission to change prompt folders"
 	},
 	"docs": {
 		"title": "Documentation",

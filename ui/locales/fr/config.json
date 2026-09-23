@@ -866,7 +866,9 @@
 		"rename": "Renommer",
 		"audio": "Fichier audio",
 		"file": "Fichier",
-		"attachmentAlt": "pièce jointe"
+		"attachmentAlt": "pièce jointe",
+		"noChangePermission": "Vous n'avez pas l'autorisation de modifier les prompts",
+		"noChangeFolderPermission": "Vous n'avez pas l'autorisation de modifier les dossiers de prompts"
 	},
 	"docs": {
 		"title": "Docs",

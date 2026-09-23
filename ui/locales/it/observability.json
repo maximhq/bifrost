@@ -630,7 +630,7 @@
 		"noChangesInTab": "Nessuna modifica apportata in questa scheda",
 		"fixValidationErrors": "Correggi gli errori di convalida",
 		"fixBeforeSave": "Correggi gli errori di convalida prima di salvare",
-		"configurePluginTracing": "Configura il tracciamento dei plugin",
+		"configurePluginTracing": "Configura il tracciamento",
 		"addProfile": "Aggiungi profilo",
 		"enabled": "Abilitato",
 		"enableProfile": "Abilita profilo",

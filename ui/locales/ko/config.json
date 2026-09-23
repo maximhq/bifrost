@@ -866,7 +866,9 @@
 		"rename": "이름 바꾸기",
 		"audio": "오디오",
 		"file": "파일",
-		"attachmentAlt": "첨부 파일"
+		"attachmentAlt": "첨부 파일",
+		"noChangePermission": "프롬프트를 변경할 권한이 없습니다",
+		"noChangeFolderPermission": "프롬프트 폴더를 변경할 권한이 없습니다"
 	},
 	"docs": {
 		"title": "문서",
