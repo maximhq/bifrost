@@ -22,17 +22,16 @@ type listModelsResp struct {
 	Data []Model `json:"data"`
 }
 
-// Client wraps HTTP calls to the Bifrost gateway API used by the CLI setup
-// flow.
+// Client wraps HTTP calls used by the legacy interactive launcher. The
+// command stack replaces this adapter with the shared authenticated client in
+// the subsequent application-integration change.
 type Client struct {
 	http *http.Client
 }
 
-// NewClient creates a Bifrost API client with a default HTTP timeout.
+// NewClient creates a model client with a bounded request timeout.
 func NewClient() *Client {
-	return &Client{
-		http: &http.Client{Timeout: 20 * time.Second},
-	}
+	return &Client{http: &http.Client{Timeout: 20 * time.Second}}
 }
 
 // NormalizeBaseURL trims whitespace and trailing slashes from a base URL.
@@ -56,8 +55,7 @@ func BuildEndpoint(baseURL, suffix string) (string, error) {
 	return u.String(), nil
 }
 
-// ListModels fetches available model IDs from the Bifrost /v1/models endpoint,
-// returning them sorted alphabetically.
+// ListModels fetches the model catalog for the legacy interactive launcher.
 func (c *Client) ListModels(ctx context.Context, baseURL, virtualKey string) ([]string, error) {
 	endpoint, err := BuildEndpoint(baseURL, "/v1/models")
 	if err != nil {
@@ -75,20 +73,25 @@ func (c *Client) ListModels(ctx context.Context, baseURL, virtualKey string) ([]
 		return nil, fmt.Errorf("request /v1/models: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("/v1/models status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("/v1/models status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-
-	const maxModelsResponseBytes = 1 << 20 // 1 MiB
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsResponseBytes))
+	const maxModelsResponseBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read model response: %w", err)
 	}
+	if len(body) > maxModelsResponseBytes {
+		return nil, fmt.Errorf("model response exceeds %d bytes", maxModelsResponseBytes)
+	}
+	return ParseModels(body)
+}
 
+// ParseModels returns the sorted, de-duplicated model IDs from /v1/models.
+func ParseModels(body []byte) ([]string, error) {
 	var parsed listModelsResp
-	if err := sonic.Unmarshal(b, &parsed); err != nil {
+	if err := sonic.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("parse model response: %w", err)
 	}
 
