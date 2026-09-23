@@ -1,1 +1,2 @@
+- [fix]: return empty object for malformed function_call arguments in Anthropic Responses [@PaddySun](https://github.com/PaddySun)
 - [fix]: preserve opted-in Anthropic extra params through Responses conversion [@wangrat](https://github.com/wangrat)
