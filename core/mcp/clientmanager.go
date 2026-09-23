@@ -610,7 +610,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	// one-time admin verification run yet (which also retains the admin
 	// discovery credential). Park in pending_verification like
 	// per-user-headers; the per-call path takes over once verified.
-	if config.AuthType == schemas.MCPAuthTypeTokenExchange && len(config.DiscoveredTools) == 0 {
+	if config.AuthType == schemas.MCPAuthTypeTokenExchange && config.DiscoveredTools == nil {
 		m.mu.Lock()
 		if client, exists := m.clientMap[config.ID]; exists {
 			if config.ConnectionString != nil {
@@ -1097,6 +1097,23 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 	precomputeToolSerialization(tools)
 	client.ToolMap = tools
 	client.ToolNameMapping = toolNameMapping
+	// Record the discovery on the config too. The callback below persists these
+	// same tools to the client's row, and that row is what makes the client
+	// verified after the next restart; until then awaitsAdminVerification reads
+	// THIS config, where DiscoveredTools == nil means "never verified" for
+	// per_user_headers and token_exchange. Left untouched, a server verified a
+	// moment ago went on reading as unverified for the life of the process:
+	// healthy, serving tools, refused by every path that consults the predicate.
+	// Swapped in as a copy rather than written into, for the same reason
+	// UpdateClient does: readers may still hold the old pointer. Cloned so the
+	// config never aliases the live tool map, and tools is non-nil by this point,
+	// so a verification that found nothing records an empty map, not nil.
+	if client.ExecutionConfig != nil {
+		recorded := *client.ExecutionConfig
+		recorded.DiscoveredTools = maps.Clone(tools)
+		recorded.DiscoveredToolNameMapping = maps.Clone(toolNameMapping)
+		client.ExecutionConfig = &recorded
+	}
 	markClientHealthy(client)
 	m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
 	fire := m.toolsChangedCallback(client, clientID, tools, toolNameMapping)
@@ -1243,6 +1260,34 @@ func isEnableable(clientState *schemas.MCPClientState) bool {
 	return clientState.ExecutionConfig != nil && clientState.ExecutionConfig.Disabled
 }
 
+// awaitsAdminVerification reports whether config still needs the one-time
+// admin flow that AddClient parks clients in pending_verification for: an
+// OAuth client carrying an unauthorized inline oauth_config block, or a
+// per-user-headers / token-exchange client whose admin verification has never
+// populated DiscoveredTools. AddClient owns the canonical branches (each does
+// its own per-type bookkeeping and logging); this is the shared predicate for
+// callers that only need the yes/no.
+func awaitsAdminVerification(config *schemas.MCPClientConfig) bool {
+	if config == nil {
+		return false
+	}
+	switch config.AuthType {
+	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
+		return config.PendingOAuthConfig != nil
+	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		// Nil, not merely empty. The store is what makes nil-ness the
+		// discriminator: BeforeSave marshals DiscoveredTools only when it is
+		// non-nil, so a verified server that legitimately exposes zero tools
+		// persists "{}" and AfterFind loads it back as a non-nil empty map,
+		// while a client that never completed verification round-trips as nil.
+		// A len-check would therefore send a verified zero-tool client back
+		// through admin verification on every reload.
+		return config.DiscoveredTools == nil
+	default:
+		return false
+	}
+}
+
 // EnableClient re-enables a previously disabled MCP client by reconnecting it
 // and restarting its health monitor and tool syncer.
 //
@@ -1312,6 +1357,36 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 	m.mu.Unlock()
 
 	m.logger.Debug("%s Enabling MCP client '%s'", MCPLogPrefix, configCopy.Name)
+
+	// A client that was disabled before its one-time admin flow ever ran is
+	// enabled but not yet usable. AddClient's disabled branch runs ahead of
+	// its pending_verification branches, so such a client is registered as
+	// Disabled with its PendingOAuthConfig (or empty DiscoveredTools) intact,
+	// and enabling it took the ordinary route from here: the per-call branch
+	// below marked it Healthy outright, and the sticky one dialled with a
+	// credential that does not exist yet and parked it back at Disabled.
+	// Either way the "an admin must authorize this" state was lost, and with
+	// it the Verify CTA that is the only way to resolve it. Park it where
+	// AddClient would have, and start no checker: there is nothing to check
+	// until the admin flow completes, exactly as on the AddClient path.
+	if awaitsAdminVerification(configCopy) {
+		m.mu.Lock()
+		if cs, exists := m.clientMap[id]; exists {
+			// Nil-checked for the same reason connectToMCPClient nil-checks it:
+			// nothing guarantees an entry reaching here was built by AddClient.
+			if cs.ConnectionInfo == nil {
+				cs.ConnectionInfo = &schemas.MCPClientConnectionInfo{Type: configCopy.ConnectionType}
+			}
+			if configCopy.ConnectionString != nil {
+				url := configCopy.ConnectionString.GetValue()
+				cs.ConnectionInfo.ConnectionURL = &url
+			}
+			cs.State = schemas.MCPConnectionStatePendingVerification
+		}
+		m.mu.Unlock()
+		m.logger.Debug("%s MCP client '%s' enabled into pending_verification (awaiting admin authorization)", MCPLogPrefix, configCopy.Name)
+		return nil
+	}
 
 	// Per-call clients have no persistent connection to dial. Mirror
 	// AddClient's per-call branch: restore the runtime state (tools, if any,
@@ -1441,6 +1516,38 @@ var ErrMCPSharedConnectFailedAfterUpdate = errors.New("mcp client fields updated
 // caller-facing message.
 var ErrMCPEnableConnectFailed = errors.New("mcp client enabled, but establishing its connection failed")
 
+// rebindToolsToClientName returns a copy of tools keyed, and named, under
+// clientName: a tool is addressed as "<client>-<tool>" in both its map key and
+// its Function.Name, so a client rename has to rewrite both. Tools are copied,
+// never edited in place, because snapshots of the old map may still be read.
+//
+// Nil in, nil out. For a client's DiscoveredTools nil-ness is data
+// (awaitsAdminVerification reads nil as "verification never ran" and an empty
+// map as "ran and found nothing"), so the two must not be collapsed.
+func rebindToolsToClientName(tools map[string]schemas.ChatTool, clientName string) map[string]schemas.ChatTool {
+	if tools == nil {
+		return nil
+	}
+	newPrefix := clientName + "-"
+	rebound := make(map[string]schemas.ChatTool, len(tools))
+	for oldToolName, tool := range tools {
+		newToolName := oldToolName
+		if _, suffix, ok := strings.Cut(oldToolName, "-"); ok {
+			newToolName = newPrefix + suffix
+		}
+		if tool.Function != nil {
+			fn := *tool.Function
+			fn.Name = newToolName
+			tool.Function = &fn
+			// The copied cache still holds the old-name bytes; drop it so the
+			// next serialization uses newToolName.
+			tool.InvalidateSerialized()
+		}
+		rebound[newToolName] = tool
+	}
+	return rebound
+}
+
 // UpdateClient updates an existing MCP client's configuration and refreshes its tool list.
 // It updates the client's execution config with new settings and retrieves updated tools
 // from the MCP server if the client is connected.
@@ -1519,21 +1626,41 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// regardless of the field, e.g. per-user, never show a transition here).
 		wasPerCall := m.credStore.RequiresPerCallConnection(client.ExecutionConfig)
 
+		// The record of the last admin verification is not an editable field, so an
+		// ordinary edit arrives without it (the update handler only sets it when the
+		// same request re-ran verification) and it has to be carried forward. It is
+		// not bookkeeping: awaitsAdminVerification reads DiscoveredTools == nil as
+		// "never verified" for per_user_headers and token_exchange, so dropping it
+		// here left a verified, healthy client reading as unverified after any edit,
+		// refused by every path that consults the predicate. It is also what a
+		// per-call client's tools are restored from, hence the rebinding: carried
+		// forward under the old name, a rename followed by a restore would reinstall
+		// tools the rebound ToolMap below no longer has. The name mapping is keyed by
+		// the unprefixed tool name and travels with the tools it describes.
+		discoveredTools := updatedConfig.DiscoveredTools
+		discoveredToolNameMapping := updatedConfig.DiscoveredToolNameMapping
+		if discoveredTools == nil {
+			discoveredTools = client.ExecutionConfig.DiscoveredTools
+			discoveredToolNameMapping = client.ExecutionConfig.DiscoveredToolNameMapping
+		}
+
 		// Create a new config struct (immutable pattern) to avoid race conditions
 		// with concurrent reads. Any snapshot holding the old ExecutionConfig pointer
 		// will continue to see consistent data.
 		newConfig = &schemas.MCPClientConfig{
 			// Immutable fields - copy from existing config
-			ID:               client.ExecutionConfig.ID,
-			ConnectionType:   client.ExecutionConfig.ConnectionType,
-			ConnectionString: client.ExecutionConfig.ConnectionString,
-			StdioConfig:      client.ExecutionConfig.StdioConfig,
-			AuthType:         client.ExecutionConfig.AuthType,
-			OauthConfigID:    oauthConfigID,
-			State:            client.ExecutionConfig.State,
-			InProcessServer:  client.ExecutionConfig.InProcessServer,
-			ConfigHash:       client.ExecutionConfig.ConfigHash,
-			ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
+			ID:                        client.ExecutionConfig.ID,
+			ConnectionType:            client.ExecutionConfig.ConnectionType,
+			ConnectionString:          client.ExecutionConfig.ConnectionString,
+			StdioConfig:               client.ExecutionConfig.StdioConfig,
+			AuthType:                  client.ExecutionConfig.AuthType,
+			OauthConfigID:             oauthConfigID,
+			State:                     client.ExecutionConfig.State,
+			InProcessServer:           client.ExecutionConfig.InProcessServer,
+			ConfigHash:                client.ExecutionConfig.ConfigHash,
+			ToolPricing:               maps.Clone(client.ExecutionConfig.ToolPricing),
+			DiscoveredTools:           rebindToolsToClientName(discoveredTools, updatedConfig.Name),
+			DiscoveredToolNameMapping: maps.Clone(discoveredToolNameMapping),
 			// Updatable fields - copy from updated config with proper cloning
 			Name:                   updatedConfig.Name,
 			IsCodeModeClient:       updatedConfig.IsCodeModeClient,
@@ -1558,22 +1685,9 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		clientName = updatedConfig.Name
 
 		// Rebind ToolMap keys (and inner Function.Name) to the current client name.
-		newPrefix := updatedConfig.Name + "-"
-		newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
-		for oldToolName, tool := range client.ToolMap {
-			newToolName := oldToolName
-			if _, suffix, ok := strings.Cut(oldToolName, "-"); ok {
-				newToolName = newPrefix + suffix
-			}
-			if tool.Function != nil {
-				fn := *tool.Function
-				fn.Name = newToolName
-				tool.Function = &fn
-				// The copied cache still holds the old-name bytes; drop it so the
-				// precomputeToolSerialization below re-serializes with newToolName.
-				tool.InvalidateSerialized()
-			}
-			newToolMap[newToolName] = tool
+		newToolMap := rebindToolsToClientName(client.ToolMap, updatedConfig.Name)
+		if newToolMap == nil {
+			newToolMap = make(map[string]schemas.ChatTool)
 		}
 
 		// Replace the old ToolMap with the new one
