@@ -2781,6 +2781,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					ExpiresAt: state.Container.ExpiresAt,
 				}
 			}
+			// Carry safeguard_results nested in message_delta.delta (Claude Code
+			// auto-mode classifier, as Bedrock InvokeModel streams deliver it) so the
+			// reverse converter can re-emit it in the same position.
+			if len(chunk.Delta.SafeguardResults) > 0 {
+				response.SafeguardResults = chunk.Delta.SafeguardResults
+			}
 
 			// Mark that we already emitted a message_delta so response.completed
 			// doesn't synthesize a duplicate one.
@@ -3992,6 +3998,14 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					ID:        bifrostResp.Response.Container.ID,
 					ExpiresAt: bifrostResp.Response.Container.ExpiresAt,
 				}
+			}
+			// Re-emit safeguard_results nested in message_delta.delta (Claude Code
+			// auto-mode classifier), where the upstream delivered it.
+			if bifrostResp.Response != nil && len(bifrostResp.Response.SafeguardResults) > 0 {
+				if streamResp.Delta == nil {
+					streamResp.Delta = &AnthropicStreamDelta{}
+				}
+				streamResp.Delta.SafeguardResults = bifrostResp.Response.SafeguardResults
 			}
 		}
 
