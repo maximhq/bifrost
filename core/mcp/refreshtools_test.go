@@ -163,7 +163,7 @@ func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 			t.Cleanup(func() { _ = m.Cleanup() })
 
 			fired := make(chan map[string]schemas.ChatTool, 4)
-			m.SetToolsChangeCallback(func(_, _ string, tools map[string]schemas.ChatTool, _ map[string]string) {
+			m.SetToolsChangeCallback(func(_, _ string, tools map[string]schemas.ChatTool, _ map[string]string, _ string) {
 				fired <- tools
 			})
 

@@ -1741,7 +1741,10 @@ type BifrostMCPConnectResponse struct {
 	ServerInfo         *MCPServerInfo           // Name + version from the initialize handshake
 	ProtocolVersion    string                   // Negotiated MCP protocol version
 	ServerCapabilities *MCPServerCapabilities   // Which MCP feature groups the server claims to support
-	ExtraFields        BifrostMCPResponseExtraFields
+	// Instructions is the server's usage guidance from the initialize result. A sibling of
+	// ServerInfo on the wire, not nested inside it. Empty when the server sent none.
+	Instructions string
+	ExtraFields  BifrostMCPResponseExtraFields
 }
 
 // PopulateExtraFields backfills ClientName on the Connect response when it's not

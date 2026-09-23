@@ -30,7 +30,7 @@ import (
 // iteration order; errors are treated as "never matches" (marshal failure
 // on these plain data types isn't expected, but must never panic or block
 // a genuine discovery result from being recorded).
-func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string) string {
+func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) string {
 	h := sha256.New()
 	if data, err := json.Marshal(tools); err == nil {
 		h.Write(data)
@@ -39,6 +39,11 @@ func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[str
 	if data, err := json.Marshal(toolNameMapping); err == nil {
 		h.Write(data)
 	}
+	// Instructions ride the same hash so a server that rewrote only its instructions
+	// still counts as a change: without this the callback never fires and the new text
+	// is never persisted or re-served.
+	h.Write([]byte{0})
+	h.Write([]byte(instructions))
 	return hex.EncodeToString(h.Sum(nil))
 }
 

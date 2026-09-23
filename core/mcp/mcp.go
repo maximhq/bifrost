@@ -95,7 +95,7 @@ type MCPManager struct {
 	// stateChangeCallback's own role for state transitions. Fired outside
 	// m.mu for the same reason: a registered callback may do arbitrary work,
 	// including I/O.
-	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
 }
 
 // SetStateChangeCallback registers cb to be invoked on every reactive
@@ -113,7 +113,7 @@ func (m *MCPManager) SetStateChangeCallback(cb func(clientID, name string, oldSt
 // map is freshly (re)discovered — see the toolsChangeCallback field doc for
 // exactly which paths that covers. Pass nil to clear a previously registered
 // callback. Safe to call at any time; takes effect on the next discovery.
-func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.toolsChangeCallback = cb
@@ -130,8 +130,8 @@ func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools
 // Must be called with m.mu (or the checker's c.manager.mu — the same
 // mutex) already held; the returned closure must be invoked AFTER releasing
 // the lock, per toolsChangeCallback's own field doc.
-func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) func() {
-	hash := computeToolsHash(tools, toolNameMapping)
+func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) func() {
+	hash := computeToolsHash(tools, toolNameMapping, instructions)
 	if clientState.LastToolsHash == hash {
 		return nil
 	}
@@ -141,7 +141,7 @@ func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, c
 		return nil
 	}
 	name := clientState.Name
-	return func() { cb(clientID, name, tools, toolNameMapping) }
+	return func() { cb(clientID, name, tools, toolNameMapping, instructions) }
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.

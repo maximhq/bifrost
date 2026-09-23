@@ -8,6 +8,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.mcp.toolManagerConfig.serverInstructionsMode` (renders `mcp.tool_manager_config.server_instructions_mode`, default `off`) — how far an upstream MCP server's `initialize` instructions travel: `off` drops them, `gateway` forwards them on the `/mcp` handshake scoped to what the caller may see, `all` also injects them into chat and responses requests. The deprecated `bifrost.client.mcpServerInstructionsMode` twin renders `client.mcp_server_instructions_mode`.
+- Added `instructions` and `instructions_mode` to `bifrost.mcp.virtualMcps[]` (renders `mcp.virtual_mcps[].instructions` / `.instructions_mode`) — model-facing guidance served with a Virtual MCP's tools, either appended to what its source servers advertise or replacing it.
+
 ### 2.1.43
 - Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.
 

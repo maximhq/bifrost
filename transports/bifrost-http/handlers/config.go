@@ -93,7 +93,7 @@ type ConfigManager interface {
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
-	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, serverInstructionsMode string) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
@@ -473,6 +473,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	if payload.ClientConfig.MCPServerInstructionsMode != "" {
+		if err := validateMCPServerInstructionsMode(payload.ClientConfig.MCPServerInstructionsMode); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
@@ -511,6 +518,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
 		shouldReloadMCPToolManagerConfig = true
 	}
+
+	// Empty means "not supplied" rather than "off", so an update that omits the field
+	// leaves the current mode alone instead of silently turning forwarding off.
+	if payload.ClientConfig.MCPServerInstructionsMode != "" && payload.ClientConfig.MCPServerInstructionsMode != currentConfig.MCPServerInstructionsMode {
+		updatedConfig.MCPServerInstructionsMode = payload.ClientConfig.MCPServerInstructionsMode
+		shouldReloadMCPToolManagerConfig = true
+	}
 	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -524,7 +538,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Reload MCP tool manager config with all current values in one call
 	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
-		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel, updatedConfig.MCPDisableAutoToolInject); err != nil {
+		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel, updatedConfig.MCPDisableAutoToolInject, updatedConfig.MCPServerInstructionsMode); err != nil {
 			logger.Warn(fmt.Sprintf("failed to update mcp tool manager config: %v", err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp tool manager config: %v", err))
 			return
@@ -539,6 +553,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(time.Duration(updatedConfig.MCPToolExecutionTimeout) * time.Second)
 		h.store.MCPConfig.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(updatedConfig.MCPCodeModeBindingLevel)
 		h.store.MCPConfig.ToolManagerConfig.DisableAutoToolInject = updatedConfig.MCPDisableAutoToolInject
+		h.store.MCPConfig.ToolManagerConfig.ServerInstructionsMode = schemas.MCPServerInstructionsMode(updatedConfig.MCPServerInstructionsMode)
 	}
 
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
@@ -1301,4 +1316,20 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 		return fmt.Errorf("mcp_tool_sync_interval must be at most %d minutes", maxToolSyncIntervalMinutes)
 	}
 	return nil
+}
+
+// validateMCPServerInstructionsMode rejects an unrecognized mode rather than storing it,
+// which would otherwise read as "off" at runtime and look like the setting was ignored.
+func validateMCPServerInstructionsMode(mode string) error {
+	switch schemas.MCPServerInstructionsMode(mode) {
+	case schemas.MCPServerInstructionsModeOff,
+		schemas.MCPServerInstructionsModeGateway,
+		schemas.MCPServerInstructionsModeAll:
+		return nil
+	default:
+		return fmt.Errorf("mcp_server_instructions_mode must be one of %q, %q or %q",
+			schemas.MCPServerInstructionsModeOff,
+			schemas.MCPServerInstructionsModeGateway,
+			schemas.MCPServerInstructionsModeAll)
+	}
 }
