@@ -509,6 +509,67 @@ def test_warp_chat_response_contract_is_current():
 
     assert not problems, "Warp chat response contract drift:\n    " + "\n    ".join(problems)
 
+
+def test_warp_unconfigured_response_validates():
+    """An unconfigured deployment gets 200 with configured:false and zero-valued fields,
+    deliberately, so the settings page can render its empty form. The schema has to admit
+    that response: a minimum that the documented empty state cannot satisfy makes every
+    fresh install fail its own contract."""
+    schema = load(HERE / "schemas" / "management" / "warp.yaml")["WarpConfig"]
+    problems = []
+
+    # Fields ConfigView leaves at zero when no row exists.
+    for field in ("embedding_dimension",):
+        # .get, not [field]: check() catches AssertionError only, so a KeyError
+        # here would abort the whole invariant script instead of reporting the
+        # drift it exists to report - and a WarpConfig that lost this property
+        # is exactly the drift worth hearing about.
+        spec = schema.get("properties", {}).get(field)
+        if spec is None:
+            problems.append(f"WarpConfig has no {field} property; the unconfigured response contract cannot be checked")
+            continue
+        minimum = spec.get("minimum")
+        if minimum is not None and minimum > 0 and "oneOf" not in schema and "allOf" not in schema:
+            problems.append(
+                f"WarpConfig.{field} requires minimum {minimum}, but an unconfigured "
+                "deployment returns 0 - the documented empty state fails its own schema"
+            )
+
+    assert not problems, "Warp unconfigured response contract:\n    " + "\n    ".join(problems)
+
+
+def test_warp_config_input_models_the_embedding_contract():
+    """ValidateConfigInput requires provider, model, embedding_provider, embedding_model
+    and a positive embedding_dimension once enabled is true, and allows an incomplete
+    draft when it is false. The schema has to say the same, or a generated client sends
+    a body the server rejects and the contract is only discoverable by trying it."""
+    schema = load(HERE / "schemas" / "management" / "warp.yaml")["WarpConfigInput"]
+    problems = []
+
+    conditional = schema.get("if")
+    if not conditional:
+        problems.append(
+            "WarpConfigInput has no enabled:true conditional, so an enabled request with "
+            "embedding_dimension 0 or missing required fields validates but is refused"
+        )
+    else:
+        if (conditional.get("properties") or {}).get("enabled", {}).get("const") is not True:
+            problems.append("the conditional does not key on enabled: true")
+        then = schema.get("then") or {}
+        required = set(then.get("required") or [])
+        for field in ("provider", "model", "embedding_provider", "embedding_model", "embedding_dimension"):
+            if field not in required:
+                problems.append(f"an enabled config must require {field}")
+        minimum = ((then.get("properties") or {}).get("embedding_dimension") or {}).get("minimum")
+        if minimum != 1:
+            problems.append(f"an enabled config needs embedding_dimension minimum 1, found {minimum}")
+
+    # The draft path must stay open, or the form cannot be filled in over two sittings.
+    if "required" in schema:
+        problems.append("WarpConfigInput must not require fields unconditionally; a disabled draft is valid")
+
+    assert not problems, "Warp config input contract:\n    " + "\n    ".join(problems)
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
@@ -585,8 +646,10 @@ check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_c
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
-check("warp config input models the enabled contract", test_warp_config_input_models_the_enabled_contract)
+check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
+check("warp unconfigured response satisfies its own schema", test_warp_unconfigured_response_validates)
+check("warp config input models its enabled-state contract", test_warp_config_input_models_the_enabled_contract)
 check("every operation declares its own security", test_every_operation_declares_security)
 
 print(f"\n{passed} passed, {failed} failed")

@@ -500,6 +500,42 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
+	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
+}
+
+func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_log_embedding_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return err
+			}
+			// Backfilled, not left to the column default. AutoMigrate adds a
+			// nullable column to a table that already has a row, and these are
+			// scanned into plain Go strings - where database/sql refuses a NULL
+			// outright on Postgres. The whole configuration read then fails on
+			// exactly the deployments that had Warp set up before this migration.
+			for _, column := range []string{"embedding_provider", "embedding_model", "embedding_api_key_id", "log_vector_store_namespace"} {
+				if !tx.Migrator().HasColumn(&tables.TableWarpConfig{}, column) {
+					continue
+				}
+				statement := fmt.Sprintf("UPDATE %s SET %s = '' WHERE %s IS NULL",
+					quoteSQLiteIdentifier(tables.TableWarpConfig{}.TableName()),
+					quoteSQLiteIdentifier(column), quoteSQLiteIdentifier(column))
+				if err := tx.Exec(statement).Error; err != nil {
+					return fmt.Errorf("backfill warp %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping embedding configuration would lose operator settings", migrationName)
+		},
+	})
 }
 
 // migrationAddWarpHistoryRetentionDaysColumn adds Warp's own retention setting.
