@@ -22,39 +22,37 @@ func isVertexGeminiEmbeddingModel(model string) bool {
 }
 
 // ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI text embedding format.
-// Exactly one content entry is required; all parts must be text-only and are joined into a single
-// instance string. Multiple contents should be sent as separate requests.
 func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
-	}
-
-	if len(bifrostReq.Input) > 1 {
-		return nil, providerUtils.InvalidRequestErrorf("vertex text embedding does not support batch inputs (multiple contents); use a single content entry")
 	}
 
 	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("vertex text"); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
-	var sb strings.Builder
-	for _, part := range bifrostReq.Input[0].Content {
-		if part.Type != schemas.EmbeddingContentPartTypeText || part.Text == nil {
-			return nil, providerUtils.InvalidRequestErrorf("vertex text embedding only supports text parts; got %q", part.Type)
+	instances := make([]VertexEmbeddingInstance, 0, len(bifrostReq.Input))
+	for _, item := range bifrostReq.Input {
+		var sb strings.Builder
+		for _, part := range item.Content {
+			if part.Type != schemas.EmbeddingContentPartTypeText || part.Text == nil {
+				return nil, providerUtils.InvalidRequestErrorf("vertex text embedding only supports text parts; got %q", part.Type)
+			}
+			if sb.Len() > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.WriteString(*part.Text)
 		}
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
+
+		instance := VertexEmbeddingInstance{Content: sb.String()}
+		if bifrostReq.Params != nil {
+			instance.TaskType = bifrostReq.Params.TaskType
+			instance.Title = bifrostReq.Params.Title
 		}
-		sb.WriteString(*part.Text)
+		instances = append(instances, instance)
 	}
 
-	instance := VertexEmbeddingInstance{Content: sb.String()}
-	if bifrostReq.Params != nil {
-		instance.TaskType = bifrostReq.Params.TaskType
-		instance.Title = bifrostReq.Params.Title
-	}
-
-	vertexReq := &VertexEmbeddingRequest{Instances: []VertexEmbeddingInstance{instance}}
+	vertexReq := &VertexEmbeddingRequest{Instances: instances}
 	if bifrostReq.Params != nil {
 		vertexReq.ExtraParams = bifrostReq.Params.ExtraParams
 		autoTruncate := true
