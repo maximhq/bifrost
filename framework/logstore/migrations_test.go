@@ -117,6 +117,21 @@ func TestMigrationEnsureDeclaredIndexesBackfillsExistingDatabase(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationEnsureDeclaredIndexes_NonRollbackable pins that the backfill
+// refuses to roll back on the dialects it acts on. A fresh database gets the
+// same indexes from CreateTable, so a rollback that dropped them would strip
+// indexes the installation never lacked, and a nil rollback would let the
+// migrator delete the record while the indexes stayed.
+func TestMigrationEnsureDeclaredIndexes_NonRollbackable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+
+	err = ensureDeclaredIndexesRollback(db)
+	require.Error(t, err, "rollback must refuse on a dialect the backfill acts on")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+}
+
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same
 // database, so each one works in its own schema to avoid clobbering the

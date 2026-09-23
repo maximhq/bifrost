@@ -548,17 +548,23 @@ func migrationEnsureDeclaredIndexes(ctx context.Context, db *gorm.DB, logger sch
 			}
 			return nil
 		},
-		Rollback: func(tx *gorm.DB) error {
-			// Dropping here would also remove the indexes CreateTable raised on
-			// a fresh database, which are indistinguishable from the backfilled
-			// ones. Leaving them costs disk; removing them breaks reads.
-			return nil
-		},
+		Rollback: ensureDeclaredIndexesRollback,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while ensuring declared indexes: %w", err)
 	}
 	return nil
+}
+
+// ensureDeclaredIndexesRollback refuses to undo the backfill on the dialects it
+// acts on. Returning nil would have the migrator delete the record while the
+// indexes remained, and dropping them would strip the ones CreateTable raises
+// on a fresh database, which are indistinguishable from the backfilled ones.
+func ensureDeclaredIndexesRollback(tx *gorm.DB) error {
+	if tx.Dialector.Name() == "postgres" {
+		return nil
+	}
+	return fmt.Errorf("logs_ensure_declared_indexes is non-rollbackable: a fresh database gets these same indexes from CreateTable, and nothing distinguishes those from the ones backfilled here, so dropping them would strip indexes the installation never lacked; they are additive and older binaries ignore them")
 }
 
 // migrationAddParentRequestIDColumn adds the parent_request_id column to the logs table.
