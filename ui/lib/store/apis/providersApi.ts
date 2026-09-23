@@ -548,7 +548,6 @@ export const {
 	useLazyGetProviderKeyQuery,
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
-	useLazyGetBaseModelsQuery,
 	useGetModelParametersQuery,
 	useLazyGetModelParametersQuery,
 	useGetModelDetailsQuery,
