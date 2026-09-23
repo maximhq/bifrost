@@ -166,6 +166,7 @@ Because these two paths are independent, a per-user client's tool list can go st
 | Endpoint | Sticky server-level | Per-call server-level | Per-user |
 | --- | --- | --- | --- |
 | `POST /api/mcp/client/{id}/reconnect` | ✅ Re-dials the persistent connection | ❌ `400` — nothing to reconnect | ❌ `400` — nothing to reconnect |
+| `POST /api/mcp/client/{id}/refresh-tools` | ✅ Re-lists over the live connection | ✅ Ephemeral connect, `tools/list`, disconnect | ✅ Same, via the retained admin discovery credential |
 | `POST /api/mcp/client/{id}/reauthorize` | ✅ Re-establishes a dead `oauth` credential | ✅ Same, for `oauth` | ✅ Re-establishes the *admin discovery* credential for `per_user_oauth` only |
 | `POST /api/mcp/client/{id}/verify-headers` | — (`headers` has no expiring credential) | — | ✅ `per_user_headers` bootstrap + repair |
 | `POST /api/mcp/client/{id}/verify-exchange` | — | — | ✅ `token_exchange` bootstrap + repair |
@@ -174,6 +175,8 @@ Because these two paths are independent, a per-user client's tool list can go st
 | `PUT /api/mcp/client/{id}` (disable/enable, non-credential edits) | ✅ | ✅ | ✅ |
 
 A `reconnect`/`reauthorize`/`close` call that doesn't apply to a client's current connection mode returns a consistent error (`client uses per-call connections; there is no persistent connection to reconnect/close`) rather than one that implies something is specifically wrong with per-user auth — the same message applies to any per-call client, shared or per-user.
+
+`refresh-tools` is the exception to that table's shape: it is the one endpoint that applies to every combination. Where the others recover a *connection* or a *credential* — and so only mean something for the modes that hold one — it re-discovers the *tool list*, which every client has regardless of how it connects. Reach for it when an upstream server's tools changed and you don't want to wait out the [tool sync interval](./connecting-to-servers#global-tool-manager-settings) (10 minutes by default). It returns `400` when the client is in a state where discovery is meaningless: `disabled`, `needs_reauth`, or `pending_verification`.
 
 ---
 
