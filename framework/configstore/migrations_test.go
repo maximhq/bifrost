@@ -4158,6 +4158,103 @@ func TestMigrationAddVirtualKeyBusinessUnitColumn(t *testing.T) {
 	assert.Equal(t, stored.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
+// TestMigrationAddVirtualKeyDisableContentLoggingColumn pins the tri-state column: the migration
+// adds it and is idempotent, NULL survives a write and a read (it means "inherit"), and the config
+// hash only moves when the key actually says something, so every pre-existing key keeps the hash
+// synchronization already stored for it.
+func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"),
+		"disable_content_logging column must not exist before migration")
+
+	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_disable_content_logging_column").Error)
+	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+
+	// This fixture's table is the pre-migration skeleton; fill in the rest of the columns the
+	// struct declares so rows can be written through it.
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+
+	inherit := tables.TableVirtualKey{ID: "vk-dcl-inherit", Name: "vk-dcl-inherit", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-inherit")}
+	off := tables.TableVirtualKey{ID: "vk-dcl-off", Name: "vk-dcl-off", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-off"), DisableContentLogging: new(true)}
+	on := tables.TableVirtualKey{ID: "vk-dcl-on", Name: "vk-dcl-on", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-on"), DisableContentLogging: new(false)}
+	for _, vk := range []*tables.TableVirtualKey{&inherit, &off, &on} {
+		hash, err := GenerateVirtualKeyHash(*vk)
+		require.NoError(t, err)
+		vk.ConfigHash = hash
+		require.NoError(t, db.Create(vk).Error)
+	}
+
+	// Fresh destination per read: GORM folds a populated primary key into the WHERE clause.
+	read := func(id string) tables.TableVirtualKey {
+		var stored tables.TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(inherit.ID).DisableContentLogging, "a key that never said anything must read back as inherit, not false")
+	storedOff := read(off.ID)
+	require.NotNil(t, storedOff.DisableContentLogging)
+	assert.True(t, *storedOff.DisableContentLogging)
+	storedOn := read(on.ID)
+	require.NotNil(t, storedOn.DisableContentLogging)
+	assert.False(t, *storedOn.DisableContentLogging, "an explicit false is a decision, not an absence")
+
+	// Hash: one key, hashed with each decision and with none, so the only thing that can move the
+	// hash is the field itself. nil contributes nothing, so a key from before the column keeps its
+	// hash; true and false are each a real config change, distinct from inherit and from each other.
+	// Built with a fresh secret: Create encrypts a SecretVar in place, so reusing inherit.Value
+	// here would hash ciphertext against the plaintext hash stored on inherit.
+	same := tables.TableVirtualKey{ID: inherit.ID, Name: inherit.Name, Value: *schemas.NewSecretVar("sk-bf-vk-dcl-inherit")}
+	hashWith := func(decision *bool) string {
+		same.DisableContentLogging = decision
+		hash, err := GenerateVirtualKeyHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	inheritHash, offHash, onHash := hashWith(nil), hashWith(new(true)), hashWith(new(false))
+	assert.Equal(t, inheritHash, inherit.ConfigHash, "inherit must hash exactly like a key from before the column existed")
+	assert.NotEqual(t, inheritHash, offHash, "forcing content off must change the hash")
+	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
+	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
+	recomputed, err := GenerateVirtualKeyHash(storedOff)
+	require.NoError(t, err)
+	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+}
+
+// TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
+// column back is refused rather than performed. The column is the only home for a key's own
+// content-logging decision, and a nil reads as "inherit": dropping it would not merely lose
+// data, it would silently start logging content for every key that had turned it off.
+func TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	require.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"))
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+
+	// A key that turned content off is exactly the state a rollback would strand.
+	seed := tables.TableVirtualKey{ID: "vk-dcl-rollback", Name: "vk-dcl-rollback", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-rollback"), DisableContentLogging: new(true)}
+	require.NoError(t, db.Create(&seed).Error)
+
+	err := rollbackVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: dropping the column would revert every content-off key to logging content")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"), "a refused rollback must leave the column intact")
+
+	var got tables.TableVirtualKey
+	require.NoError(t, db.First(&got, "id = ?", seed.ID).Error)
+	require.NotNil(t, got.DisableContentLogging)
+	assert.True(t, *got.DisableContentLogging, "the surviving decision must be untouched")
+}
+
 // TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable pins that rolling Warp's
 // move to a key reference back is refused rather than performed. The forward
 // migration deliberately NULLs api_key - clearing the credential is the step

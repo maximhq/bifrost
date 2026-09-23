@@ -93,6 +93,9 @@ func describeVirtualKey(vk *tables.TableVirtualKey) map[string]any {
 	if vk.CustomerID != nil {
 		out["customer_id"] = *vk.CustomerID
 	}
+	if vk.DisableContentLogging != nil {
+		out["disable_content_logging"] = *vk.DisableContentLogging
+	}
 	if len(vk.Budgets) > 0 {
 		budgets := make([]map[string]any, len(vk.Budgets))
 		for i, budget := range vk.Budgets {
