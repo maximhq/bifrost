@@ -5,7 +5,7 @@
 
 import { ComboboxSelect, ComboboxSelectOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Textarea } from "@/components/ui/textarea";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
@@ -14,8 +14,6 @@ import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
 
 type CELValueEditorContext = {
 	validateRegex?: (pattern: string) => string | null;
-	menuPosition?: "absolute" | "fixed";
-	menuPortalTarget?: HTMLElement | null;
 };
 
 export function ValueEditor({
@@ -32,8 +30,6 @@ export function ValueEditor({
 	const isNullOperator = operator === "null" || operator === "notNull";
 
 	const validateRegex = context?.validateRegex;
-	const menuPosition = context?.menuPosition;
-	const menuPortalTarget = context?.menuPortalTarget;
 
 	// Get valueEditorType, handling both string and function types
 	const valueEditorType =
@@ -93,7 +89,7 @@ export function ValueEditor({
 		}
 	};
 
-	// Handle model field with ModelMultiselect
+	// Handle model field with ModelSelector
 	const isModelField = fieldData?.name === "model";
 	if (isModelField && isSelectType) {
 		// For array operators (in, notIn), use multi-select
@@ -118,14 +114,13 @@ export function ValueEditor({
 			};
 
 			return (
-				<ModelMultiselect
+				<ModelSelector
+					multiple
 					value={selectedModels}
 					onChange={handleMultiModelChange}
 					placeholder="Select models..."
-					loadModelsOnEmptyProvider
+					allowCustomModel
 					className="!min-h-9 w-[360px]"
-					menuPosition={menuPosition}
-					menuPortalTarget={menuPortalTarget}
 				/>
 			);
 		}
@@ -145,16 +140,12 @@ export function ValueEditor({
 
 		// For single operators (=, !=), use single select
 		return (
-			<ModelMultiselect
+			<ModelSelector
 				value={valueToUse || ""}
 				onChange={handleOnChange}
 				placeholder="Search for a model..."
-				isSingleSelect
-				clearable={true}
-				loadModelsOnEmptyProvider
+				allowCustomModel
 				className="border-input w-[360px]"
-				menuPosition={menuPosition}
-				menuPortalTarget={menuPortalTarget}
 			/>
 		);
 	}

@@ -1,19 +1,19 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import ModelParameters from "@/components/ui/custom/modelParameters";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { Input } from "@/components/ui/input";
 import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { ModelProviderName } from "@/lib/types/config";
 import type { VirtualKey } from "@/lib/types/governance";
 import { ModelParams } from "@/lib/types/prompts";
-import { useDebouncedValue } from "@/hooks/useDebounce";
 import { cn } from "@/lib/utils";
 import { PromptDeploymentsAccordionItem } from "@enterprise/components/prompt-deployments/promptDeploymentsAccordionItem";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -179,7 +179,7 @@ export function SettingsPanel() {
 
 	return (
 		<div className="flex h-full min-h-0 flex-col">
-			<div className="flex min-h-0 flex-1 flex-col px-4 pt-2 pb-4">
+			<div className="flex min-h-0 flex-1 flex-col px-3 pt-2 pb-4">
 				<Accordion
 					type="single"
 					collapsible
@@ -199,13 +199,13 @@ export function SettingsPanel() {
 					>
 						<AccordionTrigger
 							data-testid="prompts-configuration-trigger"
-							className="text-muted-foreground shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline"
+							className="text-muted-foreground shrink-0 pt-2 pr-1 pb-3 text-xs font-medium uppercase hover:no-underline"
 						>
 							<span className="min-w-0 flex-1 text-left font-semibold">Configuration</span>
 						</AccordionTrigger>
 						<AccordionContent
 							containerClassName="data-[state=open]:flex data-[state=open]:min-h-0 data-[state=open]:flex-1 data-[state=open]:flex-col"
-							className="min-h-0 flex-1 overflow-y-auto pt-0 pb-2"
+							className="min-h-0 flex-1 overflow-y-auto px-1 pt-0 pb-2"
 						>
 							<div className="space-y-6">
 								<div className="flex flex-col gap-2" data-testid="settings-provider">
@@ -216,21 +216,26 @@ export function SettingsPanel() {
 										onValueChange={(v) => v && onProviderChange(v)}
 										placeholder="Select provider"
 										hideClear
+										className="h-9"
 									/>
 								</div>
 
 								<div className="flex flex-col gap-2" data-testid="settings-model">
-									<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
-									<ModelMultiselect
+									<Label id="settings-model-label" className="text-muted-foreground text-xs font-medium uppercase">
+										Model
+									</Label>
+									<ModelSelector
+										ariaLabelledBy="settings-model-label"
 										provider={provider}
 										keys={filterKeys && filterKeys.length > 0 ? filterKeys : undefined}
 										vks={filterVks}
 										value={model}
-										onChange={(v) => onModelChange(v)}
-										isSingleSelect
+										onChange={onModelChange}
 										placeholder={!provider ? "Select a provider first" : "Select model"}
 										disabled={!provider}
-										unfiltered={true}
+										unfiltered
+										allowCustomModel
+										data-testid="settings-model-selector"
 									/>
 								</div>
 
