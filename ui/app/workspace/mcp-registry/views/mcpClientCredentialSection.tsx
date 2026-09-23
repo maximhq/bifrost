@@ -80,10 +80,7 @@ function OAuthCredentialBlock({ mcpClient }: Props) {
 						{credential.status === "needs_reauth" && <Hint>{copy.needsReauth}</Hint>}
 						{credential.status === "needs_reauth" &&
 							shouldSuggestReplacementClient(mcpClient.config.auth_type, credential.status_reason) && (
-								<Hint>
-									The provider rejected Bifrost&apos;s client itself, not just this token, so redoing consent with it will fail the same
-									way. Use Reauthorize with a new client from the server&apos;s actions menu to register a replacement first.
-								</Hint>
+								<Hint>{t("registry.credential.clientRejected")}</Hint>
 							)}
 						{credential.status_reason && (
 							<div

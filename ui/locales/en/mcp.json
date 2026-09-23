@@ -86,7 +86,9 @@
 			"reauthorize": "Reauthorize",
 			"refreshAdminCredential": "Refresh admin credential",
 			"reverifyAsMe": "Re-verify as me",
-			"delete": "Delete"
+			"delete": "Delete",
+			"refreshTools": "Refresh tools",
+			"reauthorizeNewClient": "Reauthorize with a new client"
 		},
 		"toast": {
 			"reconnected": "Reconnected",
@@ -102,7 +104,11 @@
 			"serverDisabled": "Server disabled successfully",
 			"adminCredentialRefreshed": "Admin discovery credential refreshed successfully.",
 			"reauthorized": "MCP client re-authorized successfully",
-			"unexpectedResponse": "Unexpected response from server. Please try again."
+			"unexpectedResponse": "Unexpected response from server. Please try again.",
+			"reauthorizationDidNotComplete": "Reauthorization did not complete",
+			"toolsRefreshed": "Tools refreshed",
+			"toolsRefreshedDesc_one": "Client {{name}} is now serving {{count}} tool.",
+			"toolsRefreshedDesc_other": "Client {{name}} is now serving {{count}} tools."
 		},
 		"filter": {
 			"connectionType": "Connection Type",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} submissions",
 			"viewSessions": "View sessions",
 			"viewSubmissions": "View submissions",
-			"refreshed": "refreshed {{time}}"
+			"refreshed": "refreshed {{time}}",
+			"clientRejected": "The provider rejected Bifrost's client itself, not just this token, so redoing consent with it will fail the same way. Use Reauthorize with a new client from the server's actions menu to register a replacement first."
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "Verification did not complete.",
 				"checkValues": "Check your header values and try again."
 			}
+		},
+		"reregister": {
+			"title": "Reauthorize {{name}} with a new client",
+			"description": "Bifrost will register a new OAuth client with this server's provider and run the consent flow against it, replacing the client it currently uses. Use this when the provider no longer recognises the client it issued, which shows up as \"invalid_client\" on refresh and leaves a plain reauthorize unable to recover the connection.",
+			"perUser": "Every user of this server will be signed out and will have to authenticate again.",
+			"shared": "Every credential currently issued for this server will be signed out.",
+			"otherwise": "Otherwise use Reauthorize, which keeps the current client.",
+			"confirm": "Register and reauthorize"
 		}
 	},
 	"library": {

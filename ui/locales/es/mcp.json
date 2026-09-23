@@ -86,7 +86,9 @@
 			"reauthorize": "Reautorizar",
 			"refreshAdminCredential": "Credencial de administrador de referencia",
 			"reverifyAsMe": "Re-verificar como yo",
-			"delete": "Suprímase"
+			"delete": "Suprímase",
+			"refreshTools": "Actualizar herramientas",
+			"reauthorizeNewClient": "Volver a autorizar con un cliente nuevo"
 		},
 		"toast": {
 			"reconnected": "Reconectado",
@@ -102,7 +104,11 @@
 			"serverDisabled": "Servidor deshabilitado con éxito",
 			"adminCredentialRefreshed": "El descubrimiento de Admin Credential refrescó con éxito.",
 			"reauthorized": "MCP cliente re-autorizado con éxito",
-			"unexpectedResponse": "Respuesta inesperada desde el servidor. Por favor inténtelo de nuevo."
+			"unexpectedResponse": "Respuesta inesperada desde el servidor. Por favor inténtelo de nuevo.",
+			"reauthorizationDidNotComplete": "La reautorización no se completó",
+			"toolsRefreshed": "Herramientas actualizadas",
+			"toolsRefreshedDesc_one": "El cliente {{name}} ahora ofrece {{count}} herramienta.",
+			"toolsRefreshedDesc_other": "El cliente {{name}} ahora ofrece {{count}} herramientas."
 		},
 		"filter": {
 			"connectionType": "Tipo de conexión",
@@ -271,7 +277,7 @@
 			"basicInformationDesc": "Identificar este servidor y revisar tus datos de conexión.",
 			"clientNamePlaceholder": "Nombre del cliente",
 			"connection": "Conexión",
-			"copyEndpointAria": "Copiar la URL del punto final",
+			"copyEndpointAria": "Copiar URL del endpoint",
 			"syncTimeouts": "Sincronización \" Timeouts \"",
 			"syncTimeoutsDesc": "Superar el intervalo global de sincronización de herramientas y el tiempo de ejecución para este servidor.",
 			"toolSyncInterval": "Intervalo sin herramientas (minutos)",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}}submissions",
 			"viewSessions": "Ver sesiones",
 			"viewSubmissions": "Ver envíos",
-			"refreshed": "{{time}}refrescante"
+			"refreshed": "{{time}}refrescante",
+			"clientRejected": "El proveedor rechazó el cliente de Bifrost, no solo este token, así que repetir el consentimiento con él fallará igual. Usa primero «Volver a autorizar con un cliente nuevo» en el menú de acciones del servidor para registrar un reemplazo."
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "La verificación no terminó.",
 				"checkValues": "Revise tus valores de encabezado e inténtelo de nuevo."
 			}
+		},
+		"reregister": {
+			"title": "Volver a autorizar {{name}} con un cliente nuevo",
+			"description": "Bifrost registrará un cliente OAuth nuevo con el proveedor de este servidor y ejecutará el flujo de consentimiento con él, sustituyendo al cliente que se usa ahora. Úsalo cuando el proveedor ya no reconozca el cliente que emitió. En la actualización aparece “invalid_client” y una reautorización normal no puede recuperar la conexión.",
+			"perUser": "Cada usuario de este servidor cerrará sesión y tendrá que autenticarse de nuevo.",
+			"shared": "Cada credencial emitida ahora para este servidor cerrará sesión.",
+			"otherwise": "Si no, usa Volver a autorizar, que conserva el cliente actual.",
+			"confirm": "Registrar y volver a autorizar"
 		}
 	},
 	"library": {

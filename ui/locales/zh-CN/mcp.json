@@ -86,7 +86,9 @@
 			"reauthorize": "重新授权",
 			"refreshAdminCredential": "刷新管理员凭证",
 			"reverifyAsMe": "以我的身份重新验证",
-			"delete": "删除"
+			"delete": "删除",
+			"refreshTools": "刷新工具",
+			"reauthorizeNewClient": "使用新客户端重新授权"
 		},
 		"toast": {
 			"reconnected": "已重新连接",
@@ -102,7 +104,11 @@
 			"serverDisabled": "服务器已禁用",
 			"adminCredentialRefreshed": "管理员发现凭证已刷新。",
 			"reauthorized": "MCP 客户端已重新授权",
-			"unexpectedResponse": "服务器返回异常，请重试。"
+			"unexpectedResponse": "服务器返回异常，请重试。",
+			"reauthorizationDidNotComplete": "重新授权未完成",
+			"toolsRefreshed": "工具已刷新",
+			"toolsRefreshedDesc_one": "客户端 {{name}} 现在提供 {{count}} 个工具。",
+			"toolsRefreshedDesc_other": "客户端 {{name}} 现在提供 {{count}} 个工具。"
 		},
 		"filter": {
 			"connectionType": "连接类型",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} 次提交",
 			"viewSessions": "查看会话",
 			"viewSubmissions": "查看提交",
-			"refreshed": "已刷新 {{time}}"
+			"refreshed": "已刷新 {{time}}",
+			"clientRejected": "提供方拒绝的是 Bifrost 的客户端本身，而不只是这个令牌，因此用它重新同意会以同样的方式失败。请先从服务器的操作菜单中选择「使用新客户端重新授权」，注册一个替换客户端。"
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "验证未完成。",
 				"checkValues": "请检查请求头值后重试。"
 			}
+		},
+		"reregister": {
+			"title": "使用新客户端重新授权 {{name}}",
+			"description": "Bifrost 会向此服务器的提供方注册一个新的 OAuth 客户端，并用它完成同意流程，以替换当前使用的客户端。当提供方不再识别此前签发的客户端时使用此操作。刷新时会出现 “invalid_client”，普通重新授权无法恢复连接。",
+			"perUser": "此服务器的每位用户都会退出登录，并需要重新认证。",
+			"shared": "当前为此服务器签发的每份凭证都会退出登录。",
+			"otherwise": "否则请使用重新授权，它会保留当前客户端。",
+			"confirm": "注册并重新授权"
 		}
 	},
 	"library": {

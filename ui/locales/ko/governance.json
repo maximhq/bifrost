@@ -433,7 +433,11 @@
 		"budgetNLabel": "예산 #{{n}}: 최대 지출(USD)",
 		"noBudgets": "예산이 없어요. 지출 한도를 적용하려면 '예산 추가'를 클릭하세요.",
 		"budgetDuration": "예산({{duration}})",
-		"noLimit": "제한 없음"
+		"noLimit": "제한 없음",
+		"reset": "초기화",
+		"addBudgetButton": "예산 추가",
+		"maximumSpend": "최대 지출(USD)",
+		"noBudgetLimits": "구성된 예산 한도가 없습니다."
 	},
 	"filters": {
 		"filters": "필터",

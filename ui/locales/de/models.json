@@ -933,7 +933,7 @@
 		"modelNameRequired": "Modellname ist erforderlich",
 		"mcpClientNameRequired": "MCP-Client-Name ist erforderlich",
 		"nameRequired": "Name des virtuellen Schlüssels ist erforderlich",
-		"assignmentInvalid": "Bitte wähle ein gültiges Team, einen Kunden oder einen Benutzer aus, wenn ein Zuweisungstyp ausgewählt ist",
+		"assignmentInvalid": "Bitte wähle ein gültiges Team, eine Geschäftseinheit, einen Kunden oder einen Benutzer aus, wenn ein Zuweisungstyp gewählt ist",
 		"expiresIn": "Dieser Schlüssel läuft am {{when}} ab.",
 		"neverExpires": "Dieser Schlüssel läuft nie ab.",
 		"never": "Nie",
@@ -1040,7 +1040,15 @@
 		"providerScope": "{{provider}} Anbieter",
 		"budgetOverLimit": "Das {{duration}}-Budget für {{scope}} weist eine Nutzung von {{usage}} auf, was das neue Limit von {{limit}} erreicht oder überschreitet.",
 		"budgetQuarterShift": "Das Quartalsbudget für {{scope}} weist eine Nutzung von {{usage}} auf. Wenn du das Geschäftsquartal änderst, verschiebt sich das Zurücksetzungsdatum und diese Ausgaben werden in das neue Quartal übernommen.",
-		"budgetInheritOverLimit": "Das {{duration}}-Budget für {{scope}} erbt {{usage}} vom {{fromDuration}}-Budget, was das neue Limit von {{limit}} erreicht oder überschreitet."
+		"budgetInheritOverLimit": "Das {{duration}}-Budget für {{scope}} erbt {{usage}} vom {{fromDuration}}-Budget, was das neue Limit von {{limit}} erreicht oder überschreitet.",
+		"businessUnit": "Geschäftseinheit",
+		"ownerLockedHelp": "Dieser virtuelle Schlüssel wird unter {{kind}} <name>{{name}}</name> erstellt. Die {{kind}}-Zuweisung ist vorgegeben; alle anderen Felder sind bearbeitbar.",
+		"ownerLockedGovernedHelp": "Dieser virtuelle Schlüssel wird unter {{kind}} <name>{{name}}</name> erstellt. Die {{kind}}-Zuweisung ist vorgegeben; das Zugriffsprofil dieser {{kind}} steuert Anbieter, Budgets, Ratenlimits und den MCP-Zugriff jedes Schlüssels, den sie besitzt.",
+		"ownerProfileCheckFailed": "Es ließ sich nicht prüfen, ob das Zugriffsprofil dieses Eigentümers den Schlüssel steuert",
+		"ownerProfileChecking": "Es wird geprüft, ob das Zugriffsprofil dieses Eigentümers den Schlüssel steuert…",
+		"ownerProfileError": "Es ließ sich nicht prüfen, ob das Zugriffsprofil dieses {{owner}} den Schlüssel steuert, deshalb wird das Speichern angehalten. Das Profil entscheidet, welche Anbieter, Budgets und Ratenlimits gelten.",
+		"ownerFallback": "Eigentümer",
+		"retry": "Erneut versuchen"
 	},
 	"modelLimits": {
 		"title": "Budgets und Limits",

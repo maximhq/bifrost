@@ -872,7 +872,9 @@
 		"rename": "Переименовать",
 		"audio": "Аудио",
 		"file": "Файл",
-		"attachmentAlt": "вложение"
+		"attachmentAlt": "вложение",
+		"noChangePermission": "У вас нет права изменять промпты",
+		"noChangeFolderPermission": "У вас нет права изменять папки промптов"
 	},
 	"docs": {
 		"title": "Документация",

@@ -433,7 +433,11 @@
 		"budgetNLabel": "Бюджет №{{n}}: максимальные расходы (USD)",
 		"noBudgets": "Нет бюджетов. Нажмите «Добавить бюджет», чтобы ограничить расходы.",
 		"budgetDuration": "Бюджет ({{duration}})",
-		"noLimit": "Без лимита"
+		"noLimit": "Без лимита",
+		"reset": "Сбросить",
+		"addBudgetButton": "Добавить бюджет",
+		"maximumSpend": "Максимальные расходы (USD)",
+		"noBudgetLimits": "Лимиты бюджета не заданы."
 	},
 	"filters": {
 		"filters": "Фильтры",

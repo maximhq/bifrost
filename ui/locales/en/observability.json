@@ -630,7 +630,7 @@
 		"noChangesInTab": "No changes made in this tab",
 		"fixValidationErrors": "Please fix validation errors",
 		"fixBeforeSave": "Fix validation errors before saving",
-		"configurePluginTracing": "Configure Plugin Tracing",
+		"configurePluginTracing": "Configure Tracing",
 		"addProfile": "Add Profile",
 		"enabled": "Enabled",
 		"enableProfile": "Enable profile",

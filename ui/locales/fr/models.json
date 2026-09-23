@@ -933,7 +933,7 @@
 		"modelNameRequired": "Le nom du modèle est requis",
 		"mcpClientNameRequired": "Le nom du client MCP est requis",
 		"nameRequired": "Le nom de la clé virtuelle est requis",
-		"assignmentInvalid": "Veuillez sélectionner une équipe, un client ou un utilisateur valide lorsqu’un type d’attribution est choisi",
+		"assignmentInvalid": "Sélectionnez une équipe, une unité commerciale, un client ou un utilisateur valide lorsque le type d'attribution est choisi",
 		"expiresIn": "Cette clé expire {{when}}.",
 		"neverExpires": "Cette clé n’expire jamais.",
 		"never": "Jamais",
@@ -1040,7 +1040,15 @@
 		"providerScope": "Fournisseur {{provider}}",
 		"budgetOverLimit": "Le budget {{scope}} {{duration}} présente une utilisation de {{usage}}, ce qui atteint ou dépasse la nouvelle limite de {{limit}}.",
 		"budgetQuarterShift": "Le budget trimestriel {{scope}} présente {{usage}} d'utilisation. Modifier le trimestre fiscal déplace la date de réinitialisation et reporte ces dépenses sur le nouveau trimestre.",
-		"budgetInheritOverLimit": "Le budget {{scope}} {{duration}} héritera de {{usage}} du budget {{fromDuration}}, ce qui atteint ou dépasse la nouvelle limite de {{limit}}."
+		"budgetInheritOverLimit": "Le budget {{scope}} {{duration}} héritera de {{usage}} du budget {{fromDuration}}, ce qui atteint ou dépasse la nouvelle limite de {{limit}}.",
+		"businessUnit": "Unité commerciale",
+		"ownerLockedHelp": "Création de cette clé virtuelle sous {{kind}} <name>{{name}}</name>. L'attribution {{kind}} est déjà fixée ; les autres champs restent modifiables.",
+		"ownerLockedGovernedHelp": "Création de cette clé virtuelle sous {{kind}} <name>{{name}}</name>. L'attribution {{kind}} est déjà fixée ; le profil d'accès de cette {{kind}} régit les fournisseurs, les budgets, les limites de débit et l'accès MCP de chaque clé qu'elle possède.",
+		"ownerProfileCheckFailed": "Impossible de vérifier si le profil d'accès de ce propriétaire régit la clé",
+		"ownerProfileChecking": "Vérification du profil d'accès de ce propriétaire pour cette clé…",
+		"ownerProfileError": "Impossible de vérifier si le profil d'accès de ce {{owner}} régit la clé, l'enregistrement est donc suspendu. Le profil décide des fournisseurs, budgets et limites de débit qui s'appliquent.",
+		"ownerFallback": "propriétaire",
+		"retry": "Réessayer"
 	},
 	"modelLimits": {
 		"title": "Budgets et limites",

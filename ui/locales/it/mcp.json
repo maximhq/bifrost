@@ -86,7 +86,9 @@
 			"reauthorize": "Riautorizza",
 			"refreshAdminCredential": "Aggiorna credenziale amministratore",
 			"reverifyAsMe": "Riverifica come me",
-			"delete": "Elimina"
+			"delete": "Elimina",
+			"refreshTools": "Aggiorna strumenti",
+			"reauthorizeNewClient": "Riautorizza con un nuovo client"
 		},
 		"toast": {
 			"reconnected": "Riconnesso",
@@ -102,7 +104,11 @@
 			"serverDisabled": "Server disabilitato con successo",
 			"adminCredentialRefreshed": "Credenziale di discovery admin aggiornata con successo.",
 			"reauthorized": "Client MCP riautorizzato con successo",
-			"unexpectedResponse": "Risposta imprevista dal server. Riprova."
+			"unexpectedResponse": "Risposta imprevista dal server. Riprova.",
+			"reauthorizationDidNotComplete": "La riautorizzazione non è stata completata",
+			"toolsRefreshed": "Strumenti aggiornati",
+			"toolsRefreshedDesc_one": "Il client {{name}} ora offre {{count}} strumento.",
+			"toolsRefreshedDesc_other": "Il client {{name}} ora offre {{count}} strumenti."
 		},
 		"filter": {
 			"connectionType": "Tipo di connessione",
@@ -271,7 +277,7 @@
 			"basicInformationDesc": "Identifica questo server ed esamina i dettagli della sua connessione.",
 			"clientNamePlaceholder": "Nome del client",
 			"connection": "Connessione",
-			"copyEndpointAria": "Copia URL dell'endpoint",
+			"copyEndpointAria": "Copia l'URL dell'endpoint",
 			"syncTimeouts": "Sincronizzazione e timeout",
 			"syncTimeoutsDesc": "Sovrascrivi l'intervallo di sincronizzazione globale degli strumenti e il timeout di esecuzione per questo server.",
 			"toolSyncInterval": "Intervallo di sincronizzazione degli strumenti (minuti)",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} invii",
 			"viewSessions": "Visualizza sessioni",
 			"viewSubmissions": "Visualizza invii",
-			"refreshed": "aggiornato {{time}}"
+			"refreshed": "aggiornato {{time}}",
+			"clientRejected": "Il provider ha rifiutato il client Bifrost, non solo questo token, quindi ripetere il consenso con esso fallisce allo stesso modo. Usa prima «Riautorizza con un nuovo client» dal menu azioni del server per registrarne uno sostitutivo."
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "Verifica non completata.",
 				"checkValues": "Controlla i valori dei tuoi header e riprova."
 			}
+		},
+		"reregister": {
+			"title": "Riautorizza {{name}} con un nuovo client",
+			"description": "Bifrost registrerà un nuovo client OAuth presso il provider di questo server ed eseguirà il flusso di consenso con esso, sostituendo il client attualmente in uso. Usalo quando il provider non riconosce più il client che ha emesso. All'aggiornamento compare “invalid_client” e una riautorizzazione normale non ripristina la connessione.",
+			"perUser": "Ogni utente di questo server verrà disconnesso e dovrà autenticarsi di nuovo.",
+			"shared": "Ogni credenziale attualmente emessa per questo server verrà disconnessa.",
+			"otherwise": "Altrimenti usa Riautorizza, che mantiene il client attuale.",
+			"confirm": "Registra e riautorizza"
 		}
 	},
 	"library": {

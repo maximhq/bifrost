@@ -86,7 +86,9 @@
 			"reauthorize": "Réautoriser",
 			"refreshAdminCredential": "Rafraîchir l’identifiant admin",
 			"reverifyAsMe": "Revérifier en mon nom",
-			"delete": "Supprimer"
+			"delete": "Supprimer",
+			"refreshTools": "Actualiser les outils",
+			"reauthorizeNewClient": "Réautoriser avec un nouveau client"
 		},
 		"toast": {
 			"reconnected": "Reconnecté",
@@ -102,7 +104,11 @@
 			"serverDisabled": "Serveur désactivé avec succès",
 			"adminCredentialRefreshed": "Identifiant de découverte admin rafraîchi avec succès.",
 			"reauthorized": "Client MCP réautorisé avec succès",
-			"unexpectedResponse": "Réponse inattendue du serveur. Veuillez réessayer."
+			"unexpectedResponse": "Réponse inattendue du serveur. Veuillez réessayer.",
+			"reauthorizationDidNotComplete": "La réautorisation ne s'est pas terminée",
+			"toolsRefreshed": "Outils actualisés",
+			"toolsRefreshedDesc_one": "Le client {{name}} sert maintenant {{count}} outil.",
+			"toolsRefreshedDesc_other": "Le client {{name}} sert maintenant {{count}} outils."
 		},
 		"filter": {
 			"connectionType": "Type de connexion",
@@ -271,7 +277,7 @@
 			"basicInformationDesc": "Identifiez ce serveur et consultez ses détails de connexion.",
 			"clientNamePlaceholder": "Nom du client",
 			"connection": "Connexion",
-			"copyEndpointAria": "Copier l’URL du point de terminaison",
+			"copyEndpointAria": "Copier l'URL du point de terminaison",
 			"syncTimeouts": "Sync et délais",
 			"syncTimeoutsDesc": "Remplacez l’intervalle global de sync des outils et le délai d’exécution pour ce serveur.",
 			"toolSyncInterval": "Intervalle de sync des outils (minutes)",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} soumissions",
 			"viewSessions": "Voir les sessions",
 			"viewSubmissions": "Voir les soumissions",
-			"refreshed": "rafraîchi {{time}}"
+			"refreshed": "rafraîchi {{time}}",
+			"clientRejected": "Le fournisseur a rejeté le client Bifrost lui-même, pas seulement ce jeton. Recommencer le consentement avec lui échouera de la même façon. Utilisez d'abord « Réautoriser avec un nouveau client » dans le menu d'actions du serveur pour en enregistrer un de remplacement."
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "La vérification ne s’est pas terminée.",
 				"checkValues": "Vérifiez vos valeurs d’en-tête et réessayez."
 			}
+		},
+		"reregister": {
+			"title": "Réautoriser {{name}} avec un nouveau client",
+			"description": "Bifrost enregistrera un nouveau client OAuth auprès du fournisseur de ce serveur et exécutera le flux de consentement avec lui, en remplacement du client actuellement utilisé. À utiliser lorsque le fournisseur ne reconnaît plus le client qu'il a émis. L'actualisation affiche « invalid_client » et une réautorisation simple ne rétablit pas la connexion.",
+			"perUser": "Chaque utilisateur de ce serveur sera déconnecté et devra s'authentifier à nouveau.",
+			"shared": "Chaque identifiant actuellement émis pour ce serveur sera déconnecté.",
+			"otherwise": "Sinon, utilisez Réautoriser, qui conserve le client actuel.",
+			"confirm": "Enregistrer et réautoriser"
 		}
 	},
 	"library": {

@@ -433,7 +433,11 @@
 		"budgetNLabel": "Orçamento #{{n}}: despesa máxima (USD)",
 		"noBudgets": "Sem orçamentos. Clique em \"Adicionar orçamento\" para impor um limite de despesa.",
 		"budgetDuration": "Orçamento ({{duration}})",
-		"noLimit": "Sem limite"
+		"noLimit": "Sem limite",
+		"reset": "Repor",
+		"addBudgetButton": "Adicionar orçamento",
+		"maximumSpend": "Despesa máxima (USD)",
+		"noBudgetLimits": "Não há limites de orçamento configurados."
 	},
 	"filters": {
 		"filters": "Filtros",

@@ -86,7 +86,9 @@
 			"reauthorize": "Erneut autorisieren",
 			"refreshAdminCredential": "Admin-Anmeldedaten aktualisieren",
 			"reverifyAsMe": "Erneut als ich verifizieren",
-			"delete": "Löschen"
+			"delete": "Löschen",
+			"refreshTools": "Werkzeuge aktualisieren",
+			"reauthorizeNewClient": "Mit neuem Client neu autorisieren"
 		},
 		"toast": {
 			"reconnected": "Erneut verbunden",
@@ -102,7 +104,11 @@
 			"serverDisabled": "Server erfolgreich deaktiviert",
 			"adminCredentialRefreshed": "Admin-Discovery-Anmeldedaten erfolgreich aktualisiert.",
 			"reauthorized": "MCP-Client erfolgreich reautorisiert",
-			"unexpectedResponse": "Unerwartete Antwort vom Server. Bitte versuche es erneut."
+			"unexpectedResponse": "Unerwartete Antwort vom Server. Bitte versuche es erneut.",
+			"reauthorizationDidNotComplete": "Die erneute Autorisierung wurde nicht abgeschlossen",
+			"toolsRefreshed": "Werkzeuge aktualisiert",
+			"toolsRefreshedDesc_one": "Client {{name}} stellt jetzt {{count}} Werkzeug bereit.",
+			"toolsRefreshedDesc_other": "Client {{name}} stellt jetzt {{count}} Werkzeuge bereit."
 		},
 		"filter": {
 			"connectionType": "Verbindungstyp",
@@ -428,7 +434,8 @@
 			"submission_other": "{{count}} Übermittlungen",
 			"viewSessions": "Sitzungen anzeigen",
 			"viewSubmissions": "Übermittlungen anzeigen",
-			"refreshed": "{{time}} aktualisiert"
+			"refreshed": "{{time}} aktualisiert",
+			"clientRejected": "Der Anbieter hat den Bifrost-Client selbst abgelehnt, nicht nur dieses Token. Eine erneute Zustimmung mit ihm schlägt genauso fehl. Wähle zuerst im Aktionsmenü des Servers „Mit neuem Client neu autorisieren“, um einen Ersatz zu registrieren."
 		},
 		"authorizer": {
 			"oauth": {
@@ -480,6 +487,14 @@
 				"didNotComplete": "Verifizierung wurde nicht abgeschlossen.",
 				"checkValues": "Überprüfe deine Header-Werte und versuche es erneut."
 			}
+		},
+		"reregister": {
+			"title": "{{name}} mit einem neuen Client neu autorisieren",
+			"description": "Bifrost registriert einen neuen OAuth-Client beim Anbieter dieses Servers und führt den Zustimmungsablauf damit aus. Der bisher verwendete Client wird ersetzt. Nutze das, wenn der Anbieter den zuvor ausgestellten Client nicht mehr erkennt. Beim Aktualisieren erscheint „invalid_client“, und eine normale Neuautorisierung stellt die Verbindung nicht wieder her.",
+			"perUser": "Jeder Benutzer dieses Servers wird abgemeldet und muss sich erneut authentifizieren.",
+			"shared": "Alle derzeit für diesen Server ausgestellten Anmeldedaten werden abgemeldet.",
+			"otherwise": "Andernfalls verwende Neu autorisieren. Dabei bleibt der aktuelle Client erhalten.",
+			"confirm": "Registrieren und neu autorisieren"
 		}
 	},
 	"library": {

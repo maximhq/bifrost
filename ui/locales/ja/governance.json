@@ -433,7 +433,11 @@
 		"budgetNLabel": "予算 #{{n}}: 最大支出（USD）",
 		"noBudgets": "予算がありません。支出上限を適用するには「予算を追加」をクリックしてください。",
 		"budgetDuration": "予算（{{duration}}）",
-		"noLimit": "制限なし"
+		"noLimit": "制限なし",
+		"reset": "リセット",
+		"addBudgetButton": "予算を追加",
+		"maximumSpend": "最大支出（USD）",
+		"noBudgetLimits": "予算の上限は設定されていません。"
 	},
 	"filters": {
 		"filters": "フィルター",

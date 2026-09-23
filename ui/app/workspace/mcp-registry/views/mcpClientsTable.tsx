@@ -201,7 +201,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<ListRestart className="h-4 w-4" />
-						Refresh tools
+						{t("registry.actions.refreshTools")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess &&
@@ -240,7 +240,7 @@ function MCPClientActionsMenu({
 							    credential rather than redoing consent with it, and the two
 							    sat side by side with identical icons. */}
 							<RotateCcwKey className="h-4 w-4" />
-							Reauthorize with a new client
+							{t("registry.actions.reauthorizeNewClient")}
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
@@ -316,7 +316,8 @@ interface MCPClientsTableProps {
 // ClientEndpointCell shows the /mcp/<slug> path and copies the full external URL on click.
 // Matches the Virtual MCPs table cell: the copy icon reveals on row hover (group-hover).
 function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string }) {
-	const { copy, copied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
+	const { t } = useTranslation("mcp");
+	const { copy, copied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
 	if (!slug) return <span className="text-muted-foreground text-sm">-</span>;
 	return (
 		<Tooltip>
@@ -325,7 +326,7 @@ function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string 
 					type="button"
 					onClick={() => copy(`${baseUrl}/mcp/${slug}`)}
 					className="text-muted-foreground hover:text-foreground flex w-full min-w-0 cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
-					aria-label="Copy endpoint URL"
+					aria-label={t("registry.sheet.copyEndpointAria")}
 					data-testid={`mcp-client-endpoint-copy-${slug}`}
 				>
 					<span className="truncate">/mcp/{slug}</span>
@@ -454,14 +455,14 @@ export default function MCPClientsTable({
 		try {
 			const result = await refreshMCPClientTools(client.config.client_id).unwrap();
 			toast({
-				title: "Tools refreshed",
-				description: `Client ${client.config.name} is now serving ${result.tool_count} ${result.tool_count === 1 ? "tool" : "tools"}.`,
+				title: t("registry.toast.toolsRefreshed"),
+				description: t("registry.toast.toolsRefreshedDesc", { name: client.config.name, count: result.tool_count }),
 			});
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setRefreshingToolsClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -720,19 +721,17 @@ export default function MCPClientsTable({
 			<AlertDialog open={!!reregisterTarget} onOpenChange={(open) => !open && setReregisterTarget(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Reauthorize {reregisterTarget?.config.name} with a new client</AlertDialogTitle>
+						<AlertDialogTitle>{t("registry.reregister.title", { name: reregisterTarget?.config.name })}</AlertDialogTitle>
 						<AlertDialogDescription>
-							Bifrost will register a new OAuth client with this server&apos;s provider and run the consent flow against it, replacing the
-							client it currently uses. Use this when the provider no longer recognises the client it issued, which shows up as
-							&quot;invalid_client&quot; on refresh and leaves a plain reauthorize unable to recover the connection.
+							{t("registry.reregister.description")}{" "}
 							{reregisterTarget?.config.auth_type === "per_user_oauth"
-								? " Every user of this server will be signed out and will have to authenticate again."
-								: " Every credential currently issued for this server will be signed out."}{" "}
-							Otherwise use Reauthorize, which keeps the current client.
+								? t("registry.reregister.perUser")
+								: t("registry.reregister.shared")}{" "}
+							{t("registry.reregister.otherwise")}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="mcp-client-reregister-confirm"
 							onClick={() => {
@@ -741,7 +740,7 @@ export default function MCPClientsTable({
 								if (target) void handleReauthorize(target, true);
 							}}
 						>
-							Register and reauthorize
+							{t("registry.reregister.confirm")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

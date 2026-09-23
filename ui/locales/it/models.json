@@ -933,7 +933,7 @@
 		"modelNameRequired": "Il nome del modello è obbligatorio",
 		"mcpClientNameRequired": "Il nome del client MCP è obbligatorio",
 		"nameRequired": "Il nome della chiave virtuale è obbligatorio",
-		"assignmentInvalid": "Seleziona un team, cliente o utente valido quando viene scelto il tipo di assegnazione",
+		"assignmentInvalid": "Seleziona un team, un'unità aziendale, un cliente o un utente valido quando viene scelto il tipo di assegnazione",
 		"expiresIn": "Questa chiave scade {{when}}.",
 		"neverExpires": "Questa chiave non scade mai.",
 		"never": "Mai",
@@ -1040,7 +1040,15 @@
 		"providerScope": "provider {{provider}}",
 		"budgetOverLimit": "Il budget {{duration}} di {{scope}} ha {{usage}} di utilizzo, che raggiunge o supera il nuovo limite {{limit}}.",
 		"budgetQuarterShift": "Il budget trimestrale di {{scope}} ha {{usage}} di utilizzo. Cambiare il trimestre fiscale sposta la data di reset e porta quella spesa nel nuovo trimestre.",
-		"budgetInheritOverLimit": "Il budget {{duration}} di {{scope}} erediterà {{usage}} dal budget {{fromDuration}}, che raggiunge o supera il nuovo limite {{limit}}."
+		"budgetInheritOverLimit": "Il budget {{duration}} di {{scope}} erediterà {{usage}} dal budget {{fromDuration}}, che raggiunge o supera il nuovo limite {{limit}}.",
+		"businessUnit": "Unità aziendale",
+		"ownerLockedHelp": "Creazione di questa chiave virtuale sotto {{kind}} <name>{{name}}</name>. L'assegnazione di {{kind}} è già impostata; gli altri campi sono modificabili.",
+		"ownerLockedGovernedHelp": "Creazione di questa chiave virtuale sotto {{kind}} <name>{{name}}</name>. L'assegnazione di {{kind}} è già impostata; il profilo di accesso di questa {{kind}} governa provider, budget, limiti di frequenza e accesso MCP di ogni chiave che possiede.",
+		"ownerProfileCheckFailed": "Impossibile verificare se il profilo di accesso di questo proprietario governa la chiave",
+		"ownerProfileChecking": "Verifica se il profilo di accesso di questo proprietario governa la chiave…",
+		"ownerProfileError": "Impossibile verificare se il profilo di accesso di questo {{owner}} governa la chiave, quindi il salvataggio è in attesa. Il profilo decide quali provider, budget e limiti di frequenza si applicano.",
+		"ownerFallback": "proprietario",
+		"retry": "Riprova"
 	},
 	"modelLimits": {
 		"title": "Budget e limiti",

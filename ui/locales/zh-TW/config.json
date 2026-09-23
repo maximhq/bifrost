@@ -866,7 +866,9 @@
 		"rename": "重新命名",
 		"audio": "音訊",
 		"file": "檔案",
-		"attachmentAlt": "附件"
+		"attachmentAlt": "附件",
+		"noChangePermission": "你沒有變更提示詞的權限",
+		"noChangeFolderPermission": "你沒有變更提示詞資料夾的權限"
 	},
 	"docs": {
 		"title": "文件",

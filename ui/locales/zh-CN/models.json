@@ -933,7 +933,7 @@
 		"modelNameRequired": "模型名称为必填项",
 		"mcpClientNameRequired": "MCP 客户端名称为必填项",
 		"nameRequired": "虚拟密钥名称为必填项",
-		"assignmentInvalid": "选择了分配类型时，请选择有效的团队、客户或用户",
+		"assignmentInvalid": "选择了分配类型时，请选择有效的团队、业务单元、客户或用户",
 		"expiresIn": "此密钥将于 {{when}}过期。",
 		"neverExpires": "此密钥永不过期。",
 		"never": "永不",
@@ -1045,7 +1045,15 @@
 		"providerScope": "{{provider}} 供应商",
 		"budgetOverLimit": "{{scope}} {{duration}} 预算已有 {{usage}} 用量，达到或超过新的 {{limit}} 上限。",
 		"budgetQuarterShift": "{{scope}} 季度预算已有 {{usage}} 用量。更改财季会移动重置日期，并将该用量结转到新季度。",
-		"budgetInheritOverLimit": "{{scope}} {{duration}} 预算将从 {{fromDuration}} 预算继承 {{usage}} 用量，达到或超过新的 {{limit}} 上限。"
+		"budgetInheritOverLimit": "{{scope}} {{duration}} 预算将从 {{fromDuration}} 预算继承 {{usage}} 用量，达到或超过新的 {{limit}} 上限。",
+		"businessUnit": "业务单元",
+		"ownerLockedHelp": "正在 {{kind}} <name>{{name}}</name> 下创建此虚拟密钥。{{kind}} 分配已预设，其余字段都可以编辑。",
+		"ownerLockedGovernedHelp": "正在 {{kind}} <name>{{name}}</name> 下创建此虚拟密钥。{{kind}} 分配已预设；该{{kind}}的访问配置会管辖其名下每个密钥的供应商、预算、速率限制和 MCP 访问。",
+		"ownerProfileCheckFailed": "无法确认此所有者的访问配置是否管辖该密钥",
+		"ownerProfileChecking": "正在确认此所有者的访问配置是否管辖该密钥…",
+		"ownerProfileError": "无法确认此{{owner}}的访问配置是否管辖该密钥，因此暂停保存。访问配置决定适用的供应商、预算和速率限制。",
+		"ownerFallback": "所有者",
+		"retry": "重试"
 	},
 	"modelLimits": {
 		"title": "预算与限额",
