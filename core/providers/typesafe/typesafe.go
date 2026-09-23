@@ -16,12 +16,13 @@ import (
 
 // TypesafeProvider implements the Provider interface for Typesafe's API.
 type TypesafeProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; unused today, kept per provider pattern)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger               schemas.Logger                // Logger for provider operations
+	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; unused today, kept per provider pattern)
+	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
 
 // NewTypesafeProvider creates a new Typesafe provider instance.
@@ -51,18 +52,25 @@ func NewTypesafeProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &TypesafeProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamingClient:      streamingClient,
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
-// GetProviderKey returns the provider identifier for Typesafe.
+// GetProviderKey returns the provider identifier for Typesafe — the custom
+// provider's own configured name when this instance wraps typesafe as a
+// base_provider_type (e.g. "typesafe_vercel"), otherwise "typesafe". Every
+// other base provider (openai, anthropic, gemini, ...) resolves this the same
+// way; typesafe.go missed it when it landed, which made the account-store
+// provider lookup (keyed by the configured name) fail with "not found" for
+// every custom typesafe-based provider.
 func (provider *TypesafeProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Typesafe
+	return providerUtils.GetProviderName(schemas.Typesafe, provider.customProviderConfig)
 }
 
 // ListModels serves the static jev catalog. Typesafe documents no model-listing
