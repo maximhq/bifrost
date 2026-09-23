@@ -4035,6 +4035,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		maps.Copy(params.ExtraParams, req.ExtraParams)
+	}
 
 	// Anthropic native server-side fallback ("fallbacks" objects) is forwarded to
 	// the provider verbatim, distinct from Bifrost cross-provider fallback above.

@@ -18,7 +18,9 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,6 +81,50 @@ func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 		r.Handler(&ctx)
 
 		require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode(), "POST %s should match a registered route", uri)
+	}
+}
+
+func TestAnthropicExtraParamsReachBedrock(t *testing.T) {
+	for _, prefix := range []string{"/anthropic", "/pydanticai"} {
+		for _, enabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/passthrough=%t", prefix, enabled), func(t *testing.T) {
+				route := createAnthropicMessagesRouteConfig(prefix, &testLogger{})[0]
+				rawBody := []byte(`{
+					"model": "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+					"max_tokens": 32,
+					"messages": [{"role": "user", "content": "Hello"}],
+					"extra_params": {"requestMetadata": {"tenant_slug": "test-tenant", "trace_id": "test-trace"}}
+				}`)
+				req := route.GetRequestTypeInstance(context.Background())
+				require.NoError(t, sonic.Unmarshal(rawBody, req))
+				ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, enabled)
+				// Match the integration router's opt-in extra_params extraction.
+				if enabled {
+					setter, ok := req.(RequestWithSettableExtraParams)
+					require.True(t, ok, "Anthropic requests must accept extra_params")
+					var wrapper struct {
+						ExtraParams map[string]interface{} `json:"extra_params"`
+					}
+					require.NoError(t, sonic.Unmarshal(rawBody, &wrapper))
+					setter.SetExtraParams(wrapper.ExtraParams)
+				}
+				converted, err := route.RequestConverter(ctx, req)
+				require.NoError(t, err)
+				outgoing, err := bedrock.ToBedrockResponsesRequest(ctx, converted.ResponsesRequest)
+				require.NoError(t, err)
+				body, err := providerUtils.MarshalSorted(outgoing)
+				require.NoError(t, err)
+				var wire map[string]interface{}
+				require.NoError(t, sonic.Unmarshal(body, &wire))
+				if enabled {
+					assert.Equal(t, map[string]interface{}{"tenant_slug": "test-tenant", "trace_id": "test-trace"}, wire["requestMetadata"])
+				} else {
+					assert.NotContains(t, wire, "requestMetadata")
+				}
+				assert.NotContains(t, wire, "extra_params")
+			})
+		}
 	}
 }
 
