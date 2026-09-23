@@ -452,16 +452,12 @@ func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model
 	return unifiedMetadata
 }
 
-// addNonStreamingResponse marshals the response and writes it as a single
+// addNonStreamingResponse writes an already-marshaled response as a single
 // cache entry. The metadata map is mutated (response + stream_chunks added)
 // — safe because the calling goroutine owns it. The ttl parameter is
 // retained for symmetry with addStreamingResponse; the actual expiry is
 // already encoded in metadata["expires_at"] by buildUnifiedMetadata.
-func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
-	responseData, err := json.Marshal(res)
-	if err != nil {
-		return fmt.Errorf("failed to marshal response: %w", err)
-	}
+func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID string, responseData []byte, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
 	metadata["response"] = string(responseData)
 	metadata["stream_chunks"] = []string{}
 

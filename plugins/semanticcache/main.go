@@ -515,8 +515,9 @@ func (plugin *Plugin) setPlaceholderVectorIfRequired(state *cacheState) {
 // in PreLLMHook (deterministic directCacheID for direct hits, request UUID
 // otherwise). The store write runs in a goroutine tracked by writersWg with
 // its own background context + CacheSetTimeout, so client cancellation
-// after the response is delivered doesn't drop the cache write. Returns the
-// response unmodified — caching never alters the request flow.
+// after the response is delivered doesn't drop the cache write. Non-streaming
+// bodies are marshaled before that goroutine starts. Returns the response
+// unmodified — caching never alters the request flow.
 func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if bifrostErr != nil {
 		// We rely on errors always arriving as the final chunk for streams, so
@@ -627,9 +628,34 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		return res, nil, nil
 	}
 
+	// Snapshot before the goroutine. Marshaling res after this hook returns
+	// races with later post-hooks and panics inside encoding/json.
+	var responseData []byte
+	if !isStream {
+		var marshalErr error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					marshalErr = fmt.Errorf("panic: %v", recovered)
+				}
+			}()
+			responseData, marshalErr = json.Marshal(res)
+		}()
+		if marshalErr != nil {
+			plugin.logger.Warn("Failed to marshal response for semantic cache (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, marshalErr)
+			return res, nil, nil
+		}
+	}
+
 	plugin.writersWg.Add(1)
 	go func() {
 		defer plugin.writersWg.Done()
+		// A store or streaming panic must not kill the process.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				plugin.logger.Error("semantic cache write panicked (namespace=%s, id=%s): %v", plugin.config.VectorStoreNamespace, storageID, recovered)
+			}
+		}()
 		cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 		defer cancel()
 
@@ -639,7 +665,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
 			}
 		} else {
-			if err := plugin.addNonStreamingResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+			if err := plugin.addNonStreamingResponse(cacheCtx, storageID, responseData, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
 				plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
 			}
 		}

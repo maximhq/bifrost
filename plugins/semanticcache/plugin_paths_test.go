@@ -3,6 +3,7 @@ package semanticcache
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -796,5 +797,220 @@ func TestPostLLMHook_WritesWhenVectorRequiredAndEmbeddingPresent(t *testing.T) {
 	defer base.mu.Unlock()
 	if len(base.addIDs) != 1 {
 		t.Fatalf("expected one cache write when embedding is present, got %d", len(base.addIDs))
+	}
+}
+
+// Non-streaming cache writes snapshot the response before the async writer.
+
+func newResponsesCacheResponse(text string) *schemas.BifrostResponse {
+	body := text
+	return &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Object: "response",
+			Model:  "gpt-4o",
+			Output: []schemas.ResponsesMessage{{
+				Content: &schemas.ResponsesMessageContent{ContentStr: &body},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ResponsesRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+			},
+		},
+	}
+}
+
+func prepareResponsesCache(t *testing.T, plugin *Plugin) *schemas.BifrostContext {
+	t.Helper()
+	ctx := CreateContextWithCacheKey(t, "")
+	req := &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: CreateBasicResponsesRequest("What is Bifrost?", 0.1, 32),
+	}
+	if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	} else if shortCircuit != nil {
+		t.Fatal("expected cache miss")
+	}
+	return ctx
+}
+
+type capturingLogger struct {
+	mu       sync.Mutex
+	warnings []string
+	errors   []string
+}
+
+func (l *capturingLogger) Debug(string, ...any) {}
+func (l *capturingLogger) Info(string, ...any)  {}
+func (l *capturingLogger) Warn(msg string, args ...any) {
+	l.mu.Lock()
+	l.warnings = append(l.warnings, fmt.Sprintf(msg, args...))
+	l.mu.Unlock()
+}
+func (l *capturingLogger) Error(msg string, args ...any) {
+	l.mu.Lock()
+	l.errors = append(l.errors, fmt.Sprintf(msg, args...))
+	l.mu.Unlock()
+}
+func (l *capturingLogger) Fatal(string, ...any)                   {}
+func (l *capturingLogger) SetLevel(schemas.LogLevel)              {}
+func (l *capturingLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (l *capturingLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func (l *capturingLogger) snapshot() (warnings []string, errors []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.warnings...), append([]string(nil), l.errors...)
+}
+
+// panickingAddStore fails the background writer the way a broken cache backend would.
+type panickingAddStore struct {
+	*observableStore
+}
+
+func (s *panickingAddStore) Add(context.Context, string, string, []float32, map[string]interface{}) error {
+	panic("cache store exploded")
+}
+
+type unserializableResponse struct{}
+
+func (unserializableResponse) MarshalJSON() ([]byte, error) {
+	panic("reflect: call of reflect.Value.Set on zero Value")
+}
+
+func TestPostLLMHook_CachesNonStreamingResponsesPayload(t *testing.T) {
+	store := newObservableStore()
+	plugin := newTestPlugin(t, store)
+	ctx := prepareResponsesCache(t, plugin)
+
+	const text = "cached responses output"
+	res := newResponsesCacheResponse(text)
+	got, bifrostErr, err := plugin.PostLLMHook(ctx, res, nil)
+	if err != nil || bifrostErr != nil {
+		t.Fatalf("PostLLMHook failed: err=%v bifrostErr=%v", err, bifrostErr)
+	}
+	if got != res {
+		t.Fatal("PostLLMHook returned a different response")
+	}
+	plugin.WaitForPendingOperations()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one cache write, got %d", len(store.addIDs))
+	}
+	props := store.chunks[store.addIDs[0]].Properties
+	cached, _ := props["response"].(string)
+	if !strings.Contains(cached, text) {
+		t.Fatalf("cached response missing %q: %s", text, cached)
+	}
+	chunks, ok := props["stream_chunks"].([]string)
+	if !ok || len(chunks) != 0 {
+		t.Fatalf("expected empty stream_chunks, got %#v", props["stream_chunks"])
+	}
+}
+
+func TestPostLLMHook_SkipsCacheWriteWhenResponseCannotBeMarshaled(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload any
+	}{
+		{name: "UnsupportedType", payload: make(chan int)},
+		{name: "MarshalPanic", payload: unserializableResponse{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := &capturingLogger{}
+			store := newObservableStore()
+			plugin := newTestPlugin(t, store)
+			plugin.logger = logger
+			ctx := prepareResponsesCache(t, plugin)
+
+			res := newResponsesCacheResponse("should not be cached")
+			res.ResponsesResponse.ExtraFields.RawResponse = tt.payload
+
+			got, bifrostErr, err := plugin.PostLLMHook(ctx, res, nil)
+			if err != nil || bifrostErr != nil {
+				t.Fatalf("PostLLMHook failed: err=%v bifrostErr=%v", err, bifrostErr)
+			}
+			if got != res {
+				t.Fatal("serialization failure changed the response returned to the caller")
+			}
+			plugin.WaitForPendingOperations()
+
+			store.mu.Lock()
+			writes := len(store.addIDs)
+			store.mu.Unlock()
+			if writes != 0 {
+				t.Fatalf("expected zero cache writes, got %d", writes)
+			}
+
+			warnings, errors := logger.snapshot()
+			if len(errors) != 0 {
+				t.Fatalf("expected no error log, got %v", errors)
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0], "Failed to marshal response for semantic cache") {
+				t.Fatalf("expected one marshal warning, got %v", warnings)
+			}
+			if res.ResponsesResponse.ExtraFields.CacheDebug == nil {
+				t.Fatal("expected cache_debug to stay stamped when the write is skipped")
+			}
+		})
+	}
+}
+
+func TestPostLLMHook_NonStreamingWriteUsesSerializedSnapshot(t *testing.T) {
+	store := newObservableStore()
+	plugin := newTestPlugin(t, store)
+	ctx := prepareResponsesCache(t, plugin)
+
+	const text = "stable-responses-body"
+	res := newResponsesCacheResponse(text)
+	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+	res.ResponsesResponse = nil
+	plugin.WaitForPendingOperations()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one cache write, got %d", len(store.addIDs))
+	}
+	cached, _ := store.chunks[store.addIDs[0]].Properties["response"].(string)
+	if !strings.Contains(cached, text) {
+		t.Fatalf("cached payload is not the pre-return snapshot: %s", cached)
+	}
+}
+
+func TestPostLLMHook_RecoversAsyncCacheWriterPanic(t *testing.T) {
+	logger := &capturingLogger{}
+	store := &panickingAddStore{observableStore: newObservableStore()}
+	plugin := newTestPlugin(t, store)
+	plugin.logger = logger
+	ctx := prepareResponsesCache(t, plugin)
+
+	res := newResponsesCacheResponse("writer panic")
+	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		plugin.WaitForPendingOperations()
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer panic was not recovered; WaitForPendingOperations blocked")
+	}
+
+	_, errors := logger.snapshot()
+	if len(errors) != 1 || !strings.Contains(errors[0], "semantic cache write panicked") || !strings.Contains(errors[0], "cache store exploded") {
+		t.Fatalf("expected the recovered panic to be logged, got %v", errors)
 	}
 }
