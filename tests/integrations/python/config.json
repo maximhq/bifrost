@@ -103,6 +103,12 @@
       "store_raw_request_response": true,
       "keys": [
         {
+          "name": "Anthropic (harness, no models)",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["harness-no-model"]
+        },
+        {
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
@@ -961,7 +967,7 @@
         "id": "harness-session-pin-rescue",
         "priority": 904,
         "name": "Harness session pin: pinned Vertex rescues a failing Anthropic primary",
-        "description": "Provider harness only (folder 'session-affinity'). Same Vertex target and pin as the 'vertex' rule, but the Anthropic fallback names a model Anthropic rejects. In a session bound to Anthropic the promoted Anthropic attempt fails, and the demoted Vertex entry must serve on the key the rule pinned for it. Matches nothing without x-harness-session-pin: rescue.",
+        "description": "Provider harness only (folder 'session-affinity'). Same Vertex target and pin as the 'vertex' rule, but the Anthropic fallback is pinned to a key whose model list excludes every real model. In a session bound to Anthropic on the same model the promoted Anthropic attempt fails at key selection, and the demoted Vertex entry must serve on the key the rule pinned for it. Matches nothing without x-harness-session-pin: rescue.",
         "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"rescue\"",
         "targets": [
           {
@@ -973,7 +979,7 @@
         "fallbacks": [
           {
             "provider": "anthropic",
-            "model": "claude-does-not-exist-harness"
+            "provider_key_name": "Anthropic (harness, no models)"
           }
         ]
       },
@@ -987,6 +993,53 @@
           {
             "provider": "vertex",
             "provider_key_name": "Vertex Global (Claude)",
+            "weight": 1
+          }
+        ]
+      },
+      {
+        "id": "harness-session-pin-anthropic-first",
+        "priority": 906,
+        "name": "Harness session pin: Anthropic first, Vertex fallback",
+        "description": "Provider harness only (folder 'session-affinity'). The mirror image of the 'vertex' rule: Anthropic is the primary and Vertex the fallback on the incoming model. A session bound to Vertex on that model moves Vertex first; a session whose Vertex binding was dropped follows this decision. Matches nothing without x-harness-session-pin: anthropic-first.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"anthropic-first\"",
+        "targets": [
+          {
+            "provider": "anthropic",
+            "weight": 1
+          }
+        ],
+        "fallbacks": ["vertex/"]
+      },
+      {
+        "id": "harness-session-pin-anthropic-first-other-model",
+        "priority": 907,
+        "name": "Harness session pin: Anthropic first, Vertex fallback on another model",
+        "description": "Provider harness only (folder 'session-affinity'). Anthropic on the incoming model, with Vertex as a fallback on a different model. A session bound to Vertex on the incoming model must not be moved onto that entry: a binding names provider and model together, so the routing decision stands and the session rebinds on Anthropic. Matches nothing without x-harness-session-pin: anthropic-first-other-model.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"anthropic-first-other-model\"",
+        "targets": [
+          {
+            "provider": "anthropic",
+            "weight": 1
+          }
+        ],
+        "fallbacks": [
+          {
+            "provider": "vertex",
+            "model": "claude-opus-4-8"
+          }
+        ]
+      },
+      {
+        "id": "harness-session-pin-vertex-badkey",
+        "priority": 908,
+        "name": "Harness session pin: Vertex pinned to a key that cannot serve the model",
+        "description": "Provider harness only (folder 'session-affinity'). Vertex on the incoming model, pinned to the Gemini-only key and with no fallback, so the request fails at key selection with 'no supported key found'. A session bound to Vertex on that model follows the binding into the failure, and must forget it. Matches nothing without x-harness-session-pin: vertex-badkey.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"vertex-badkey\"",
+        "targets": [
+          {
+            "provider": "vertex",
+            "provider_key_name": "Vertex Global (Gemini 3)",
             "weight": 1
           }
         ]
