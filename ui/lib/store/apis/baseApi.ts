@@ -214,6 +214,7 @@ export const baseApi = createApi({
 		"EdgeMCPServers",
 		"EdgeConfig",
 		"Notifications",
+		"WarpConfig",
 	],
 	endpoints: () => ({}),
 });
