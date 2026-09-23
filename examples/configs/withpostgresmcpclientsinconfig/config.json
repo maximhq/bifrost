@@ -37,6 +37,9 @@
     }
   },
   "mcp": {
+    "tool_manager_config": {
+      "server_instructions_mode": "gateway"
+    },
     "client_configs": [
       {
         "name": "WeatherService",

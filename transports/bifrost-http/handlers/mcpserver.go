@@ -34,6 +34,9 @@ const mcpServerName = "bifrost"
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
 	GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool
+	// GetMCPServerInstructions returns the upstream instructions this request may see,
+	// already aggregated and size-bounded. Scoped by the same context the tool filter reads.
+	GetMCPServerInstructions(ctx context.Context) string
 	ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
@@ -354,10 +357,14 @@ func (h *MCPServerHandler) server() *server.MCPServer {
 // about the caller: what a request may see and call rides on its context, and both the tool filter
 // and the executor read it from there.
 func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *server.MCPServer {
+	hooks := &server.Hooks{}
+	hooks.AddAfterInitialize(h.forwardServerInstructions)
+
 	mcpServer := server.NewMCPServer(
 		mcpServerName,
 		version,
 		server.WithToolCapabilities(true),
+		server.WithHooks(hooks),
 	)
 	// Per-request tool filter so tools/list answers with what this request may see.
 	server.WithToolFilter(h.makeIncludeClientsFilter())(mcpServer)
@@ -450,6 +457,38 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 		}, handler)
 	}
 	return mcpServer
+}
+
+// forwardServerInstructions answers initialize with the upstream servers' own usage guidance,
+// which the MCP spec carries in this field and which a gateway that drops it eats on the
+// client's behalf. Runs as an AfterInitialize hook rather than through server.WithInstructions
+// because that option is fixed at construction, and one server here serves every caller: the
+// text has to be resolved per request, from the same context the tool filter reads, or a caller
+// narrowed to one upstream would be handed the instructions of servers it cannot reach.
+//
+// Silent when the aggregate is empty, so no upstream instructions means no field at all rather
+// than an empty one.
+func (h *MCPServerHandler) forwardServerInstructions(ctx context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+	if result == nil || h.instructionsMode() == schemas.MCPServerInstructionsModeOff {
+		return
+	}
+	if instructions := h.toolManager.GetMCPServerInstructions(ctx); instructions != "" {
+		result.Instructions = instructions
+	}
+}
+
+// instructionsMode reads the forwarding setting under the config lock, mirroring authSettings.
+func (h *MCPServerHandler) instructionsMode() schemas.MCPServerInstructionsMode {
+	h.config.Mu.RLock()
+	defer h.config.Mu.RUnlock()
+	if h.config.ClientConfig == nil {
+		return schemas.MCPServerInstructionsModeOff
+	}
+	mode := schemas.MCPServerInstructionsMode(h.config.ClientConfig.MCPServerInstructionsMode)
+	if mode == "" {
+		return schemas.MCPServerInstructionsModeOff
+	}
+	return mode
 }
 
 // makeIncludeClientsFilter returns a ToolFilterFunc that narrows tools/list to what the request's

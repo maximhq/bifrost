@@ -7719,6 +7719,18 @@
           ],
           "description": "How far an upstream MCP server's initialize `instructions` travel. \"off\" (default) drops them, which is today's behavior. \"gateway\" forwards them on the /mcp initialize response, aggregated and labeled per source server and scoped to the clients the caller may see. \"all\" additionally injects them into chat and responses requests, which adds tokens to every MCP-bearing request and changes the prompt prefix.",
           "default": "off"
+        },
+        "max_instructions_per_client": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on a single MCP server's forwarded instructions. Longer text is truncated on a rune boundary with a notice. 0 uses the built-in default of 4096.",
+          "default": 0
+        },
+        "max_instructions_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. At server_instructions_mode \"all\" this rides on every MCP-bearing request, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
+          "default": 0
         }
       }
     },

@@ -337,6 +337,10 @@ type MCPToolManagerConfig struct {
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
 	// ServerInstructionsMode controls forwarding of upstream MCP `instructions`. Empty is "off".
 	ServerInstructionsMode MCPServerInstructionsMode `json:"server_instructions_mode,omitempty"`
+	// MaxInstructionsPerClient bounds one server's forwarded instructions, in bytes. 0 is the default.
+	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
+	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
+	MaxInstructionsTotal int `json:"max_instructions_total,omitempty"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
@@ -376,6 +380,12 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
+
+	// Byte bounds on forwarded instructions. A gateway aggregating tens of upstreams can
+	// otherwise hand every caller an unbounded prefix, which on the inference path is billed
+	// on every request.
+	DefaultMaxInstructionsPerClient = 4096
+	DefaultMaxInstructionsTotal     = 16384
 )
 
 // CodeModeBindingLevel defines how tools are exposed in the VFS for code execution
@@ -1005,12 +1015,12 @@ type MCPClientState struct {
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
 	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
 	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
-	ServerInstructions string `json:"server_instructions,omitempty"`
-	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
-	LastFailure     *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
-	ConnGeneration  uint64                   `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash   string                   `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	ServerInstructions string                `json:"server_instructions,omitempty"`
+	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
+	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
