@@ -2224,6 +2224,10 @@ type AnthropicStreamDelta struct {
 	// Container is the code-execution sandbox container, surfaced on the final
 	// message_delta of a response that used the code execution tool.
 	Container *AnthropicResponseContainer `json:"container,omitempty"`
+	// SafeguardResults carries the Claude Code auto-mode classifier verdicts when
+	// the upstream nests them in message_delta.delta (Bedrock InvokeModel streams
+	// do) rather than at the event's top level.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
 }
 
 // ==================== MODEL TYPES ====================
