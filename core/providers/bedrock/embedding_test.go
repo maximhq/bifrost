@@ -2,8 +2,11 @@ package bedrock
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -264,6 +267,123 @@ func TestToBedrockTitanEmbeddingRequestEncodingTypes(t *testing.T) {
 	})
 }
 
+// titan-embed-image-v1 accepts an image alongside the text. The text models must keep
+// rejecting images rather than quietly embedding the text alone.
+func TestToBedrockTitanMultimodalEmbeddingRequest(t *testing.T) {
+	redPixelPNG := "iVBORw0KGgoAAAANSUhEUg=="
+
+	t.Run("image part reaches inputImage with the data URI stripped", func(t *testing.T) {
+		dataURI := "data:image/png;base64," + redPixelPNG
+		text := "a red square"
+		dimensions := 384
+		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-image-v1",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &dataURI}},
+			}}},
+			Params: &schemas.EmbeddingParameters{Dimensions: &dimensions},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.InputImage)
+		assert.Equal(t, redPixelPNG, *req.InputImage)
+		assert.Equal(t, "a red square", req.InputText)
+		// The multimodal model carries the output length under embeddingConfig, not the
+		// top-level dimensions field the text models use.
+		assert.Nil(t, req.Dimensions)
+		require.NotNil(t, req.EmbeddingConfig)
+		require.NotNil(t, req.EmbeddingConfig.OutputEmbeddingLength)
+		assert.Equal(t, 384, *req.EmbeddingConfig.OutputEmbeddingLength)
+	})
+
+	t.Run("image only, no text", func(t *testing.T) {
+		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-image-v1",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &redPixelPNG}},
+			}}},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, req.InputText)
+		require.NotNil(t, req.InputImage)
+		wireBody, err := json.Marshal(req)
+		require.NoError(t, err)
+		assert.NotContains(t, string(wireBody), `"inputText"`)
+	})
+
+	// An image bound for a text-only model is forwarded rather than rejected here:
+	// AWS answers "extraneous key [inputImage] is not permitted", which is more
+	// accurate than a verdict guessed from the model name and cannot go stale when
+	// AWS adds a variant.
+	t.Run("text-only Titan models forward the image and let AWS rule", func(t *testing.T) {
+		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-text-v2:0",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &redPixelPNG}},
+			}}},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.InputImage)
+		assert.Equal(t, redPixelPNG, *req.InputImage)
+	})
+
+	t.Run("part types Titan has no field for are still rejected", func(t *testing.T) {
+		audio := "AA=="
+		_, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-image-v1",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeAudio, Audio: &schemas.EmbeddingMediaPart{Data: &audio}},
+			}}},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `do not support "audio" parts`)
+	})
+
+	t.Run("two images cannot be represented in one request", func(t *testing.T) {
+		_, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-image-v1",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &redPixelPNG}},
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &redPixelPNG}},
+			}}},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at most one image")
+	})
+
+	t.Run("remote urls are rejected rather than dropped", func(t *testing.T) {
+		remote := "https://example.com/red.png"
+		_, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-image-v1",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &remote}},
+			}}},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "inline base64 image data")
+	})
+
+	t.Run("invoke route carries inputImage through as one input", func(t *testing.T) {
+		assert.Equal(t, schemas.EmbeddingRequest,
+			DetectInvokeRequestType([]byte(`{"inputImage":"`+redPixelPNG+`"}`), "amazon.titan-embed-image-v1"))
+
+		var invokeRequest BedrockInvokeRequest
+		require.NoError(t, json.Unmarshal(
+			[]byte(`{"inputText":"a red square","inputImage":"`+redPixelPNG+`","embeddingConfig":{"outputEmbeddingLength":256}}`),
+			&invokeRequest))
+		invokeRequest.ModelID = "bedrock/amazon.titan-embed-image-v1"
+
+		converted, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+		require.NoError(t, err)
+		require.Len(t, converted.Input, 1, "inputText and inputImage describe one input")
+		require.Len(t, converted.Input[0].Content, 2)
+		assert.Equal(t, schemas.EmbeddingContentPartTypeText, converted.Input[0].Content[0].Type)
+		assert.Equal(t, schemas.EmbeddingContentPartTypeImage, converted.Input[0].Content[1].Type)
+		require.NotNil(t, converted.Params.Dimensions)
+		assert.Equal(t, 256, *converted.Params.Dimensions)
+	})
+}
+
 func TestBedrockTitanEmbeddingResponsePreservesLegacyEmptyEntry(t *testing.T) {
 	response := (&BedrockTitanEmbeddingResponse{InputTextTokenCount: 3}).ToBifrostEmbeddingResponse()
 	require.NotNil(t, response)
@@ -296,6 +416,59 @@ func TestBedrockTitanEmbeddingResponseLeavesOrdinaryV2ResponseUnlabelled(t *test
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"embedding":[0.25,0.75],"inputTextTokenCount":4}`, string(wire),
 		"the native envelope for an ordinary Titan V2 request must not change")
+}
+
+// The Titan envelope holds one input's vectors. A response covering several inputs — only
+// reachable when the invoke route fronts a non-Titan provider — has to use the
+// multi-embedding envelope, or every vector but one is dropped at HTTP 200.
+func TestBedrockEmbeddingInvokeEnvelopeFitsInputCount(t *testing.T) {
+	ctx := testBedrockCtx()
+
+	t.Run("non-Titan provider with two inputs", func(t *testing.T) {
+		wire, err := ToBedrockEmbeddingInvokeResponse(ctx, &schemas.BifrostEmbeddingResponse{
+			Model: "text-embedding-3-small",
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 8, TotalTokens: 8},
+			Data: []schemas.EmbeddingData{
+				{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.25, 0.75}}},
+				{Index: 1, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{-0.5, 0.125}}},
+			},
+		})
+		require.NoError(t, err)
+		encoded, err := json.Marshal(wire)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"embeddings":[[0.25,0.75],[-0.5,0.125]],"response_type":"embeddings_floats"}`, string(encoded))
+	})
+
+	t.Run("labelled entries from a non-Titan provider stay distinct", func(t *testing.T) {
+		wire, err := ToBedrockEmbeddingInvokeResponse(ctx, &schemas.BifrostEmbeddingResponse{
+			Model: "embed-english-v3.0",
+			Data: []schemas.EmbeddingData{
+				{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.25}}, EncodingFormat: schemas.EmbeddingEncodingFloat},
+				{Index: 1, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.5}}, EncodingFormat: schemas.EmbeddingEncodingFloat},
+			},
+		})
+		require.NoError(t, err)
+		encoded, err := json.Marshal(wire)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"embeddings":{"float":[[0.25],[0.5]]},"response_type":"embeddings_by_type"}`, string(encoded))
+	})
+
+	// Titan's typed response carries several entries for one input, which the Titan
+	// envelope does represent — the index, not the entry count, is what decides.
+	t.Run("Titan float plus binary for one input keeps the Titan envelope", func(t *testing.T) {
+		wire, err := ToBedrockEmbeddingInvokeResponse(ctx, &schemas.BifrostEmbeddingResponse{
+			Model: "amazon.titan-embed-text-v2:0",
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, TotalTokens: 1},
+			Data: []schemas.EmbeddingData{
+				{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.25, 0.75}}, EncodingFormat: schemas.EmbeddingEncodingFloat},
+				{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingInt8Array: []int8{1, 0}}, EncodingFormat: schemas.EmbeddingEncodingBinary},
+			},
+		})
+		require.NoError(t, err)
+		encoded, err := json.Marshal(wire)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"embedding":[0.25,0.75],"embeddingsByType":{"float":[0.25,0.75],"binary":[1,0]},"inputTextTokenCount":1}`, string(encoded))
+	})
 }
 
 func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
@@ -417,6 +590,209 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		assert.Equal(t, []string{"float", "int8", "binary"}, req.EmbeddingTypes)
 		assert.NotContains(t, req.ExtraParams, "embedding_types")
 	})
+
+	// encoding_format is the standard field and carries the representation on the
+	// ordinary path.
+	t.Run("encoding_format maps onto embedding_types", func(t *testing.T) {
+		text := "hello"
+		int8Format := schemas.EmbeddingEncodingInt8
+		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  "cohere.embed-v4:0",
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+			Params: &schemas.EmbeddingParameters{EncodingFormat: &int8Format},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"int8"}, req.EmbeddingTypes)
+	})
+
+	// v3 has no base64 representation and v4's is byte-identical to encoding the float
+	// vector locally, so base64 is served from floats rather than asked of AWS.
+	t.Run("encoding_format base64 is not forwarded as embedding_types", func(t *testing.T) {
+		text := "hello"
+		base64Format := schemas.EmbeddingEncodingBase64
+		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  "cohere.embed-v4:0",
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+			Params: &schemas.EmbeddingParameters{EncodingFormat: &base64Format},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, req.EmbeddingTypes)
+	})
+
+	// embedding_types reaches the converter only through the Bedrock integration, where
+	// it is the caller's own wire field and must survive untouched — including the
+	// multi-representation form encoding_format cannot express.
+	t.Run("native embedding_types wins over encoding_format", func(t *testing.T) {
+		text := "hello"
+		base64Format := schemas.EmbeddingEncodingBase64
+		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "cohere.embed-v4:0",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+			Params: &schemas.EmbeddingParameters{
+				EncodingFormat: &base64Format,
+				ExtraParams:    map[string]interface{}{"embedding_types": []string{"float", "int8"}},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"float", "int8"}, req.EmbeddingTypes)
+	})
+}
+
+// Titan mirrors Cohere: encoding_format on the standard path, embeddingTypes for the
+// Bedrock integration, integration wins.
+func TestToBedrockTitanEmbeddingRequestEncodingFormat(t *testing.T) {
+	text := "hello"
+	input := []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}
+
+	t.Run("encoding_format maps onto embeddingTypes", func(t *testing.T) {
+		format := schemas.EmbeddingEncodingBinary
+		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  "amazon.titan-embed-text-v2:0",
+			Input:  input,
+			Params: &schemas.EmbeddingParameters{EncodingFormat: &format},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"binary"}, req.EmbeddingTypes)
+	})
+
+	// Titan G1 takes inputText and nothing else - AWS rejects embeddingTypes as an extraneous
+	// key - and float is what it returns anyway, so asking for it must stay a no-op.
+	t.Run("encoding_format float is never forwarded", func(t *testing.T) {
+		format := schemas.EmbeddingEncodingFloat
+		for _, model := range []string{"amazon.titan-embed-text-v1", "amazon.titan-embed-g1-text-02", "amazon.titan-embed-text-v2:0"} {
+			req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+				Model:  model,
+				Input:  input,
+				Params: &schemas.EmbeddingParameters{EncodingFormat: &format},
+			})
+			require.NoError(t, err)
+			assert.Empty(t, req.EmbeddingTypes, "float leaked into the request for %s", model)
+		}
+	})
+
+	t.Run("native embeddingTypes wins over encoding_format", func(t *testing.T) {
+		format := schemas.EmbeddingEncodingBase64
+		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-text-v2:0",
+			Input: input,
+			Params: &schemas.EmbeddingParameters{
+				EncodingFormat: &format,
+				ExtraParams:    map[string]interface{}{"embeddingTypes": []string{"float", "binary"}},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"float", "binary"}, req.EmbeddingTypes)
+	})
+
+	t.Run("absent encoding_format leaves embeddingTypes unset", func(t *testing.T) {
+		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  "amazon.titan-embed-text-v2:0",
+			Input:  input,
+			Params: &schemas.EmbeddingParameters{},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, req.EmbeddingTypes)
+	})
+
+	// base64 is outside Titan's enum: AWS answers "only 1 subschema matches out of 2"
+	// rather than ignoring it, so it is encoded from the float vector on the way back.
+	t.Run("encoding_format base64 is not forwarded", func(t *testing.T) {
+		format := schemas.EmbeddingEncodingBase64
+		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  "amazon.titan-embed-text-v2:0",
+			Input:  input,
+			Params: &schemas.EmbeddingParameters{EncodingFormat: &format},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, req.EmbeddingTypes)
+	})
+
+	// titan-embed-image-v1 has no embeddingTypes field at all; AWS rejects the key as
+	// extraneous, so even a valid representation must not be forwarded for it.
+	t.Run("multimodal model never carries embeddingTypes", func(t *testing.T) {
+		for _, format := range []string{schemas.EmbeddingEncodingFloat, schemas.EmbeddingEncodingBinary, schemas.EmbeddingEncodingBase64} {
+			f := format
+			req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+				Model:  "amazon.titan-embed-image-v1",
+				Input:  input,
+				Params: &schemas.EmbeddingParameters{EncodingFormat: &f},
+			})
+			require.NoError(t, err)
+			assert.Empty(t, req.EmbeddingTypes, "encoding_format %q leaked into the multimodal request", f)
+		}
+	})
+}
+
+// The base64 a caller gets when the model has no native base64 representation. The bytes
+// are little-endian float32, which is what Bedrock Cohere v4 returns for embedding_types
+// base64 and what OpenAI's encoding_format base64 produces - verified against both.
+func TestEncodeEmbeddingsAsBase64(t *testing.T) {
+	t.Run("float vectors become little-endian float32 base64", func(t *testing.T) {
+		resp := &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{
+			{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1, -2, 0.5}}},
+		}}
+		encodeEmbeddingsAsBase64(resp)
+
+		require.NotNil(t, resp.Data[0].Embedding.EmbeddingStr)
+		assert.Nil(t, resp.Data[0].Embedding.EmbeddingArray)
+		assert.Equal(t, schemas.EmbeddingEncodingBase64, resp.Data[0].EncodingFormat)
+
+		raw, err := base64.StdEncoding.DecodeString(*resp.Data[0].Embedding.EmbeddingStr)
+		require.NoError(t, err)
+		require.Len(t, raw, 12)
+		for i, want := range []float32{1, -2, 0.5} {
+			assert.Equal(t, want, math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:])))
+		}
+	})
+
+	t.Run("a representation the provider already returned is left alone", func(t *testing.T) {
+		native := "already-encoded"
+		resp := &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{
+			{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingStr: &native}, EncodingFormat: schemas.EmbeddingEncodingBase64},
+		}}
+		encodeEmbeddingsAsBase64(resp)
+		assert.Equal(t, native, *resp.Data[0].Embedding.EmbeddingStr)
+	})
+
+	t.Run("every entry of a batch is converted", func(t *testing.T) {
+		resp := &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{
+			{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1}}},
+			{Index: 1, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{2}}},
+		}}
+		encodeEmbeddingsAsBase64(resp)
+		for i := range resp.Data {
+			require.NotNil(t, resp.Data[i].Embedding.EmbeddingStr, "entry %d was not converted", i)
+		}
+		assert.NotEqual(t, *resp.Data[0].Embedding.EmbeddingStr, *resp.Data[1].Embedding.EmbeddingStr)
+	})
+}
+
+// Which requests the local encoding applies to. A Bedrock-native embedding_types field
+// means the caller came through the integration and owns the response envelope.
+func TestShouldEncodeEmbeddingsAsBase64(t *testing.T) {
+	base64Format := schemas.EmbeddingEncodingBase64
+	floatFormat := schemas.EmbeddingEncodingFloat
+
+	assert.False(t, shouldEncodeEmbeddingsAsBase64(nil))
+	assert.False(t, shouldEncodeEmbeddingsAsBase64(&schemas.BifrostEmbeddingRequest{}))
+	assert.False(t, shouldEncodeEmbeddingsAsBase64(&schemas.BifrostEmbeddingRequest{
+		Params: &schemas.EmbeddingParameters{EncodingFormat: &floatFormat},
+	}))
+	assert.True(t, shouldEncodeEmbeddingsAsBase64(&schemas.BifrostEmbeddingRequest{
+		Params: &schemas.EmbeddingParameters{EncodingFormat: &base64Format},
+	}))
+	assert.False(t, shouldEncodeEmbeddingsAsBase64(&schemas.BifrostEmbeddingRequest{
+		Params: &schemas.EmbeddingParameters{
+			EncodingFormat: &base64Format,
+			ExtraParams:    map[string]interface{}{"embedding_types": []string{"float"}},
+		},
+	}))
+	assert.False(t, shouldEncodeEmbeddingsAsBase64(&schemas.BifrostEmbeddingRequest{
+		Params: &schemas.EmbeddingParameters{
+			EncodingFormat: &base64Format,
+			ExtraParams:    map[string]interface{}{"embeddingTypes": []string{"float", "binary"}},
+		},
+	}))
 }
 
 func TestToBedrockCohereEmbeddingRequestWireBody(t *testing.T) {
