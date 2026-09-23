@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
+	"github.com/maximhq/bifrost/plugins/nadir"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
@@ -152,6 +153,13 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal compat plugin config: %w", err)
 		}
 		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
+
+	case nadir.PluginName:
+		nadirConfig, err := MarshalPluginConfig[nadir.Config](pluginConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal nadir plugin config: %w", err)
+		}
+		return nadir.Init(nadirConfig, logger)
 
 	case modelcatalogresolver.PluginName:
 		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
@@ -305,7 +313,19 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(9))
 
-	// 10. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
+	// 10. Nadir (if configured in PluginConfigs). Routing layer: rewrites the trigger model
+	// to the tier its decision API picks. After routing rules, so a rule that already pinned a
+	// real model wins and this no-ops on it, and before the catalog resolver, which then finds
+	// the provider already set.
+	nadirConfig := s.getPluginConfig(nadir.PluginName)
+	if nadirConfig != nil && nadirConfig.Enabled {
+		s.registerPluginWithStatus(ctx, nadir.PluginName, nil, nadirConfig.Config, false)
+	} else {
+		s.markPluginDisabled(nadir.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(nadir.PluginName, builtinPlacement, schemas.Ptr(10))
+
+	// 11. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
 	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
 	// already set one. CEL rules can still match on provider == "" because this runs last.
 	// Requires a model catalog; only register when one is configured.
