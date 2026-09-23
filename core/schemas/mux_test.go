@@ -1114,15 +1114,15 @@ func TestToBifrostResponsesStreamResponse_ClosesToolCallWithEmptyArguments(t *te
 			t.Fatalf("%s output_index = %v, want 0", event.Type, event.OutputIndex)
 		}
 	}
-	if events[3].Arguments == nil || *events[3].Arguments != "" {
-		t.Fatalf("function_call_arguments.done arguments = %v, want empty string", events[3].Arguments)
+	if events[3].Arguments == nil || *events[3].Arguments != "{}" {
+		t.Fatalf("function_call_arguments.done arguments = %v, want empty object", events[3].Arguments)
 	}
-	if events[4].Item == nil || events[4].Item.Arguments == nil || *events[4].Item.Arguments != "" {
-		t.Fatalf("output_item.done arguments = %v, want empty string", events[4].Item)
+	if events[4].Item == nil || events[4].Item.Arguments == nil || *events[4].Item.Arguments != "{}" {
+		t.Fatalf("output_item.done arguments = %v, want empty object", events[4].Item)
 	}
 	completed := events[5]
-	if completed.Response == nil || len(completed.Response.Output) != 1 || completed.Response.Output[0].Arguments == nil || *completed.Response.Output[0].Arguments != "" {
-		t.Fatalf("completed output = %+v, want one tool call with empty arguments", completed.Response)
+	if completed.Response == nil || len(completed.Response.Output) != 1 || completed.Response.Output[0].Arguments == nil || *completed.Response.Output[0].Arguments != "{}" {
+		t.Fatalf("completed output = %+v, want one tool call with empty object arguments", completed.Response)
 	}
 }
 

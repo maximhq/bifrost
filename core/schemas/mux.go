@@ -2229,6 +2229,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		for _, entry := range toolCallEntries {
 			toolCallID := entry.toolCallID
 			args := state.ToolArgumentBuffers[toolCallID]
+			if args == "" {
+				args = "{}"
+				state.ToolArgumentBuffers[toolCallID] = args
+			}
 			outputIndex := entry.outputIndex
 			itemID := state.ItemIDs[toolCallID]
 			contentIndex := 1 // Tool calls use content_index:1
