@@ -1,69 +1,64 @@
 ---
-title: "v2.2.1"
-description: "v2.2.1 changelog - 2026-09-19"
+title: "v2.2.2"
+description: "v2.2.2 changelog - 2026-09-23"
 ---
 
-<Update label="Bifrost Enterprise" description="v2.2.1">
+<Update label="Bifrost Enterprise" description="v2.2.2">
 
 ## Changelog
 
-v2.2.1 moves the enterprise gateway onto OSS transports v2.2.1. API key scopes are now clamped to the caller's own permissions at create and update. Virtual key search now matches the assigned user's name or email, and the assignee column is resolved in one batched query per page instead of one request per row. The OSS release also carries three security fixes: resource IDs are validated before they enter outbound URL paths, Bedrock S3 bucket names can no longer redirect signed requests to a caller-chosen host, and the billing idempotency key can no longer be forged through the `x-request-id` header.
+v2.2.2 moves the enterprise gateway onto OSS transports v2.2.2. Session affinity is now health-aware in enterprise: a session bound to a provider or key that is failing on the node, or that the circuit breaker holds back, is dropped and re-routed instead of being sent back to the failing route. The OSS release adds the typesafe provider with a `/v1/decisions` endpoint, provider-level session affinity for Claude Code, Codex CLI and OpenCode sessions, and Claude Opus 5.5 support.
 
 ## ✨ Features
 
-- **API Key Scope Ceiling** - Creating or updating an API key now clamps the granted scopes to the permissions the caller holds. Unknown permission ids are rejected with 400, scopes the caller does not hold are rejected with 403 naming the offending permissions, and a key's own scopes win the permission check even when the creator's role is broader. Local-admin and auth-disabled requests keep their existing bypass.
-- **Scope Ceiling in the API Key Picker** - The scope picker shows the ceiling before save: permissions above the caller's own are rendered locked with a lock icon and cannot be toggled on, while a locked scope already on the key stays removable so access can always be lowered. If the server still returns a 403 because the permission map went stale, the denied scopes are highlighted inline and the caller's permissions are re-fetched. The picker is built on a shared `PermissionMatrix` component with search and per-resource bulk select, now used by both API key scopes and role permissions.
-- **Virtual Key Assignee Search and Batched Resolution** - Virtual key search now matches the assigned user's name or email through the enterprise store, which previously delegated search to the base store and silently dropped the assignee filter. The "Assigned To" column on the list page and in CSV export is resolved with a single batched query per page instead of one request per key.
-- **Access-Profile MCP Grants in DAC Scopes** - Own-data and team-data scoped reads now treat access-profile grants as a first-class visibility path for MCP servers and Virtual MCPs. An MCP server granted exclusively through a user's access profile was previously invisible to that user under DAC scoping, because access-profile-managed virtual keys intentionally carry no VK-to-MCP assignment rows.
-- **Unknown MCP Calls Recorded as Observations** - When an MCP tool call cannot be matched to any known installation in the device inventory (stale inventory, removed server, unrecognized name), the gateway now records it as an observation with `status=unknown` and full attribution metadata instead of issuing a hard denial, and the rest of the batch continues under normal enforcement. True policy denials and guardrail failures are still enforced strictly.
+- **Health-Aware Session Affinity** - Enterprise registers its own session affinity on top of the one OSS ships. A route binding to a provider whose direction is Failed on this node is dropped and the routing decision stands, and a key binding is dropped when the key's route is Failed or the circuit breaker removes it from the eligible pool, so key selection picks again. Each drop is written to the routing engine log. Health is node-local while bindings are shared across the cluster, so the node that sees the failure drops the binding and the next served request rebinds it. Without the adaptive load balancer or the circuit breaker, behaviour is identical to OSS. [Docs](https://docs.getbifrost.ai/providers/session-affinity)
 
 ## 🌎 Open Source Features
 
-- **Virtual Key Assignees and Expanded Search** - The virtual key list resolves `assigned_user` for every row via a single batch lookup, and VK search matches team, customer and user names in addition to key fields, so keys can be found by who owns them.
-- **User Attribution in Prometheus Metrics** - The telemetry plugin's metrics export includes user id and user name labels, so per-user usage and error rates can be graphed and alerted on directly.
-- **Prompt Cache Breakpoints Capability** - A `SupportsPromptCacheBreakpoints` model capability with a name-based fallback for OpenRouter gates `prompt_cache_breakpoint` forwarding, so OpenRouter's non-Claude models stop rejecting requests that carry it.
-- **MCP Observed Latency** - Native (observed) MCP tool-call latency from `observed_latency_ms` is surfaced in the logs duration column and detail sheet, kept clearly distinct from true execution time and never fabricating a synthetic start timestamp on the timeline.
+- **Typesafe Provider and Decisions API** - A new `typesafe` provider, a `/v1/decisions` endpoint and a `/typesafe` integration. Providers without native decision support answer decision requests through forced tool-calling on their chat model, as primary or as fallback; probabilities are normalized to sum to exactly 1 and the chosen option must be the most likely one. Decision requests are priced from the datasheet under a new `decisions` usage type and logged with their answers. [Docs](https://docs.getbifrost.ai/quickstart/gateway/decisions)
+- **Provider-Level Session Affinity** - A session, identified by `x-bf-session-id` or the session header Claude Code, Codex CLI and OpenCode already send, stays on the provider and key that last served it. Bindings are updated from the request outcome, affinity only reorders the chain that routing built and never restores a provider that routing excluded, and the `x-bf-session-affinity` header opts a request out. The logs UI shows affinity as a routing engine. [Docs](https://docs.getbifrost.ai/providers/session-affinity)
+- **Claude Opus 5.5 Support** - Computer use sends `computer_toolset_20260801` on the Anthropic API and Vertex, while Bedrock and Azure keep `computer_20251124`, and `toolset_name` is carried on both halves of each call/result pair across typed, raw passthrough and streaming paths. Disabled thinking and forced tool choice are rejected for Opus 5.5 and later, which the datasheet `supports_reasoning_disable` field can override.
+- **Claude Code Auto-Mode Safeguards Passthrough** - `safeguards` and `safeguard_results` are forwarded byte-for-byte on requests, responses and stream events to the direct Anthropic provider and stripped for every other provider. The `dangerous-tool-use` and `auto-mode-classifier` betas are gated the same way, and unknown Anthropic SSE events are forwarded raw on the Anthropic passthrough.
 
 ## 🐞 Fixed
 
-- **Access Profile Role-Detach Revocation Scope** - Detaching a role from an access profile now revokes the profile only from the detached role's users, sparing users whose remaining role still grants the profile.
-- **Resource ID Path Injection (OSS)** - Caller-supplied resource IDs (batch, file, video, container, response IDs, cached content names) were interpolated into outbound URL paths unvalidated; a crafted ID could redirect the request to an unintended upstream endpoint. A central `EscapeResourceID` helper validates and escapes every such ID.
-- **Bedrock S3 SSRF (OSS)** - A caller-supplied `s3://` file ID or `s3_bucket` param could control the upstream host of a SigV4-signed connection; bucket names are now validated with a DNS-compatible regex.
-- **Caller-Forged Billing Idempotency (OSS)** - The billing idempotency key included the caller-controllable `x-request-id`, so two requests sharing a chosen ID collided and the second was never charged. An internally minted `BillingNonce` is mixed into the key, making it unforgeable.
-- **Abandoned Non-Streaming Request Hung Forever (OSS)** - The worker kept a `ctx.Done()` arm on an already-claimed delivery send, so a non-streaming caller could hang indefinitely.
-- **Repeated Empty Thinking Blocks (OSS)** - Streaming chat chunks emitted empty reasoning/message fields on every content delta, which clients rendered as repeated empty thinking blocks.
-- **Claude Code Thread Continuations Behind Key Rotation (OSS)** - Server-side conversation threads are bound to the upstream account that creates them, which per-request key selection cannot guarantee; the Anthropic integration now declares itself stateless, refusing continuations with a 400 `thread_unsupported_request` so the client resends the turn in full, and stripping `thread` from create requests so no orphaned thread state accumulates upstream.
-- **Gemini Flash-Lite Minimal Thinking Promoted to Low (OSS)** - `gemini-3.1-flash-lite` requests silently promoted `minimal` thinking to `low` on Gemini and Vertex; the text model's four supported levels are now registered.
-- **Config.json Virtual Key Limits Broke Under UI Edits (OSS)** - VK rate limits and budgets created via the config.json standalone-limits flow and then edited through the UI produced duplicate, conflicting ownership records; a migration consolidates ownership into VK-scoped model configs while preserving usage counters.
-- **Bedrock Service Tier Rejections (OSS)** - Service tier forwarding for Bedrock is now gated on explicit model capability metadata, failing closed when none exists.
-- **Anthropic Root-Level Tool Schema Compositions (OSS)** - Root-level `oneOf`/`anyOf`/`allOf` in a tool's `input_schema` are rewritten into a flat object schema before dispatch, unblocking tools that Anthropic would otherwise reject.
-- **GenAI Streaming TTS (OSS)** - Speech stream chunks routed through the `/genai` integration had no converter registered; streaming TTS now works, and a missing stream converter returns a clean error instead of panicking.
-- **xAI Usage and Cost (OSS)** - `completion_tokens` now folds reasoning tokens in so token totals add up, and streaming cost normalization preserves xAI's authoritative cost ticks instead of falling back to catalog pricing.
-- **OpenAI-Only `search_content_types` Forwarded Everywhere (OSS)** - The field is gated behind a per-provider capability check so Bedrock and other OpenAI-compatible backends receive a clean `web_search` tool.
-- **Claude Code `diagnostics` Field Rejected by Non-Native Providers (OSS)** - `diagnostics.previous_message_id` is stripped for providers that do not support it, fixing 400s on Bedrock, Vertex and Azure.
-- **Unreadable Bedrock Error Logs (OSS)** - AWS's flat `{"message", "__type"}` error shape now seeds the error message, and the logs UI falls back to the raw provider error body when no message could be extracted.
-- **Anthropic `container` Param Dropped (OSS)** - The string-form `container` param on `/anthropic/v1/messages` is now carried through the round trip, so container reuse stops provisioning a fresh container every time.
-- **Responses API Finish Reason Missing From OTEL Spans (OSS)** - `gen_ai.response.finish_reason` is now emitted on the `llm.call` span for `/v1/responses` requests, matching the chat path.
-- **Cohere Fallback Response Shape (OSS)** - Responses served by a fallback from a non-Cohere provider are converted to the Cohere v2 shape instead of returning the raw normalized response.
-- **Skill Serving Race (OSS)** - Fixed a race condition in the skill serving handler.
-- **Log and Dashboard Label Truncation (OSS)** - Long model and provider labels truncate from the start so the distinctive suffix stays visible, the logs model column is wider, and key picker options are keyed by id so duplicate labels stop highlighting together.
+- **Allow-All Providers on Access Profiles and Projects** - Access profiles and projects with allow-all providers now create a provider permit for every configured provider, so requests are no longer refused for providers without an explicit entry.
+- **Held Responses Stream Raw Payloads** - When guardrails rewrite held Responses stream chunks, the raw provider response is dropped instead of patched, so a raw copy can no longer carry unredacted tool arguments or fail the stream on a shape mismatch.
+- **Blocked Models With All Models Allowed** - The access profile grant details view renders the Blocked Models row correctly when the profile allows all models.
+- **Allow-All Provider Access on Virtual Keys (OSS)** - Virtual keys that allow every provider now list models from, and route to, every configured provider; the governance routing log names providers excluded for having no weight.
+- **OpenAI-Family Stream Errors After Startup Events (OSS)** - Stream errors that arrive after `response.created`, `in_progress` or an empty role delta now reach retry and fallback for OpenAI models on every host (OpenAI, Bedrock, Bedrock Mantle, Vertex, custom providers), not only Azure.
+- **Kimi and DeepSeek With Claude Code (OSS)** - Tool-schema regex patterns are rewritten for Moonshot and DeepSeek models only, and kimi-k3 on Bedrock no longer returns an empty stream.
+- **Anthropic Billing Header Leak (OSS)** - Claude Code's `x-anthropic-billing-header` system block is stripped at ingress and restored only for Anthropic-family attempts, so it no longer pollutes GPT or Gemini prompts.
+- **Anthropic `allowed_tools` and `parallel_tool_calls` (OSS)** - OpenAI-style `allowed_tools` restrictions and `parallel_tool_calls` are now carried into Anthropic requests instead of being silently dropped.
+- **MCP Egress Proxy (OSS)** - MCP HTTP/SSE connections honor `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` again, and link-local or unspecified destinations are refused before the proxy is dialed.
+- **OpenAI `computer` Tool (OSS)** - The bare `{"type":"computer"}` tool is no longer rewritten to `computer_use_preview`, fixing computer use on GPT-6 Astra and GPT-5.6.
+- **Streaming Memory Leaks (OSS)** - The request context is cancelled on every stream exit path, and empty-thinking-block stripping and Anthropic beta-header gating no longer re-encode or fully decode the body.
+- **Streaming Gate Replay Buffer (OSS)** - Full-hold replay buffer size accounting uses cached estimates instead of marshalling every chunk.
+- **Bedrock cachePoint Leak (OSS)** - Bedrock `cachePoint` markers are stripped copy-on-write for non-Bedrock providers and kept for Bedrock fallbacks, and the compat plugin no longer mutates the shared request.
+- **Bedrock Empty JSON Keys (OSS)** - Tool results containing an empty-string object key are sent as text, so Converse no longer rejects them.
+- **Bedrock cache_control on String Content (OSS)** - InvokeModel keeps every `cache_control` when any message's content is a plain string.
+- **Web Search Source Names (OSS)** - Responses web search API sources keep their `name` and no longer emit an empty `url`.
+- **Grok 4.7 xhigh Reasoning (OSS)** - `xhigh` reasoning effort is no longer downgraded to `high`.
+- **OpenAI Chat Stream Framing (OSS)** - Bundled raw finish and usage frames on the OpenAI chat stream passthrough each get their own `data:` prefix.
+- **Responses Deep Copy (OSS)** - `DeepCopyResponsesMessage` deep copies cache controls, provider-native parts, tool fields and annotations, so copies no longer share pointers with the original.
+- **Request Preparation Performance (OSS)** - Responses requests are decoded once instead of several times, and the compat plugin clones only the fields it writes.
 
 ## 🗄️ Database Migrations
 
-- **migrate_vk_standalone_limits_to_model_configs** - Consolidates virtual key standalone budgets and rate limits into VK-scoped model configs: standalone budgets are re-pointed to the VK's top-level model config (created if missing, usage preserved), orphaned duplicate UUID rate-limit rows created by the UI are deleted with the model config re-pointed to the canonical config.json row, and `vk.rate_limit_id` is cleared.
+- No new database migrations in this release.
 
 ## 🐙 Closed OSS Issues
 
-- [#123](https://github.com/maximhq/bifrost/issues/123) - Files API Support
-- [#5707](https://github.com/maximhq/bifrost/issues/5707) - string-form `container` param on /anthropic/v1/messages is silently dropped - container reuse provisions a fresh container
-- [#7204](https://github.com/maximhq/bifrost/issues/7204) - Responses API path never sets gen_ai.response.finish_reason in OTEL traces (refusals invisible to observability)
-- [#7287](https://github.com/maximhq/bifrost/issues/7287) - Gemini 3.1 Flash-Lite minimal thinking is silently promoted to low
-- [#7294](https://github.com/maximhq/bifrost/issues/7294) - Streaming chat chunks emit empty reasoning/message fields on every content delta, causing repeated thinking blocks
-- [#7308](https://github.com/maximhq/bifrost/issues/7308) - non-streaming caller hangs forever - worker keeps a ctx.Done() arm on a claimed delivery send (regression from #6972)
+- [#7223](https://github.com/maximhq/bifrost/issues/7223) - MCP client HTTP transport ignores HTTP_PROXY/HTTPS_PROXY and fails on any deployment behind an egress proxy
+- [#7336](https://github.com/maximhq/bifrost/issues/7336) - Bedrock InvokeModel drops message-level cache_control when any historical message content is a JSON string
+- [#7356](https://github.com/maximhq/bifrost/issues/7356) - Responses web search API source name is dropped during round-trip
+- [#7402](https://github.com/maximhq/bifrost/issues/7402) - Grok 4.7 xhigh reasoning effort is silently downgraded to high
+- [#7411](https://github.com/maximhq/bifrost/issues/7411) - Redundant JSON decoding in Responses request preparation
+- [#7425](https://github.com/maximhq/bifrost/issues/7425) - Responses: `{"type":"computer"}` is rewritten to `computer_use_preview`, breaking GPT-6 Astra / GPT-5.6 computer use
 
 ## 📀 Base OSS version
 
-`transports/v2.2.1` (pinned as `github.com/maximhq/bifrost/transports v1.6.12-0.20260918214249-f44b5410fb7b`), with core `v1.9.1`, framework `v1.7.2`, governance `v1.8.1`, and logging `v1.8.1`.
+`transports/v2.2.2` (pinned as `github.com/maximhq/bifrost/transports v1.6.12-0.20260923045635-fdeef8e3f31a`), with core `v1.10.1`, framework `v1.7.3`, governance `v1.8.2`, and logging `v1.8.2`.
 
 ## 🔌 If you are compiling plugin against this release - use following deps
 
@@ -81,13 +76,13 @@ require (
 	github.com/maximhq/bifrost-enterprise/core v0.0.0
 	github.com/maximhq/bifrost-enterprise/framework v0.0.0
 	github.com/maximhq/bifrost-enterprise/plugins v0.0.0
-	github.com/maximhq/bifrost/core v1.9.1
-	github.com/maximhq/bifrost/framework v1.7.2
-	github.com/maximhq/bifrost/plugins/governance v1.8.1
-	github.com/maximhq/bifrost/plugins/logging v1.8.1
-	github.com/maximhq/bifrost/plugins/routing v1.1.1
-	github.com/maximhq/bifrost/plugins/semanticcache v1.6.4
-	github.com/maximhq/bifrost/transports v1.6.12-0.20260918214249-f44b5410fb7b
+	github.com/maximhq/bifrost/core v1.10.1
+	github.com/maximhq/bifrost/framework v1.7.3
+	github.com/maximhq/bifrost/plugins/governance v1.8.2
+	github.com/maximhq/bifrost/plugins/logging v1.8.2
+	github.com/maximhq/bifrost/plugins/routing v1.1.2
+	github.com/maximhq/bifrost/plugins/semanticcache v1.6.5
+	github.com/maximhq/bifrost/transports v1.6.12-0.20260923045635-fdeef8e3f31a
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.74.0
 	golang.org/x/sync v0.22.0
@@ -306,13 +301,13 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.17 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.3.1 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.7.4 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.4 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.4 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.5.4 // indirect
-	github.com/maximhq/bifrost/plugins/prompts v1.1.4 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.8.0 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.3.2 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.7.5 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.5 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.5 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.5.5 // indirect
+	github.com/maximhq/bifrost/plugins/prompts v1.1.5 // indirect
+	github.com/maximhq/bifrost/plugins/telemetry v1.8.1 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect

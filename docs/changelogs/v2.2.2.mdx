@@ -40,7 +40,6 @@ description: "v2.2.2 changelog - 2026-09-23"
 - **OpenAI Chat Stream Framing** - Bundled raw finish and usage frames on the OpenAI chat stream passthrough each get their own `data:` prefix (#7440)
 - **Responses Deep Copy** - `DeepCopyResponsesMessage` now deep copies cache controls, provider-native parts, computer/MCP/code-interpreter tool fields and annotations, so copies no longer share pointers with the original (#7422)
 - **Request Preparation Performance** - Responses requests are decoded once instead of several times, and the compat plugin clones only the fields it writes (#7412, #7097) (thanks [@G-XD](https://github.com/G-XD)!)
-- **Virtual Key PUT Round-Trip** - PUT `/api/governance/virtual-keys/{vk_id}` no longer drops provider-config key associations when the request body omits `key_ids`. The GET response exposes `allow_all_keys` and `keys` but not `key_ids`, so the standard GET -> edit -> PUT round-trip silently flipped AllowAllKeys to false and detached every key, and inference through the virtual key then failed with "no keys found for provider". An omitted `key_ids` list now leaves the existing associations untouched; an explicit list (including `[]`) still replaces them (#7347) (thanks [@xiechimon](https://github.com/xiechimon)!)
 
 ## 🗄️ Database Migrations
 

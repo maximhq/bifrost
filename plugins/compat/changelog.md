@@ -1,3 +1,0 @@
-- fix: Bedrock cachePoint handling moved to core dispatch; plugin no longer mutates the shared request (#7182)
-- fix: clone only Reasoning, ToolChoice and Tools in PreLLMHook (#7097)
-- chore: upgraded core to v1.10.0 and framework to v1.7.3

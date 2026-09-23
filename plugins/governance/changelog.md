@@ -1,3 +1,0 @@
-- fix: allow-all virtual keys list and route every configured provider (#7375)
-- fix: routing log names providers excluded for having no weight
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
