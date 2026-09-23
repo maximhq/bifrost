@@ -626,3 +626,45 @@ func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
 		})
 	}
 }
+
+// TestAccounting_SkipRequestCountChargesCostOnly: a GPT Live voice window bills its
+// cost and tokens but is not a request, so it must not consume request allowance.
+func TestAccounting_SkipRequestCountChargesCostOnly(t *testing.T) {
+	f := newAccountingFixture(t)
+
+	window := acctUpdate("live-window-1", 0, true, 0.025, 0)
+	window.SkipRequestCount = true
+	f.apply(window, acctUpdate("req-1", 0, true, 1.0, 10))
+
+	assert.InDelta(t, 1.025, f.cost(), 1e-9)
+	assert.Equal(t, int64(1), f.requests(), "only the ordinary request counts")
+	assert.Equal(t, int64(10), f.tokens())
+}
+
+// TestPostHookWorker_LiveRequestDoesNotCountRequest pins the wiring: the live request
+// type is what marks an update as not counting toward request limits.
+func TestPostHookWorker_LiveRequestDoesNotCountRequest(t *testing.T) {
+	for _, tc := range []struct {
+		requestType  schemas.RequestType
+		wantRequests int64
+	}{
+		{schemas.LiveRequest, 0},
+		{schemas.ResponsesRequest, 1},
+	} {
+		t.Run(string(tc.requestType), func(t *testing.T) {
+			f := newAccountingFixture(t)
+			plugin := &GovernancePlugin{ctx: context.Background(), tracker: f.tracker}
+			result := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10},
+			}}
+
+			settled := settleLimits(f.store, "sk-bf-acct", schemas.OpenAI, "gpt-live-1", &UsageUpdate{})
+			plugin.postHookWorker(result, nil, schemas.OpenAI, "gpt-live-1", tc.requestType, "req-"+string(tc.requestType), "", false, 0, nil, settled.Budgets, settled.RateLimits, nil)
+
+			assert.EventuallyWithT(t, func(c *assert.CollectT) {
+				assert.Equal(c, int64(10), f.tokens())
+			}, time.Second, 10*time.Millisecond)
+			assert.Equal(t, tc.wantRequests, f.requests())
+		})
+	}
+}
