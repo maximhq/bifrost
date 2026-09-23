@@ -202,6 +202,7 @@ const (
 	UnknownRequest                 RequestType = "unknown"
 	WebSocketResponsesRequest      RequestType = "websocket_responses"
 	RealtimeRequest                RequestType = "realtime"
+	LiveRequest                    RequestType = "live"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
