@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -847,6 +848,63 @@ func TestResolveAccessStampsContentLoggingDecision(t *testing.T) {
 				return
 			}
 			assert.Equal(t, *tc.decision, stamped)
+		})
+	}
+}
+
+// A key that turns content off also marks the request's root span, which is how connectors that
+// never see the request context (they are handed the finished trace) learn to strip content. The
+// mark is one-directional: a key that keeps content on, or inherits, leaves the span alone so it
+// can never loosen a connector's own disable_content_logging.
+func TestResolveAccessMarksTraceWhenContentLoggingOff(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		decision *bool
+		marked   bool
+	}{
+		{name: "off marks the root span", decision: new(true), marked: true},
+		{name: "on leaves the root span alone", decision: new(false), marked: false},
+		{name: "inherit leaves the root span alone", decision: nil, marked: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.DisableContentLogging = tc.decision
+
+			logger := NewMockLogger()
+			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, &mockInMemoryStore{})
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			// A real tracer with a root span already open, as the HTTP tracing middleware leaves it
+			// before any handler runs.
+			traceStore := tracing.NewTraceStore(time.Minute, nil)
+			t.Cleanup(traceStore.Stop)
+			tracer := tracing.NewTracer(traceStore, nil, nil)
+			t.Cleanup(tracer.Stop)
+			traceID := tracer.CreateTrace("")
+			ctx := emptyCtx()
+			ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			_, handle := tracer.StartSpanID(ctx, "request", schemas.SpanKindHTTPRequest)
+			require.NotNil(t, handle, "root span must open for the trace")
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+
+			_, err = plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+			require.Equal(t, vk.ID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the key resolved")
+
+			trace := traceStore.GetTrace(traceID)
+			require.NotNil(t, trace)
+			require.NotNil(t, trace.RootSpan)
+			assert.Equal(t, tc.marked, schemas.ContentLoggingDisabledForTrace(trace))
+			if !tc.marked {
+				_, present := trace.RootSpan.Attributes[schemas.AttrBifrostContentLoggingDisabled]
+				assert.False(t, present, "the mark is never written as false")
+			}
 		})
 	}
 }
