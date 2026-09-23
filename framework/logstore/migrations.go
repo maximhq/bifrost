@@ -326,6 +326,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"logs_add_warp_conversations_updated_at_index"}, run: migrationAddWarpConversationsUpdatedAtIndex},
 	{IDs: []string{"logs_add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+	{IDs: []string{"logs_ensure_declared_indexes"}, run: migrationEnsureDeclaredIndexes},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -515,6 +516,47 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB, logger 
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running object column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationEnsureDeclaredIndexes backfills the struct-tag indexes that earlier
+// column migrations added their column without. Those migrations are recorded
+// and never run again, so an installation that already has the column keeps
+// scanning the table until something creates the index once.
+//
+// Postgres is skipped: ensurePerformanceIndexes raises the same set
+// CONCURRENTLY after startup, and a blocking CREATE INDEX here is what that
+// builder exists to avoid.
+func migrationEnsureDeclaredIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_ensure_declared_indexes"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				return nil
+			}
+			for _, model := range []interface{}{&Log{}, &MCPToolLog{}} {
+				if err := migrator.CreateDeclaredIndexes(tx, logger, model); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Dropping here would also remove the indexes CreateTable raised on
+			// a fresh database, which are indistinguishable from the backfilled
+			// ones. Leaving them costs disk; removing them breaks reads.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while ensuring declared indexes: %w", err)
 	}
 	return nil
 }

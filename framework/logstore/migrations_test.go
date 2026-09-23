@@ -87,6 +87,36 @@ func TestMigrationAddParentRequestIDColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationEnsureDeclaredIndexesBackfillsExistingDatabase covers the half of
+// issue #7457 that the column adder cannot reach: an installation that already
+// has parent_request_id has also recorded the migration that added it, so that
+// migration never runs again and the index would stay missing forever.
+func TestMigrationEnsureDeclaredIndexesBackfillsExistingDatabase(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	// A database in the reported state: the column is present, its migration is
+	// recorded, and no index was ever built.
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "existing-log").Error)
+	require.NoError(t, migrationAddParentRequestIDColumn(ctx, db, testLogger{}))
+	require.NoError(t, db.Migrator().DropIndex(&Log{}, "idx_logs_parent_request_id"))
+	require.False(t, db.Migrator().HasIndex(&Log{}, "idx_logs_parent_request_id"))
+
+	// Re-running the column migration cannot help: its id is already recorded.
+	require.NoError(t, migrationAddParentRequestIDColumn(ctx, db, testLogger{}))
+	require.False(t, db.Migrator().HasIndex(&Log{}, "idx_logs_parent_request_id"))
+
+	require.NoError(t, migrationEnsureDeclaredIndexes(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_parent_request_id"))
+	require.NoError(t, migrationEnsureDeclaredIndexes(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "existing-log").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same
 // database, so each one works in its own schema to avoid clobbering the

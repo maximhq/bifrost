@@ -66,17 +66,46 @@ func AddColumnIfNotExists(tx *gorm.DB, logger schemas.Logger, model interface{},
 	).Error
 }
 
+// CreateDeclaredIndexes creates every not-yet-existing index that model
+// declares by struct tag, skipping any whose columns the table does not have.
+//
+// It exists to backfill databases whose columns were added before the adder
+// created indexes: those migrations are recorded, so they never run again, and
+// the index would otherwise stay missing for the life of the installation.
+// Callers must keep it away from Postgres, which builds the same set
+// CONCURRENTLY outside any migration.
+func CreateDeclaredIndexes(tx *gorm.DB, logger schemas.Logger, model interface{}) error {
+	stmt := &gorm.Statement{DB: tx}
+	if err := stmt.Parse(model); err != nil {
+		return fmt.Errorf("failed to parse schema for %T: %w", model, err)
+	}
+	return createIndexes(tx, logger, model, stmt, nil)
+}
+
 // createFieldIndexes creates the not-yet-existing indexes that f declares by
-// struct tag, skipping any composite index whose other columns are still
-// absent. Postgres is excluded by the caller: it raises the same indexes
+// struct tag. Postgres is excluded by the caller: it raises the same indexes
 // CONCURRENTLY from its own builder once the process is up.
 func createFieldIndexes(tx *gorm.DB, logger schemas.Logger, model interface{}, stmt *gorm.Statement, f *schema.Field) error {
+	return createIndexes(tx, logger, model, stmt, f)
+}
+
+// createIndexes creates the missing tag-declared indexes on model, restricted
+// to those covering `only` when it is non-nil. A composite index is skipped
+// until every column it names exists, so the migration adding the first of them
+// cannot abort; the one adding the last raises it.
+func createIndexes(
+	tx *gorm.DB,
+	logger schemas.Logger,
+	model interface{},
+	stmt *gorm.Statement,
+	only *schema.Field,
+) error {
 	mig := tx.Migrator()
 	for _, idx := range stmt.Schema.ParseIndexes() {
-		if !indexCoversField(idx, f) || mig.HasIndex(model, idx.Name) {
+		if only != nil && !indexCoversField(idx, only) {
 			continue
 		}
-		if !indexColumnsExist(mig, model, idx) {
+		if mig.HasIndex(model, idx.Name) || !indexColumnsExist(mig, model, idx) {
 			continue
 		}
 		if logger != nil {
