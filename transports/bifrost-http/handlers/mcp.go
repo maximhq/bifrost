@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -117,6 +118,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 	r.POST("/api/mcp/client/{id}/initiate-verification", lib.ChainMiddlewares(h.initiateMCPClientVerification, middlewares...))
 	r.POST("/api/mcp/client/{id}/reauthorize", lib.ChainMiddlewares(h.reauthorizeMCPClient, middlewares...))
+	r.POST("/api/mcp/client/{id}/reregister", lib.ChainMiddlewares(h.reregisterMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/verify-headers", lib.ChainMiddlewares(h.verifyMCPClientHeaders, middlewares...))
 	r.POST("/api/mcp/client/{id}/verify-exchange", lib.ChainMiddlewares(h.verifyMCPClientExchange, middlewares...))
 }
@@ -185,8 +187,37 @@ type MCPVKConfigResponse struct {
 // admin can rotate it proactively; end-user credentials are untouched
 // either way. Always redoes consent against whatever credentials are
 // currently stored on the oauth_configs row, no mode flag, no branching on
-// why the token needs it.
+// why the token needs it. To redo consent against a NEWLY registered client
+// instead, see reregisterMCPClient.
 func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
+	h.startMCPClientReauthorization(ctx, false)
+}
+
+// reregisterMCPClient handles POST /api/mcp/client/{id}/reregister.
+//
+// reauthorizeMCPClient's counterpart for the case where redoing consent
+// cannot work: the provider no longer recognises the client_id it issued
+// through dynamic registration (a client registry that did not survive a
+// restart, a client revoked upstream). Both the authorize request and the
+// code exchange behind it are then rejected with invalid_client, so an admin
+// can redo consent forever without recovering the connection. This registers
+// a replacement client first (RFC 7591) and runs consent against that.
+//
+// A separate route rather than a flag on reauthorize: the two differ in what
+// they destroy. Reauthorizing replaces one credential the admin is already
+// choosing to replace, while registering a new client invalidates every token
+// bound to the config — on a per_user_oauth server, every end user's. That
+// belongs in the path, where access control and audit logs can see it, not in
+// an optional request body.
+func (h *MCPHandler) reregisterMCPClient(ctx *fasthttp.RequestCtx) {
+	h.startMCPClientReauthorization(ctx, true)
+}
+
+// startMCPClientReauthorization is the shared body of reauthorizeMCPClient and
+// reregisterMCPClient: validate the client is one that can
+// reauthorize, optionally register a replacement OAuth client, then open an
+// admin-mode flow and hand back the upstream authorize URL.
+func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, reregisterClient bool) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
 		return
@@ -229,15 +260,75 @@ func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Register the replacement client BEFORE the flow is initiated, so the
+	// authorize URL this call hands back is already built from it. Doing it
+	// after would hand the admin a URL carrying the client_id that was just
+	// replaced, which is the failure this exists to fix.
+	// Computed once and used for both the registration and the consent behind
+	// it: the provider checks the authorize request's redirect_uri against
+	// what THAT client was registered with, so the two must be the same value,
+	// not two values that happen to agree until the external URL changes.
 	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+
+	var previousClientID, newClientID string
+	rotated := false
+	if reregisterClient {
+		previousClientID, newClientID, rotated, err = h.store.OAuthProvider.ReregisterDynamicClient(ctx, *clientConfig.OauthConfigID, redirectURI)
+		if err != nil {
+			// 400 only for what the caller can change their way out of: no
+			// registration endpoint to ask (set one, or reauthorize instead),
+			// or a provider that understood the request and refused it. A
+			// config that would not load, a provider that fell over, a
+			// replacement that would not persist: none of those is a mistake in
+			// the request, and calling it one sends the admin to fix the wrong
+			// thing.
+			status := fasthttp.StatusInternalServerError
+			if errors.Is(err, oauth2.ErrDynamicRegistrationUnavailable) || errors.Is(err, oauth2.ErrDynamicRegistrationRejected) {
+				status = fasthttp.StatusBadRequest
+			}
+			SendError(ctx, status, fmt.Sprintf("Failed to register a new OAuth client: %v", err))
+			return
+		}
+		if rotated {
+			// Same two steps, for the same reason, as the rotation in
+			// updateMCPClient: the cascade to needs_reauth is a database fact,
+			// and neither the provider's token cache (answered from before any
+			// row is read) nor a shared client's live connection (old bearer
+			// baked into its transport) knows about it. Through the cache
+			// manager rather than the provider, so a clustered deployment's
+			// override reaches its peers.
+			h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, clientConfig.ID)
+			if err := h.mcpManager.CloseAndMarkNeedsReauth(ctx, clientConfig.ID); err != nil && !errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+				logger.Error(fmt.Sprintf("Failed to close MCP client %s's connection after registering a new OAuth client: %v", clientConfig.ID, err))
+			}
+		}
+	}
+
+	// A failure from here on, after a rotation, is a partial success: the
+	// replacement client is registered upstream (which cannot be undone) and
+	// installed, and only the consent against it has not started. Reported the
+	// way updateMCPClient reports its own, and for a sharper reason: a caller
+	// who reads a bare failure as "nothing happened" retries this route and
+	// registers yet another client. reauthorize is what finishes the job,
+	// since it runs consent against whatever is stored, which is now the
+	// replacement.
+	failConsentSetup := func(what string, err error) {
+		if !rotated {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("%s: %v", what, err))
+			return
+		}
+		logger.Error(fmt.Sprintf("[PARTIAL SUCCESS] MCP client %s had a new OAuth client registered and installed (client_id %s replaces %s) but starting consent with it failed: %v", clientConfig.ID, newClientID, previousClientID, err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("A new OAuth client was registered and installed (client_id %s replaces %s), but starting consent with it failed: %v. Do not retry this request, which would register another client: call reauthorize to run consent against the client that is now stored", newClientID, previousClientID, err))
+	}
+
 	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate reauthorization: %v", err))
+		failConsentSetup("Failed to initiate reauthorization", err)
 		return
 	}
 	authorizeURL, err := h.store.OAuthProvider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to build authorize URL: %v", err))
+		failConsentSetup("Failed to build authorize URL", err)
 		return
 	}
 
@@ -249,7 +340,7 @@ func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
 	// signed in. With flow_id the status endpoint answers from the flow row
 	// instead, which stays "pending" until the callback actually completes.
 	statusURL := fmt.Sprintf("/api/oauth/config/%s/status?flow_id=%s", flowInitiation.OauthConfigID, url.QueryEscape(flowID))
-	SendJSON(ctx, map[string]any{
+	response := map[string]any{
 		"status":          "pending_oauth",
 		"oauth_config_id": flowInitiation.OauthConfigID,
 		"flow_id":         flowID,
@@ -263,7 +354,16 @@ func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
 			"2. Poll status_url to check when status becomes 'authorized'",
 			"3. POST complete_url to reconnect the MCP client",
 		},
-	})
+	}
+	// Reported back so the caller can show which client_id the consent it is
+	// about to run actually belongs to. Present only when a registration
+	// happened, and a provider that answers with the client_id it already
+	// issued reports both fields equal rather than claiming a swap.
+	if reregisterClient {
+		response["registered_client_id"] = newClientID
+		response["previous_client_id"] = previousClientID
+	}
+	SendJSON(ctx, response)
 }
 
 // initiateMCPClientVerification handles
