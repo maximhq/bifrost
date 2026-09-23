@@ -4,6 +4,7 @@
  */
 
 import { RuleGroupType } from "react-querybuilder";
+import { v4 as uuid } from "uuid";
 
 export interface RoutingTarget {
 	provider?: string;
@@ -71,13 +72,26 @@ export interface RoutingTargetFormData {
 	weight: number;
 }
 
+export interface RoutingFallbackFormData {
+	id: string;
+	value: string;
+}
+
+/**
+ * Map an API fallback string[] ("provider/model") to form objects with stable
+	 * and local select state stay attached to the same fallback.
+	 */
+export function routingFallbacksFromApi(fallbacks: string[] = []): RoutingFallbackFormData[] {
+	return fallbacks.map((value) => ({ id: uuid(), value }));
+}
+
 export interface RoutingRuleFormData {
 	id?: string;
 	name: string;
 	description: string;
 	cel_expression: string;
 	targets: RoutingTargetFormData[];
-	fallbacks: string[];
+	fallbacks: RoutingFallbackFormData[];
 	scope: string;
 	scope_id: string;
 	priority: number;
