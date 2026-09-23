@@ -981,6 +981,34 @@ paths:
     $ref: "./paths/management/accessprofiles.yaml#/access-profiles-audit-logs-by-id"
   /api/governance/access-profiles/audit-logs:
     $ref: "./paths/management/accessprofiles.yaml#/access-profiles-audit-logs-all"
+  # Access profiles held by a team, business unit or customer (Enterprise)
+  /api/governance/teams/access-profiles:
+    $ref: "./paths/management/accessprofiles.yaml#/teams~1access-profiles"
+  /api/governance/business-units/access-profiles:
+    $ref: "./paths/management/accessprofiles.yaml#/business-units~1access-profiles"
+  /api/governance/customers/access-profiles:
+    $ref: "./paths/management/accessprofiles.yaml#/customers~1access-profiles"
+  /api/governance/users/{user_id}/entity-access-profiles:
+    $ref: "./paths/management/accessprofiles.yaml#/users-entity-access-profiles"
+  /api/governance/teams/{team_id}/access-profile:
+    $ref: "./paths/management/accessprofiles.yaml#/teams~1{team_id}~1access-profile"
+  /api/governance/business-units/{business_unit_id}/access-profile:
+    $ref: "./paths/management/accessprofiles.yaml#/business-units~1{business_unit_id}~1access-profile"
+  /api/governance/customers/{customer_id}/access-profile:
+    $ref: "./paths/management/accessprofiles.yaml#/customers~1{customer_id}~1access-profile"
+  /api/governance/teams/{team_id}/access-profile/migrate:
+    $ref: "./paths/management/accessprofiles.yaml#/teams~1{team_id}~1access-profile~1migrate"
+  /api/governance/business-units/{business_unit_id}/access-profile/migrate:
+    $ref: "./paths/management/accessprofiles.yaml#/business-units~1{business_unit_id}~1access-profile~1migrate"
+  /api/governance/customers/{customer_id}/access-profile/migrate:
+    $ref: "./paths/management/accessprofiles.yaml#/customers~1{customer_id}~1access-profile~1migrate"
+  /api/governance/teams/{team_id}/access-profile/budgets/{budget_id}/override:
+    $ref: "./paths/management/accessprofiles.yaml#/teams~1{team_id}~1access-profile~1budgets~1{budget_id}~1override"
+  /api/governance/business-units/{business_unit_id}/access-profile/budgets/{budget_id}/override:
+    $ref: "./paths/management/accessprofiles.yaml#/business-units~1{business_unit_id}~1access-profile~1budgets~1{budget_id}~1override"
+  /api/governance/customers/{customer_id}/access-profile/budgets/{budget_id}/override:
+    $ref: "./paths/management/accessprofiles.yaml#/customers~1{customer_id}~1access-profile~1budgets~1{budget_id}~1override"
+
   /api/governance/users/{user_id}/access-profiles:
     $ref: "./paths/management/accessprofiles.yaml#/users-access-profiles"
   /api/governance/users/{user_id}/access-profiles/{profile_id}:
