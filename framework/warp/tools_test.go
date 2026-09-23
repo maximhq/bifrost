@@ -75,7 +75,10 @@ func (f *fakeLogReader) GetCostHistogram(ctx context.Context, filters *logstore.
 
 func runTool(t *testing.T, name string, deps *ToolDeps, args map[string]any) (any, error) {
 	t.Helper()
-	tool, ok := toolByName(buildTools(), name)
+	// Built for the deps under test: the semantic tool is only in the set when a
+	// searcher exists, which is the behaviour TestWarpToolsOmitSemanticSearch...
+	// pins, so a test exercising that tool has to supply one.
+	tool, ok := toolByName(buildToolsFor(deps.semantic), name)
 	require.True(t, ok, "tool %s should exist", name)
 	// Default to an identified caller. A deployment with no user identity has no
 	// default scope, so an unscoped query from one is refused - correct, but it
@@ -1093,4 +1096,24 @@ func TestWarpQueryLogsMarksSampledResults(t *testing.T) {
 	require.NoError(t, err)
 	out = result.(map[string]any)
 	require.Equal(t, false, out["sampled"], "every matching row was returned")
+}
+
+// The semantic tool is only usable where an embedding executor was configured.
+// Declaring it regardless means the model is told a capability exists, spends a
+// step calling it, and gets an error back - and on a deployment with no
+// embedding provider that is every single time it tries.
+func TestWarpToolsOmitSemanticSearchWhenUnavailable(t *testing.T) {
+	withSearcher := buildToolsFor(&SemanticSearcher{})
+	_, present := toolByName(withSearcher, SemanticSearchToolName)
+	require.True(t, present, "a configured deployment still offers semantic search")
+
+	without := buildToolsFor(nil)
+	_, present = toolByName(without, SemanticSearchToolName)
+	require.False(t, present, "a tool that cannot run must not be advertised to the model")
+
+	// Everything else is still there, so the agent is not crippled by the gap.
+	for _, name := range []string{"query_logs", "query_metrics", "describe_filter_space"} {
+		_, ok := toolByName(without, name)
+		require.True(t, ok, "%s must still be offered", name)
+	}
 }

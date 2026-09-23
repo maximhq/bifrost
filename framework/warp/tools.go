@@ -80,6 +80,7 @@ var Now = func() time.Time { return time.Now().UTC() }
 // is the decision point for whether Warp can see something new.
 type ToolDeps struct {
 	logManager LogReader
+	semantic   *SemanticSearcher
 	// scope is the caller's default slice of traffic. It narrows a question that
 	// named no scope of its own; it is not an access control, which queryscope
 	// already applies inside the store.
@@ -731,7 +732,21 @@ func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
 // per request, which is what will let a future change withhold content-bearing
 // tools from callers who may not read log bodies.
 func buildTools() []Tool {
-	return []Tool{
+	return buildToolsFor(nil)
+}
+
+// buildToolsFor returns the tools a request can actually run.
+//
+// semantic_search_logs needs an embedding executor, which a deployment may not
+// have configured. Declaring it anyway tells the model a capability exists,
+// costs it a step to discover otherwise, and on a deployment with no embedding
+// provider does that on every single attempt.
+func buildToolsFor(searcher *SemanticSearcher) []Tool {
+	tools := []Tool{}
+	if searcher != nil {
+		tools = append(tools, semanticSearchLogsTool())
+	}
+	tools = append(tools,
 		queryLogsTool(),
 		countLogsTool(),
 		getLogDetailTool(),
@@ -742,7 +757,8 @@ func buildTools() []Tool {
 		describeFilterSpaceTool(),
 		describeScopeTool(),
 		askUserToolDef(),
-	}
+	)
+	return tools
 }
 
 // ChatTools converts the tool set into provider-facing declarations.
