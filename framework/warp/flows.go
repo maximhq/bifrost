@@ -122,8 +122,8 @@ func semanticSearchLogsTool() Tool {
 func queryLogsTool() Tool {
 	return Tool{
 		name: "query_logs",
-		description: "List individual LLM request logs matching a filter. Returns compact rows (timestamp, provider, model, status, latency, tokens, cost, virtual key, user), not full message bodies. " +
-			"Use this to find specific requests - which ones failed, which were slowest, what a given user actually sent. For totals and trends use query_metrics instead, which is far cheaper.",
+		description: "List individual LLM request logs matching a filter. Returns compact rows (timestamp, provider, model, status, latency, tokens, cost, virtual key, user, and on an error row: error_message, error_type, error_code, status_code), not full message bodies. " +
+			"Use this to find specific requests - which ones failed, which were slowest, what a given user actually sent. It is also the right tool for 'what kinds of errors are these' - filter to status error and tally error_type/error_code across the returned rows, rather than opening each one individually. For totals and trends use query_metrics instead, which is far cheaper.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
@@ -745,6 +745,11 @@ var rankingDimensions = []struct {
 	{logstore.RankingDimensionProject, "the project on the request or its virtual key"},
 	{logstore.RankingDimensionApp, "the client app that sent the request"},
 	{logstore.RankingDimensionUserAgent, "the raw User-Agent string"},
+	{logstore.RankingDimensionErrorType, "the provider's error classification on a failed request, e.g. rate_limit_error, invalid_request_error, timeout - filter to status error first, or every non-error request is silently excluded rather than shown as a false zero"},
+	{logstore.RankingDimensionErrorCode, "the provider's finer-grained error code on a failed request, e.g. rate_limited, context_length_exceeded - same status-error caveat as error_type"},
+	{logstore.RankingDimensionFailReason, "why a retry attempt failed, e.g. rate_limit_error, authentication_error, billing_error - one request can contribute more than one (one per failed attempt before it succeeded or gave up), so totals here can exceed the request count"},
+	{logstore.RankingDimensionGuardrailRule, "which named guardrail rule fired - one request can trigger more than one rule, same over-count caveat as fail_reason"},
+	{logstore.RankingDimensionGuardrailAction, "what a guardrail did (e.g. block, redact) when it fired - same over-count caveat as fail_reason"},
 }
 
 // queryUsageByTool is flow 3: any dimension ranked by usage, one tool instead

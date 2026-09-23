@@ -222,6 +222,7 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	count_logs: { running: "Checking log volume", done: "Checked log volume" },
 	query_logs: { running: "Searching request logs", done: "Searched request logs" },
 	get_log_detail: { running: "Opening a request", done: "Opened a request" },
+	get_request_trace: { running: "Tracing what happened", done: "Traced what happened" },
 	query_metrics: { running: "Querying metrics", done: "Queried metrics" },
 	query_usage_by: { running: "Ranking usage", done: "Ranked usage" },
 	query_model_performance: { running: "Comparing models and providers", done: "Compared models and providers" },

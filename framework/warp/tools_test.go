@@ -106,6 +106,23 @@ type fakeLogReader struct {
 	// scheduler jitter.
 	entered chan struct{}
 	release chan struct{}
+
+	// getLogFunc, when set, answers GetLog by id - the lever get_request_trace's
+	// tests use to script a root row and its fallback children as distinct rows
+	// behind distinct ids. Unset behaves like a real store asked for a row that
+	// does not exist, rather than panicking through the embedded nil stub.
+	getLogFunc func(ctx context.Context, id string) (*logstore.Log, error)
+}
+
+func (f *fakeLogReader) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	f.mu.Lock()
+	fn := f.getLogFunc
+	f.sawContext = ctx
+	f.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("no log found with id %s", id)
+	}
+	return fn(ctx, id)
 }
 
 // enter records one more of this fake's calls starting, updating the
@@ -1124,6 +1141,42 @@ func TestWarpToolsPassCallerContextToStore(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "caller-scope", fake.sawContext.Value(scopeKey{}),
 		"the caller's context must reach the store, or queryscope stops filtering rows")
+}
+
+// A row's error fields must be usable to tally "what kinds of errors are
+// these" across many rows, so error_type/error_code/status_code need to come
+// through structured rather than only inside the free-text message - and
+// error_message itself must fall back to a sensible string (via
+// BifrostError.GetErrorString) even when the provider's Error field is absent
+// and only a status code was recorded.
+func TestWarpProjectLogExposesStructuredErrorFields(t *testing.T) {
+	entry := &logstore.Log{
+		ID: "req-1",
+		ErrorDetailsParsed: &schemas.BifrostError{
+			StatusCode: new(429),
+			Error: &schemas.ErrorField{
+				Type:    new("rate_limit_error"),
+				Code:    new("rate_limited"),
+				Message: "rate limit exceeded",
+			},
+		},
+	}
+	row := projectLog(entry, false, LogContentChars)
+	require.Equal(t, "rate limit exceeded", row.ErrorMessage)
+	require.Equal(t, "rate_limit_error", row.ErrorType)
+	require.Equal(t, "rate_limited", row.ErrorCode)
+	require.Equal(t, 429, row.StatusCode)
+
+	// No Error field at all - GetErrorString falls back to a status-derived
+	// string rather than leaving error_message blank.
+	statusOnly := &logstore.Log{
+		ID:                 "req-2",
+		ErrorDetailsParsed: &schemas.BifrostError{StatusCode: new(503)},
+	}
+	row = projectLog(statusOnly, false, LogContentChars)
+	require.Equal(t, "service unavailable", row.ErrorMessage)
+	require.Empty(t, row.ErrorType)
+	require.Equal(t, 503, row.StatusCode)
 }
 
 func TestWarpGetLogDetailRequiresID(t *testing.T) {

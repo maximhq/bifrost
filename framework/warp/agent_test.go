@@ -1018,11 +1018,28 @@ func TestWarpAgentRunsQueuedToolCallsConcurrently(t *testing.T) {
 	}
 	agent := newTestAgent(model, fake, 8)
 
+	// releaseFake is idempotent and deferred before the barrier loop below, so
+	// a t.Fatal timeout - which only unwinds this goroutine via Goexit, not the
+	// one below actually blocked in GetStats - still closes release on the way
+	// out. Without this, a timeout here would strand that goroutine forever
+	// (context.Background() never cancels either), holding its toolCallSem
+	// slot for the rest of the test binary. The explicit call further down
+	// stays, since the success path wants to unblock done before observing
+	// fake.statsCalls, and calling this twice is safe.
+	var releaseOnce sync.Once
+	releaseFake := func() { releaseOnce.Do(func() { close(fake.release) }) }
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		collectEvents(t, agent, context.Background())
 	}()
+	// Deferred before releaseFake, so on unwind it runs second (defers are
+	// LIFO): releaseFake opens the barrier first, then this waits for the
+	// goroutine it just unblocked. Waiting first would just add a second hang
+	// on top of the one the barrier already caused.
+	defer func() { <-done }()
+	defer releaseFake()
 
 	// If the calls actually ran one at a time, only one would ever be
 	// blocked in GetStats waiting on release at once, and this would time
@@ -1037,7 +1054,7 @@ func TestWarpAgentRunsQueuedToolCallsConcurrently(t *testing.T) {
 	}
 	require.Equal(t, int32(MaxToolCallsPerTurn), atomic.LoadInt32(&fake.activeStatsCalls),
 		"every queued call must be running at once, not trickling in one at a time")
-	close(fake.release)
+	releaseFake()
 	<-done
 
 	require.Equal(t, MaxToolCallsPerTurn, fake.statsCalls, "every call must actually have reached the store")
@@ -1084,7 +1101,22 @@ func TestWarpAgentToolCallCapIsGlobalAcrossConcurrentTurns(t *testing.T) {
 		release: make(chan struct{}),
 	}
 
+	// releaseFake is idempotent and deferred, along with wg.Wait, before any
+	// goroutine is even spawned below. This test holds the entire global
+	// semaphore (all maxConcurrentToolCalls slots) once its barrier is met, so
+	// a t.Fatal timeout here is the worst case of the leak this guards
+	// against: without it, the three goroutines below would stay blocked in
+	// GetStats forever (context.Background() never cancels), permanently
+	// starving every later test in the binary that calls a tool through
+	// toolCallSem. Deferred in this order (wg.Wait registered first,
+	// releaseFake second) so unwind runs releaseFake before wg.Wait - LIFO -
+	// opening the barrier before waiting for the goroutines it just unblocked.
+	var releaseOnce sync.Once
+	releaseFake := func() { releaseOnce.Do(func() { close(fake.release) }) }
 	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer releaseFake()
+
 	for range 3 {
 		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
 			MultiToolTurn(names...),
@@ -1112,7 +1144,7 @@ func TestWarpAgentToolCallCapIsGlobalAcrossConcurrentTurns(t *testing.T) {
 	}
 	require.Equal(t, int32(maxConcurrentToolCalls), atomic.LoadInt32(&fake.activeStatsCalls),
 		"the global cap must hold exactly maxConcurrentToolCalls calls in flight at once, not more")
-	close(fake.release)
+	releaseFake()
 	wg.Wait()
 
 	require.Equal(t, MaxToolCallsPerTurn*3, int(fake.statsCalls), "every call across all three turns must still have reached the store")
@@ -1423,4 +1455,30 @@ func TestWarpAgentRefusesRepeatedCallsWithinAStep(t *testing.T) {
 		}
 	}
 	require.Equal(t, 2, refused, "the repeats must be reported as refused, so the model is told why")
+}
+
+// The conversation budget only protects against an oversized upstream request
+// if the estimate can't fall meaningfully short of what the real tokenizer
+// would count. Dense non-ASCII content is exactly where a flat bytes/3
+// estimate falls short - a tokenizer's byte-fallback path can turn each such
+// byte into its own token - so it must not get the same discount ASCII does.
+func TestWarpEstimateTokensForBytesDoesNotDiscountNonASCII(t *testing.T) {
+	ascii := []byte(strings.Repeat("a", 300))
+	require.Equal(t, 100, estimateTokensForBytes(ascii), "ASCII keeps the bytesPerTokenEstimate discount")
+
+	// Same byte count, but non-ASCII: three-byte CJK runes, no discount applied.
+	nonASCII := []byte(strings.Repeat("值", 100))
+	require.Len(t, nonASCII, 300)
+	require.Equal(t, 300, estimateTokensForBytes(nonASCII),
+		"non-ASCII bytes must not be divided down, or byte-fallback-heavy content would undercount")
+
+	mixed := append(append([]byte{}, ascii...), nonASCII...)
+	require.Equal(t, 100+300, estimateTokensForBytes(mixed))
+}
+
+func TestWarpEstimateMessageTokensSumsAcrossMessages(t *testing.T) {
+	one := schemas.ResponsesMessage{ID: schemas.Ptr(strings.Repeat("a", 30))}
+	two := schemas.ResponsesMessage{ID: schemas.Ptr(strings.Repeat("值", 10))}
+	sum := estimateMessageTokens(one) + estimateMessageTokens(two)
+	require.Equal(t, sum, estimateMessageTokens(one, two))
 }

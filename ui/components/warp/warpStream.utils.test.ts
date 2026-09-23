@@ -102,6 +102,7 @@ describe("warpToolLabel", () => {
 			"count_logs",
 			"query_logs",
 			"get_log_detail",
+			"get_request_trace",
 			"query_metrics",
 			"query_usage_by",
 			"query_model_performance",
