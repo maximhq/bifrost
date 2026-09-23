@@ -2857,6 +2857,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
+		var chatToResponses *schemas.ChatToResponsesStreamState
+		defer func() { schemas.ReleaseChatToResponsesStreamState(chatToResponses) }()
 		// Transport-side overhead split (streaming): (B) outbound convert+marshal CPU
 		// and (A) client-socket write wait. Accumulated across the send loop below and
 		// stamped on the root span before trace completion; the breakdown uses their
@@ -3074,6 +3076,37 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					} else {
 						eventType, convertedResponse, err = config.StreamConfig.TextStreamResponseConverter(bifrostCtx, chunk.BifrostTextCompletionResponse)
 					}
+				case chunk.BifrostResponsesStreamResponse != nil && config.StreamConfig.ResponsesStreamResponseConverter != nil:
+					eventType, convertedResponse, err = config.StreamConfig.ResponsesStreamResponseConverter(bifrostCtx, chunk.BifrostResponsesStreamResponse)
+				case chunk.BifrostChatResponse != nil && config.StreamConfig.ChatStreamResponseConverter == nil && config.StreamConfig.ResponsesStreamResponseConverter != nil:
+					if chatToResponses == nil {
+						chatToResponses = schemas.AcquireChatToResponsesStreamState()
+					}
+					var events strings.Builder
+					for _, response := range chunk.BifrostChatResponse.ToBifrostResponsesStreamResponse(chatToResponses) {
+						convertedType, converted, convertErr := config.StreamConfig.ResponsesStreamResponseConverter(bifrostCtx, response)
+						if convertErr != nil {
+							err = convertErr
+							break
+						}
+						if converted == nil {
+							continue
+						}
+						if raw, ok := converted.(string); ok && (strings.HasPrefix(raw, "event: ") || strings.HasPrefix(raw, "data: ")) {
+							events.WriteString(raw)
+							continue
+						}
+						payload, marshalErr := sonic.Marshal(converted)
+						if marshalErr != nil {
+							err = marshalErr
+							break
+						}
+						if convertedType != "" {
+							fmt.Fprintf(&events, "event: %s\n", convertedType)
+						}
+						fmt.Fprintf(&events, "data: %s\n\n", payload)
+					}
+					convertedResponse = events.String()
 				case chunk.BifrostChatResponse != nil:
 					if config.StreamConfig.ChatStreamResponseConverter == nil {
 						converterMissing = true
