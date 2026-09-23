@@ -113499,9 +113499,43 @@
           "fallbacks": {
             "type": "array",
             "items": {
-              "type": "string"
+              "description": "A fallback in a routing rule's chain. Either the \"provider/model\" string (\"provider/\" keeps the incoming model), or an object that additionally pins a provider key.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "provider"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Fallback provider"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Fallback model (omit or empty to use the incoming request model)"
+                    },
+                    "key_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             },
-            "description": "Fallback providers in format \"provider/model\""
+            "description": "Ordered fallback chain, tried after the selected target fails"
           },
           "scope": {
             "type": "string",
@@ -113684,9 +113718,43 @@
           "fallbacks": {
             "type": "array",
             "items": {
-              "type": "string"
+              "description": "A fallback in a routing rule's chain. Either the \"provider/model\" string (\"provider/\" keeps the incoming model), or an object that additionally pins a provider key.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "provider"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Fallback provider"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Fallback model (omit or empty to use the incoming request model)"
+                    },
+                    "key_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             },
-            "description": "Fallback providers in format \"provider/model\""
+            "description": "Ordered fallback chain, tried after the selected target fails"
           },
           "scope": {
             "type": "string",
@@ -113822,8 +113890,43 @@
           "fallbacks": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
+              "description": "A fallback in a routing rule's chain. Either the \"provider/model\" string (\"provider/\" keeps the incoming model), or an object that additionally pins a provider key.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "provider"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Fallback provider"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Fallback model (omit or empty to use the incoming request model)"
+                    },
+                    "key_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "description": "Ordered fallback chain, tried after the selected target fails"
           },
           "priority": {
             "type": "integer"
