@@ -397,6 +397,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -417,6 +418,7 @@ func HandleGeminiChatCompletionStream(
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
@@ -522,9 +524,9 @@ func HandleGeminiChatCompletionStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
-			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
+			sseReader = providerUtils.GetSSEDataReaderSize(ctx, decompressedReader, streamReadBufferSize)
 		}
 
 		chunkIndex := 0
@@ -925,6 +927,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -945,6 +948,7 @@ func HandleGeminiResponsesStream(
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
@@ -1057,9 +1061,9 @@ func HandleGeminiResponsesStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
-			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
+			sseReader = providerUtils.GetSSEDataReaderSize(ctx, decompressedReader, streamReadBufferSize)
 		}
 
 		chunkIndex := 0
@@ -1551,7 +1555,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		sseReader := providerUtils.GetSSEDataReaderSize(ctx, reader, provider.networkConfig.StreamReadBufferSize())
 		chunkIndex := -1
 		usage := &schemas.SpeechUsage{}
 		lastChunkTime := startTime
@@ -1839,7 +1843,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		sseReader := providerUtils.GetSSEDataReaderSize(ctx, reader, provider.networkConfig.StreamReadBufferSize())
 		chunkIndex := -1
 		usage := &schemas.TranscriptionUsage{}
 		lastChunkTime := startTime
