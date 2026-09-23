@@ -584,3 +584,39 @@ func TestExecuteRequestWithRetries_TrailHasNoHintWhenTheProviderGaveNone(t *test
 		t.Errorf("retry_after_ms=%d without a provider hint, want 0", trail[0].RetryAfter)
 	}
 }
+
+// A selector failure that is neither errNoEligibleKeys nor errAllKeysDead is Bifrost's
+// own machinery failing. Carrying no status it resolved to 400, blaming the caller for
+// an operational fault and hiding it from 5xx dashboards.
+func TestExecuteRequestWithRetries_SelectorFailureIsInternal(t *testing.T) {
+	ctx := rotationTestContext()
+	called := false
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		called = true
+		return "ok", nil
+	}
+	selector := func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+		return schemas.Key{}, errors.New("selector exploded")
+	}
+
+	_, err := executeRequestWithRetries(ctx, createTestConfig(0, 0, 0), handler, selector,
+		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+	if err == nil {
+		t.Fatal("expected a selector failure to be returned")
+	}
+	if called {
+		t.Error("provider was called despite key selection failing")
+	}
+	if !err.IsBifrostError {
+		t.Error("selector failure is not attributed to Bifrost")
+	}
+	if got := err.EffectiveHTTPStatus(); got != 500 {
+		t.Errorf("EffectiveHTTPStatus() = %d, want 500", got)
+	}
+	if err.ExtraFields.ErrorType != schemas.ErrorTypeBifrostInternal {
+		t.Errorf("ErrorType = %q, want %q", err.ExtraFields.ErrorType, schemas.ErrorTypeBifrostInternal)
+	}
+	if got := schemas.ClassifyErrorType(err, schemas.ChatCompletionRequest); got != schemas.ErrorTypeBifrostInternal {
+		t.Errorf("ClassifyErrorType() = %q, want %q", got, schemas.ErrorTypeBifrostInternal)
+	}
+}

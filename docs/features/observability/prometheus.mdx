@@ -234,7 +234,7 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
-| `bifrost_error_requests_total` | Counter | Failed requests, by raw `status_code` and normalized `error_type` — see [Error Types](#error-types) |
+| `bifrost_error_requests_total` | Counter | Failed requests, by effective `status_code` and normalized `error_type` — see [Error Types](#error-types) |
 | `bifrost_input_tokens_total` | Counter | Total input tokens processed |
 | `bifrost_output_tokens_total` | Counter | Total output tokens generated |
 | `bifrost_cost_total` | Counter | Total cost in USD |
@@ -250,7 +250,11 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 
 ### Error Types
 
-`bifrost_error_requests_total` carries two error dimensions. `status_code` is the raw fact. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+`bifrost_error_requests_total` carries two error dimensions. `status_code` is the status the failure resolves to — the caller's status over HTTP, including the 500s Bifrost raises internally, but not for an error delivered inside an already-committed stream, where the caller saw a 200 and the error arrived in the event body. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+
+<Note>
+Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion error, or an empty or unparseable provider response — carried no status of its own and was labelled `status_code="unknown"`, even though the caller received a 500. 5xx dashboards and alerts under-counted these. They are now labelled `status_code="500"`; repoint anything keyed on `status_code="unknown"`, which is no longer emitted on this path.
+</Note>
 
 Values are prefixed by fault domain, so a success-rate alarm that should ignore caller mistakes is one clause rather than a list of reasons that grows over time:
 

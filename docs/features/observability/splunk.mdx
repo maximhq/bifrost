@@ -273,7 +273,7 @@ With `enable_metrics` on, the connector emits the following metrics to the metri
 |--------|-------------|------------|
 | `bifrost.requests.total` | Total LLM requests | provider, model, method |
 | `bifrost.success.total` | Successful requests | provider, model, method |
-| `bifrost.errors.total` | Failed requests | provider, model, method, reason |
+| `bifrost.errors.total` | Failed requests | provider, model, method, status_code, reason |
 | `bifrost.latency.seconds` | Request latency | provider, model, method |
 | `bifrost.tokens.input` | Input/prompt tokens | provider, model |
 | `bifrost.tokens.output` | Output/completion tokens | provider, model |
@@ -285,6 +285,18 @@ With `enable_metrics` on, the connector emits the following metrics to the metri
 | `bifrost.mcp.client.operation.duration` | Duration of an MCP tool call | mcp_method, mcp_tool_name, network_transport, error_type, and attribution |
 
 Every metric also carries your configured `custom_fields` and the scalar attribution dimensions.
+
+### Error dimensions
+
+`bifrost.errors.total` carries two error dimensions, mirroring `bifrost_error_requests_total` on the [Prometheus](./prometheus#error-types) and [OTel](./otel) sides.
+
+`status_code` is the status the failure resolves to. For a failure answered over HTTP that is the status the caller received, and it includes the 500s Bifrost raises internally — a request that fails during conversion or on an unparseable provider response has no upstream status of its own. For an error delivered inside an already-committed stream the caller saw HTTP 200 and the error in the event body, so this is the status the failure would have carried, not the wire status. Alert on this.
+
+`reason` is a per-provider vocabulary kept for existing dashboards and is deprecated; it resolves from `bifrost.error.type`, then `gen_ai.error.type`, then `gen_ai.error.code`, then `unknown`. Prefer `status_code`, or the normalized `bifrost.error.type` on the span.
+
+<Note>
+Before Bifrost 2.2.2 these internally-raised failures were tagged `status_code:unknown`, so 5xx dashboards under-counted them. If you have alerts or dashboards keyed on `status_code:unknown`, repoint them — that value is now emitted only for a span carrying no status at all.
+</Note>
 
 ---
 

@@ -279,7 +279,7 @@ func buildErrorSide(d *schemas.LLMSpanData, bifrostErr *schemas.BifrostError) {
 	}
 	d.Error = &schemas.SpanError{
 		Detail:     bifrostErr.Error,
-		StatusCode: bifrostErr.StatusCode,
+		StatusCode: schemas.Ptr(bifrostErr.EffectiveHTTPStatus()),
 	}
 	// Billed usage is what the provider charged for a failed or cancelled turn;
 	// without it every span-based consumer records zero tokens.

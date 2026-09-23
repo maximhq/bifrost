@@ -6526,7 +6526,19 @@ func executeRequestWithRetries[T any](
 						},
 					}
 				}
-				return zero, newBifrostErrorFromMsg(err.Error())
+				// Any other selector failure is Bifrost's own machinery, not the
+				// caller's request. Without a status it would resolve to 400.
+				statusCode := 500
+				return zero, &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     &statusCode,
+					Error: &schemas.ErrorField{
+						Message: err.Error(),
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						ErrorType: schemas.ErrorTypeBifrostInternal,
+					},
+				}
 			}
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
@@ -6823,14 +6835,9 @@ func executeRequestWithRetries[T any](
 				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			}
 
-			// End span with appropriate status
+			// End span with appropriate status. Error attributes (gen_ai.error,
+			// http.response.status_code) are stamped by PopulateLLMResponseAttributes above.
 			if bifrostError != nil {
-				if bifrostError.Error != nil {
-					tracer.SetAttribute(handle, "error", bifrostError.Error.Message)
-				}
-				if bifrostError.StatusCode != nil {
-					tracer.SetAttribute(handle, "status_code", *bifrostError.StatusCode)
-				}
 				tracer.EndSpan(handle, schemas.SpanStatusError, "request failed")
 			} else {
 				tracer.EndSpan(handle, schemas.SpanStatusOk, "")

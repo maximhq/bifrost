@@ -437,7 +437,7 @@ The plugin emits the following metrics to Datadog:
 |--------|------|-------------|------|
 | `bifrost.requests.total` | Counter | Total LLM requests | provider, model, method |
 | `bifrost.success.total` | Counter | Successful requests | provider, model, method |
-| `bifrost.errors.total` | Counter | Failed requests | provider, model, method, reason |
+| `bifrost.errors.total` | Counter | Failed requests | provider, model, method, status_code, reason |
 | `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, method |
 | `bifrost.tokens.input` | Counter | Input/prompt tokens consumed | provider, model |
 | `bifrost.tokens.output` | Counter | Output/completion tokens generated | provider, model |
@@ -447,6 +447,18 @@ The plugin emits the following metrics to Datadog:
 | `bifrost.stream.first_token_latency` | Histogram | Time to first token (streaming) | provider, model |
 | `bifrost.stream.inter_token_latency` | Histogram | Inter-token latency (streaming) | provider, model |
 | `bifrost.mcp.client.operation.duration` | Histogram | Duration of an MCP tool call (mirrors the OTel semconv `mcp.client.operation.duration`) | mcp_method, mcp_tool_name, network_transport, error_type, virtual_key_id, virtual_key_name, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name, project_id, project_name |
+
+### Error tags
+
+`bifrost.errors.total` carries two error dimensions, mirroring `bifrost_error_requests_total` on the [Prometheus](./prometheus#error-types) and [OTel](./otel) sides.
+
+`status_code` is the status the failure resolves to. For a failure answered over HTTP that is the status the caller received, and it includes the 500s Bifrost raises internally — a request that fails during conversion or on an unparseable provider response has no upstream status of its own. For an error delivered inside an already-committed stream the caller saw HTTP 200 and the error in the event body, so this is the status the failure would have carried, not the wire status. Alert on this.
+
+`reason` is a per-provider vocabulary kept for existing dashboards and is deprecated; it resolves from `bifrost.error.type`, then `gen_ai.error.type`, then `gen_ai.error.code`, then `unknown`. Prefer `status_code`, or the normalized `bifrost.error.type` on the span.
+
+<Note>
+Before Bifrost 2.2.2 these internally-raised failures were tagged `status_code:unknown`, so 5xx dashboards under-counted them. If you have alerts or dashboards keyed on `status_code:unknown`, repoint them — that value is now emitted only for a span carrying no status at all.
+</Note>
 
 ### Migrating from `bifrost.cost.usd`
 

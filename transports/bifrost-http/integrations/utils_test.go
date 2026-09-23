@@ -116,6 +116,7 @@ func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 	tests := []struct {
 		name               string
 		statusCode         *int
+		isBifrostError     bool
 		expectedStatusCode int
 	}{
 		{
@@ -139,8 +140,16 @@ func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 			expectedStatusCode: 529,
 		},
 		{
-			name:               "nil StatusCode defaults to 500",
+			// Same ladder as the unary sendError path: a provider-attributed error
+			// with no status is a caller problem, an internal one is a 500.
+			name:               "nil StatusCode, provider-attributed, defaults to 400",
 			statusCode:         nil,
+			expectedStatusCode: 400,
+		},
+		{
+			name:               "nil StatusCode, bifrost-internal, defaults to 500",
+			statusCode:         nil,
+			isBifrostError:     true,
 			expectedStatusCode: 500,
 		},
 	}
@@ -152,7 +161,8 @@ func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 			bifrostCtx := newTestBifrostContext()
 
 			bifrostErr := &schemas.BifrostError{
-				StatusCode: tt.statusCode,
+				StatusCode:     tt.statusCode,
+				IsBifrostError: tt.isBifrostError,
 				Error: &schemas.ErrorField{
 					Message: "test error",
 				},

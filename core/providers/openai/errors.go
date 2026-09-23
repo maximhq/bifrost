@@ -68,6 +68,12 @@ func responsesStreamError(response *schemas.BifrostResponsesStreamResponse) *sch
 		}
 	}
 
+	// The transport status is 200, so without a status here the error reaches metrics
+	// as a caller 400 and ClassifyFailure has nothing to act on.
+	if bifrostErr.StatusCode == nil {
+		bifrostErr.StatusCode = schemas.Ptr(streamErrorStatus(bifrostErr.Error))
+	}
+
 	if bifrostErr.Error.Message == "" {
 		details := eventType
 		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" && *bifrostErr.Error.Type != eventType {
@@ -80,6 +86,42 @@ func responsesStreamError(response *schemas.BifrostResponsesStreamResponse) *sch
 	}
 
 	return bifrostErr
+}
+
+// streamErrorStatus infers the status a stream error would have carried over HTTP from
+// the provider's own code or type. A blanket 502 would make every stream failure look
+// transient: a rate limit would be retried on the same key instead of rotating, and a
+// context-length rejection would be retried though it can never succeed.
+func streamErrorStatus(field *schemas.ErrorField) int {
+	var code, errType string
+	if field != nil {
+		if field.Code != nil {
+			code = *field.Code
+		}
+		if field.Type != nil {
+			errType = *field.Type
+		}
+	}
+	switch {
+	case matchesStreamErrorSignal(code, errType, "rate_limit_exceeded", "rate_limit_error", "too_many_requests", "insufficient_quota"):
+		return fasthttp.StatusTooManyRequests
+	case matchesStreamErrorSignal(code, errType, "context_length_exceeded", "invalid_prompt", "invalid_request_error"):
+		return fasthttp.StatusBadRequest
+	}
+	// Unknown: the upstream failed and gave nothing to go on, which is what Bifrost
+	// already reports as 502. Keeps first-chunk failures retryable as transient.
+	return fasthttp.StatusBadGateway
+}
+
+// matchesStreamErrorSignal reports whether the event's code or type is one of want.
+// Providers disagree on which of the two carries the fact, so both are checked.
+func matchesStreamErrorSignal(code, errType string, want ...string) bool {
+	for _, w := range want {
+		if code == w || errType == w {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseOpenAIError parses OpenAI error responses.
