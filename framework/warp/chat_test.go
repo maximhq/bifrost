@@ -104,8 +104,15 @@ func normalizeToolCallDurations(response ChatResponse) ChatResponse {
 // asking the model rather than finishing an answer nobody will read.
 //
 // Events are buffered, so the agent can be a few steps ahead of the sink when
-// the refusal lands; what matters is that the cancellation reaches the model
-// call in flight and that no call starts after it.
+// the refusal lands, and RunTurn itself returns the moment the sink refuses -
+// well before agent.Run's own goroutine necessarily reaches its next
+// cancellation check. Which of two outcomes results is a genuine, harmless
+// race: either a second model call starts and is then cancelled mid-flight
+// (the scripted model's blocking behavior exists to prove that reaches it),
+// or the cancellation is already visible by the time the loop would have
+// started one, and it never does - the cheaper of the two, not a failure.
+// What must never happen, and is what this test actually guards, is a call
+// that starts after the refusal and is never cancelled, or a third call.
 func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 	scripted := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
 		ToolTurn("loop", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
@@ -161,12 +168,30 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 	})
 	require.Nil(t, response.Error, "the refused frame is not an error, the client simply left")
 
+	// ctx was already cancelled by the time RunTurn returned above (stop() is
+	// called synchronously before it does) - so nothing below is waiting on
+	// cancellation to propagate, only on agent.Run's own goroutine, running
+	// independently, to reach whichever check settles it: either it notices
+	// ctx.Err() before starting a second call, or it starts one and that call
+	// sees the already-cancelled ctx and returns at once. Both settle in
+	// microseconds; the grace period is slack for scheduler noise, not
+	// something a correct run should ever need.
 	select {
 	case <-released:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the in-flight model call was never cancelled")
+		// A second call started and was cancelled - what the scripted model's
+		// blocking behavior exists to prove reaches it.
+	case <-time.After(300 * time.Millisecond):
+		// No second call arrived - the other valid outcome: the loop noticed
+		// the refusal before it would have started one.
 	}
-	require.Equal(t, int32(2), calls.Load(), "no model call may start after the client is gone")
+	require.LessOrEqual(t, calls.Load(), int32(2), "no more than one call may run past the refusal")
+	if calls.Load() == 2 {
+		select {
+		case <-released:
+		case <-time.After(time.Second):
+			t.Fatal("a model call that started after the refusal was never cancelled")
+		}
+	}
 }
 
 func TestWarpNewTurnMapsRequestProblems(t *testing.T) {

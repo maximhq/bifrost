@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -19,8 +21,19 @@ import (
 // tools reach are implemented; the rest of logging.LogManager is embedded as a
 // nil interface, so an executor that starts calling something new fails loudly
 // with a nil-pointer panic in tests rather than silently widening Warp's reach.
+//
+// mu guards every field below: the agent loop runs a step's tool calls
+// concurrently (see Agent.Run), so a test scripting two calls that both reach
+// this fake - two query_metrics calls, or query_metrics alongside count_logs,
+// both hitting GetStats - hits it from more than one goroutine at once. The
+// four org-hierarchy lookups already had this same problem solved a different
+// way (a distinct field per method, see the comment below) because they have
+// always run concurrently, inside describe_filter_space's own fan-out; mu is
+// the general form of that fix for every other method here.
 type fakeLogReader struct {
 	LogReaderStub
+
+	mu sync.Mutex
 
 	searchFilters    *logstore.SearchFilters
 	searchPagination *logstore.PaginationOptions
@@ -70,9 +83,48 @@ type fakeLogReader struct {
 	// a current period distinct from a previous one.
 	statsResponses []*logstore.SearchStats
 	sawContext     context.Context
+	// *Delay, when set, makes the matching method take real wall-clock time
+	// before returning - the lever a test has to prove several calls actually
+	// overlap (or complete out of order) rather than just not visibly failing
+	// when run together.
+	statsDelay          time.Duration
+	histogramDelay      time.Duration
+	costHistogramDelay  time.Duration
+	tokenHistogramDelay time.Duration
+	// activeStatsCalls and peakStatsCalls track how many GetStats calls are
+	// in flight at once, atomically - the lever a test has to prove a global
+	// concurrency cap (see toolCallSem) actually bounds callers spread across
+	// several Agent/turn instances, not just within one.
+	activeStatsCalls int32
+	peakStatsCalls   int32
+	// entered and release, when both set, turn GetStats into a rendezvous
+	// point: each call sends on entered right after it is counted in
+	// activeStatsCalls, then blocks until release is closed. This lets a
+	// test wait for an exact number of calls to actually be in flight at
+	// once and assert on that count directly, instead of inferring overlap
+	// from wall-clock delays and a timing margin that could flake under
+	// scheduler jitter.
+	entered chan struct{}
+	release chan struct{}
+}
+
+// enter records one more of this fake's calls starting, updating the
+// high-water mark if this is the most that have ever overlapped, and returns
+// the matching exit func.
+func (f *fakeLogReader) enter() (exit func()) {
+	active := atomic.AddInt32(&f.activeStatsCalls, 1)
+	for {
+		peak := atomic.LoadInt32(&f.peakStatsCalls)
+		if active <= peak || atomic.CompareAndSwapInt32(&f.peakStatsCalls, peak, active) {
+			break
+		}
+	}
+	return func() { atomic.AddInt32(&f.activeStatsCalls, -1) }
 }
 
 func (f *fakeLogReader) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.searchFilters, f.searchPagination = filters, pagination
 	if f.searchResult != nil {
@@ -82,6 +134,8 @@ func (f *fakeLogReader) Search(ctx context.Context, filters *logstore.SearchFilt
 }
 
 func (f *fakeLogReader) GetDimensionRankings(ctx context.Context, filters *logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.rankingFilters, f.rankingDimension = filters, dimension
 	return &logstore.DimensionRankingResult{
@@ -91,34 +145,74 @@ func (f *fakeLogReader) GetDimensionRankings(ctx context.Context, filters *logst
 }
 
 func (f *fakeLogReader) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.rankingFilters = filters
 	return &logstore.ModelRankingResult{}, nil
 }
 
+// wait sleeps for delay, if any, without holding the fake's lock - holding it
+// across the sleep would serialize every concurrent caller through this fake
+// regardless of whether the agent loop itself ran them concurrently, which is
+// exactly the thing a test using a delay is trying to observe. ctx.Done()
+// still cuts it short, the same as a real, cancellable store call would.
+func wait(ctx context.Context, delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+	}
+}
+
 func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
+	f.mu.Lock()
 	f.sawContext = ctx
 	f.statsCalled = true
 	f.statsFiltersSeen = append(f.statsFiltersSeen, filters)
+	var resp *logstore.SearchStats
 	if len(f.statsResponses) > f.statsCalls {
-		resp := f.statsResponses[f.statsCalls]
-		f.statsCalls++
-		return resp, nil
+		resp = f.statsResponses[f.statsCalls]
+	} else {
+		resp = &logstore.SearchStats{}
 	}
 	f.statsCalls++
-	return &logstore.SearchStats{}, nil
+	delay := f.statsDelay
+	entered, release := f.entered, f.release
+	f.mu.Unlock()
+
+	defer f.enter()()
+	if entered != nil && release != nil {
+		entered <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}
+	wait(ctx, delay)
+	return resp, nil
 }
 
 func (f *fakeLogReader) GetHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.HistogramResult, error) {
+	f.mu.Lock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
-	if f.histogramResult != nil {
-		return f.histogramResult, nil
+	result := f.histogramResult
+	delay := f.histogramDelay
+	f.mu.Unlock()
+
+	wait(ctx, delay)
+	if result != nil {
+		return result, nil
 	}
 	return &logstore.HistogramResult{}, nil
 }
 
 func (f *fakeLogReader) GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
 	if f.latencyHistogramResult != nil {
@@ -128,24 +222,38 @@ func (f *fakeLogReader) GetLatencyHistogram(ctx context.Context, filters *logsto
 }
 
 func (f *fakeLogReader) GetTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.TokenHistogramResult, error) {
+	f.mu.Lock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
-	if f.tokenHistogramResult != nil {
-		return f.tokenHistogramResult, nil
+	result := f.tokenHistogramResult
+	delay := f.tokenHistogramDelay
+	f.mu.Unlock()
+
+	wait(ctx, delay)
+	if result != nil {
+		return result, nil
 	}
 	return &logstore.TokenHistogramResult{}, nil
 }
 
 func (f *fakeLogReader) GetCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.CostHistogramResult, error) {
+	f.mu.Lock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
-	if f.costHistogramResult != nil {
-		return f.costHistogramResult, nil
+	result := f.costHistogramResult
+	delay := f.costHistogramDelay
+	f.mu.Unlock()
+
+	wait(ctx, delay)
+	if result != nil {
+		return result, nil
 	}
 	return &logstore.CostHistogramResult{}, nil
 }
 
 func (f *fakeLogReader) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
 	if f.throughputHistogramResult != nil {
@@ -155,6 +263,8 @@ func (f *fakeLogReader) GetThroughputHistogram(ctx context.Context, filters *log
 }
 
 func (f *fakeLogReader) GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
 	if f.providerLatencyHistogramResult != nil {
@@ -164,6 +274,8 @@ func (f *fakeLogReader) GetProviderLatencyHistogram(ctx context.Context, filters
 }
 
 func (f *fakeLogReader) GetProviderTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
 	if f.providerTokenHistogramResult != nil {
@@ -173,6 +285,8 @@ func (f *fakeLogReader) GetProviderTokenHistogram(ctx context.Context, filters *
 }
 
 func (f *fakeLogReader) GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
 	if f.providerCostHistogramResult != nil {
@@ -182,6 +296,8 @@ func (f *fakeLogReader) GetProviderCostHistogram(ctx context.Context, filters *l
 }
 
 func (f *fakeLogReader) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
 	if f.providerThroughputHistogramResult != nil {
@@ -191,28 +307,42 @@ func (f *fakeLogReader) GetProviderThroughputHistogram(ctx context.Context, filt
 }
 
 func (f *fakeLogReader) GetAvailableTeams(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.teamsQuerySeen = query
 	return f.availableTeams, nil
 }
 func (f *fakeLogReader) GetAvailableCustomers(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.customersQuerySeen = query
 	return f.availableCustomers, nil
 }
 func (f *fakeLogReader) GetAvailableBusinessUnits(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.businessUnitsQuerySeen = query
 	return f.availableBusinessUnits, nil
 }
 func (f *fakeLogReader) GetAvailableVirtualKeys(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.virtualKeysQuerySeen = query
 	return f.availableVirtualKeys, nil
 }
 func (f *fakeLogReader) GetAvailableModels(_ context.Context, _ int, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.availableModels, nil
 }
 func (f *fakeLogReader) GetAvailableApps(_ context.Context, _ int, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.availableApps, nil
 }
 func (f *fakeLogReader) GetAvailableStopReasons(_ context.Context, _ int, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.availableStopReasons, nil
 }
 
