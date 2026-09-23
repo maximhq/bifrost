@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -380,6 +381,87 @@ func isTransientToolCallError(err error) bool {
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
 	for _, needle := range []string{"401", "403", "unauthorized", "forbidden"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// deadSessionErrorSubstrings is what "the upstream has abandoned this MCP
+// session" looks like by the time it reaches a CallTool error. Like
+// isAuthFailureErrorText above, substring matching on flattened text is the
+// only option: mcp-go collapses HTTP status codes and its own sentinels into a
+// plain error string before any call site sees them. What it does keep is the
+// *transport.Error frame around anything the transport (as opposed to the
+// tool) produced, and isDeadSessionError matches these needles only inside
+// that frame.
+//
+// The spec's signal is HTTP 404 on a request carrying Mcp-Session-Id, which
+// mcp-go turns into ErrSessionTerminated ("session terminated (404). need to
+// re-initialize"), so the first two entries cover every compliant server. The
+// rest are wordings real servers use when they answer a dead session with
+// something other than a 404.
+//
+// Deliberately narrow. Generic transport failures (connection refused, broken
+// pipe, 5xx) are left out even though a reconnect would sometimes help: they
+// are already retried by ToolCallRetryConfig, the periodic connection checker
+// repairs the ones a reconnect can fix, and a false positive here costs a
+// needless session swap plus one extra attempt at the tool.
+var deadSessionErrorSubstrings = []string{
+	"session terminated", "need to re-initialize",
+	"expect initialize request", "session not found",
+	"invalid session", "unknown session", "no transport found for session",
+}
+
+// isDeadSessionError reports whether an upstream tool-call error says the MCP
+// session behind the connection is gone. Retrying over the same connection
+// cannot fix that; only a fresh one can. Prefer this over the text-only form
+// below whenever the error value itself is in hand.
+//
+// The typed check comes first because it does not depend on how the sentinel is
+// worded: mcp-go returns ErrSessionTerminated for the spec's signal (a 404 on a
+// request carrying Mcp-Session-Id) and preserves it through its own wrapping,
+// so errors.Is sees it at the call site.
+//
+// The text fallback is not redundant, and cannot be removed. It is the only
+// signal a server gives when it answers a dead session with something other
+// than a 404: the 422 carrying "Unexpected message, expect initialize request"
+// that prompted this work has no typed error anywhere, because mcp-go formats
+// non-404 statuses straight into prose. Today the two checks agree on every
+// input, since the sentinel's own text contains one of the needles below; the
+// typed check is what keeps that true if the wording ever changes upstream.
+//
+// The text fallback only reads errors the transport produced. client.sendRequest
+// returns exactly two shapes: a transport failure, which it wraps in
+// *transport.Error, or the tool's own JSON-RPC error, which it flattens to the
+// tool's message with no wrapper at all (mcp.JSONRPCErrorDetails.AsError). Every
+// dead-session wording above comes from the first shape, an HTTP status the
+// transport formatted into prose. The second shape is the tool talking about
+// its own domain, and a tool that legitimately answers "invalid session" or
+// "session not found" must not be mistaken for a dead MCP session: the recovery
+// this gates reconnects a healthy client and, for a retry-safe tool, replays
+// the call. errors.As rather than a type assertion, because ExecuteWithRetry
+// and callers may wrap the transport error further before it gets here.
+func isDeadSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, transport.ErrSessionTerminated) {
+		return true
+	}
+	var transportErr *transport.Error
+	if !errors.As(err, &transportErr) {
+		return false
+	}
+	return isDeadSessionErrorText(transportErr.Error())
+}
+
+// isDeadSessionErrorText is the text half of isDeadSessionError, kept separate
+// for callers that only hold the flattened message.
+func isDeadSessionErrorText(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	for _, needle := range deadSessionErrorSubstrings {
 		if strings.Contains(lower, needle) {
 			return true
 		}
