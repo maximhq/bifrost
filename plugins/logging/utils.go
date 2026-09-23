@@ -921,6 +921,32 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 	return metadata
 }
 
+// mergeLoadBalancerMetadata folds the enterprise load balancer's per-attempt routing decision into a
+// log row's metadata. Only keys carrying schemas.LoadBalancerMetadataPrefix are taken, so the load
+// balancer cannot write into the caller's namespace; where a caller header produced the same prefixed
+// key, the load balancer's value wins, so a header can never masquerade as a routing decision. The
+// map is read at PostLLMHook time because key selection, which stamps the key-level decision, runs
+// after PreLLMHook.
+func mergeLoadBalancerMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	attempt, ok := ctx.Value(schemas.BifrostContextKeyLoadBalancerAttempt).(map[string]string)
+	if !ok || len(attempt) == 0 {
+		return metadata
+	}
+	for key, value := range attempt {
+		if !strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]interface{}, len(attempt))
+		}
+		metadata[key] = value
+	}
+	return metadata
+}
+
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.
 // Format: [timestamp] [engine] [level] - message
 // The level token lets the log detail view filter and badge each line by severity.

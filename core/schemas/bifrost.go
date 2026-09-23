@@ -430,6 +430,7 @@ const (
 	BifrostContextKeyCompatDroppedParams                 BifrostContextKey = "bifrost-compat-dropped-params"              // []string (set by compat plugin) - params stripped from the request because the model catalog did not allowlist them; read back in PostLLMHook to populate extra_fields.dropped_compat_plugin_params
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
+	BifrostContextKeyLoadBalancerAttempt                 BifrostContextKey = "bifrost-lb-attempt"                         // map[string]string (set by the enterprise load balancer plugin - DO NOT SET THIS MANUALLY) - flat, string-valued routing decision for the current attempt, every key prefixed with LoadBalancerMetadataPrefix; the logging plugin merges it into the log row's metadata, and a key-selection decision overwrites the previous attempt's value on the shared context
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
 	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
 	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"         // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
@@ -488,6 +489,12 @@ const (
 	// engines (governance, loadbalancing, etc.) selected upstream.
 	RoutingEngineCore = "core"
 )
+
+// LoadBalancerMetadataPrefix prefixes every key the enterprise load balancer records under
+// BifrostContextKeyLoadBalancerAttempt. The logging plugin gives keys with this prefix precedence
+// over caller-supplied metadata of the same name, so a caller header can never masquerade as a
+// routing decision.
+const LoadBalancerMetadataPrefix = "bifrost_alb_"
 
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.
