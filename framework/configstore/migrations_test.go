@@ -3935,3 +3935,176 @@ func TestMigrationAddGithubCopilotConfigColumns_NonRollbackable(t *testing.T) {
 	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotKeyConfig.PrivateKey.GetValue(),
 		"the private key must survive the refused rollback")
 }
+
+// oauth2PreWidenDDL returns the three OAuth2 AS tables as
+// migrationAddOAuth2IssuanceTables created them before the client-controlled
+// columns were widened to text: state varchar(512), client_name and every scope
+// column varchar(255). Those bounds are the upgrade path the widen migration
+// exists for; everything else matches the structs of that time.
+func oauth2PreWidenDDL(dialect string) []string {
+	ts := "DATETIME"
+	if dialect == "postgres" {
+		ts = "TIMESTAMPTZ"
+	}
+	return []string{
+		`CREATE TABLE oauth2_clients (
+			id VARCHAR(255) PRIMARY KEY,
+			client_id VARCHAR(255) NOT NULL UNIQUE,
+			client_name VARCHAR(255),
+			redirect_uris_json TEXT NOT NULL,
+			grant_types_json TEXT NOT NULL,
+			scope VARCHAR(255),
+			created_at ` + ts + ` NOT NULL
+		)`,
+		`CREATE TABLE oauth2_authorize_requests (
+			id VARCHAR(255) PRIMARY KEY,
+			client_id VARCHAR(255) NOT NULL,
+			redirect_uri TEXT NOT NULL,
+			state VARCHAR(512) NOT NULL,
+			scope VARCHAR(255),
+			resource TEXT NOT NULL,
+			code_challenge VARCHAR(512) NOT NULL,
+			code_challenge_method VARCHAR(10) NOT NULL,
+			status VARCHAR(20) NOT NULL,
+			bf_mode VARCHAR(20),
+			bf_sub VARCHAR(255),
+			code_hash VARCHAR(255) UNIQUE,
+			expires_at ` + ts + ` NOT NULL,
+			created_at ` + ts + ` NOT NULL,
+			updated_at ` + ts + ` NOT NULL
+		)`,
+		`CREATE TABLE oauth2_refresh_tokens (
+			id VARCHAR(255) PRIMARY KEY,
+			token_hash VARCHAR(255) NOT NULL UNIQUE,
+			family_id VARCHAR(255) NOT NULL,
+			client_id VARCHAR(255) NOT NULL,
+			bf_mode VARCHAR(20) NOT NULL,
+			bf_sub VARCHAR(255) NOT NULL,
+			scope VARCHAR(255),
+			resource TEXT NOT NULL,
+			revoked_at ` + ts + `,
+			last_used_at ` + ts + `,
+			created_at ` + ts + ` NOT NULL
+		)`,
+	}
+}
+
+// oauth2WidenedColumns lists every (table, column) the widen migration targets.
+var oauth2WidenedColumns = []struct{ table, column string }{
+	{"oauth2_authorize_requests", "state"},
+	{"oauth2_authorize_requests", "scope"},
+	{"oauth2_clients", "client_name"},
+	{"oauth2_clients", "scope"},
+	{"oauth2_refresh_tokens", "scope"},
+}
+
+// forEachOAuth2PreWidenDB returns the pre-widen tables on every available
+// backend. Postgres is the one that matters: it enforces varchar(n), SQLite does
+// not, so only Postgres can show the bounds and their removal.
+func forEachOAuth2PreWidenDB(t *testing.T) []namedDB {
+	t.Helper()
+	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err, "Failed to create test database")
+	for _, stmt := range oauth2PreWidenDDL("sqlite") {
+		require.NoError(t, sqliteDB.Exec(stmt).Error)
+	}
+	dbs := []namedDB{{"sqlite", sqliteDB}}
+
+	pgDB, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return dbs
+	}
+	sqlDB, err := pgDB.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		return dbs
+	}
+	if pgDB.Exec("CREATE SCHEMA IF NOT EXISTS "+pgTestSchema).Error != nil {
+		return dbs
+	}
+	dropAll := func() {
+		pgDB.Exec("DROP TABLE IF EXISTS oauth2_refresh_tokens CASCADE")
+		pgDB.Exec("DROP TABLE IF EXISTS oauth2_authorize_requests CASCADE")
+		pgDB.Exec("DROP TABLE IF EXISTS oauth2_clients CASCADE")
+	}
+	dropAll()
+	pgDB.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`)
+	pgDB.Exec("DELETE FROM migrations")
+	for _, stmt := range oauth2PreWidenDDL("postgres") {
+		if err := pgDB.Exec(stmt).Error; err != nil {
+			return dbs
+		}
+	}
+	t.Cleanup(func() {
+		pgDB.Exec("DELETE FROM migrations")
+		dropAll()
+	})
+	return append(dbs, namedDB{"postgres", pgDB})
+}
+
+// TestMigrationWidenOAuth2ClientControlledColumns verifies the upgrade path: an
+// existing deployment whose client-controlled OAuth2 columns are still varchar
+// accepts arbitrarily long values in each once the migration has run. On
+// Postgres every pre-migration insert is required to fail first, so the
+// post-migration success is proof of the widening rather than of a bound that
+// was never enforced.
+func TestMigrationWidenOAuth2ClientControlledColumns(t *testing.T) {
+	ctx := context.Background()
+	logr := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	long := strings.Repeat("s", 4096)
+	insertClient := func(db *gorm.DB, id string) error {
+		return db.Exec(`
+			INSERT INTO oauth2_clients (id, client_id, client_name, redirect_uris_json, grant_types_json, scope, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			id, id, long, `["https://client.example/cb"]`, `["authorization_code"]`, long, time.Now()).Error
+	}
+	insertRequest := func(db *gorm.DB, id string) error {
+		now := time.Now()
+		return db.Exec(`
+			INSERT INTO oauth2_authorize_requests (id, client_id, redirect_uri, state, scope, resource, code_challenge, code_challenge_method, status, expires_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, "client-1", "https://client.example/cb", long, long, "https://bifrost.test/mcp",
+			"challenge", "S256", "pending", now.Add(time.Minute), now, now).Error
+	}
+	insertRefreshToken := func(db *gorm.DB, id string) error {
+		return db.Exec(`
+			INSERT INTO oauth2_refresh_tokens (id, token_hash, family_id, client_id, bf_mode, bf_sub, scope, resource, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, "hash-"+id, "req-1", "client-1", "vk", "vk-1", long, "https://bifrost.test/mcp", time.Now()).Error
+	}
+
+	for _, backend := range forEachOAuth2PreWidenDB(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			if backend.name == "postgres" {
+				require.Error(t, insertClient(db, "pre-widen"), "varchar(255) must reject the long client_name/scope before migration")
+				require.Error(t, insertRequest(db, "pre-widen"), "varchar(512) must reject the long state before migration")
+				require.Error(t, insertRefreshToken(db, "pre-widen"), "varchar(255) must reject the long scope before migration")
+			}
+
+			require.NoError(t, migrationWidenOAuth2ClientControlledColumns(ctx, db, logr))
+
+			require.NoError(t, insertClient(db, "post-widen"))
+			require.NoError(t, insertRequest(db, "post-widen"))
+			require.NoError(t, insertRefreshToken(db, "post-widen"))
+			var got string
+			require.NoError(t, db.Raw("SELECT state FROM oauth2_authorize_requests WHERE id = ?", "post-widen").Scan(&got).Error)
+			assert.Equal(t, long, got)
+			require.NoError(t, db.Raw("SELECT client_name FROM oauth2_clients WHERE id = ?", "post-widen").Scan(&got).Error)
+			assert.Equal(t, long, got)
+			require.NoError(t, db.Raw("SELECT scope FROM oauth2_refresh_tokens WHERE id = ?", "post-widen").Scan(&got).Error)
+			assert.Equal(t, long, got)
+
+			if backend.name == "postgres" {
+				for _, c := range oauth2WidenedColumns {
+					var dataType string
+					require.NoError(t, db.Raw(`SELECT data_type FROM information_schema.columns
+						WHERE table_schema = ? AND table_name = ? AND column_name = ?`, pgTestSchema, c.table, c.column).Scan(&dataType).Error)
+					assert.Equalf(t, "text", dataType, "%s.%s", c.table, c.column)
+				}
+			}
+
+			// Re-running is a no-op: the migrator has recorded the ID.
+			require.NoError(t, migrationWidenOAuth2ClientControlledColumns(ctx, db, logr))
+		})
+	}
+}
