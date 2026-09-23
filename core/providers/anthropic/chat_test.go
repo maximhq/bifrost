@@ -186,6 +186,36 @@ func TestToAnthropicChatRequest_DocumentOnlyMessageGetsPlaceholderTextBlock(t *t
 	}
 }
 
+func TestToAnthropicChatRequest_RejectsInputAudio(t *testing.T) {
+	format := "wav"
+	text := "mixed audio and text"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{{
+					Type: schemas.ChatContentBlockTypeInputAudio,
+					Text: &text,
+					InputAudio: &schemas.ChatInputAudio{
+						Data:   "AQ==",
+						Format: &format,
+					},
+				}},
+			},
+		}},
+	}
+
+	_, err := ToAnthropicChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), bifrostReq)
+	if err == nil {
+		t.Fatal("expected input_audio conversion to fail")
+	}
+	if !strings.Contains(err.Error(), "input_audio") {
+		t.Fatalf("error = %q, want input_audio context", err)
+	}
+}
+
 func TestToAnthropicChatRequest_DocumentWithTextDoesNotGetPlaceholder(t *testing.T) {
 	body := `{
 		"model": "anthropic/claude-sonnet-4-5-20250929",

@@ -123,3 +123,38 @@ func TestGenerateContentRoundTrip_NoMimeInjectionForFileData(t *testing.T) {
 	assert.Equal(t, testFileURI, found.FileURI)
 	assert.Empty(t, found.MIMEType, "no MIME should be injected when the caller didn't provide one")
 }
+
+func TestConvertContentBlockToGeminiPart_RejectsUnresolvedFileID(t *testing.T) {
+	fileID := "files/abc123"
+
+	for _, blockType := range []schemas.ResponsesMessageContentBlockType{
+		schemas.ResponsesInputMessageContentBlockTypeFile,
+		schemas.ResponsesInputMessageContentBlockTypeContainer,
+	} {
+		t.Run(string(blockType), func(t *testing.T) {
+			_, err := convertContentBlockToGeminiPart(schemas.ResponsesMessageContentBlock{
+				Type:   blockType,
+				FileID: &fileID,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be resolved to a file URI")
+		})
+	}
+}
+
+func TestConvertBifrostMessagesToGemini_RejectsUnresolvedFileID(t *testing.T) {
+	fileID := "files/abc123"
+	msgs := []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{
+			ContentBlocks: []schemas.ChatContentBlock{{
+				Type: schemas.ChatContentBlockTypeFile,
+				File: &schemas.ChatInputFile{FileID: &fileID},
+			}},
+		},
+	}}
+
+	_, _, err := convertBifrostMessagesToGemini(msgs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be resolved to a file URI")
+}

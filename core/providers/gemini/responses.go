@@ -4951,9 +4951,10 @@ func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock,
 			}, nil
 		}
 
-	case schemas.ResponsesInputMessageContentBlockTypeFile:
-		if block.ResponsesInputMessageContentBlockFile != nil {
-			fileBlock := block.ResponsesInputMessageContentBlockFile
+	case schemas.ResponsesInputMessageContentBlockTypeFile,
+		schemas.ResponsesInputMessageContentBlockTypeContainer:
+		fileBlock := block.ResponsesInputMessageContentBlockFile
+		if fileBlock != nil {
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
@@ -4992,6 +4993,10 @@ func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock,
 					return part, nil
 				}
 			}
+		}
+
+		if block.FileID != nil && strings.TrimSpace(*block.FileID) != "" {
+			return nil, fmt.Errorf("Gemini file ID %q must be resolved to a file URI before conversion", *block.FileID)
 		}
 	}
 

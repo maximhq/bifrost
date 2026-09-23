@@ -2652,6 +2652,32 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 	}
 }
 
+func TestToOpenAIResponsesRequest_NormalizesContainerFileInput(t *testing.T) {
+	fileID := "file_abc123"
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:   schemas.ResponsesInputMessageContentBlockTypeContainer,
+					FileID: &fileID,
+				}},
+			},
+		}},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1)
+	blocks := result.Input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks
+	require.Len(t, blocks, 1)
+	require.Equal(t, schemas.ResponsesInputMessageContentBlockTypeFile, blocks[0].Type)
+	require.NotNil(t, blocks[0].FileID)
+	require.Equal(t, fileID, *blocks[0].FileID)
+	require.Equal(t, schemas.ResponsesInputMessageContentBlockTypeContainer, bifrostReq.Input[0].Content.ContentBlocks[0].Type)
+}
+
 // TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools verifies function tools
 // leave with an explicit strict rather than null. OpenAI resolves a null strict to
 // false, but strict-pydantic upstreams (sglang's ResponseTool.strict is a non-Optional
