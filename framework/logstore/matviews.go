@@ -983,6 +983,13 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 // canUseMatViewFilters returns true if the given filters can be served from
 // mv_logs_hourly. Per-row filters (content search, request ID, parent request ID,
 // session ID, metadata, numeric ranges) require the raw logs table.
+//
+// GroupSessions needs no test of its own: grouping only collapses rows when
+// SessionGroupingActive() holds, which requires RootsOnly, and RootsOnly is
+// already rejected below. Testing it as well would push group_sessions=true with
+// roots_only=false onto the raw COUNT path, where grouping does nothing and the
+// matview's answer is the same. TestSessionGroupingActiveImpliesRootsOnly pins
+// the implication this relies on.
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		f.RequestID == "" &&
