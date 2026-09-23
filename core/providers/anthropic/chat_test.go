@@ -188,6 +188,7 @@ func TestToAnthropicChatRequest_DocumentOnlyMessageGetsPlaceholderTextBlock(t *t
 
 func TestToAnthropicChatRequest_RejectsInputAudio(t *testing.T) {
 	format := "wav"
+	text := "mixed audio and text"
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
 		Model:    "claude-sonnet-4-20250514",
@@ -196,6 +197,7 @@ func TestToAnthropicChatRequest_RejectsInputAudio(t *testing.T) {
 			Content: &schemas.ChatMessageContent{
 				ContentBlocks: []schemas.ChatContentBlock{{
 					Type: schemas.ChatContentBlockTypeInputAudio,
+					Text: &text,
 					InputAudio: &schemas.ChatInputAudio{
 						Data:   "AQ==",
 						Format: &format,
