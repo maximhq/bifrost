@@ -3491,7 +3491,7 @@ func newMockCustomerStore() *mockCustomerStore {
 func (m *mockCustomerStore) ExecuteTransaction(_ context.Context, fn func(*gorm.DB) error) error {
 	return fn(nil)
 }
-func (m *mockCustomerStore) GetCustomer(_ context.Context, id string) (*configstoreTables.TableCustomer, error) {
+func (m *mockCustomerStore) GetCustomer(_ context.Context, id string, _ ...*gorm.DB) (*configstoreTables.TableCustomer, error) {
 	c, ok := m.customers[id]
 	if !ok {
 		return nil, configstore.ErrNotFound

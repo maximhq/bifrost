@@ -3913,8 +3913,19 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Which teams and customers an access profile governs, settled before the first limit is
+		// written: the rate-limit rows below are shared by id, so a governed entity's row has to be
+		// known before the file's version of it is applied.
+		governed, err := governedEntitiesInConfig(ctx, config, tx, rateLimitsToAdd, rateLimitsToUpdate, customersToAdd, customersToUpdate, teamsToAdd, teamsToUpdate)
+		if err != nil {
+			return err
+		}
+
 		// Create rate limits
 		for _, rateLimit := range rateLimitsToAdd {
+			if governed.rateLimits[rateLimit.ID] {
+				continue
+			}
 			if err := config.ConfigStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
 				return fmt.Errorf("failed to create rate limit %s: %w", rateLimit.ID, err)
 			}
@@ -3922,6 +3933,12 @@ func updateGovernanceConfigInStore(
 
 		// Update rate limits (config.json changed)
 		for _, rateLimit := range rateLimitsToUpdate {
+			// The row a governed team or customer links keeps the numbers it has. Its link is preserved
+			// below, and writing the file's numbers onto it would apply the limits that preservation
+			// exists to keep out.
+			if governed.rateLimits[rateLimit.ID] {
+				continue
+			}
 			if err := config.ConfigStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
 				return fmt.Errorf("failed to update rate limit %s: %w", rateLimit.ID, err)
 			}
@@ -3930,6 +3947,13 @@ func updateGovernanceConfigInStore(
 		// Create customers — strip inline Budgets first; created explicitly after the row exists.
 		for i := range customersToAdd {
 			customer := &customersToAdd[i]
+			if governed.customers[customer.ID] {
+				customer.RateLimitID = governed.rateLimitOfCustomer[customer.ID]
+				customer.RateLimit = nil
+				// Nothing the file says about this customer's budgets is applied: not the ones declared
+				// inline, and not the link named by budget_id, which the loops below leave alone.
+				customer.Budgets = nil
+			}
 			for j := range customer.Budgets {
 				cid := customer.ID
 				customer.Budgets[j].CustomerID = &cid
@@ -3944,6 +3968,14 @@ func updateGovernanceConfigInStore(
 		// Update customers (config.json changed)
 		for i := range customersToUpdate {
 			customer := &customersToUpdate[i]
+			if governed.customers[customer.ID] {
+				customer.RateLimitID = governed.rateLimitOfCustomer[customer.ID]
+				customer.RateLimit = nil
+				// Emptied before the reconcile below reads it, so a governed customer's stored budgets are
+				// neither rewritten nor deleted as stale: the file's list is not the desired state while a
+				// profile governs the customer, so nothing may be compared against it.
+				customer.Budgets = nil
+			}
 			if customer.Budgets != nil {
 				// Fetch existing budget IDs for this customer so we can route
 				// to add vs update — avoids INSERT conflicts on second sync.
@@ -3987,7 +4019,7 @@ func updateGovernanceConfigInStore(
 		// For adds: verify the budget is unowned before taking it.
 		// For updates: also clear any stale link from the old budget_id.
 		for _, customer := range customersToAdd {
-			if customer.BudgetID == nil {
+			if governed.customers[customer.ID] || customer.BudgetID == nil {
 				continue
 			}
 			if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, false); err != nil {
@@ -3995,6 +4027,11 @@ func updateGovernanceConfigInStore(
 			}
 		}
 		for _, customer := range customersToUpdate {
+			// A governed customer keeps the links it has. Falling through would take the branch below on
+			// the file's silence and unlink the budgets the profile's arrival left in place.
+			if governed.customers[customer.ID] {
+				continue
+			}
 			if customer.BudgetID == nil {
 				// budget_id removed — unlink any budget previously owned via this path.
 				if err := tx.Model(&configstoreTables.TableBudget{}).
@@ -4011,6 +4048,10 @@ func updateGovernanceConfigInStore(
 
 		// Create teams
 		for _, team := range teamsToAdd {
+			if governed.teams[team.ID] {
+				team.RateLimitID = governed.rateLimitOfTeam[team.ID]
+				team.RateLimit = nil
+			}
 			if err := config.ConfigStore.CreateTeam(ctx, &team, tx); err != nil {
 				return fmt.Errorf("failed to create team %s: %w", team.ID, err)
 			}
@@ -4018,6 +4059,10 @@ func updateGovernanceConfigInStore(
 
 		// Update teams (config.json changed)
 		for _, team := range teamsToUpdate {
+			if governed.teams[team.ID] {
+				team.RateLimitID = governed.rateLimitOfTeam[team.ID]
+				team.RateLimit = nil
+			}
 			if err := config.ConfigStore.UpdateTeam(ctx, &team, tx); err != nil {
 				return fmt.Errorf("failed to update team %s: %w", team.ID, err)
 			}
@@ -4025,7 +4070,7 @@ func updateGovernanceConfigInStore(
 
 		// Create team-owned budgets after teams exist.
 		for _, budget := range pendingTeamBudgetsToAdd {
-			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderTeam, budget.TeamID, budget.ID); err != nil {
+			if skip, err := skipBudgetOfGovernedEntity(ctx, governance.LegacyLimitHolderTeam, budget.TeamID, budget.ID); err != nil {
 				return err
 			} else if skip {
 				continue
@@ -4037,7 +4082,7 @@ func updateGovernanceConfigInStore(
 
 		// Update team-owned budgets after teams exist.
 		for _, budget := range pendingTeamBudgetsToUpdate {
-			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderTeam, budget.TeamID, budget.ID); err != nil {
+			if skip, err := skipBudgetOfGovernedEntity(ctx, governance.LegacyLimitHolderTeam, budget.TeamID, budget.ID); err != nil {
 				return err
 			} else if skip {
 				continue
@@ -4049,7 +4094,7 @@ func updateGovernanceConfigInStore(
 
 		// Create customer-owned budgets after customers exist (inline budgets + top-level with customer_id).
 		for _, budget := range pendingCustomerBudgetsToAdd {
-			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderCustomer, budget.CustomerID, budget.ID); err != nil {
+			if skip, err := skipBudgetOfGovernedEntity(ctx, governance.LegacyLimitHolderCustomer, budget.CustomerID, budget.ID); err != nil {
 				return err
 			} else if skip {
 				continue
@@ -4061,7 +4106,7 @@ func updateGovernanceConfigInStore(
 
 		// Update customer-owned budgets declared in top-level governance.budgets.
 		for _, budget := range pendingCustomerBudgetsToUpdate {
-			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderCustomer, budget.CustomerID, budget.ID); err != nil {
+			if skip, err := skipBudgetOfGovernedEntity(ctx, governance.LegacyLimitHolderCustomer, budget.CustomerID, budget.ID); err != nil {
 				return err
 			} else if skip {
 				continue
@@ -7883,14 +7928,175 @@ func DeepCopy[T any](in T) (T, error) {
 	return out, err
 }
 
-// skipBudgetGovernedElsewhere reports whether a budget declared in config.json must be left unwritten
+// governedConfigEntities is what a reconcile may not write over: the teams and customers an access
+// profile governs, and the rate-limit rows they link.
+//
+// An entity governed by a profile answers to the profile's money, and config.json declaring limits for
+// it is a stale file rather than the desired state - the boot-time report asks the operator to clear
+// one or the other. Until they do, none of the file's limits are applied to it: not the budgets, not
+// the rate limit, and not the links to either.
+type governedConfigEntities struct {
+	customers           map[string]bool
+	teams               map[string]bool
+	rateLimitOfCustomer map[string]*string
+	rateLimitOfTeam     map[string]*string
+	// rateLimits are the rows those entities link. A rate limit is declared once in config.json and
+	// referenced by id, so this is what tells a row belonging to a governed entity from any other.
+	rateLimits map[string]bool
+}
+
+// governedEntitiesInConfig asks which of the teams and customers this reconcile touches are governed by
+// an access profile, and reads the rate limit each one links today.
+//
+// Settled before anything is written, because the writes come in an order that would otherwise decide
+// it too late: the rate-limit rows are saved first, and by the time a governed customer is reached its
+// row would already carry the file's numbers.
+//
+// Two kinds of entity are asked about. The ones the file changed, whose own save must keep the links
+// it has; and the ones that link a rate limit this reconcile is about to write, which a file can edit
+// without touching the entity at all - the row is declared once and referenced by id.
+//
+// The reads run inside the caller's transaction, so they see what it has already written.
+func governedEntitiesInConfig(
+	ctx context.Context,
+	config *Config,
+	tx *gorm.DB,
+	rateLimitsToAdd, rateLimitsToUpdate []configstoreTables.TableRateLimit,
+	customersToAdd, customersToUpdate []configstoreTables.TableCustomer,
+	teamsToAdd, teamsToUpdate []configstoreTables.TableTeam,
+) (governedConfigEntities, error) {
+	governed := governedConfigEntities{
+		customers:           map[string]bool{},
+		teams:               map[string]bool{},
+		rateLimitOfCustomer: map[string]*string{},
+		rateLimitOfTeam:     map[string]*string{},
+		rateLimits:          map[string]bool{},
+	}
+
+	writing := map[string]bool{}
+	for i := range rateLimitsToAdd {
+		writing[rateLimitsToAdd[i].ID] = true
+	}
+	for i := range rateLimitsToUpdate {
+		writing[rateLimitsToUpdate[i].ID] = true
+	}
+
+	// declaresLimits says whether the warning applies: an entity reached only because a row it links is
+	// being written has limits in the file all the same, but one saved with none does not.
+	customerCandidates := map[string]bool{}
+	for _, customers := range [][]configstoreTables.TableCustomer{customersToAdd, customersToUpdate} {
+		for i := range customers {
+			customerCandidates[customers[i].ID] = len(customers[i].Budgets) > 0 || customers[i].RateLimit != nil || customers[i].BudgetID != nil
+		}
+	}
+	teamCandidates := map[string]bool{}
+	for _, teams := range [][]configstoreTables.TableTeam{teamsToAdd, teamsToUpdate} {
+		for i := range teams {
+			teamCandidates[teams[i].ID] = len(teams[i].Budgets) > 0 || teams[i].RateLimit != nil
+		}
+	}
+	if config.GovernanceConfig != nil {
+		for i := range config.GovernanceConfig.Customers {
+			customer := &config.GovernanceConfig.Customers[i]
+			if customer.RateLimitID != nil && writing[*customer.RateLimitID] {
+				customerCandidates[customer.ID] = true
+			}
+		}
+		for i := range config.GovernanceConfig.Teams {
+			team := &config.GovernanceConfig.Teams[i]
+			if team.RateLimitID != nil && writing[*team.RateLimitID] {
+				teamCandidates[team.ID] = true
+			}
+		}
+	}
+
+	for id, declaresLimits := range customerCandidates {
+		governedBy, rateLimitID, err := governingAccessProfile(ctx, config.ConfigStore, tx, governance.LegacyLimitHolderCustomer, id, declaresLimits)
+		if err != nil {
+			return governedConfigEntities{}, err
+		}
+		if governedBy == "" {
+			continue
+		}
+		governed.customers[id] = true
+		governed.rateLimitOfCustomer[id] = rateLimitID
+		if rateLimitID != nil {
+			governed.rateLimits[*rateLimitID] = true
+		}
+	}
+	for id, declaresLimits := range teamCandidates {
+		governedBy, rateLimitID, err := governingAccessProfile(ctx, config.ConfigStore, tx, governance.LegacyLimitHolderTeam, id, declaresLimits)
+		if err != nil {
+			return governedConfigEntities{}, err
+		}
+		if governedBy == "" {
+			continue
+		}
+		governed.teams[id] = true
+		governed.rateLimitOfTeam[id] = rateLimitID
+		if rateLimitID != nil {
+			governed.rateLimits[*rateLimitID] = true
+		}
+	}
+	return governed, nil
+}
+
+// governingAccessProfile names the access profile that governs a team or customer, and gives back the
+// rate limit that entity links today so the caller can save the row with what it has.
+//
+// Governed means an access profile is attached to the entity: the profile's budgets and rate limits
+// then cover every key under it, and the entity is not allowed limits of its own as well. governedBy
+// is empty when no profile is attached, and the caller then applies config.json as usual.
+//
+// The saves write every column, so applying the file's values would give the entity a second cap, and
+// blanking them would delete what it already has; answering with the stored link leaves the row as it
+// stands. warn says whether config.json actually declares limits for this entity, which is what the
+// operator has to clear.
+func governingAccessProfile(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, holderKind, id string, warn bool) (governedBy string, rateLimitID *string, err error) {
+	governedBy, err = governance.LegacyLimitsGovernedBy(ctx, holderKind, id)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to check whether %s %s is governed before applying its limits: %w", holderKind, id, err)
+	}
+	if governedBy == "" {
+		return "", nil, nil
+	}
+	switch holderKind {
+	case governance.LegacyLimitHolderTeam:
+		team, err := store.GetTeam(ctx, id, tx)
+		if errors.Is(err, configstore.ErrNotFound) {
+			// The file is creating the entity in this same transaction, so it links nothing yet.
+			return governedBy, nil, nil
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to read team %s before applying its limits: %w", id, err)
+		}
+		rateLimitID = team.RateLimitID
+	case governance.LegacyLimitHolderCustomer:
+		customer, err := store.GetCustomer(ctx, id, tx)
+		if errors.Is(err, configstore.ErrNotFound) {
+			return governedBy, nil, nil
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to read customer %s before applying its limits: %w", id, err)
+		}
+		rateLimitID = customer.RateLimitID
+	default:
+		return "", nil, fmt.Errorf("cannot read the limits of %q %s: not a legacy limit holder", holderKind, id)
+	}
+	if warn {
+		logger.Warn("config.json declares limits for %s %s, which is governed by access profile %q: they are not applied, since an entity cannot have both. Edit the profile, or remove the limits from config.json.", holderKind, id, governedBy)
+	}
+	return governedBy, rateLimitID, nil
+}
+
+// skipBudgetOfGovernedEntity reports whether a budget declared in config.json must be left unwritten
 // because an access profile already governs the team or customer that owns it: the two would be caps
 // on the same keys.
 //
 // It is skipped with a warning rather than refused, because a config file left declaring a budget for
 // an entity since moved onto a profile is stale, not broken, and the rest of the file should still
 // apply. A lookup that fails is different: the answer is unknown, so the reconcile stops.
-func skipBudgetGovernedElsewhere(ctx context.Context, holderKind string, holderID *string, budgetID string) (bool, error) {
+func skipBudgetOfGovernedEntity(ctx context.Context, holderKind string, holderID *string, budgetID string) (bool, error) {
 	if holderID == nil || *holderID == "" {
 		return false, nil
 	}
