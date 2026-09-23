@@ -37,6 +37,10 @@ type WarpHandler struct {
 	unsubscribeLogs func()
 	sidekiqRunner   *sidekiq.Runner
 	backfillStore   warpBackfillJobStore
+	// enabled reports the Warp feature flag. It is read per request and per
+	// log rather than once at startup, so toggling the flag takes effect
+	// without a restart. Nil means ungated.
+	enabled func() bool
 }
 
 // NewWarpLogReader adapts a log manager to what Warp reads through. Exported so
@@ -57,7 +61,12 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 // different questions - the plugin is what Warp researches through, the store
 // is where it files what was said - and a deployment can have the store without
 // the plugin.
-func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
+//
+// enabled is the Warp feature flag. The service is still built when it is off,
+// because the flag can be switched on at runtime and routes are only
+// registered once; what the flag withholds is every route and the indexing of
+// new logs.
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
 	if client != nil {
 		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest))
@@ -68,11 +77,11 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	if logsStore != nil {
 		opts = append(opts, warp.WithConversationStore(logsStore))
 	}
-	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner}
+	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner, enabled: enabled}
 	handler.backfillStore, _ = store.(warpBackfillJobStore)
 	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {
-		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.service.IndexLog)
+		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.indexLog)
 	}
 	// Retention runs on a timer rather than on write: what expires is age, so a
 	// deployment nobody has chatted on for a month is exactly where a
@@ -91,6 +100,35 @@ func (h *WarpHandler) Shutdown() {
 	h.service.Shutdown()
 }
 
+// isEnabled reports whether the Warp feature flag is on.
+func (h *WarpHandler) isEnabled() bool {
+	return h.enabled == nil || h.enabled()
+}
+
+// indexLog feeds a finished log to Warp's indexer while the flag is on. With it
+// off nothing is embedded: indexing spends provider calls on every request, and
+// a feature nobody can use should not be paying for them. Logs written while it
+// was off can be indexed afterwards with a backfill.
+func (h *WarpHandler) indexLog(ctx context.Context, entry *logstore.Log) {
+	if !h.isEnabled() {
+		return
+	}
+	h.service.IndexLog(ctx, entry)
+}
+
+// gated answers 404 while the Warp feature flag is off, so a disabled Warp is
+// indistinguishable from one this build does not have. The check runs per
+// request because routes are registered once and the flag can change after.
+func (h *WarpHandler) gated(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if !h.isEnabled() {
+			SendError(ctx, fasthttp.StatusNotFound, "Warp is not enabled. Turn on the \"warp\" feature flag to use it.")
+			return
+		}
+		next(ctx)
+	}
+}
+
 // Service exposes the underlying service to in-process callers.
 func (h *WarpHandler) Service() *warp.Service {
 	return h.service
@@ -101,15 +139,15 @@ func (h *WarpHandler) Service() *warp.Service {
 // must never be reachable on an unauthenticated route the way the OAuth2
 // issuance handler deliberately is.
 func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	r.GET("/api/warp/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
-	r.PUT("/api/warp/config", lib.ChainMiddlewares(h.putConfig, middlewares...))
-	r.POST("/api/warp/log-index/backfill", lib.ChainMiddlewares(h.startBackfill, middlewares...))
-	r.GET("/api/warp/log-index/backfill/status", lib.ChainMiddlewares(h.backfillStatus, middlewares...))
-	r.POST("/api/warp/log-index/backfill/cancel", lib.ChainMiddlewares(h.cancelBackfill, middlewares...))
+	r.GET("/api/warp/config", lib.ChainMiddlewares(h.gated(h.getConfig), middlewares...))
+	r.PUT("/api/warp/config", lib.ChainMiddlewares(h.gated(h.putConfig), middlewares...))
+	r.POST("/api/warp/log-index/backfill", lib.ChainMiddlewares(h.gated(h.startBackfill), middlewares...))
+	r.GET("/api/warp/log-index/backfill/status", lib.ChainMiddlewares(h.gated(h.backfillStatus), middlewares...))
+	r.POST("/api/warp/log-index/backfill/cancel", lib.ChainMiddlewares(h.gated(h.cancelBackfill), middlewares...))
 	// A read-only summary for the tray. Unlike the backfill controls above it is
 	// not admin-gated: whether semantic search is usable is something everyone
 	// who can ask Warp a question needs to see.
-	r.GET("/api/warp/log-index/status", lib.ChainMiddlewares(h.logIndexStatus, middlewares...))
+	r.GET("/api/warp/log-index/status", lib.ChainMiddlewares(h.gated(h.logIndexStatus), middlewares...))
 
 	// Registered unconditionally, and 503 while Warp cannot answer.
 	//
@@ -119,16 +157,16 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 	// The 503 body carries a machine-readable reason, which is what keeps
 	// "present but unusable" distinguishable from "absent" - the concern the
 	// gate was there for in the first place.
-	r.POST("/api/warp/chat", lib.ChainMiddlewares(h.chat, middlewares...))
+	r.POST("/api/warp/chat", lib.ChainMiddlewares(h.gated(h.chat), middlewares...))
 
 	// History rides on the same middleware chain. Every route resolves its owner
 	// from the request context, so an unauthenticated deployment shares one
 	// history and an authenticated one gives each person their own, with no
 	// second code path between them.
 	if h.service.HasHistory() {
-		r.GET("/api/warp/conversations", lib.ChainMiddlewares(h.listConversations, middlewares...))
-		r.GET("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.getConversation, middlewares...))
-		r.DELETE("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.deleteConversation, middlewares...))
+		r.GET("/api/warp/conversations", lib.ChainMiddlewares(h.gated(h.listConversations), middlewares...))
+		r.GET("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.gated(h.getConversation), middlewares...))
+		r.DELETE("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.gated(h.deleteConversation), middlewares...))
 	}
 }
 

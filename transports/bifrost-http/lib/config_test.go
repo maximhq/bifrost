@@ -372,6 +372,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
@@ -22622,4 +22623,24 @@ func TestAttachWarpHistoryLock(t *testing.T) {
 	bare := &lockableLogStore{}
 	attachWarpHistoryLock(&Config{LogsStore: bare})
 	require.Nil(t, bare.locker)
+}
+
+// Warp ships behind a feature flag that is off until an operator turns it on.
+// registerFeatureFlags runs on every LoadConfig, and tests call LoadConfig many
+// times per process, so a second registration must not surface as an error.
+func TestRegisterFeatureFlags_WarpIsRegisteredOffAndIdempotent(t *testing.T) {
+	require.NoError(t, registerFeatureFlags(context.Background()))
+	require.NoError(t, registerFeatureFlags(context.Background()), "re-registering on a later LoadConfig must not fail")
+
+	def, ok := featureflags.LookupDef(FeatureFlagWarp)
+	require.True(t, ok, "warp flag must be registered")
+	require.False(t, def.Default, "Warp must be off unless an operator enables it")
+	require.False(t, def.EnterpriseOnly)
+
+	store, err := featureflags.New(featureflags.Config{})
+	require.NoError(t, err)
+	require.False(t, store.IsEnabled(FeatureFlagWarp))
+	_, err = store.Set(context.Background(), FeatureFlagWarp, true)
+	require.NoError(t, err)
+	require.True(t, store.IsEnabled(FeatureFlagWarp))
 }
