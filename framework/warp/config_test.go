@@ -716,3 +716,23 @@ func TestWarpEffectiveMaxIterationsLiftsAStoredOne(t *testing.T) {
 	require.Equal(t, schemas.WarpDefaultMaxIterations, (&schemas.WarpConfig{}).EffectiveMaxIterations())
 	require.Equal(t, 5, (&schemas.WarpConfig{MaxIterations: 5}).EffectiveMaxIterations())
 }
+
+// SaveConfigJSON is the MCP tools' write path: it must run the same validation
+// as SaveConfig and keep field presence, so an embedding setting the body does
+// not name keeps its stored value instead of resetting.
+func TestWarpSaveConfigJSONValidatesAndKeepsPresence(t *testing.T) {
+	row := validWarpConfigRow()
+	row.LogVectorStoreNamespace = "custom_ns"
+	store := &recordingStore{row: row}
+	service := newTestService(store)
+
+	err := service.SaveConfigJSON(context.Background(), []byte(`{"enabled":true,"provider":"openai","model":"gpt-4o","base_url":"https://user:pass@example.com"}`))
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.Empty(t, store.upserted, "an invalid body is not saved")
+
+	err = service.SaveConfigJSON(context.Background(), []byte(`{"enabled":true,"provider":"openai","model":"gpt-4o-mini"}`))
+	require.NoError(t, err)
+	require.Len(t, store.upserted, 1)
+	require.Equal(t, "gpt-4o-mini", store.upserted[0].Model)
+	require.Equal(t, "custom_ns", store.upserted[0].LogVectorStoreNamespace, "an omitted namespace keeps the stored one")
+}

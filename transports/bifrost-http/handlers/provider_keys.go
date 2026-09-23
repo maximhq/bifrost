@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -128,32 +129,8 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	baseProvider := provider
-	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
-		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
-	}
-
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
-		return
-	}
-
-	if err := validateProviderKeyURL(baseProvider, key); err != nil {
+	if err := ValidateProviderKeyContent(ProviderKeyBaseProvider(providerConfig, provider), key); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-
-	if err := key.Models.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
-		return
-	}
-	if err := key.BlacklistedModels.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
-		return
-	}
-
-	if err := key.Aliases.Validate(baseProvider); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
 		return
 	}
 
@@ -245,31 +222,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	baseProvider := provider
-	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
-		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
-	}
-
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
-		return
-	}
-
-	if err := mergedKey.Models.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
-		return
-	}
-	if err := mergedKey.BlacklistedModels.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
-		return
-	}
-
-	if err := mergedKey.Aliases.Validate(baseProvider); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
-		return
-	}
-
-	if err := validateProviderKeyURL(baseProvider, mergedKey); err != nil {
+	if err := ValidateProviderKeyContent(ProviderKeyBaseProvider(providerConfig, provider), mergedKey); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -765,6 +718,34 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 // config.schema.json marks as required, so a create or merge can never persist
 // a key missing them (a masked update against a stored key lacking the section
 // would otherwise only surface later as a downstream 500).
+// ProviderKeyBaseProvider is the provider whose key rules apply: a custom
+// provider's base type, else the provider itself.
+func ProviderKeyBaseProvider(providerConfig *configstore.ProviderConfig, provider schemas.ModelProvider) schemas.ModelProvider {
+	if providerConfig != nil && providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
+		return providerConfig.CustomProviderConfig.BaseProviderType
+	}
+	return provider
+}
+
+// ValidateProviderKeyContent is every check a provider-key write makes on the
+// key itself - a create on the new key, an update on the merged one. Shared
+// with the MCP tools so a key written there meets the same bar.
+func ValidateProviderKeyContent(baseProvider schemas.ModelProvider, key schemas.Key) error {
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" {
+		return fmt.Errorf("Key value must not be empty")
+	}
+	if err := key.Models.Validate(); err != nil {
+		return fmt.Errorf("Invalid models: %v", err)
+	}
+	if err := key.BlacklistedModels.Validate(); err != nil {
+		return fmt.Errorf("Invalid blacklisted_models: %v", err)
+	}
+	if err := key.Aliases.Validate(baseProvider); err != nil {
+		return fmt.Errorf("Invalid aliases: %v", err)
+	}
+	return validateProviderKeyURL(baseProvider, key)
+}
+
 func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) error {
 	switch provider {
 	case schemas.Ollama:

@@ -1716,6 +1716,111 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
 }
 
+// The write tools on Bifrost's own MCP server carry secrets in and out -
+// provider-key values, connection strings, one-time virtual key and webhook
+// secrets - so their arguments and results never reach the MCP log. Read tools
+// on the same server stay fully logged.
+func TestMCPHooksWithholdBuiltinWriteToolContent(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	call := func(logID, tool, args, result string) {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+		fullName := "bifrostmcp-" + tool
+		if _, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+			RequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:  "bifrostmcp",
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: &fullName, Arguments: args},
+			},
+		}); err != nil {
+			t.Fatalf("PreMCPHook() error = %v", err)
+		}
+		if _, _, err := plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "bifrostmcp", ToolName: tool},
+		}, nil); err != nil {
+			t.Fatalf("PostMCPHook() error = %v", err)
+		}
+	}
+	call("mcp-write", "create_provider_key", `{"provider":"openai","name":"k","value":"sk-provider-secret"}`, `{"value":"sk-bf-one-time"}`)
+	call("mcp-read", "query_logs", `{"filters":{}}`, `{"rows":[]}`)
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	write, err := store.FindMCPToolLog(context.Background(), "mcp-write")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if write.Status != "success" || write.ToolName != "create_provider_key" {
+		t.Fatalf("the call itself is still logged, got status %q tool %q", write.Status, write.ToolName)
+	}
+	if write.ArgumentsParsed != nil || write.ResultParsed != nil {
+		t.Fatalf("write tool content must not be stored, got args %#v result %#v", write.ArgumentsParsed, write.ResultParsed)
+	}
+	for _, secret := range []string{"sk-provider-secret", "sk-bf-one-time"} {
+		if strings.Contains(write.Arguments+write.Result, secret) {
+			t.Fatalf("secret %q reached the MCP log", secret)
+		}
+	}
+
+	read, err := store.FindMCPToolLog(context.Background(), "mcp-read")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if read.ArgumentsParsed == nil || read.ResultParsed == nil {
+		t.Fatalf("read tool content stays logged, got args %#v result %#v", read.ArgumentsParsed, read.ResultParsed)
+	}
+}
+
+// The response names the client and tool that actually ran. When the call's
+// own name carried a different prefix - an alias, not the client - the entry's
+// label disagrees, and the response is what decides whether the result of a
+// Bifrost write tool is withheld.
+func TestPostMCPHookPrefersResponseClientAndToolName(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-alias")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-alias")
+	aliased := "opsbundle-create_provider_key"
+	if _, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ClientName:  "bifrostmcp",
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &aliased, Arguments: `{}`},
+		},
+	}); err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+	result := `{"value":"sk-bf-one-time"}`
+	if _, _, err := plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "bifrostmcp", ToolName: "create_provider_key"},
+	}, nil); err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	entry, err := store.FindMCPToolLog(context.Background(), "mcp-alias")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if entry.ResultParsed != nil || strings.Contains(entry.Result, "sk-bf-one-time") {
+		t.Fatalf("the write tool's result must be withheld by the response's client name, got %#v", entry.ResultParsed)
+	}
+}
+
 // TestPostMCPHookFallbackStampsGovernanceFields verifies fallback MCP logs
 // created without a pending pre-hook entry still carry DAC ownership fields.
 func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {

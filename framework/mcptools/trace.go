@@ -147,6 +147,7 @@ func getRequestTraceTool() Tool {
   },
   "required": ["log_id"]
 }`,
+		tenantScoped: true,
 		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			id, _ := args["log_id"].(string)
 			if id == "" {

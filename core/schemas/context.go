@@ -247,6 +247,24 @@ func (bc *BifrostContext) Grant() Grant {
 // is not itself a *BifrostContext.
 type bifrostContextSelfKey struct{}
 
+// GrantFromContext returns the grant of the request ctx belongs to, or nil when ctx carries no
+// BifrostContext or its request has none. For code handed a plain context.Context derived from a
+// request - an MCP tool handler behind mcp-go's own context wrapping, a context.WithTimeout -
+// that still needs the request's grant without holding the BifrostContext itself.
+func GrantFromContext(ctx context.Context) Grant {
+	if ctx == nil {
+		return nil
+	}
+	bc, ok := ctx.(*BifrostContext)
+	if !ok {
+		bc, ok = ctx.Value(bifrostContextSelfKey{}).(*BifrostContext)
+		if !ok {
+			return nil
+		}
+	}
+	return bc.Grant()
+}
+
 // inheritedGrant finds the grant of the nearest ancestor request context that has one. A
 // BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
 // giving up, since a foreign context with nothing to offer still answers nil for that key the

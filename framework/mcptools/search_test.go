@@ -14,14 +14,15 @@ import (
 // hidden-content behaviour are framework/warp's to test; this covers the tool
 // wrapped around it.
 type fakeSemanticSearcher struct {
+	sawContext context.Context
 	sawQuery   string
 	sawFilters *logstore.SearchFilters
 	sawLimit   int
 	result     SemanticSearchResult
 }
 
-func (f *fakeSemanticSearcher) Search(_ context.Context, query string, filters *logstore.SearchFilters, requestedLimit int) (SemanticSearchResult, error) {
-	f.sawQuery, f.sawFilters, f.sawLimit = query, filters, requestedLimit
+func (f *fakeSemanticSearcher) Search(ctx context.Context, query string, filters *logstore.SearchFilters, requestedLimit int) (SemanticSearchResult, error) {
+	f.sawContext, f.sawQuery, f.sawFilters, f.sawLimit = ctx, query, filters, requestedLimit
 	return f.result, nil
 }
 

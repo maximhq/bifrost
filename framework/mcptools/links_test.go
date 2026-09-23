@@ -43,6 +43,12 @@ func TestLogsViewLinkEncodesFilters(t *testing.T) {
 	require.Contains(t, link, "end_time=1788307200")
 }
 
+func TestMCPLogDetailLink(t *testing.T) {
+	require.Equal(t, "/workspace/mcp-logs?selected_log=mcp-1", mcpLogDetailLink("mcp-1"))
+	require.Equal(t, "/workspace/mcp-logs?selected_log=a%2Fb", mcpLogDetailLink("a/b"), "ids are escaped")
+	require.Empty(t, mcpLogDetailLink(""), "no id, no link")
+}
+
 func TestLogsViewLinkOmitsEmptyFilters(t *testing.T) {
 	require.Equal(t, "/workspace/logs", logsViewLink(&logstore.SearchFilters{}))
 	require.Equal(t, "/workspace/logs", logsViewLink(nil))
