@@ -18,7 +18,7 @@
 		"readMoreAria": "Mehr über Anbieter erfahren (öffnet in neuem Tab)",
 		"addProvider": "Anbieter hinzufügen",
 		"addNewProvider": "Neuen Anbieter hinzufügen",
-		"addNewProviderAria": "Neuen Anbieter hinzufügen",
+		"addNewProviderAria": "Anbieter hinzufügen",
 		"customProviderEllipsis": "Benutzerdefinierter Anbieter...",
 		"deleteProviderAria": "Anbieter löschen",
 		"editConfig": "Anbieterkonfiguration bearbeiten",
@@ -696,7 +696,9 @@
 			"findInstallationId": "Finde deine Installations-ID"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "Anbieter suchen...",
+		"noProvidersLeft": "Keine weiteren Anbieter zum Hinzufügen"
 	},
 	"modelCatalog": {
 		"title": "Modellkatalog",
@@ -1124,8 +1126,8 @@
 		"readMore": "Weitere Informationen lesen",
 		"readMoreAria": "Erfahre mehr über Preisüberschreibungen (öffnet in neuem Tab)",
 		"addOverride": "Überschreibung hinzufügen",
-		"newOverride": "Neue Überschreibung",
-		"newOverrideAria": "Neue Preisüberschreibung",
+		"newOverride": "Override hinzufügen",
+		"newOverrideAria": "Preis-Override hinzufügen",
 		"createOverride": "Überschreibung erstellen",
 		"createFirstAria": "Erstelle deine erste Preisüberschreibung",
 		"createTitle": "Preisüberschreibung erstellen",
@@ -1225,7 +1227,7 @@
 		"readMoreAria": "Mehr über Routing-Regeln erfahren (öffnet in neuem Tab)",
 		"addRule": "Regel hinzufügen",
 		"newRule": "Neue Regel",
-		"newRuleAria": "Neue Routing-Regel",
+		"newRuleAria": "Routing-Regel hinzufügen",
 		"createFirstAria": "Erstelle deine erste Routing-Regel",
 		"viewTree": "Baumstruktur anzeigen",
 		"viewTreeAria": "Baumstruktur der Routing-Regeln anzeigen",
@@ -1463,7 +1465,7 @@
 		"totalWeight": "Gesamtgewichtung: {{total}}",
 		"mustEqualOne": "(muss 1 entsprechen)",
 		"fallbacks": "Fallbacks",
-		"fallbacksHelp": "Anbieter ist erforderlich, Modell ist jedoch optional. Lass das Modell leer, um den Wert der eingehenden Anfrage zu verwenden.",
+		"fallbacksHelp": "Anbieter ist erforderlich, Modell und API key sind optional. Modell leer lassen, um den Wert der eingehenden Anfrage zu verwenden.",
 		"addFallback": "Fallback hinzufügen",
 		"noFallbacks": "Keine Fallbacks konfiguriert",
 		"selectProvider": "Anbieter auswählen...",
@@ -1522,6 +1524,8 @@
 		"scopeVirtualKey": "Virtueller Schlüssel",
 		"scopeTeam": "Team",
 		"scopeCustomer": "Kunde",
-		"scopeGlobal": "Global"
+		"scopeGlobal": "Global",
+		"clearFallbackApiKey": "API key für Fallback {{n}} löschen",
+		"pinnedKeyTitle": "Festgelegter Schlüssel: {{id}}"
 	}
 }

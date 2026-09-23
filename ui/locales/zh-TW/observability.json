@@ -60,7 +60,8 @@
 		"semantic": "語義命中",
 		"costLegend": "費用",
 		"source": "來源",
-		"device": "裝置"
+		"device": "裝置",
+		"session": "會話"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "已結算費用",
 		"settledTooltipGrouped": "在此請求完成後結算。展開該行即可檢視。",
 		"settledTooltipFlat": "在此請求完成後結算，顯示在獨立行上。",
-		"groupTooltip": "將回退嘗試與關聯請求歸組到原始根請求下。展開任意行可檢視完整請求鏈。\n\n對於超大日誌表，分組檢視可能比平鋪檢視更慢。",
+		"groupTooltip": "將回退嘗試與關聯請求歸入原始根請求之下，並將共用同一會話的每個請求歸入該會話的首次請求之下。展開任意行即可檢視其所代表的內容。\n\n對於非常大的日誌表，此分組檢視可能比扁平檢視載入更慢。",
 		"stats": {
 			"totalRequests": "總請求數",
 			"successRate": "成功率",

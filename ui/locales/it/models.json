@@ -18,7 +18,7 @@
 		"readMoreAria": "Scopri di più sui provider (si apre in una nuova scheda)",
 		"addProvider": "Aggiungi provider",
 		"addNewProvider": "Aggiungi nuovo provider",
-		"addNewProviderAria": "Aggiungi nuovo provider",
+		"addNewProviderAria": "Aggiungi fornitore",
 		"customProviderEllipsis": "Provider personalizzato...",
 		"deleteProviderAria": "Elimina provider",
 		"editConfig": "Modifica configurazione Provider",
@@ -696,7 +696,9 @@
 			"findInstallationId": "Trova il tuo ID di installazione"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "Cerca fornitori...",
+		"noProvidersLeft": "Nessun altro fornitore da aggiungere"
 	},
 	"modelCatalog": {
 		"title": "Catalogo modelli",
@@ -1124,8 +1126,8 @@
 		"readMore": "Leggi di più",
 		"readMoreAria": "Scopri di più sugli override dei prezzi (si apre in una nuova scheda)",
 		"addOverride": "Aggiungi override",
-		"newOverride": "Nuovo override",
-		"newOverrideAria": "Nuovo override dei prezzi",
+		"newOverride": "Aggiungi override",
+		"newOverrideAria": "Aggiungi override di prezzo",
 		"createOverride": "Crea override",
 		"createFirstAria": "Crea il tuo primo override dei prezzi",
 		"createTitle": "Crea override dei prezzi",
@@ -1225,7 +1227,7 @@
 		"readMoreAria": "Scopri di più sulle regole di routing (si apre in una nuova scheda)",
 		"addRule": "Aggiungi regola",
 		"newRule": "Nuova regola",
-		"newRuleAria": "Nuova regola di routing",
+		"newRuleAria": "Aggiungi regola di routing",
 		"createFirstAria": "Crea la tua prima regola di routing",
 		"viewTree": "Visualizza albero",
 		"viewTreeAria": "Visualizza l'albero delle regole di routing",
@@ -1463,7 +1465,7 @@
 		"totalWeight": "Peso totale: {{total}}",
 		"mustEqualOne": "(deve essere uguale a 1)",
 		"fallbacks": "Fallback",
-		"fallbacksHelp": "Il provider è obbligatorio, ma il modello è facoltativo. Lascia vuoto il modello per usare il valore della richiesta in entrata.",
+		"fallbacksHelp": "Il fornitore è obbligatorio, ma modello e API key sono opzionali. Lascia il modello vuoto per usare il valore della richiesta in ingresso.",
 		"addFallback": "Aggiungi fallback",
 		"noFallbacks": "Nessun fallback configurato",
 		"selectProvider": "Seleziona provider...",
@@ -1522,6 +1524,8 @@
 		"scopeVirtualKey": "Chiave virtuale",
 		"scopeTeam": "Team",
 		"scopeCustomer": "Cliente",
-		"scopeGlobal": "Globale"
+		"scopeGlobal": "Globale",
+		"clearFallbackApiKey": "Cancella API key per il fallback {{n}}",
+		"pinnedKeyTitle": "Chiave fissata: {{id}}"
 	}
 }

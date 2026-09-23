@@ -61,6 +61,7 @@
 		"compatibility": "Compatibilidade",
 		"caching": "Cache",
 		"security": "Segurança",
+		"warp": "Warp",
 		"proxy": "Proxy",
 		"apiKeys": "Chaves API",
 		"performanceTuning": "Ajuste de desempenho",
@@ -127,6 +128,7 @@
 		"compatibility": "Definições de conversão de compatibilidade",
 		"caching": "Configuração de cache",
 		"security": "Definições de segurança",
+		"warp": "Configuração do agente Warp",
 		"proxy": "Configuração de proxy",
 		"apiKeys": "Gestão de chaves API",
 		"performanceTuning": "Definições de ajuste de desempenho",
@@ -259,6 +261,198 @@
 			"Security": "Segurança",
 			"Provider Setup": "Configuração do fornecedor",
 			"Everything Else": "Tudo o resto"
+		}
+	},
+	"warp": {
+		"ask": "Perguntar ao Warp",
+		"history": {
+			"openFailed": "Não foi possível abrir essa conversa.",
+			"deleteFailed": "Não foi possível eliminar essa conversa.",
+			"untitled": "Sem título",
+			"deleteAria": "Eliminar conversa",
+			"deleteTitle": "Eliminar esta conversa?",
+			"deleteDescription": "\"{{title}}\" e as respetivas mensagens são removidas permanentemente. Isto não pode ser anulado.",
+			"loading": "A carregar histórico",
+			"loadFailed": "Não foi possível carregar o histórico.",
+			"empty": "Ainda não há conversas guardadas.",
+			"cancel": "Cancelar",
+			"delete": "Eliminar",
+			"messages_one": "{{count}} mensagem",
+			"messages_other": "{{count}} mensagens"
+		},
+		"panel": {
+			"indexStatusTitle": "O Warp não conseguiu ler o estado do respetivo índice. A pesquisa semântica pode ou não estar disponível.",
+			"backToChat": "Voltar ao chat",
+			"chatHistory": "Histórico do chat",
+			"newChat": "Novo chat",
+			"close": "Fechar Warp",
+			"loading": "A carregar Warp...",
+			"loadFailed": "Não foi possível carregar a configuração do Warp. Recarregue a página para tentar novamente.",
+			"turnedOff": "O Warp está desativado",
+			"notSetUp": "O Warp ainda não está configurado",
+			"enableHint": "Ative Ativar Warp para começar a fazer perguntas.",
+			"chooseModel": "Escolha um modelo no qual o Warp deve ser executado.",
+			"openSettings": "Abrir definições do Warp",
+			"configure": "Configurar Warp",
+			"emptyTitle": "Pergunte sobre os seus dados do Bifrost",
+			"queued": "Em fila",
+			"removeQueued": "Remover mensagem em fila",
+			"resumeQueue": "Retomar mensagens em fila",
+			"jumpToLatest": "Ir para a mais recente"
+		},
+		"starters": {
+			"spend": "Quanto gastei em cada fornecedor nos últimos 7 dias?",
+			"latency": "Que modelo teve a pior latência p99 ontem?",
+			"users": "Quem são os meus 5 utilizadores com maior custo esta semana?",
+			"failed": "Mostre-me os pedidos falhados nas últimas 24 horas"
+		},
+		"composer": {
+			"followUp": "Faça uma pergunta de seguimento; é enviada quando esta resposta terminar...",
+			"placeholder": "Pergunte sobre os seus dados do Bifrost...",
+			"stop": "Parar",
+			"send": "Enviar"
+		},
+		"question": {
+			"label": "Pergunta",
+			"skip": "Ignorar",
+			"orType": "Ou escreva a sua própria resposta abaixo."
+		},
+		"message": {
+			"whatThisCovers": "O que isto abrange",
+			"partialTitle": "Resposta parcial",
+			"partialBody": "O Warp usou todos os seus passos de investigação antes de terminar a verificação. Isto é o que encontrou até agora, e indica o que não conseguiu confirmar. Uma pergunta mais restrita costuma completar-se.",
+			"whatToTry": "O que tentar:",
+			"thinking": "A pensar"
+		},
+		"toolStatus": {
+			"inProgress": "Em curso",
+			"failed": "Falhou",
+			"completed": "Concluído"
+		},
+		"index": {
+			"noVectorStore": "Sem armazenamento vetorial",
+			"searchNotSetUp": "Pesquisa não configurada",
+			"failed": "Indexação falhou",
+			"indexingPercent": "A indexar {{percent}}%",
+			"indexing": "A indexar",
+			"ready": "Índice pronto"
+		},
+		"tools": {
+			"semantic_search_logs": {
+				"running": "A realizar pesquisa vetorial",
+				"done": "Pesquisa vetorial realizada"
+			},
+			"count_logs": {
+				"running": "A verificar o volume de registos",
+				"done": "Volume de registos verificado"
+			},
+			"query_logs": {
+				"running": "A pesquisar registos de pedidos",
+				"done": "Registos de pedidos pesquisados"
+			},
+			"get_log_detail": {
+				"running": "A abrir um pedido",
+				"done": "Pedido aberto"
+			},
+			"get_request_trace": {
+				"running": "A rastrear o que aconteceu",
+				"done": "O que aconteceu foi rastreado"
+			},
+			"query_metrics": {
+				"running": "A consultar métricas",
+				"done": "Métricas consultadas"
+			},
+			"query_usage_by": {
+				"running": "A ordenar a utilização",
+				"done": "Utilização ordenada"
+			},
+			"query_user_usage": {
+				"running": "A classificar utilizadores por utilização",
+				"done": "Utilizadores classificados por utilização"
+			},
+			"query_virtual_key_usage": {
+				"running": "A classificar chaves virtuais por utilização",
+				"done": "Chaves virtuais classificadas por utilização"
+			},
+			"query_model_performance": {
+				"running": "A comparar modelos e fornecedores",
+				"done": "Modelos e fornecedores comparados"
+			},
+			"describe_filter_space": {
+				"running": "A verificar valores disponíveis",
+				"done": "Valores disponíveis verificados"
+			},
+			"describe_virtual_key": {
+				"running": "A verificar os limites da chave virtual",
+				"done": "Limites da chave virtual verificados"
+			},
+			"describe_scope": {
+				"running": "A validar o âmbito",
+				"done": "Âmbito validado"
+			},
+			"ask_user": {
+				"running": "A fazer uma pergunta",
+				"done": "Pergunta feita"
+			}
+		},
+		"errors": {
+			"not_configured": {
+				"summary": "O Warp ainda não está configurado.",
+				"cause": "Não há fornecedor nem modelo definidos, ou o Warp está desativado nas definições.",
+				"suggestions": [
+					"Abra as definições do Warp e escolha um fornecedor e um modelo.",
+					"Certifique-se de que Ativar Warp está ligado."
+				]
+			},
+			"max_iterations": {
+				"summary": "O Warp não conseguiu chegar a uma resposta.",
+				"cause": "O Warp esgotou o orçamento completo de passos de investigação sem alcançar uma conclusão. Isso costuma significar que a pergunta era suficientemente ampla para que cada consulta levantasse outra, pelo que continuou a procurar em vez de responder.",
+				"suggestions": [
+					"Peça uma coisa de cada vez: uma única métrica, um intervalo de tempo, um âmbito.",
+					"Indique a janela de forma explícita, por exemplo «nas últimas 24 horas».",
+					"Indique de quem é o tráfego — uma equipa, um cliente ou todos.",
+					"Aumente Max Iterations nas definições do Warp se a pergunta precisar mesmo de mais passos."
+				]
+			},
+			"timeout": {
+				"summary": "Isso demorou demasiado.",
+				"cause": "O pedido completo esgotou o orçamento de tempo antes de o Warp terminar. Intervalos longos e âmbitos amplos tornam cada consulta mais lenta, e o Warp executa várias.",
+				"suggestions": [
+					"Experimente um intervalo de tempo mais curto.",
+					"Restrinja a uma equipa, cliente ou chave virtual.",
+					"Aumente Request Timeout nas definições do Warp se o seu modelo for simplesmente lento."
+				]
+			},
+			"upstream_error": {
+				"summary": "Não foi possível contactar o modelo do Warp.",
+				"cause": "O fornecedor rejeitou o pedido ou estava inacessível. Isto diz respeito ao próprio modelo do Warp, não ao tráfego sobre o qual perguntou.",
+				"suggestions": [
+					"Verifique o fornecedor, o modelo e a chave nas definições do Warp.",
+					"Confirme que o Base URL está correto — por predefinição aponta para este Bifrost.",
+					"Experimente o mesmo modelo no playground para ver se responde de todo."
+				]
+			},
+			"tool_error": {
+				"summary": "Uma consulta falhou.",
+				"cause": "Uma das consultas de dados do Warp devolveu um erro e não conseguiu recuperar com os passos restantes.",
+				"suggestions": [
+					"Experimente um intervalo de tempo mais restrito.",
+					"Verifique se o modelo, a chave ou a equipa que nomeou existem de facto."
+				]
+			},
+			"cancelled": {
+				"summary": "Parado.",
+				"cause": "O pedido foi cancelado antes de terminar.",
+				"suggestions": []
+			},
+			"unknown": {
+				"summary": "Algo correu mal.",
+				"cause": "O Warp devolveu um erro sem um código reconhecido.",
+				"suggestions": [
+					"Tente a pergunta novamente.",
+					"Se continuar a acontecer, reporte-o com os detalhes abaixo."
+				]
+			}
 		}
 	}
 }

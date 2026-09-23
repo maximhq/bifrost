@@ -888,7 +888,8 @@
 			"loading": "Caricamento delle chiavi virtuali…",
 			"empty": "Nessuna chiave virtuale ancora assegnata. Assegnane una in modo che i chiamanti possano raggiungere questo Virtual MCP.",
 			"unassignAria": "Rimuovi assegnazione chiave virtuale"
-		}
+		},
+		"add": "Aggiungi MCP virtuale"
 	},
 	"usageGuide": {
 		"connectAgent": "Connetti agente",

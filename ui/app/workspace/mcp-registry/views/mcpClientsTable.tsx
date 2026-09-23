@@ -1062,11 +1062,11 @@ export default function MCPClientsTable({
 						onClick={handleCreate}
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
-						aria-label={t("registry.newServer")}
+						aria-label={t("registry.addServer")}
 						className="h-8 gap-2"
 					>
 						<Plus />
-						<span className="hidden sm:inline">{t("registry.newServer")}</span>
+						<span className="hidden sm:inline">{t("registry.addServer")}</span>
 					</Button>
 				</div>
 			</div>

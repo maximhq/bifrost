@@ -166,7 +166,8 @@
 		"saveSequence": "Enregistrer la séquence",
 		"sequenceUpdated": "Séquence des plugins mise à jour",
 		"builtInPlugins": "Plugins intégrés",
-		"deleting": "Suppression…"
+		"deleting": "Suppression…",
+		"addPlugin": "Ajouter un plugin"
 	},
 	"webhooks": {
 		"title": "Points de terminaison webhook",
@@ -592,6 +593,7 @@
 		"modelCount_other": "{{count}} modèles",
 		"patternCount_one": "{{count}} motif",
 		"patternCount_other": "{{count}} motifs",
-		"removeAria": "Retirer {{name}}"
+		"removeAria": "Retirer {{name}}",
+		"noneLeftClick": "Plus de fournisseurs à configurer. Cliquez pour ajouter"
 	}
 }

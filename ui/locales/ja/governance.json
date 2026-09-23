@@ -166,7 +166,8 @@
 		"saveSequence": "順序を保存",
 		"sequenceUpdated": "プラグインの順序を更新しました",
 		"builtInPlugins": "組み込みプラグイン",
-		"deleting": "削除中…"
+		"deleting": "削除中…",
+		"addPlugin": "プラグインを追加"
 	},
 	"webhooks": {
 		"title": "Webhook",
@@ -592,6 +593,7 @@
 		"modelCount_other": "{{count}} モデル",
 		"patternCount_one": "{{count}} パターン",
 		"patternCount_other": "{{count}} パターン",
-		"removeAria": "{{name}} を削除"
+		"removeAria": "{{name}} を削除",
+		"noneLeftClick": "設定できるプロバイダーは残っていません。クリックして追加"
 	}
 }

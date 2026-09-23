@@ -1,8 +1,8 @@
-import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ModelAccessChipLabel } from "./modelAccessChip";
 import { RegexPatternInput } from "./regexPatternInput";
@@ -68,6 +68,7 @@ export function ModelAccessSelector({
 	...rest
 }: ModelAccessSelectorProps) {
 	const { t } = useTranslation();
+	const allModelsOption = useMemo(() => [{ value: "*", label: t("modelAccess.allModels") }], [t]);
 	const testId = rest["data-testid"];
 	// FormControl injects these onto its child; forward them to whichever input is showing
 	// so the label, the error message and the invalid state still point at a real element.
@@ -122,7 +123,7 @@ export function ModelAccessSelector({
 			{tab === "models" ? (
 				<ModelSelector
 					multiple
-					extraOptions={allowAllOption ? ALL_MODELS_OPTION : undefined}
+					extraOptions={allowAllOption ? allModelsOption : undefined}
 					allowCustomModel
 					data-testid={testId}
 					inputId={controlId}

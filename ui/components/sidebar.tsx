@@ -1050,10 +1050,10 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Warp",
+						title: t("nav.warp"),
 						url: "/workspace/config/warp",
 						icon: WarpNavIcon,
-						description: "Warp agent configuration",
+						description: t("navDesc.warp"),
 						hasAccess: hasWarpAccess && isWarpEnabled,
 					},
 					...(IS_ENTERPRISE

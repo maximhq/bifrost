@@ -888,7 +888,8 @@
 			"loading": "가상 키 로드 중…",
 			"empty": "아직 할당된 가상 키가 없어요. 발신자가 이 가상 MCP에 연결할 수 있도록 하나를 할당하세요.",
 			"unassignAria": "가상 키 할당 해제"
-		}
+		},
+		"add": "가상 MCP 추가"
 	},
 	"usageGuide": {
 		"connectAgent": "에이전트 연결",

@@ -60,7 +60,8 @@
 		"semantic": "Semantico",
 		"costLegend": "Costo",
 		"source": "Origine",
-		"device": "Dispositivo"
+		"device": "Dispositivo",
+		"session": "Sessione"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "Costo contabilizzato",
 		"settledTooltipGrouped": "Contabilizzato dopo il completamento di questa richiesta. Espandi la riga per vederlo.",
 		"settledTooltipFlat": "Contabilizzato dopo il completamento di questa richiesta, sulla propria riga.",
-		"groupTooltip": "Raggruppa i tentativi di fallback e le richieste collegate sotto la richiesta root originale. Espandi qualsiasi riga per visualizzare la catena completa delle richieste.\n\nQuesta vista raggruppata può caricarsi più lentamente della vista flat per tabelle dei log molto grandi.",
+		"groupTooltip": "Raggruppa i tentativi di fallback e le richieste collegate sotto la richiesta root originale, e ogni richiesta che condivide una sessione sotto la prima richiesta della sessione. Espandi una riga per vedere a cosa corrisponde.\n\nQuesta vista raggruppata può caricarsi più lentamente della vista piatta su tabelle di registro molto grandi.",
 		"stats": {
 			"totalRequests": "Richieste totali",
 			"successRate": "Tasso di successo",

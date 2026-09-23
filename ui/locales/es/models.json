@@ -18,7 +18,7 @@
 		"readMoreAria": "Leer más sobre proveedores (opens en nueva pestaña)",
 		"addProvider": "Agregar proveedor",
 		"addNewProvider": "Añadir nuevo proveedor",
-		"addNewProviderAria": "Agregar nuevo proveedor",
+		"addNewProviderAria": "Añadir proveedor",
 		"customProviderEllipsis": "Proveedor personalizado...",
 		"deleteProviderAria": "Eliminar el proveedor",
 		"editConfig": "Editar Config Proveedor",
@@ -696,7 +696,9 @@
 			"findInstallationId": "Encuentre su ID de instalación"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "Buscar proveedores...",
+		"noProvidersLeft": "No quedan proveedores por añadir"
 	},
 	"modelCatalog": {
 		"title": "Catálogo modelo",
@@ -1124,8 +1126,8 @@
 		"readMore": "Leer más",
 		"readMoreAria": "Leer más sobre sobrevaloramientos de precios (opens en nueva pestaña)",
 		"addOverride": "Añadir Override",
-		"newOverride": "Nueva anulación",
-		"newOverrideAria": "Nueva sobrevaloración de precios",
+		"newOverride": "Añadir anulación",
+		"newOverrideAria": "Añadir anulación de precios",
 		"createOverride": "Crear Override",
 		"createFirstAria": "Cree su primera sobrevaloración de precios",
 		"createTitle": "Crear una sobrevaloración de precios",
@@ -1225,7 +1227,7 @@
 		"readMoreAria": "Leer más sobre reglas de enrutamiento (opens en nueva pestaña)",
 		"addRule": "Añádase la regla",
 		"newRule": "Nueva regla",
-		"newRuleAria": "Nueva regla de enrutamiento",
+		"newRuleAria": "Añadir regla de enrutamiento",
 		"createFirstAria": "Crea tu primera regla de enrutamiento",
 		"viewTree": "Ver Árbol",
 		"viewTreeAria": "Ver el árbol de reglas de enrutamiento",
@@ -1463,7 +1465,7 @@
 		"totalWeight": "Peso total:{{total}}",
 		"mustEqualOne": "(Debe ser igual a 1)",
 		"fallbacks": "Respaldo",
-		"fallbacksHelp": "El proveedor es necesario, pero el modelo es opcional. Dejar el modelo vacío para utilizar el valor de solicitud entrante.",
+		"fallbacksHelp": "El proveedor es obligatorio, pero el modelo y la API key son opcionales. Deja el modelo vacío para usar el valor de la solicitud entrante.",
 		"addFallback": "Añadir Fallback",
 		"noFallbacks": "No hay retrocesos configurados",
 		"selectProvider": "Selecciona proveedor...",
@@ -1522,6 +1524,8 @@
 		"scopeVirtualKey": "Clave virtual",
 		"scopeTeam": "Equipo",
 		"scopeCustomer": "Cliente",
-		"scopeGlobal": "Global"
+		"scopeGlobal": "Global",
+		"clearFallbackApiKey": "Borrar API key del fallback {{n}}",
+		"pinnedKeyTitle": "Clave fijada: {{id}}"
 	}
 }

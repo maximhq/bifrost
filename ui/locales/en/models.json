@@ -18,7 +18,7 @@
 		"readMoreAria": "Read more about providers (opens in new tab)",
 		"addProvider": "Add provider",
 		"addNewProvider": "Add New Provider",
-		"addNewProviderAria": "Add new provider",
+		"addNewProviderAria": "Add Provider",
 		"customProviderEllipsis": "Custom provider...",
 		"deleteProviderAria": "Delete provider",
 		"editConfig": "Edit Provider Config",
@@ -696,7 +696,9 @@
 			"findInstallationId": "Find your installation ID"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "Search providers...",
+		"noProvidersLeft": "No providers left to add"
 	},
 	"modelCatalog": {
 		"title": "Model Catalog",
@@ -1129,8 +1131,8 @@
 		"readMore": "Read more",
 		"readMoreAria": "Read more about pricing overrides (opens in new tab)",
 		"addOverride": "Add Override",
-		"newOverride": "New Override",
-		"newOverrideAria": "New pricing override",
+		"newOverride": "Add Override",
+		"newOverrideAria": "Add pricing override",
 		"createOverride": "Create Override",
 		"createFirstAria": "Create your first pricing override",
 		"createTitle": "Create Pricing Override",
@@ -1230,7 +1232,7 @@
 		"readMoreAria": "Read more about routing rules (opens in new tab)",
 		"addRule": "Add Rule",
 		"newRule": "New Rule",
-		"newRuleAria": "New routing rule",
+		"newRuleAria": "Add routing rule",
 		"createFirstAria": "Create your first routing rule",
 		"viewTree": "View Tree",
 		"viewTreeAria": "View routing rules tree",
@@ -1468,7 +1470,7 @@
 		"totalWeight": "Total weight: {{total}}",
 		"mustEqualOne": "(must equal 1)",
 		"fallbacks": "Fallbacks",
-		"fallbacksHelp": "Provider is required, but model is optional. Leave model empty to use the incoming request value.",
+		"fallbacksHelp": "Provider is required, but model and API key are optional. Leave model empty to use the incoming request value.",
 		"addFallback": "Add Fallback",
 		"noFallbacks": "No fallbacks configured",
 		"selectProvider": "Select provider...",
@@ -1527,6 +1529,8 @@
 		"scopeVirtualKey": "Virtual Key",
 		"scopeTeam": "Team",
 		"scopeCustomer": "Customer",
-		"scopeGlobal": "Global"
+		"scopeGlobal": "Global",
+		"clearFallbackApiKey": "Clear API key for fallback {{n}}",
+		"pinnedKeyTitle": "Pinned key: {{id}}"
 	}
 }

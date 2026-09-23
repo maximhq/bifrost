@@ -18,7 +18,7 @@
 		"readMoreAria": "En savoir plus sur les fournisseurs (s’ouvre dans un nouvel onglet)",
 		"addProvider": "Ajouter un fournisseur",
 		"addNewProvider": "Ajouter un nouveau fournisseur",
-		"addNewProviderAria": "Ajouter un nouveau fournisseur",
+		"addNewProviderAria": "Ajouter un fournisseur",
 		"customProviderEllipsis": "Fournisseur personnalisé...",
 		"deleteProviderAria": "Supprimer le fournisseur",
 		"editConfig": "Modifier la configuration du fournisseur",
@@ -696,7 +696,9 @@
 			"findInstallationId": "Trouver votre ID d'installation"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "Rechercher des fournisseurs...",
+		"noProvidersLeft": "Plus de fournisseurs à ajouter"
 	},
 	"modelCatalog": {
 		"title": "Catalogue de modèles",
@@ -1124,8 +1126,8 @@
 		"readMore": "En savoir plus",
 		"readMoreAria": "En savoir plus sur les dérogations tarifaires (ouvre un nouvel onglet)",
 		"addOverride": "Ajouter une dérogation",
-		"newOverride": "Nouvelle dérogation",
-		"newOverrideAria": "Nouvelle dérogation tarifaire",
+		"newOverride": "Ajouter une surcharge",
+		"newOverrideAria": "Ajouter une surcharge de prix",
 		"createOverride": "Créer une dérogation",
 		"createFirstAria": "Créez votre première dérogation tarifaire",
 		"createTitle": "Créer une dérogation tarifaire",
@@ -1225,7 +1227,7 @@
 		"readMoreAria": "En savoir plus sur les règles de routage (s'ouvre dans un nouvel onglet)",
 		"addRule": "Ajouter une règle",
 		"newRule": "Nouvelle règle",
-		"newRuleAria": "Nouvelle règle de routage",
+		"newRuleAria": "Ajouter une règle de routage",
 		"createFirstAria": "Créez votre première règle de routage",
 		"viewTree": "Afficher l'arborescence",
 		"viewTreeAria": "Afficher l'arborescence des règles de routage",
@@ -1463,7 +1465,7 @@
 		"totalWeight": "Poids total : {{total}}",
 		"mustEqualOne": "(doit être égal à 1)",
 		"fallbacks": "Solutions de repli",
-		"fallbacksHelp": "Le fournisseur est requis, mais le modèle est facultatif. Laissez le modèle vide pour utiliser la valeur de la requête entrante.",
+		"fallbacksHelp": "Le fournisseur est requis, mais le modèle et l'API key sont facultatifs. Laissez le modèle vide pour utiliser la valeur de la requête entrante.",
 		"addFallback": "Ajouter une solution de secours",
 		"noFallbacks": "Aucune solution de secours configurée",
 		"selectProvider": "Sélectionnez un fournisseur...",
@@ -1522,6 +1524,8 @@
 		"scopeVirtualKey": "Clé virtuelle",
 		"scopeTeam": "Équipe",
 		"scopeCustomer": "Client",
-		"scopeGlobal": "Portée globale"
+		"scopeGlobal": "Portée globale",
+		"clearFallbackApiKey": "Effacer l'API key du fallback {{n}}",
+		"pinnedKeyTitle": "Clé épinglée : {{id}}"
 	}
 }

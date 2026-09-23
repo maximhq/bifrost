@@ -166,7 +166,8 @@
 		"saveSequence": "Сохранить последовательность",
 		"sequenceUpdated": "Последовательность плагинов обновлена",
 		"builtInPlugins": "Встроенные плагины",
-		"deleting": "Удаление..."
+		"deleting": "Удаление...",
+		"addPlugin": "Добавить плагин"
 	},
 	"webhooks": {
 		"title": "Вебхуки",
@@ -600,6 +601,7 @@
 		"patternCount_few": "{{count}} шаблона",
 		"patternCount_many": "{{count}} шаблонов",
 		"patternCount_other": "{{count}} шаблона",
-		"removeAria": "Удалить {{name}}"
+		"removeAria": "Удалить {{name}}",
+		"noneLeftClick": "Больше нет провайдеров для настройки. Нажмите, чтобы добавить"
 	}
 }

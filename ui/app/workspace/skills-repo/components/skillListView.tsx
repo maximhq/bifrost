@@ -411,7 +411,7 @@ export function SkillsListView({
 						{hasCreateAccess && (
 							<Button aria-label={t("skillsRepo.createFirstAria")} data-testid="skill-create-btn" onClick={onCreateNew}>
 								<Plus className="h-4 w-4" />
-								{t("skillsRepo.createSkill")}
+								{t("skillsRepo.newSkill")}
 							</Button>
 						)}
 					</div>
@@ -691,7 +691,10 @@ export function SkillsListView({
 							<ChevronLeft className="size-3" />
 						</Button>
 						<div className="flex items-center gap-1">
-							{t("skillsRepo.pageCount", { page: Math.floor(offset / PAGE_SIZE) + 1, total: Math.ceil(total / PAGE_SIZE) })}
+							{t("skillsRepo.pageCount", {
+								page: Math.floor(offset / PAGE_SIZE) + 1,
+								total: Math.ceil(total / PAGE_SIZE),
+							})}
 						</div>
 						<Button
 							variant="ghost"

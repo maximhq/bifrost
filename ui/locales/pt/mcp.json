@@ -888,7 +888,8 @@
 			"loading": "A carregar chaves virtuais…",
 			"empty": "Ainda sem chaves virtuais atribuídas. Atribua uma para que os autores das chamadas possam alcançar este MCP virtual.",
 			"unassignAria": "Remover atribuição da chave virtual"
-		}
+		},
+		"add": "Adicionar MCP virtual"
 	},
 	"usageGuide": {
 		"connectAgent": "Ligar agente",

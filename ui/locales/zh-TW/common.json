@@ -102,6 +102,24 @@
 		"noneForProvider": "此供應商沒有可用模型。",
 		"noneAvailable": "沒有可用模型。",
 		"selectProviderFirst": "請先選擇供應商。",
-		"deprecated": "已棄用"
+		"deprecated": "已棄用",
+		"selectModel": "選擇模型",
+		"searching": "正在搜尋…",
+		"loadingMore": "正在載入更多…",
+		"useModel": "使用 <name>{{name}}</name>"
+	},
+	"providerSelect": {
+		"select": "選擇供應商",
+		"search": "搜尋供應商…",
+		"all": "全部供應商",
+		"couldntLoad": "無法載入供應商。",
+		"noMatching": "沒有匹配的供應商。",
+		"noneAvailable": "沒有可用的供應商。",
+		"loading": "正在載入供應商…"
+	},
+	"providerList": {
+		"moreProviders_one": "另有 {{count}} 個供應商",
+		"moreProviders_other": "另有 {{count}} 個供應商",
+		"moreCount": "+{{count}} 更多"
 	}
 }

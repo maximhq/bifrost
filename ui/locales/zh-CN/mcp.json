@@ -888,7 +888,8 @@
 			"loading": "正在加载虚拟密钥…",
 			"empty": "尚未分配虚拟密钥。分配一个，调用方才能到达此虚拟 MCP。",
 			"unassignAria": "取消分配虚拟密钥"
-		}
+		},
+		"add": "添加虚拟 MCP"
 	},
 	"usageGuide": {
 		"connectAgent": "连接 Agent",

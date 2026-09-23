@@ -60,7 +60,8 @@
 		"semantic": "Sémantique",
 		"costLegend": "Coût",
 		"source": "Source",
-		"device": "Appareil"
+		"device": "Appareil",
+		"session": "Session"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "Coût finalisé",
 		"settledTooltipGrouped": "Finalisé après l’exécution de cette requête. Développez la ligne pour l’afficher.",
 		"settledTooltipFlat": "Finalisé après l’exécution de cette requête, sur sa propre ligne.",
-		"groupTooltip": "Regroupe les tentatives de repli et les requêtes associées sous la requête racine d’origine. Développez une ligne pour afficher la chaîne complète de requêtes.\n\nCette vue groupée peut se charger plus lentement que la vue plate pour les très grands tableaux de journaux.",
+		"groupTooltip": "Regroupe les tentatives de fallback et les requêtes liées sous la requête racine d'origine, et chaque requête partageant une session sous la première requête de la session. Développez une ligne pour voir ce qu'elle représente.\n\nCette vue groupée peut se charger plus lentement que la vue plate pour de très grandes tables de journaux.",
 		"stats": {
 			"totalRequests": "Total des requêtes",
 			"successRate": "Taux de réussite",

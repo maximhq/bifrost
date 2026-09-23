@@ -102,6 +102,24 @@
 		"noneForProvider": "No models available for this provider.",
 		"noneAvailable": "No models available.",
 		"selectProviderFirst": "Select a provider first.",
-		"deprecated": "Deprecated"
+		"deprecated": "Deprecated",
+		"selectModel": "Select model",
+		"searching": "Searching…",
+		"loadingMore": "Loading more…",
+		"useModel": "Use <name>{{name}}</name>"
+	},
+	"providerSelect": {
+		"select": "Select provider",
+		"search": "Search providers...",
+		"all": "All Providers",
+		"couldntLoad": "Couldn't load providers.",
+		"noMatching": "No matching providers.",
+		"noneAvailable": "No providers available.",
+		"loading": "Loading providers…"
+	},
+	"providerList": {
+		"moreProviders_one": "{{count}} more provider",
+		"moreProviders_other": "{{count}} more providers",
+		"moreCount": "+{{count}} more"
 	}
 }

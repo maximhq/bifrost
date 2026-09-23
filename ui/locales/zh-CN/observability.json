@@ -60,7 +60,8 @@
 		"semantic": "语义命中",
 		"costLegend": "费用",
 		"source": "来源",
-		"device": "设备"
+		"device": "设备",
+		"session": "会话"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "已结算费用",
 		"settledTooltipGrouped": "在此请求完成后结算。展开该行即可查看。",
 		"settledTooltipFlat": "在此请求完成后结算，显示在独立行上。",
-		"groupTooltip": "将回退尝试与关联请求归组到原始根请求下。展开任意行可查看完整请求链。\n\n对于超大日志表，分组视图可能比平铺视图更慢。",
+		"groupTooltip": "将回退尝试与关联请求归入原始根请求之下，并将共享同一会话的每个请求归入该会话的首次请求之下。展开任意行即可查看其所代表的内容。\n\n对于非常大的日志表，此分组视图可能比平铺视图加载更慢。",
 		"stats": {
 			"totalRequests": "总请求数",
 			"successRate": "成功率",

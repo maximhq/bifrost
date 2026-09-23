@@ -18,7 +18,7 @@
 		"readMoreAria": "プロバイダーについてもっと読む（新しいタブで開く）",
 		"addProvider": "プロバイダーを追加",
 		"addNewProvider": "新しいプロバイダーを追加",
-		"addNewProviderAria": "新しいプロバイダーを追加",
+		"addNewProviderAria": "プロバイダーを追加",
 		"customProviderEllipsis": "カスタムプロバイダー...",
 		"deleteProviderAria": "プロバイダーを削除",
 		"editConfig": "プロバイダー設定を編集",
@@ -696,7 +696,9 @@
 			"findInstallationId": "あなたのインストールIDを見つける"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "プロバイダーを検索...",
+		"noProvidersLeft": "追加できるプロバイダーは残っていません"
 	},
 	"modelCatalog": {
 		"title": "モデルカタログ",
@@ -1124,8 +1126,8 @@
 		"readMore": "詳細を読む",
 		"readMoreAria": "価格の上書きについてさらに読む（新しいタブで開く）",
 		"addOverride": "オーバーライドを追加",
-		"newOverride": "新しいオーバーライド",
-		"newOverrideAria": "新しい価格オーバーライド",
+		"newOverride": "オーバーライドを追加",
+		"newOverrideAria": "料金オーバーライドを追加",
 		"createOverride": "オーバーライドを作成",
 		"createFirstAria": "最初の価格オーバーライドを作成する",
 		"createTitle": "価格上書きを作成",
@@ -1225,7 +1227,7 @@
 		"readMoreAria": "ルーティングルールの詳細を読む（新しいタブで開きます）",
 		"addRule": "ルールを追加",
 		"newRule": "新しいルール",
-		"newRuleAria": "新しいルーティングルール",
+		"newRuleAria": "ルーティングルールを追加",
 		"createFirstAria": "最初のルーティングルールを作成する",
 		"viewTree": "木を見る",
 		"viewTreeAria": "ルーティングルールツリーを表示",
@@ -1463,7 +1465,7 @@
 		"totalWeight": "総重量: {{total}}",
 		"mustEqualOne": "（1に等しくなければならない）",
 		"fallbacks": "フォールバック",
-		"fallbacksHelp": "プロバイダーは必須ですが、モデルは任意です。モデルを空にすると、受信リクエストの値が使用されます。",
+		"fallbacksHelp": "プロバイダーは必須ですが、モデルと API キーは任意です。モデルを空にすると、受信リクエストの値を使用します。",
 		"addFallback": "フォールバックを追加",
 		"noFallbacks": "フォールバックが設定されていません",
 		"selectProvider": "プロバイダーを選択...",
@@ -1522,6 +1524,8 @@
 		"scopeVirtualKey": "仮想キー",
 		"scopeTeam": "チーム",
 		"scopeCustomer": "顧客",
-		"scopeGlobal": "グローバル"
+		"scopeGlobal": "グローバル",
+		"clearFallbackApiKey": "フォールバック {{n}} の API キーをクリア",
+		"pinnedKeyTitle": "固定キー: {{id}}"
 	}
 }

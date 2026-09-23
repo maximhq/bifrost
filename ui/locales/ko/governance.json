@@ -166,7 +166,8 @@
 		"saveSequence": "시퀀스 저장",
 		"sequenceUpdated": "플러그인 순서가 업데이트되었어요.",
 		"builtInPlugins": "내장 플러그인",
-		"deleting": "삭제 중..."
+		"deleting": "삭제 중...",
+		"addPlugin": "플러그인 추가"
 	},
 	"webhooks": {
 		"title": "웹훅",
@@ -592,6 +593,7 @@
 		"modelCount_other": "{{count}} 모델",
 		"patternCount_one": "{{count}} 패턴",
 		"patternCount_other": "{{count}} 패턴",
-		"removeAria": "{{name}} 삭제"
+		"removeAria": "{{name}} 삭제",
+		"noneLeftClick": "구성할 프로바이더가 남지 않았습니다. 클릭하여 추가"
 	}
 }

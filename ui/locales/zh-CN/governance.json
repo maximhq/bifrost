@@ -166,7 +166,8 @@
 		"saveSequence": "保存顺序",
 		"sequenceUpdated": "插件顺序已更新",
 		"builtInPlugins": "内置插件",
-		"deleting": "删除中…"
+		"deleting": "删除中…",
+		"addPlugin": "添加插件"
 	},
 	"webhooks": {
 		"title": "Webhook",
@@ -592,6 +593,7 @@
 		"modelCount_other": "{{count}} 个模型",
 		"patternCount_one": "{{count}} 个模式",
 		"patternCount_other": "{{count}} 个模式",
-		"removeAria": "移除 {{name}}"
+		"removeAria": "移除 {{name}}",
+		"noneLeftClick": "没有可配置的供应商。点击添加"
 	}
 }

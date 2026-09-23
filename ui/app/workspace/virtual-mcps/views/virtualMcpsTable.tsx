@@ -204,7 +204,7 @@ export default function VirtualMCPsTable({
 				</div>
 				<Button onClick={onCreate} data-testid="virtual-mcp-create-btn">
 					<Plus className="h-4 w-4" />
-					{t("virtualMcps.new")}
+					{t("virtualMcps.add")}
 				</Button>
 			</div>
 
@@ -239,7 +239,7 @@ export default function VirtualMCPsTable({
 												</span>
 												<Button size="sm" onClick={onCreate}>
 													<Plus className="h-4 w-4" />
-													{t("virtualMcps.new")}
+													{t("virtualMcps.add")}
 												</Button>
 											</div>
 										)}

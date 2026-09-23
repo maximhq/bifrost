@@ -888,7 +888,8 @@
 			"loading": "Cargando claves virtuales...",
 			"empty": "No hay claves virtuales asignadas todavía. Asigna una para que los solicitantes puedan llegar a este MCP virtual.",
 			"unassignAria": "Unassign clave virtual"
-		}
+		},
+		"add": "Añadir MCP virtual"
 	},
 	"usageGuide": {
 		"connectAgent": "Agente de conexión",

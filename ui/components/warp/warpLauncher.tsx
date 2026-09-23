@@ -3,6 +3,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWarp } from "@/lib/contexts/warpContext";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 /**
  * Topbar button that opens and closes the Warp dock.
@@ -20,6 +21,7 @@ function isAppleDevice(): boolean {
 }
 
 export default function WarpLauncher() {
+	const { t } = useTranslation("shell");
 	const warp = useWarp();
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	// Tracks whether this launcher was the thing that got hidden, so focus is
@@ -64,7 +66,7 @@ export default function WarpLauncher() {
 				<button
 					ref={buttonRef}
 					type="button"
-					aria-label="Ask Warp"
+					aria-label={t("warp.ask")}
 					aria-pressed={warp.isOpen}
 					data-state={warp.isOpen ? "open" : "closed"}
 					data-testid="topbar-warp-btn"
@@ -76,7 +78,7 @@ export default function WarpLauncher() {
 			</TooltipTrigger>
 			<TooltipContent sideOffset={8}>
 				<span className="flex items-center gap-2">
-					Ask Warp
+					{t("warp.ask")}
 					{/* mod+i binds Cmd on a Mac and Ctrl everywhere else, so the label
 					    has to follow the platform rather than always claiming ⌘. */}
 					<kbd className="bg-muted text-muted-foreground rounded px-1 py-0.5 font-mono text-[10px]">

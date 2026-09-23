@@ -166,7 +166,8 @@
 		"saveSequence": "Reihenfolge speichern",
 		"sequenceUpdated": "Plugin-Reihenfolge aktualisiert",
 		"builtInPlugins": "Integrierte Plugins",
-		"deleting": "Wird gelöscht..."
+		"deleting": "Wird gelöscht...",
+		"addPlugin": "Plugin hinzufügen"
 	},
 	"webhooks": {
 		"title": "Webhooks",
@@ -592,6 +593,7 @@
 		"modelCount_other": "{{count}} Modelle",
 		"patternCount_one": "{{count}} Pattern",
 		"patternCount_other": "{{count}} Patterns",
-		"removeAria": "{{name}} entfernen"
+		"removeAria": "{{name}} entfernen",
+		"noneLeftClick": "Keine weiteren Anbieter zum Konfigurieren. Klicken zum Hinzufügen"
 	}
 }

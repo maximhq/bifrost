@@ -18,7 +18,7 @@
 		"readMoreAria": "Подробнее о провайдерах (откроется в новой вкладке)",
 		"addProvider": "Добавить провайдера",
 		"addNewProvider": "Добавить нового провайдера",
-		"addNewProviderAria": "Добавить нового провайдера",
+		"addNewProviderAria": "Добавить провайдер",
 		"customProviderEllipsis": "Свой провайдер…",
 		"deleteProviderAria": "Удалить провайдера",
 		"editConfig": "Изменить конфигурацию провайдера",
@@ -716,7 +716,9 @@
 			"findInstallationId": "Найти installation ID"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "Поиск провайдеров...",
+		"noProvidersLeft": "Больше нет провайдеров для добавления"
 	},
 	"modelCatalog": {
 		"title": "Каталог моделей",
@@ -1150,8 +1152,8 @@
 		"readMore": "Подробнее",
 		"readMoreAria": "Подробнее о переопределениях тарифов (откроется в новой вкладке)",
 		"addOverride": "Добавить переопределение",
-		"newOverride": "Новое переопределение",
-		"newOverrideAria": "Новое переопределение тарифа",
+		"newOverride": "Добавить override",
+		"newOverrideAria": "Добавить переопределение цены",
 		"createOverride": "Создать переопределение",
 		"createFirstAria": "Создать первое переопределение тарифа",
 		"createTitle": "Создать переопределение тарифа",
@@ -1251,7 +1253,7 @@
 		"readMoreAria": "Подробнее о правилах маршрутизации (откроется в новой вкладке)",
 		"addRule": "Добавить правило",
 		"newRule": "Новое правило",
-		"newRuleAria": "Новое правило маршрутизации",
+		"newRuleAria": "Добавить правило маршрутизации",
 		"createFirstAria": "Создать первое правило маршрутизации",
 		"viewTree": "Просмотр дерева",
 		"viewTreeAria": "Просмотр дерева правил маршрутизации",
@@ -1495,7 +1497,7 @@
 		"totalWeight": "Суммарный вес: {{total}}",
 		"mustEqualOne": "(должно равняться 1)",
 		"fallbacks": "Запасные варианты",
-		"fallbacksHelp": "Провайдер обязателен, модель необязательна. Оставьте модель пустой, чтобы использовать значение входящего запроса.",
+		"fallbacksHelp": "Провайдер обязателен, а модель и API key необязательны. Оставьте модель пустой, чтобы использовать значение входящего запроса.",
 		"addFallback": "Добавить запасной вариант",
 		"noFallbacks": "Запасные варианты не настроены",
 		"selectProvider": "Выберите провайдера…",
@@ -1556,6 +1558,8 @@
 		"scopeVirtualKey": "Виртуальный ключ",
 		"scopeTeam": "Команда",
 		"scopeCustomer": "Клиент",
-		"scopeGlobal": "Глобально"
+		"scopeGlobal": "Глобально",
+		"clearFallbackApiKey": "Очистить API key для fallback {{n}}",
+		"pinnedKeyTitle": "Закреплённый ключ: {{id}}"
 	}
 }
