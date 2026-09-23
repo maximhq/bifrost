@@ -97048,6 +97048,88 @@
           }
         ]
       }
+    },
+    "/api/warp/chat": {
+      "post": {
+        "operationId": "warpChat",
+        "summary": "Ask Warp a question",
+        "description": "Runs Warp's agent loop over the deployment's telemetry and returns an\nanswer.\n\n**The route is always registered, and answers `503` while Warp cannot\nwork.** The body carries a machine-readable `reason`, so \"present but\nunusable\" stays distinguishable from \"absent\" without the state being\npermanent: a deployment that enables logging after startup begins serving\nthis route without a restart.\n\nConversation history is client-sent and no session is stored: the dashboard\nalready holds the thread, so a server-side session would need TTLs, cleanup\nand cross-node coordination for no user-visible gain.\n\n**Data visibility equals the caller's own.** Every tool query runs against\nthe caller's row-level scope, so Warp can never surface data the caller\ncould not already retrieve from the logs API directly.\n\nWith `stream: true` (the default) the response is `text/event-stream`. Both\nmodes run the identical loop; only the sink differs.\n",
+        "tags": [
+          "Warp"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarpChatRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer. `text/event-stream` when streaming, otherwise a single JSON\nbody.\n\nSSE frames are `event: <type>` with a JSON payload. Types are `start`,\n`delta` (an answer fragment), `tool_call_start`, `tool_call_end`,\n`error` and `done`.\n\n**`error` is terminal and is never followed by `done`.** A client that\ntreats `done` as the only completion signal will read a failed request\nas a successful one, so both must end the stream.\n",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarpChatResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Conversation exceeds the server's history limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Warp cannot answer yet. `reason` says why: `no_log_store` when the\ndeployment persists no logs, `not_configured` when it has no usable\nsettings or no model client. The dashboard treats them differently -\nthe first hides the launcher, the second links to settings.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarpUnavailable"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -118849,6 +118931,119 @@
         "required": [
           "reason",
           "message"
+        ]
+      },
+      "WarpChatRequest": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The full conversation so far, oldest first. Roles must be `user` or\n`assistant`; a client-supplied `system` turn is rejected, since it would\nlet a caller displace the instructions that keep Warp from inventing\nnumbers.\n\nLong threads are trimmed server-side, always keeping the opening turn -\nit usually carries the framing everything after it depends on.\n",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant"
+                  ]
+                },
+                "content": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "role",
+                "content"
+              ]
+            }
+          },
+          "stream": {
+            "type": "boolean",
+            "default": true,
+            "description": "Selects the transport, not the behaviour. `true` streams SSE frames;\n`false` returns one JSON body. Both run the same loop.\n"
+          }
+        },
+        "required": [
+          "messages"
+        ]
+      },
+      "WarpChatResponse": {
+        "type": "object",
+        "description": "The non-streaming body - the same events, assembled.",
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "type": "array",
+            "description": "What Warp queried, in order. The result payloads are deliberately\nabsent: the model consumed them, and echoing them would multiply the\nresponse size for no reader benefit.\n",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "arguments": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "type": "integer"
+                },
+                "failed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "duration_ms"
+              ]
+            }
+          },
+          "iterations": {
+            "type": "integer",
+            "description": "How many model round trips the answer took."
+          },
+          "finish_reason": {
+            "type": "string"
+          },
+          "usage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BifrostLLMUsage"
+              }
+            ],
+            "description": "Token usage summed across every model round trip in the request. Warp\nruns on its own Bifrost instance with no logging plugin - deliberately,\nso its calls do not pollute the log table it reads - which means this is\nthe only place its spend is reported.\n"
+          },
+          "error": {
+            "type": "object",
+            "description": "Present when the request failed. The codes are the closed set the agent\nemits; both fields are always populated when the object is present.\n",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "upstream_error",
+                  "max_iterations",
+                  "timeout",
+                  "cancelled"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "answer",
+          "tool_calls",
+          "iterations"
         ]
       }
     }

@@ -5,7 +5,9 @@
 package warp
 
 import (
+	"context"
 	"errors"
+	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -29,6 +31,24 @@ type Service struct {
 	// method treats that as "not configured" rather than a fault.
 	store  configstore.WarpStore
 	logger schemas.Logger
+	// logs is nil on deployments with no logging plugin. Warp's tools have
+	// nothing to read there, so chat is reported unavailable rather than
+	// registered and always failing.
+	logs LogReader
+	// client owns Warp's dedicated Bifrost instance. It exists only when there is
+	// something to read; tests replace chatOverride instead, so the loop can be
+	// driven by a scripted model.
+	client *Client
+	// chatOverride, when set, replaces the real inference path. Test seam only.
+	chatOverride ChatFunc
+	// mu guards logs, client and chatOverride - the fields that change after
+	// construction. Every reader takes it, not just the ones near SetLogReader:
+	// an unguarded read elsewhere is the same race, just harder to find. A logging plugin enabled at runtime rebinds them while
+	// requests are already being served.
+	mu sync.RWMutex
+	// closed records that Shutdown ran, so a later rebind cannot revive a
+	// service whose lifecycle is over.
+	closed bool
 }
 
 // Option configures a Service.
@@ -38,6 +58,18 @@ type Option func(*Service)
 // caller (a failed write after a successful answer, for example).
 func WithLogger(logger schemas.Logger) Option {
 	return func(s *Service) { s.logger = logger }
+}
+
+// WithLogReader gives the service something to research with, and with it a
+// model client. Without one, Warp serves configuration only.
+func WithLogReader(logs LogReader) Option {
+	return func(s *Service) { s.logs = logs }
+}
+
+// WithChatFunc replaces the real inference path. Test seam only: the agent loop
+// can then be driven by a scripted model with no provider behind it.
+func WithChatFunc(chat ChatFunc) Option {
+	return func(s *Service) { s.chatOverride = chat }
 }
 
 // WithConfigStore sets the configuration store directly, bypassing the
@@ -57,7 +89,113 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	for _, opt := range opts {
 		opt(service)
 	}
+	if service.logs != nil {
+		service.client = NewClient(service.logger)
+	}
 	return service
+}
+
+// CanChat reports whether the chat endpoint can be served: there is data to
+// read and a way to reach a model. Transports gate the route on it, because a
+// route that is registered but always 503s is worse than absent - it tells the
+// dashboard the feature is present, and the failure only shows up after a user
+// has typed a question.
+func (s *Service) CanChat() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logs != nil && (s.client != nil || s.chatOverride != nil)
+}
+
+// chatFuncFor resolves the inference function for a request.
+// turnDeps returns the model client and the log reader as one consistent pair.
+//
+// Taken under a single RLock, because SetLogReader replaces both and reading
+// them separately let a turn keep a usable chat func while the reader went nil
+// underneath it - RunTurn then handed nil to NewAgent, and the first log tool
+// the model reached for dereferenced it.
+func (s *Service) turnDeps(ctx context.Context, config *schemas.WarpConfig) (ChatFunc, LogReader) {
+	s.mu.RLock()
+	override, client, logs := s.chatOverride, s.client, s.logs
+	s.mu.RUnlock()
+	return s.chatFuncFrom(ctx, config, override, client), logs
+}
+
+func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig) ChatFunc {
+	// Copied out under the read lock rather than used in place: SetLogReader
+	// writes s.client while requests are in flight, so reading it here unguarded
+	// is a race on a pointer another goroutine is assigning. Holding the lock
+	// across the inference call itself would serialize every chat behind a
+	// settings reload, which is why only the read is guarded.
+	s.mu.RLock()
+	override, client := s.chatOverride, s.client
+	s.mu.RUnlock()
+	return s.chatFuncFrom(ctx, config, override, client)
+}
+
+// chatFuncFrom resolves an already-snapshotted override and client. Split out so
+// turnDeps can take the client and the reader under one lock without reading
+// s.client a second time.
+func (s *Service) chatFuncFrom(ctx context.Context, config *schemas.WarpConfig, override ChatFunc, client *Client) ChatFunc {
+	if override != nil {
+		return override
+	}
+	if client == nil {
+		return nil
+	}
+	return client.Chat(ctx, config)
+}
+
+// Shutdown releases Warp's model client. Safe to call on a service that never
+// built one.
+func (s *Service) Shutdown() {
+	s.mu.Lock()
+	s.closed = true
+	client := s.client
+	s.mu.Unlock()
+	if client != nil {
+		client.Shutdown()
+	}
+}
+
+// SetLogReader rebinds what Warp researches through, after construction.
+//
+// Routes are registered once at startup, so a logging plugin enabled later
+// cannot be picked up by rebuilding the handler - the router still holds the
+// original one's closures. Rebinding inside the live service is what lets the
+// chat endpoint start working without a restart. Building the model client here
+// too keeps CanChat honest: a reader with no client still cannot answer.
+func (s *Service) SetLogReader(logs LogReader) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A service constructed without a log reader has no client, so Shutdown had
+	// nothing to close and left no trace that it ran. A plugin reload landing
+	// after that would build a fresh Client outside the completed shutdown, and
+	// the next chat would stand up a Bifrost instance nobody owns.
+	if s.closed {
+		return
+	}
+	s.logs = logs
+	if logs != nil && s.client == nil && s.chatOverride == nil {
+		s.client = NewClient(s.logger)
+	}
+}
+
+// logReader returns the current reader under the read lock.
+func (s *Service) logReader() LogReader {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logs
+}
+
+// ChatUnavailableReason says why CanChat is false, so the transport can report
+// the cause the dashboard branches on rather than guessing.
+func (s *Service) ChatUnavailableReason() schemas.WarpUnavailableReason {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.logs == nil {
+		return schemas.WarpUnavailableNoLogStore
+	}
+	return schemas.WarpUnavailableNotConfigured
 }
 
 // HasConfigStore reports whether configuration can be read and written at all.
