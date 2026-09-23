@@ -60,7 +60,8 @@
 		"semantic": "Semantic",
 		"costLegend": "Cost",
 		"source": "Source",
-		"device": "Device"
+		"device": "Device",
+		"session": "Session"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "Settled Cost",
 		"settledTooltipGrouped": "Settled after this request completed. Expand the row to see it.",
 		"settledTooltipFlat": "Settled after this request completed, on its own row.",
-		"groupTooltip": "Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.\n\nThis grouped view may load more slowly than the flat view for very large log tables.",
+		"groupTooltip": "Groups fallback attempts and linked requests under the original root request, and every request sharing a session under the session's first request. Expand any row to view what it stands for.\n\nThis grouped view may load more slowly than the flat view for very large log tables.",
 		"stats": {
 			"totalRequests": "Total Requests",
 			"successRate": "Success Rate",

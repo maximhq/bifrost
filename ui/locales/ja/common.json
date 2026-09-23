@@ -102,6 +102,24 @@
 		"noneForProvider": "このプロバイダーで利用可能なモデルはありません。",
 		"noneAvailable": "利用可能なモデルはありません。",
 		"selectProviderFirst": "先にプロバイダーを選択してください。",
-		"deprecated": "非推奨"
+		"deprecated": "非推奨",
+		"selectModel": "モデルを選択",
+		"searching": "検索中…",
+		"loadingMore": "さらに読み込み中…",
+		"useModel": "<name>{{name}}</name> を使用"
+	},
+	"providerSelect": {
+		"select": "プロバイダーを選択",
+		"search": "プロバイダーを検索...",
+		"all": "すべてのプロバイダー",
+		"couldntLoad": "プロバイダーを読み込めませんでした。",
+		"noMatching": "一致するプロバイダーがありません。",
+		"noneAvailable": "利用可能なプロバイダーがありません。",
+		"loading": "プロバイダーを読み込み中…"
+	},
+	"providerList": {
+		"moreProviders_one": "他 {{count}} 件のプロバイダー",
+		"moreProviders_other": "他 {{count}} 件のプロバイダー",
+		"moreCount": "+他 {{count}} 件"
 	}
 }

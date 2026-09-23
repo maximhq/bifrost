@@ -61,6 +61,7 @@
 		"compatibility": "相容性",
 		"caching": "快取",
 		"security": "安全",
+		"warp": "Warp",
 		"proxy": "代理",
 		"apiKeys": "API 金鑰",
 		"performanceTuning": "效能調優",
@@ -127,6 +128,7 @@
 		"compatibility": "相容性轉換設定",
 		"caching": "快取配置",
 		"security": "安全設定",
+		"warp": "Warp 代理設定",
 		"proxy": "代理配置",
 		"apiKeys": "API 金鑰管理",
 		"performanceTuning": "效能調優設定",
@@ -259,6 +261,198 @@
 			"Security": "安全",
 			"Provider Setup": "供應商設定",
 			"Everything Else": "其他設定"
+		}
+	},
+	"warp": {
+		"ask": "詢問 Warp",
+		"history": {
+			"openFailed": "無法開啟該對話。",
+			"deleteFailed": "無法刪除該對話。",
+			"untitled": "未命名",
+			"deleteAria": "刪除對話",
+			"deleteTitle": "刪除此對話？",
+			"deleteDescription": "「{{title}}」及其訊息將被永久刪除。此操作無法撤銷。",
+			"loading": "正在載入歷史紀錄",
+			"loadFailed": "無法載入歷史紀錄。",
+			"empty": "尚無已儲存的對話。",
+			"cancel": "取消",
+			"delete": "刪除",
+			"messages_one": "{{count}} 則訊息",
+			"messages_other": "{{count}} 則訊息"
+		},
+		"panel": {
+			"indexStatusTitle": "Warp 無法讀取其索引狀態。語意搜尋可能可用，也可能不可用。",
+			"backToChat": "返回聊天",
+			"chatHistory": "聊天歷史",
+			"newChat": "新聊天",
+			"close": "關閉 Warp",
+			"loading": "正在載入 Warp…",
+			"loadFailed": "無法載入 Warp 的設定。請重新載入頁面後再試。",
+			"turnedOff": "Warp 已關閉",
+			"notSetUp": "Warp 尚未設定",
+			"enableHint": "開啟「啟用 Warp」即可開始提問。",
+			"chooseModel": "為 Warp 選擇要執行的模型。",
+			"openSettings": "開啟 Warp 設定",
+			"configure": "設定 Warp",
+			"emptyTitle": "詢問你的 Bifrost 資料",
+			"queued": "已排隊",
+			"removeQueued": "移除排隊訊息",
+			"resumeQueue": "繼續傳送佇列中的訊息",
+			"jumpToLatest": "跳到最新"
+		},
+		"starters": {
+			"spend": "過去 7 天各供應商的花費是多少？",
+			"latency": "昨天哪個模型的 p99 延遲最差？",
+			"users": "本週按費用排名前 5 的使用者是誰？",
+			"failed": "顯示過去 24 小時內失敗的請求"
+		},
+		"composer": {
+			"followUp": "提出追問，目前回答結束後會傳送…",
+			"placeholder": "詢問你的 Bifrost 資料…",
+			"stop": "停止",
+			"send": "傳送"
+		},
+		"question": {
+			"label": "問題",
+			"skip": "跳過",
+			"orType": "或在下方輸入你自己的回答。"
+		},
+		"message": {
+			"whatThisCovers": "涵蓋內容",
+			"partialTitle": "部分回答",
+			"partialBody": "Warp 在完成核查前已用盡全部研究步驟。以下是目前已找到的內容，並說明了未能確認的部分。問題範圍更窄時通常能完成。",
+			"whatToTry": "可以嘗試：",
+			"thinking": "思考中"
+		},
+		"toolStatus": {
+			"inProgress": "進行中",
+			"failed": "失敗",
+			"completed": "已完成"
+		},
+		"index": {
+			"noVectorStore": "無向量儲存",
+			"searchNotSetUp": "搜尋尚未設定",
+			"failed": "索引失敗",
+			"indexingPercent": "正在索引 {{percent}}%",
+			"indexing": "正在索引",
+			"ready": "索引就緒"
+		},
+		"tools": {
+			"semantic_search_logs": {
+				"running": "正在執行向量搜尋",
+				"done": "已執行向量搜尋"
+			},
+			"count_logs": {
+				"running": "正在檢查日誌量",
+				"done": "已檢查日誌量"
+			},
+			"query_logs": {
+				"running": "正在搜尋請求日誌",
+				"done": "已搜尋請求日誌"
+			},
+			"get_log_detail": {
+				"running": "正在開啟請求",
+				"done": "已開啟請求"
+			},
+			"get_request_trace": {
+				"running": "正在追蹤發生了什麼",
+				"done": "已追蹤發生了什麼"
+			},
+			"query_metrics": {
+				"running": "正在查詢指標",
+				"done": "已查詢指標"
+			},
+			"query_usage_by": {
+				"running": "正在按用量排名",
+				"done": "已按用量排名"
+			},
+			"query_user_usage": {
+				"running": "正在依用量對使用者排名",
+				"done": "已依用量對使用者排名"
+			},
+			"query_virtual_key_usage": {
+				"running": "正在依用量對虛擬金鑰排名",
+				"done": "已依用量對虛擬金鑰排名"
+			},
+			"query_model_performance": {
+				"running": "正在比較模型與供應商",
+				"done": "已比較模型與供應商"
+			},
+			"describe_filter_space": {
+				"running": "正在檢查可用值",
+				"done": "已檢查可用值"
+			},
+			"describe_virtual_key": {
+				"running": "正在檢查虛擬金鑰限制",
+				"done": "已檢查虛擬金鑰限制"
+			},
+			"describe_scope": {
+				"running": "正在驗證範圍",
+				"done": "已驗證範圍"
+			},
+			"ask_user": {
+				"running": "正在提問",
+				"done": "已提問"
+			}
+		},
+		"errors": {
+			"not_configured": {
+				"summary": "Warp 尚未設定。",
+				"cause": "未設定供應商和模型，或在設定中關閉了 Warp。",
+				"suggestions": [
+					"開啟 Warp 設定並選擇供應商和模型。",
+					"確認已開啟「啟用 Warp」。"
+				]
+			},
+			"max_iterations": {
+				"summary": "Warp 未能得出答案。",
+				"cause": "Warp 用盡了全部研究步驟預算仍未得出結論。這通常表示問題過寬，每次查詢又引出新問題，於是它一直在查找而沒有作答。",
+				"suggestions": [
+					"一次只問一件事：單一指標、一個時間範圍、一個範圍。",
+					"明確寫出時間視窗，例如「過去 24 小時」。",
+					"說明你指的是誰的流量——某個團隊、某個客戶，或全部。",
+					"若問題確實需要更多步驟，可在 Warp 設定中提高最大迭代次數。"
+				]
+			},
+			"timeout": {
+				"summary": "耗時過長。",
+				"cause": "整個請求在 Warp 完成前已超過時間預算。時間範圍長、範圍寬會使每次查詢更慢，而 Warp 會執行多次查詢。",
+				"suggestions": [
+					"嘗試更短的時間範圍。",
+					"縮小到一個團隊、客戶或虛擬金鑰。",
+					"若模型本身較慢，可在 Warp 設定中提高請求逾時。"
+				]
+			},
+			"upstream_error": {
+				"summary": "無法連線到 Warp 的模型。",
+				"cause": "供應商拒絕了請求或無法連線。這與 Warp 自身的模型有關，與你詢問的流量無關。",
+				"suggestions": [
+					"檢查 Warp 設定中的供應商、模型和金鑰。",
+					"確認 Base URL 正確——預設指向此 Bifrost。",
+					"在 playground 中試用同一模型，看它是否能正常回答。"
+				]
+			},
+			"tool_error": {
+				"summary": "一次查詢失敗。",
+				"cause": "Warp 的某次資料查詢回傳了錯誤，且在剩餘步驟內無法復原。",
+				"suggestions": [
+					"嘗試更窄的時間範圍。",
+					"確認你提到的模型、金鑰或團隊確實存在。"
+				]
+			},
+			"cancelled": {
+				"summary": "已停止。",
+				"cause": "請求在完成前被取消。",
+				"suggestions": []
+			},
+			"unknown": {
+				"summary": "出了點問題。",
+				"cause": "Warp 回傳了錯誤，但沒有可辨識的錯誤碼。",
+				"suggestions": [
+					"再試一次該問題。",
+					"若持續發生，請連同下方詳情一併回報。"
+				]
+			}
 		}
 	}
 }

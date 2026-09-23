@@ -888,7 +888,8 @@
 			"loading": "Loading virtual keys…",
 			"empty": "No virtual keys assigned yet. Assign one so callers can reach this Virtual MCP.",
 			"unassignAria": "Unassign virtual key"
-		}
+		},
+		"add": "Add Virtual MCP"
 	},
 	"usageGuide": {
 		"connectAgent": "Connect agent",

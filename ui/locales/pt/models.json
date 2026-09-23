@@ -18,7 +18,7 @@
 		"readMoreAria": "Ler mais sobre fornecedores (abre num novo separador)",
 		"addProvider": "Adicionar fornecedor",
 		"addNewProvider": "Adicionar novo fornecedor",
-		"addNewProviderAria": "Adicionar novo fornecedor",
+		"addNewProviderAria": "Adicionar fornecedor",
 		"customProviderEllipsis": "Fornecedor personalizado...",
 		"deleteProviderAria": "Eliminar fornecedor",
 		"editConfig": "Editar configuração do fornecedor",
@@ -696,7 +696,9 @@
 			"findInstallationId": "Encontrar o seu installation ID"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "Pesquisar fornecedores...",
+		"noProvidersLeft": "Não restam fornecedores para adicionar"
 	},
 	"modelCatalog": {
 		"title": "Catálogo de modelos",
@@ -1124,8 +1126,8 @@
 		"readMore": "Ler mais",
 		"readMoreAria": "Saber mais sobre substituições de preços (abre num novo separador)",
 		"addOverride": "Adicionar sobreposição",
-		"newOverride": "Nova Substituição",
-		"newOverrideAria": "Nova sobreposição de preços",
+		"newOverride": "Adicionar substituição",
+		"newOverrideAria": "Adicionar substituição de preços",
 		"createOverride": "Criar substituição",
 		"createFirstAria": "Crie a sua primeira substituição de preços",
 		"createTitle": "Criar substituição de preços",
@@ -1225,7 +1227,7 @@
 		"readMoreAria": "Saber mais sobre regras de encaminhamento (abre num novo separador)",
 		"addRule": "Adicionar regra",
 		"newRule": "Nova Regra",
-		"newRuleAria": "Nova regra de roteamento",
+		"newRuleAria": "Adicionar regra de encaminhamento",
 		"createFirstAria": "Crie a sua primeira regra de encaminhamento",
 		"viewTree": "Ver Árvore",
 		"viewTreeAria": "Ver árvore de regras de encaminhamento",
@@ -1463,7 +1465,7 @@
 		"totalWeight": "Peso total: {{total}}",
 		"mustEqualOne": "(tem de ser igual a 1)",
 		"fallbacks": "Retiradas",
-		"fallbacksHelp": "O fornecedor é obrigatório, mas o modelo é opcional. Deixe o modelo vazio para usar o valor do pedido de entrada.",
+		"fallbacksHelp": "O fornecedor é obrigatório, mas o modelo e a API key são opcionais. Deixe o modelo vazio para usar o valor do pedido de entrada.",
 		"addFallback": "Adicionar Recuo",
 		"noFallbacks": "Nenhum fallback configurado",
 		"selectProvider": "Selecionar fornecedor...",
@@ -1522,6 +1524,8 @@
 		"scopeVirtualKey": "Chave virtual",
 		"scopeTeam": "Equipa",
 		"scopeCustomer": "Cliente",
-		"scopeGlobal": "Global"
+		"scopeGlobal": "Global",
+		"clearFallbackApiKey": "Limpar API key do fallback {{n}}",
+		"pinnedKeyTitle": "Chave fixada: {{id}}"
 	}
 }

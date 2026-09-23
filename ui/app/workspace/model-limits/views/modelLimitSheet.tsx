@@ -2,7 +2,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
-import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { ProviderSelector } from "@/components/ui/providerSelector";
 import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
@@ -74,6 +74,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const allProvidersOption = useMemo(() => ({ value: ALL_PROVIDERS_VALUE, label: t("modelLimits.allProviders") }), [t]);
+	const allModelsOption = useMemo(() => [{ value: "*", label: tc("modelAccess.allModels") }], [tc]);
 	const [isOpen, setIsOpen] = useState(true);
 	const isEditing = !!modelConfig;
 	// A readOnly-registered scope (e.g. enterprise's access_profile) is
@@ -192,7 +193,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		if (!isEditing || !modelConfig) return false;
 		const next = (data.budgets ?? [])
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-			.map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration, reset_config: b.reset_config }));
+			.map((b) => ({
+				max_limit: b.max_limit,
+				reset_duration: b.reset_duration,
+				reset_config: b.reset_config,
+			}));
 		const current = (modelConfig.budgets ?? []).map((b) => ({
 			max_limit: b.max_limit ?? undefined,
 			reset_duration: b.reset_duration,
@@ -330,7 +335,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						<div className="space-y-1">
 							<Label className="text-muted-foreground text-xs font-normal">{t("modelLimits.provider")}</Label>
 							<p className="text-sm">
-								{modelConfig.provider ? ProviderLabels[modelConfig.provider as ProviderName] || modelConfig.provider : t("modelLimits.allProviders")}
+								{modelConfig.provider
+									? ProviderLabels[modelConfig.provider as ProviderName] || modelConfig.provider
+									: t("modelLimits.allProviders")}
 							</p>
 						</div>
 						<div className="space-y-1">
@@ -365,7 +372,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											<p className="font-medium">
 												{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 											</p>
-											<p className="text-muted-foreground text-xs">{t("modelLimits.resets", { period: resetDurationLabels[b.reset_duration] || b.reset_duration })}</p>
+											<p className="text-muted-foreground text-xs">
+												{t("modelLimits.resets", {
+													period: resetDurationLabels[b.reset_duration] || b.reset_duration,
+												})}
+											</p>
 										</div>
 									))}
 								</div>
@@ -437,9 +448,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			>
 				<SheetHeader className="flex flex-col items-start p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{isEditing ? t("modelLimits.editLimit") : t("modelLimits.createLimit")}</SheetTitle>
-					<SheetDescription>
-						{isEditing ? t("modelLimits.editDescriptionShort") : t("modelLimits.createDescriptionShort")}
-					</SheetDescription>
+					<SheetDescription>{isEditing ? t("modelLimits.editDescriptionShort") : t("modelLimits.createDescriptionShort")}</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
@@ -493,7 +502,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 														onChange={field.onChange}
 														placeholder={t("modelLimits.searchForModel")}
 														baseModelsWithoutProvider
-														extraOptions={ALL_MODELS_OPTION}
+														extraOptions={allModelsOption}
 														allowCustomModel
 													/>
 												</div>

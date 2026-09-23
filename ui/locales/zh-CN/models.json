@@ -18,7 +18,7 @@
 		"readMoreAria": "了解更多供应商信息（在新标签页打开）",
 		"addProvider": "添加供应商",
 		"addNewProvider": "添加新供应商",
-		"addNewProviderAria": "添加新供应商",
+		"addNewProviderAria": "添加供应商",
 		"customProviderEllipsis": "自定义供应商…",
 		"deleteProviderAria": "删除供应商",
 		"editConfig": "编辑供应商配置",
@@ -696,7 +696,9 @@
 			"findInstallationId": "查找 installation ID"
 		},
 		"proxyHttp": "HTTP",
-		"proxySocks5": "SOCKS5"
+		"proxySocks5": "SOCKS5",
+		"searchProviders": "搜索供应商…",
+		"noProvidersLeft": "没有可添加的供应商"
 	},
 	"modelCatalog": {
 		"title": "模型目录",
@@ -1129,8 +1131,8 @@
 		"readMore": "了解更多",
 		"readMoreAria": "了解更多定价覆盖信息（在新标签页打开）",
 		"addOverride": "添加覆盖",
-		"newOverride": "新建覆盖",
-		"newOverrideAria": "新建定价覆盖",
+		"newOverride": "添加覆盖",
+		"newOverrideAria": "添加定价覆盖",
 		"createOverride": "创建覆盖",
 		"createFirstAria": "创建第一个定价覆盖",
 		"createTitle": "创建定价覆盖",
@@ -1230,7 +1232,7 @@
 		"readMoreAria": "了解更多路由规则信息（在新标签页打开）",
 		"addRule": "添加规则",
 		"newRule": "新建规则",
-		"newRuleAria": "新建路由规则",
+		"newRuleAria": "添加路由规则",
 		"createFirstAria": "创建第一条路由规则",
 		"viewTree": "查看树",
 		"viewTreeAria": "查看路由规则树",
@@ -1468,7 +1470,7 @@
 		"totalWeight": "总权重：{{total}}",
 		"mustEqualOne": "（必须等于 1）",
 		"fallbacks": "回退",
-		"fallbacksHelp": "供应商必填，模型可选。模型留空则使用入站请求值。",
+		"fallbacksHelp": "供应商为必填，模型和 API 密钥可选。模型留空则使用传入请求中的值。",
 		"addFallback": "添加回退",
 		"noFallbacks": "未配置回退",
 		"selectProvider": "选择供应商…",
@@ -1527,6 +1529,8 @@
 		"scopeVirtualKey": "虚拟密钥",
 		"scopeTeam": "团队",
 		"scopeCustomer": "客户",
-		"scopeGlobal": "全局"
+		"scopeGlobal": "全局",
+		"clearFallbackApiKey": "清除回退 {{n}} 的 API 密钥",
+		"pinnedKeyTitle": "固定密钥：{{id}}"
 	}
 }

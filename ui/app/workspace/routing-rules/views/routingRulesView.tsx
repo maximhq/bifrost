@@ -151,7 +151,7 @@ export function RoutingRulesView() {
 								aria-label={t("routing.newRuleAria")}
 							>
 								<Plus className="h-4 w-4" />
-								<span className="hidden sm:inline">{t("routing.newRule")}</span>
+								<span className="hidden sm:inline">{t("routing.addRule")}</span>
 							</Button>
 						)}
 					</>

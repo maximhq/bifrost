@@ -106,6 +106,26 @@
 		"noneForProvider": "Для этого провайдера нет доступных моделей.",
 		"noneAvailable": "Нет доступных моделей.",
 		"selectProviderFirst": "Сначала выберите провайдера.",
-		"deprecated": "Устарело"
+		"deprecated": "Устарело",
+		"selectModel": "Выберите модель",
+		"searching": "Поиск…",
+		"loadingMore": "Загрузка ещё…",
+		"useModel": "Использовать <name>{{name}}</name>"
+	},
+	"providerSelect": {
+		"select": "Выберите провайдер",
+		"search": "Поиск провайдеров...",
+		"all": "Все провайдеры",
+		"couldntLoad": "Не удалось загрузить провайдеров.",
+		"noMatching": "Нет подходящих провайдеров.",
+		"noneAvailable": "Нет доступных провайдеров.",
+		"loading": "Загрузка провайдеров…"
+	},
+	"providerList": {
+		"moreProviders_one": "Ещё {{count}} провайдер",
+		"moreProviders_few": "Ещё {{count}} провайдера",
+		"moreProviders_many": "Ещё {{count}} провайдеров",
+		"moreProviders_other": "Ещё {{count}} провайдеров",
+		"moreCount": "+{{count}} ещё"
 	}
 }

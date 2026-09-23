@@ -166,7 +166,8 @@
 		"saveSequence": "Salva sequenza",
 		"sequenceUpdated": "Sequenza dei plugin aggiornata",
 		"builtInPlugins": "Plugin integrati",
-		"deleting": "Eliminazione..."
+		"deleting": "Eliminazione...",
+		"addPlugin": "Aggiungi plugin"
 	},
 	"webhooks": {
 		"title": "Webhook",
@@ -592,6 +593,7 @@
 		"modelCount_other": "{{count}} modelli",
 		"patternCount_one": "{{count}} pattern",
 		"patternCount_other": "{{count}} pattern",
-		"removeAria": "Rimuovi {{name}}"
+		"removeAria": "Rimuovi {{name}}",
+		"noneLeftClick": "Nessun altro fornitore da configurare. Clicca per aggiungere"
 	}
 }

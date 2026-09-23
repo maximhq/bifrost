@@ -166,7 +166,8 @@
 		"saveSequence": "儲存順序",
 		"sequenceUpdated": "外掛順序已更新",
 		"builtInPlugins": "內建外掛",
-		"deleting": "刪除中…"
+		"deleting": "刪除中…",
+		"addPlugin": "新增外掛"
 	},
 	"webhooks": {
 		"title": "Webhook",
@@ -592,6 +593,7 @@
 		"modelCount_other": "{{count}} 個模型",
 		"patternCount_one": "{{count}} 個模式",
 		"patternCount_other": "{{count}} 個模式",
-		"removeAria": "移除 {{name}}"
+		"removeAria": "移除 {{name}}",
+		"noneLeftClick": "沒有可設定的供應商。點擊新增"
 	}
 }

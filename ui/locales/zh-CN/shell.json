@@ -61,6 +61,7 @@
 		"compatibility": "兼容性",
 		"caching": "缓存",
 		"security": "安全",
+		"warp": "Warp",
 		"proxy": "代理",
 		"apiKeys": "API 密钥",
 		"performanceTuning": "性能调优",
@@ -127,6 +128,7 @@
 		"compatibility": "兼容性转换设置",
 		"caching": "缓存配置",
 		"security": "安全设置",
+		"warp": "Warp 代理配置",
 		"proxy": "代理配置",
 		"apiKeys": "API 密钥管理",
 		"performanceTuning": "性能调优设置",
@@ -259,6 +261,198 @@
 			"Security": "安全",
 			"Provider Setup": "供应商设置",
 			"Everything Else": "其他设置"
+		}
+	},
+	"warp": {
+		"ask": "询问 Warp",
+		"history": {
+			"openFailed": "无法打开该对话。",
+			"deleteFailed": "无法删除该对话。",
+			"untitled": "未命名",
+			"deleteAria": "删除对话",
+			"deleteTitle": "删除此对话？",
+			"deleteDescription": "「{{title}}」及其消息将被永久删除。此操作无法撤销。",
+			"loading": "正在加载历史记录",
+			"loadFailed": "无法加载历史记录。",
+			"empty": "暂无已保存的对话。",
+			"cancel": "取消",
+			"delete": "删除",
+			"messages_one": "{{count}} 条消息",
+			"messages_other": "{{count}} 条消息"
+		},
+		"panel": {
+			"indexStatusTitle": "Warp 无法读取其索引状态。语义搜索可能可用，也可能不可用。",
+			"backToChat": "返回聊天",
+			"chatHistory": "聊天历史",
+			"newChat": "新聊天",
+			"close": "关闭 Warp",
+			"loading": "正在加载 Warp…",
+			"loadFailed": "无法加载 Warp 的配置。请重新加载页面后再试。",
+			"turnedOff": "Warp 已关闭",
+			"notSetUp": "Warp 尚未设置",
+			"enableHint": "打开「启用 Warp」即可开始提问。",
+			"chooseModel": "为 Warp 选择要运行的模型。",
+			"openSettings": "打开 Warp 设置",
+			"configure": "配置 Warp",
+			"emptyTitle": "询问你的 Bifrost 数据",
+			"queued": "已排队",
+			"removeQueued": "移除排队消息",
+			"resumeQueue": "继续发送队列中的消息",
+			"jumpToLatest": "跳到最新"
+		},
+		"starters": {
+			"spend": "过去 7 天各供应商的花费是多少？",
+			"latency": "昨天哪个模型的 p99 延迟最差？",
+			"users": "本周按费用排名前 5 的用户是谁？",
+			"failed": "显示过去 24 小时内失败的请求"
+		},
+		"composer": {
+			"followUp": "提出追问，当前回答结束后会发送…",
+			"placeholder": "询问你的 Bifrost 数据…",
+			"stop": "停止",
+			"send": "发送"
+		},
+		"question": {
+			"label": "问题",
+			"skip": "跳过",
+			"orType": "或在下方输入你自己的回答。"
+		},
+		"message": {
+			"whatThisCovers": "涵盖内容",
+			"partialTitle": "部分回答",
+			"partialBody": "Warp 在完成核查前已用尽全部研究步骤。以下是目前已找到的内容，并说明了未能确认的部分。问题范围更窄时通常能完成。",
+			"whatToTry": "可以尝试：",
+			"thinking": "思考中"
+		},
+		"toolStatus": {
+			"inProgress": "进行中",
+			"failed": "失败",
+			"completed": "已完成"
+		},
+		"index": {
+			"noVectorStore": "无向量存储",
+			"searchNotSetUp": "搜索未设置",
+			"failed": "索引失败",
+			"indexingPercent": "正在索引 {{percent}}%",
+			"indexing": "正在索引",
+			"ready": "索引就绪"
+		},
+		"tools": {
+			"semantic_search_logs": {
+				"running": "正在执行向量搜索",
+				"done": "已执行向量搜索"
+			},
+			"count_logs": {
+				"running": "正在检查日志量",
+				"done": "已检查日志量"
+			},
+			"query_logs": {
+				"running": "正在搜索请求日志",
+				"done": "已搜索请求日志"
+			},
+			"get_log_detail": {
+				"running": "正在打开请求",
+				"done": "已打开请求"
+			},
+			"get_request_trace": {
+				"running": "正在追踪发生了什么",
+				"done": "已追踪发生了什么"
+			},
+			"query_metrics": {
+				"running": "正在查询指标",
+				"done": "已查询指标"
+			},
+			"query_usage_by": {
+				"running": "正在按用量排名",
+				"done": "已按用量排名"
+			},
+			"query_user_usage": {
+				"running": "正在按用量对用户排名",
+				"done": "已按用量对用户排名"
+			},
+			"query_virtual_key_usage": {
+				"running": "正在按用量对虚拟密钥排名",
+				"done": "已按用量对虚拟密钥排名"
+			},
+			"query_model_performance": {
+				"running": "正在比较模型与供应商",
+				"done": "已比较模型与供应商"
+			},
+			"describe_filter_space": {
+				"running": "正在检查可用值",
+				"done": "已检查可用值"
+			},
+			"describe_virtual_key": {
+				"running": "正在检查虚拟密钥限制",
+				"done": "已检查虚拟密钥限制"
+			},
+			"describe_scope": {
+				"running": "正在验证范围",
+				"done": "已验证范围"
+			},
+			"ask_user": {
+				"running": "正在提问",
+				"done": "已提问"
+			}
+		},
+		"errors": {
+			"not_configured": {
+				"summary": "Warp 尚未配置。",
+				"cause": "未设置供应商和模型，或在设置中关闭了 Warp。",
+				"suggestions": [
+					"打开 Warp 设置并选择供应商和模型。",
+					"确认已打开「启用 Warp」。"
+				]
+			},
+			"max_iterations": {
+				"summary": "Warp 未能得出答案。",
+				"cause": "Warp 用尽了全部研究步骤预算仍未得出结论。这通常表示问题过宽，每次查询又引出新问题，于是它一直在查找而没有作答。",
+				"suggestions": [
+					"一次只问一件事：单一指标、一个时间范围、一个范围。",
+					"明确写出时间窗口，例如「过去 24 小时」。",
+					"说明你指的是谁的流量——某个团队、某个客户，或全部。",
+					"若问题确实需要更多步骤，可在 Warp 设置中提高最大迭代次数。"
+				]
+			},
+			"timeout": {
+				"summary": "耗时过长。",
+				"cause": "整个请求在 Warp 完成前已超过时间预算。时间范围长、范围宽会使每次查询更慢，而 Warp 会运行多次查询。",
+				"suggestions": [
+					"尝试更短的时间范围。",
+					"缩小到一个团队、客户或虚拟密钥。",
+					"若模型本身较慢，可在 Warp 设置中提高请求超时。"
+				]
+			},
+			"upstream_error": {
+				"summary": "无法到达 Warp 的模型。",
+				"cause": "供应商拒绝了请求或不可达。这与 Warp 自身的模型有关，与你询问的流量无关。",
+				"suggestions": [
+					"检查 Warp 设置中的供应商、模型和密钥。",
+					"确认 Base URL 正确——默认指向此 Bifrost。",
+					"在 playground 中试用同一模型，看它是否能正常回答。"
+				]
+			},
+			"tool_error": {
+				"summary": "一次查询失败。",
+				"cause": "Warp 的某次数据查询返回了错误，且在剩余步骤内无法恢复。",
+				"suggestions": [
+					"尝试更窄的时间范围。",
+					"确认你提到的模型、密钥或团队确实存在。"
+				]
+			},
+			"cancelled": {
+				"summary": "已停止。",
+				"cause": "请求在完成前被取消。",
+				"suggestions": []
+			},
+			"unknown": {
+				"summary": "出了点问题。",
+				"cause": "Warp 返回了错误，但没有可识别的错误码。",
+				"suggestions": [
+					"再试一次该问题。",
+					"若持续发生，请连同下方详情一并反馈。"
+				]
+			}
 		}
 	}
 }

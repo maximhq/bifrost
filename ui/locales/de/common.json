@@ -102,6 +102,24 @@
 		"noneForProvider": "Es sind keine Modelle für diesen Anbieter verfügbar.",
 		"noneAvailable": "Keine Modell verfügbar.",
 		"selectProviderFirst": "Erst einen Anbieter auswählen.",
-		"deprecated": "Veraltet"
+		"deprecated": "Veraltet",
+		"selectModel": "Modell auswählen",
+		"searching": "Suche…",
+		"loadingMore": "Weitere werden geladen…",
+		"useModel": "<name>{{name}}</name> verwenden"
+	},
+	"providerSelect": {
+		"select": "Anbieter auswählen",
+		"search": "Anbieter suchen...",
+		"all": "Alle Anbieter",
+		"couldntLoad": "Anbieter konnten nicht geladen werden.",
+		"noMatching": "Keine passenden Anbieter.",
+		"noneAvailable": "Keine Anbieter verfügbar.",
+		"loading": "Anbieter werden geladen…"
+	},
+	"providerList": {
+		"moreProviders_one": "{{count}} weiterer Anbieter",
+		"moreProviders_other": "{{count}} weitere Anbieter",
+		"moreCount": "+{{count}} weitere"
 	}
 }

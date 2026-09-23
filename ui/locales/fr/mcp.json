@@ -888,7 +888,8 @@
 			"loading": "Chargement des clés virtuelles…",
 			"empty": "Aucune clé virtuelle assignée pour le moment. Assignez-en une pour que les appelants puissent atteindre ce MCP virtuel.",
 			"unassignAria": "Désassigner la clé virtuelle"
-		}
+		},
+		"add": "Ajouter un MCP virtuel"
 	},
 	"usageGuide": {
 		"connectAgent": "Connecter l’agent",

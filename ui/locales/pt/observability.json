@@ -60,7 +60,8 @@
 		"semantic": "Semântico",
 		"costLegend": "Custo",
 		"source": "Origem",
-		"device": "Dispositivo"
+		"device": "Dispositivo",
+		"session": "Sessão"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "Custo Solucionado",
 		"settledTooltipGrouped": "Decidido após este pedido concluído. Expanda a linha para vê-la.",
 		"settledTooltipFlat": "Resolvedo após este pedido concluído, em sua própria linha.",
-		"groupTooltip": "Grupos tentativas de recuo e pedidos vinculados sob o pedido raiz original. Expanda qualquer linha para ver a cadeia de pedidos completa.\n\nEsta vista agrupada pode carregar mais lentamente do que a vista plana para tabelas de log muito grandes.",
+		"groupTooltip": "Agrupa tentativas de fallback e pedidos associados sob o pedido raiz original, e cada pedido que partilha uma sessão sob o primeiro pedido da sessão. Expanda qualquer linha para ver o que representa.\n\nEsta vista agrupada pode carregar mais lentamente do que a vista plana em tabelas de registos muito grandes.",
 		"stats": {
 			"totalRequests": "Total de pedidos",
 			"successRate": "Taxa de Sucesso",

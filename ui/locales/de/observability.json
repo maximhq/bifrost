@@ -60,7 +60,8 @@
 		"semantic": "Semantisch",
 		"costLegend": "Kosten",
 		"source": "Quelle",
-		"device": "Gerät"
+		"device": "Gerät",
+		"session": "Sitzung"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "Abgerechnete Kosten",
 		"settledTooltipGrouped": "Wurde nach Abschluss dieser Anfrage abgerechnet. Klappe die Zeile aus, um sie zu sehen.",
 		"settledTooltipFlat": "Wurde nach Abschluss dieser Anfrage abgerechnet, in einer eigenen Zeile.",
-		"groupTooltip": "Gruppiert Fallback-Versuche und verknüpfte Anfragen unter der ursprünglichen Root-Anfrage. Klappe eine beliebige Zeile aus, um die vollständige Anfragekette anzuzeigen.\n\nDiese gruppierte Ansicht lädt bei sehr großen Protokolltabellen möglicherweise langsamer als die flache Ansicht.",
+		"groupTooltip": "Gruppiert Fallback-Versuche und verknüpfte Anfragen unter der ursprünglichen Root-Anfrage, und jede Anfrage mit derselben Session unter der ersten Anfrage der Session. Beliebige Zeile aufklappen, um zu sehen, wofür sie steht.\n\nDiese gruppierte Ansicht kann bei sehr großen Protokolltabellen langsamer laden als die flache Ansicht.",
 		"stats": {
 			"totalRequests": "Anfragen insgesamt",
 			"successRate": "Erfolgsrate",

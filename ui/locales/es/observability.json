@@ -60,7 +60,8 @@
 		"semantic": "Semántica",
 		"costLegend": "Costo",
 		"source": "Fuente",
-		"device": "Dispositivo"
+		"device": "Dispositivo",
+		"session": "Sesión"
 	},
 	"dashboard": {
 		"tabs": {
@@ -145,7 +146,7 @@
 		"settledCost": "Costo acelerado",
 		"settledTooltipGrouped": "Se asentaron después de que esta solicitud se completara. Ampliar la fila para verla.",
 		"settledTooltipFlat": "Se asentaron después de que esta solicitud se completara, en su propia fila.",
-		"groupTooltip": "Grupos intentos de retroceso y solicitudes vinculadas bajo la solicitud original de raíz. Ampliar cualquier fila para ver la cadena de solicitud completa. Esta vista agrupada puede cargar más lentamente que la vista plana para tablas de troncos muy grandes.",
+		"groupTooltip": "Agrupa los intentos de fallback y las solicitudes vinculadas bajo la solicitud raíz original, y cada solicitud que comparte una sesión bajo la primera solicitud de la sesión. Expande cualquier fila para ver qué representa.\n\nEsta vista agrupada puede cargarse más despacio que la vista plana en tablas de registro muy grandes.",
 		"stats": {
 			"totalRequests": "Total Solicitudes",
 			"successRate": "Tasa de éxito",
