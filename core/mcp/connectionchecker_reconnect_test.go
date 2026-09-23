@@ -149,3 +149,82 @@ func TestPerformCheck_LiveConn_FailedCheck_TriggersReconnect(t *testing.T) {
 	require.True(t, ok)
 	assert.NotSame(t, before.Conn, after.Conn, "the dead connection must be replaced, not re-probed forever")
 }
+
+// TestReconnectAfterFailedCheck_StaleOrAuthoritativeState_DoesNotReconnect
+// covers the guard half. A check runs unlocked and can take seconds, so by the
+// time it fails the entry may have moved on: a reconnect already swapped in a
+// fresh connection (the failure proves only that the replaced one was dead,
+// and redialling would tear down its healthy successor), or an authoritative
+// state was written that must not be dialled out of. Disabled and NeedsReauth
+// are checked separately from the generation on purpose, since neither
+// DisableClient nor CloseAndMarkNeedsReauth bumps ConnGeneration when it
+// clears the connection.
+func TestReconnectAfterFailedCheck_StaleOrAuthoritativeState_DoesNotReconnect(t *testing.T) {
+	const currentGeneration = 6
+
+	tests := []struct {
+		name            string
+		state           schemas.MCPConnectionState
+		checkGeneration uint64
+		wantReconnect   bool
+	}{
+		{
+			name:            "a check that spanned a reconnect must not redial its successor",
+			state:           schemas.MCPConnectionStateUnstable,
+			checkGeneration: currentGeneration - 1,
+		},
+		{
+			name:            "a client disabled mid-check must not be dialled",
+			state:           schemas.MCPConnectionStateDisabled,
+			checkGeneration: currentGeneration,
+		},
+		{
+			name:            "a credential confirmed dead has nothing to reconnect with",
+			state:           schemas.MCPConnectionStateNeedsReauth,
+			checkGeneration: currentGeneration,
+		},
+		{
+			name:            "a current-generation failure on a live client does redial",
+			state:           schemas.MCPConnectionStateUnstable,
+			checkGeneration: currentGeneration,
+			wantReconnect:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := &schemas.MCPClientConfig{
+				ID:                     "client-reconnect-guard",
+				Name:                   "guarded-client",
+				AuthType:               schemas.MCPAuthTypeHeaders,
+				ConnectionType:         schemas.MCPConnectionTypeHTTP,
+				ConnectionString:       schemas.NewSecretVar("http://127.0.0.1:0/mcp"), // unreachable: only the attempt matters
+				NeedsSessionStickiness: schemas.Ptr(true),
+			}
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{
+				Name:            config.Name,
+				ExecutionConfig: config,
+				State:           tc.state,
+				ConnGeneration:  currentGeneration,
+			}
+			m.mu.Unlock()
+
+			checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+			checker.reconnectAfterFailedCheck(config.Name, tc.checkGeneration)
+
+			if tc.wantReconnect {
+				require.Eventually(t, func() bool {
+					_, inFlightOrDone := m.reconnectingClients.Load(config.ID)
+					return inFlightOrDone
+				}, 2*time.Second, 10*time.Millisecond, "the guards must not be a blanket no-op")
+				return
+			}
+			require.Never(t, func() bool {
+				_, inFlightOrDone := m.reconnectingClients.Load(config.ID)
+				return inFlightOrDone
+			}, 500*time.Millisecond, 25*time.Millisecond, "no reconnect may be started for this client")
+		})
+	}
+}
