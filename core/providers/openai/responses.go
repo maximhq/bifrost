@@ -940,6 +940,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 		schemas.ResponsesToolTypeFunction:           true,
 		schemas.ResponsesToolTypeFileSearch:         true,
 		schemas.ResponsesToolTypeComputerUsePreview: true,
+		schemas.ResponsesToolTypeComputer:           true,
 		schemas.ResponsesToolTypeWebSearch:          true,
 		schemas.ResponsesToolTypeWebFetch:           true,
 		schemas.ResponsesToolTypeMCP:                true,

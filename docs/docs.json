@@ -332,6 +332,7 @@
               "enterprise/data-access-control",
               "enterprise/virtual-mcps",
               "enterprise/projects",
+              "enterprise/prompt-deployments",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -1247,6 +1248,7 @@
                   "PUT /api/mcp/client/{id}",
                   "DELETE /api/mcp/client/{id}",
                   "POST /api/mcp/client/{id}/reconnect",
+                  "POST /api/mcp/client/{id}/refresh-tools",
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",
@@ -1844,6 +1846,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.2",
               "changelogs/v2.2.1",
               "changelogs/v2.2.0",
               "changelogs/v2.1.1",
@@ -2065,6 +2068,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.2",
               "changelogs/ent-v2.2.1",
               "changelogs/ent-v2.2.0",
               "changelogs/ent-v2.1.1",

@@ -50,15 +50,23 @@ describe("assignedToLabel", () => {
 		expect(assignedToLabel({ assigned_user: { name: "", email: "ada@acme.com" } })).toBe("User: ada@acme.com");
 	});
 
-	it("prefers team, then customer, then user", () => {
+	// A business unit reaches the payload as an id with no relation to read a name from, so it is
+	// named by its kind. Blank is what this used to show, which reads as "assigned to nothing".
+	it("labels a business-unit assignment by its kind", () => {
+		expect(assignedToLabel({ business_unit_id: "bu-1" })).toBe("Business unit");
+	});
+
+	it("prefers team, then customer, then business unit, then user", () => {
 		expect(
 			assignedToLabel({
 				team: { name: "Platform" },
 				customer: { name: "Acme" },
+				business_unit_id: "bu-1",
 				assigned_user: { name: "Ada", email: "ada@acme.com" },
 			}),
 		).toBe("Team: Platform");
 		expect(assignedToLabel({ customer: { name: "Acme" }, assigned_user: { name: "Ada", email: "ada@acme.com" } })).toBe("Customer: Acme");
+		expect(assignedToLabel({ business_unit_id: "bu-1", assigned_user: { name: "Ada", email: "ada@acme.com" } })).toBe("Business unit");
 	});
 });
 
@@ -74,9 +82,11 @@ describe("csvAssignedToCell", () => {
 		expect(csvAssignedToCell({})).toBe("Unknown (not resolved)");
 	});
 
-	it("still prefers team and customer, which are on the row either way", () => {
+	it("still prefers team, customer and business unit, which are on the row either way", () => {
 		expect(csvAssignedToCell({ team: { name: "Platform" } })).toBe("Team: Platform");
 		expect(csvAssignedToCell({ customer: { name: "Acme" } })).toBe("Customer: Acme");
+		// An owner on the row is never the unresolved case, so it must not read "Unknown".
+		expect(csvAssignedToCell({ business_unit_id: "bu-1" })).toBe("Business unit");
 	});
 
 	it("labels a resolved user assignment", () => {

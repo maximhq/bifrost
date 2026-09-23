@@ -3416,3 +3416,39 @@ func TestToOpenAIResponsesRequest_StripsWebSearchSourceProviderFields(t *testing
 	require.NotNil(t, bifrostReq.Input[0].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources[0].Title,
 		"the caller's input must not be mutated")
 }
+
+// TestToOpenAIResponsesRequest_ForwardsComputerTool locks in issue #7425: the
+// bare `computer` tool (GPT-6 Astra / GPT-5.6 computer use) must pass the
+// OpenAI tool whitelist unchanged, not be dropped or rewritten to
+// computer_use_preview.
+func TestToOpenAIResponsesRequest_ForwardsComputerTool(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-astra",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Click Settings."),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputer}},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+	}
+	if result.Tools[0].Type != schemas.ResponsesToolTypeComputer {
+		t.Fatalf("expected tool type %q, got %q", schemas.ResponsesToolTypeComputer, result.Tools[0].Type)
+	}
+	if result.Tools[0].ResponsesToolComputerUsePreview != nil {
+		t.Fatal("expected no computer_use_preview fields on the bare computer tool")
+	}
+}

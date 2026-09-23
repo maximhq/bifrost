@@ -4422,6 +4422,26 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	return bifrost.MCPManager.ReconnectClient(id)
 }
 
+// RefreshMCPClientTools re-discovers an MCP client's tools from its upstream
+// server immediately, instead of waiting for the periodic connection
+// checker's next tick. Applies to every client type, including the per-call
+// ones ReconnectMCPClient rejects.
+//
+// Parameters:
+//   - ctx: Context bounding the discovery attempt
+//   - id: ID of the client to refresh
+//
+// Returns:
+//   - int: Number of tools the client is serving after the refresh
+//   - error: Any discovery error
+func (bifrost *Bifrost) RefreshMCPClientTools(ctx context.Context, id string) (int, error) {
+	if bifrost.MCPManager == nil {
+		return 0, fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+
+	return bifrost.MCPManager.RefreshClientTools(ctx, id)
+}
+
 // CloseAndMarkNeedsReauth closes a shared MCP client's live upstream
 // connection and flips it to needs_reauth, without attempting a new dial.
 // Used after OAuth credential rotation.
@@ -6296,7 +6316,10 @@ func executeRequestWithRetries[T any](
 	logger schemas.Logger,
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
-	checkAzurePreamble := providerKey == schemas.Azure && IsStreamRequestType(requestType)
+	isStreamRequest := IsStreamRequestType(requestType)
+	// Whether the previous attempt buffered startup events; its stream-end
+	// markers must be cleared before the next attempt reads a fresh stream.
+	prevCheckedPreamble := false
 
 	// Emit the terminal routing-engine entry on every return path — including
 	// early returns from key-selection failures and tracer-missing — so the
@@ -6580,7 +6603,7 @@ func executeRequestWithRetries[T any](
 		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType))
 
 		applyContextSpanAttributes(span, ctx)
-		span.SetAttribute(schemas.AttrBifrostRetries, attempts)
+		span.SetRetries(attempts)
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
 		// header forwarding) as span attributes so observability backends see the
@@ -6631,7 +6654,7 @@ func executeRequestWithRetries[T any](
 		}
 
 		// The previous failed stream has drained before reaching this retry.
-		if checkAzurePreamble && attempts > 0 {
+		if prevCheckedPreamble && attempts > 0 {
 			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
@@ -6641,7 +6664,17 @@ func executeRequestWithRetries[T any](
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
-		// Azure Chat and Responses may emit startup metadata before an error.
+		// Azure and OpenAI upstreams (including custom providers built on them,
+		// whatever their model ids) and OpenAI models on any other host (Bedrock,
+		// Bedrock Mantle, Vertex) may emit startup events (response.created,
+		// in_progress, an empty role delta) before an overload or throttle error.
+		// Checked after requestHandler so the key's resolved alias decides the
+		// model family.
+		baseProvider := schemas.ResolveBaseProvider(ctx, providerKey)
+		checkPreamble := isStreamRequest &&
+			(baseProvider == schemas.Azure || baseProvider == schemas.OpenAI ||
+				schemas.IsOpenAIModelFamily(ctx, model))
+		prevCheckedPreamble = checkPreamble
 		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
@@ -6650,7 +6683,7 @@ func executeRequestWithRetries[T any](
 					drainDone     <-chan struct{}
 					firstChunkErr *schemas.BifrostError
 				)
-				if checkAzurePreamble {
+				if checkPreamble {
 					requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 					checkedStream, drainDone, firstChunkErr = providerUtils.CheckStreamPreambleForError(
 						ctx, requestID, streamChan, azure.IsStreamPreamble,
@@ -7659,7 +7692,8 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 }
 
 // prepareResponsesRequest returns the Responses request to dispatch for one attempt:
-// prompt-cache breakpoints first, then embedded client tools promoted and namespace
+// billing metadata restored for Anthropic models, prompt-cache breakpoints
+// injected, then embedded client tools promoted and namespace
 // tools flattened when the target wire does not understand them. All steps are copy-on-write, so the shared
 // req.BifrostRequest keeps the caller's namespaces for a later fallback attempt against
 // a wire that does.
@@ -7669,10 +7703,12 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 // the per-provider default in providerUtils applies, keyed on the BASE provider so a
 // custom provider wrapping OpenAI is treated like OpenAI.
 func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.Provider, key schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
+	r = restoreResponsesBillingHeader(ctx, provider.GetProviderKey(), r)
 	r = promptCacheResponsesRequest(ctx, config, provider.GetProviderKey(), r)
 	if r == nil {
 		return nil, nil
 	}
+	r = normalizeResponsesToolSchemas(ctx, r)
 	var supported bool
 	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
 		supported = capable.SupportsResponsesNamespaceTools(ctx, key, r.Model)
@@ -7698,6 +7734,64 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 		return r, nil
 	}
 	return providerUtils.FlattenResponsesNamespaceTools(ctx, r)
+}
+
+// normalizeResponsesToolSchemas applies toolSchemaPatternRewriter to the request's
+// tool schemas, with the same copy-on-write guarantee as promptCacheResponsesRequest:
+// a request whose model is outside the relaxed set, or whose tools need no
+// rewrite, is returned unchanged and allocates nothing.
+//
+// This sits on the shared dispatch path rather than in any one provider because
+// the affected models are reached through several: DeepSeek natively,
+// moonshotai.kimi-k3 through Bedrock, and OpenAI-compatible gateways fronting
+// either.
+func normalizeResponsesToolSchemas(ctx *schemas.BifrostContext, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if r == nil || r.Params == nil || len(r.Params.Tools) == 0 {
+		return r
+	}
+	rewrite := toolSchemaPatternRewriter(ctx, r.Model)
+	if rewrite == nil {
+		return r
+	}
+	tools, changed := providerUtils.RewriteResponsesToolSchemas(r.Params.Tools, rewrite)
+	if !changed {
+		return r
+	}
+	params := *r.Params
+	params.Tools = tools
+	cp := *r
+	cp.Params = &params
+	return &cp
+}
+
+// relaxedPatternRewriter is the tool-schema pattern rewrite for the two model
+// families whose validators reject regex syntax that every other tested backend
+// accepts: the lossless `\0` -> `\x00` normalization followed by the lossy
+// lookaround strip. Built once so the per-request path allocates no closure.
+var relaxedPatternRewriter = providerUtils.ComposePatternRewriters(
+	providerUtils.NormalizeRegexNULEscape,
+	providerUtils.StripRegexLookaround,
+)
+
+// toolSchemaPatternRewriter returns the pattern rewrite for a request's model, or
+// nil when the model's tool schemas must reach the provider untouched.
+//
+// This is a positive list on purpose. Verified live on 2026-09-22: OpenAI,
+// Anthropic (directly and on Bedrock) and Gemini all accept both `\0` and
+// lookaround; DeepSeek rejects `\0` with a 400; moonshotai.kimi-k3 on Bedrock
+// rejects both with HTTP 200 and an empty event stream. Only the two families
+// with a verified rejection are rewritten, so every other model keeps its exact
+// bytes (and its prompt-cache key), and a new backend that chokes on a pattern
+// fails loudly through the Bedrock empty-stream guard rather than being silently
+// rewritten. The check is on the model, never the provider: kimi behind an
+// OpenAI-compatible custom provider is still kimi, and Claude on Bedrock is still
+// Claude.
+func toolSchemaPatternRewriter(ctx *schemas.BifrostContext, model string) providerUtils.PatternRewriter {
+	canonical := schemas.ResolveCanonicalModel(ctx, model)
+	if schemas.IsMoonshotModel(canonical) || schemas.IsDeepSeekModel(canonical) {
+		return relaxedPatternRewriter
+	}
+	return nil
 }
 
 // promptCacheChatRequest is the Chat Completions parallel of

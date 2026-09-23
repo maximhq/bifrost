@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
@@ -3810,4 +3811,160 @@ func TestPrepareFallbackRequestRetargetsEveryFallbackCapableType(t *testing.T) {
 	if cases == 0 {
 		t.Fatal("no fallback-capable sub-request types found on BifrostRequest; the reflection walk is broken")
 	}
+}
+
+// TestShutdown_RetentionNoGoroutineLeak is the core-side retention assertion.
+//
+// Bifrost runs a worker pool per provider, and a production profile showed 5120 of those
+// goroutines on a single pod. Each holds channel references and, while serving, the
+// request-scoped state that flows through them. A Shutdown that returns while workers are
+// still parked leaks the whole pool plus everything it can still reach, and nothing in the
+// suite asserted otherwise: the existing tests all `defer client.Shutdown()` and never
+// check it did anything.
+//
+// This is the same class as the client-disconnect watcher leak that pinned roughly 2.0 GB
+// of a 2.66 GB heap while GC ran perfectly, because every byte of it was reachable.
+func TestShutdown_RetentionNoGoroutineLeak(t *testing.T) {
+	memtest.AssertNoGoroutineLeak(t, func() {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.ModelProvider("custom-openai-shutdown"), 1, 1, "http://127.0.0.1:1")
+		account.SetKeysForProvider(schemas.ModelProvider("custom-openai-shutdown"), []schemas.Key{
+			{
+				ID:     "test-key-shutdown",
+				Value:  *schemas.NewSecretVar("sk-test-shutdown"),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(schemas.ModelProvider("custom-openai-shutdown"), &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		client.Shutdown()
+	})
+}
+
+// TestShutdown_RetentionClientReleased complements TestShutdown_RetentionNoGoroutineLeak.
+//
+// A goroutine count returning to baseline proves nothing is still running; it does not
+// prove nothing still holds a reference. A package-level registry, a pool entry or a
+// closure captured somewhere can keep the whole client (and its provider queues) alive
+// with zero goroutines running. That is precisely the shape that made a production heap
+// unreclaimable: not busy, just reachable.
+//
+// The weak pointer asserts unreachability directly rather than inferring it from a number.
+func TestShutdown_RetentionClientReleased(t *testing.T) {
+	memtest.AssertReleased(t, "the Bifrost client after Shutdown", func() *Bifrost {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.ModelProvider("custom-openai-release"), 1, 1, "http://127.0.0.1:1")
+		account.SetKeysForProvider(schemas.ModelProvider("custom-openai-release"), []schemas.Key{
+			{
+				ID:     "test-key-release",
+				Value:  *schemas.NewSecretVar("sk-test-release"),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(schemas.ModelProvider("custom-openai-release"), &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		client.Shutdown()
+		return client
+	})
+}
+
+// patternOf reads properties.p.pattern from a tool schema without a JSON round trip.
+func patternOf(t *testing.T, params *schemas.ToolFunctionParameters) string {
+	t.Helper()
+	v, ok := params.Properties.Get("p")
+	if !ok {
+		t.Fatal("property p missing")
+	}
+	pm, ok := v.(*schemas.OrderedMap)
+	if !ok {
+		t.Fatalf("property p is %T, want *OrderedMap", v)
+	}
+	pat, _ := pm.Get("pattern")
+	s, _ := pat.(string)
+	return s
+}
+
+func lookaroundToolParams() *schemas.ToolFunctionParameters {
+	prop := schemas.NewOrderedMap()
+	prop.Set("type", "string")
+	prop.Set("pattern", `^(?!\.\.?$)[^\0]{1,200}$`)
+	props := schemas.NewOrderedMap()
+	props.Set("p", prop)
+	return &schemas.ToolFunctionParameters{Type: "object", Properties: props}
+}
+
+// Only Moonshot and DeepSeek models get their tool-schema patterns rewritten.
+// Every other model, on every provider, must reach the wire byte-identical, and
+// the no-op path must hand back the caller's request itself so nothing is copied.
+func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cases := []struct {
+		model     string
+		rewritten bool
+	}{
+		{"gpt-4o-mini", false},
+		{"claude-haiku-4-5", false},
+		{"global.anthropic.claude-sonnet-5", false},
+		{"gemini-3.6-flash", false},
+		{"mistral-large-latest", false},
+		{"kimina-prover", false}, // contains "kimi" but is not a Moonshot model
+		{"global.moonshotai.kimi-k3", true},
+		{"kimi-k3", true},
+		{"moonshotai/kimi-k2-instruct", true},
+		{"deepseek-chat", true},
+		{"deepseek-v4.1-flash", true},
+		{"us.deepseek.r1-v1:0", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model: tc.model,
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("probe"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: lookaroundToolParams()},
+				}}},
+			}
+			out := normalizeResponsesToolSchemas(ctx, req)
+			got := patternOf(t, out.Params.Tools[0].ResponsesToolFunction.Parameters)
+			if !tc.rewritten {
+				if out != req {
+					t.Fatal("a model outside the relaxed set must get its own request back, not a copy")
+				}
+				if !strings.Contains(got, `\0`) || !strings.Contains(got, `(?!`) {
+					t.Fatalf("pattern was rewritten for a model outside the relaxed set: %q", got)
+				}
+				return
+			}
+			if strings.Contains(got, `\0`) || strings.Contains(got, `(?!`) || !strings.Contains(got, `\x00`) {
+				t.Fatalf("pattern not fully rewritten for a relaxed-set model: %q", got)
+			}
+			if orig := patternOf(t, req.Params.Tools[0].ResponsesToolFunction.Parameters); !strings.Contains(orig, `\0`) {
+				t.Fatalf("caller's request was mutated in place: %q", orig)
+			}
+		})
+	}
+
 }

@@ -689,3 +689,37 @@ func TestModelFamilyIsValid(t *testing.T) {
 		t.Fatal("nil ModelFamily should be invalid")
 	}
 }
+
+func TestIsMoonshotModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// Every id Moonshot publishes starts with "kimi-"; Bedrock and Groq wrap it
+		// in a "moonshotai" namespace.
+		{"kimi-k3", true},
+		{"kimi-k2.7-code", true},
+		{"KIMI-K3", true},
+		{"moonshotai.kimi-k3", true},
+		{"global.moonshotai.kimi-k3", true},
+		{"us.moonshotai.kimi-k2.5", true},
+		{"moonshotai/kimi-k2-instruct", true},
+
+		// Near misses that a substring match would wrongly claim. The predicate
+		// gates a lossy tool-schema rewrite, so these must stay false.
+		{"kimina-prover", false},
+		{"mykimi", false},
+		{"kimi", false},
+		{"akimi-k3", false},
+		{"deepseek-chat", false},
+		{"gpt-4o-mini", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			if got := IsMoonshotModel(tc.model); got != tc.want {
+				t.Fatalf("IsMoonshotModel(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}

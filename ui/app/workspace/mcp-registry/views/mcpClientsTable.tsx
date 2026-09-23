@@ -27,7 +27,9 @@ import {
 	useGetCoreConfigQuery,
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
+	useReregisterMCPClientMutation,
 	useReconnectMCPClientMutation,
+	useRefreshMCPClientToolsMutation,
 	useUpdateMCPClientMutation,
 	useVerifyMCPClientExchangeMutation,
 	useVerifyMCPClientHeadersMutation,
@@ -35,6 +37,7 @@ import {
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
+import { supportsClientReregistration } from "@/lib/utils/mcpCredential";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -45,11 +48,13 @@ import {
 	Copy,
 	Info,
 	KeyRound,
+	ListRestart,
 	Loader2,
 	MoreHorizontal,
 	PencilIcon,
 	Plus,
 	RefreshCcw,
+	RotateCcwKey,
 	Search,
 	Trash2,
 	X,
@@ -70,14 +75,17 @@ function MCPClientActionsMenu({
 	hasUpdateAccess,
 	hasDeleteAccess,
 	isReconnecting,
+	isRefreshingTools,
 	isAuthorizing,
 	isReauthorizing,
 	isVerifyingExchange,
 	canReconnect,
 	onEdit,
 	onReconnect,
+	onRefreshTools,
 	onAuthorize,
 	onReauthorize,
+	onReregister,
 	onRefreshHeaders,
 	onVerifyExchange,
 	onDelete,
@@ -86,14 +94,17 @@ function MCPClientActionsMenu({
 	hasUpdateAccess: boolean;
 	hasDeleteAccess: boolean;
 	isReconnecting: boolean;
+	isRefreshingTools: boolean;
 	isAuthorizing: boolean;
 	isReauthorizing: boolean;
 	isVerifyingExchange: boolean;
 	canReconnect: boolean;
 	onEdit: (client: MCPClient) => void;
 	onReconnect: (client: MCPClient) => void;
+	onRefreshTools: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
 	onReauthorize: (client: MCPClient) => void;
+	onReregister: (client: MCPClient) => void;
 	onRefreshHeaders: (client: MCPClient) => void;
 	onVerifyExchange: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
@@ -109,9 +120,9 @@ function MCPClientActionsMenu({
 					className="h-8 w-8"
 					aria-label="MCP server actions"
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
-					disabled={isReconnecting || isReauthorizing || isVerifyingExchange}
+					disabled={isReconnecting || isRefreshingTools || isReauthorizing || isVerifyingExchange}
 				>
-					{isReconnecting || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
+					{isReconnecting || isRefreshingTools || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
 						<Loader2 className="h-4 w-4 animate-spin" />
 					) : (
 						<MoreHorizontal className="h-4 w-4" />
@@ -173,6 +184,23 @@ function MCPClientActionsMenu({
 						Reconnect
 					</DropdownMenuItem>
 				)}
+				{hasUpdateAccess && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={
+							client.config.disabled || isRefreshingTools || client.state === "pending_verification" || client.state === "needs_reauth"
+						}
+						data-testid={`mcp-client-refresh-tools-${client.config.client_id}-menu-item`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onRefreshTools(client);
+							setIsOpen(false);
+						}}
+					>
+						<ListRestart className="h-4 w-4" />
+						Refresh tools
+					</DropdownMenuItem>
+				)}
 				{hasUpdateAccess &&
 					client.state !== "pending_verification" &&
 					client.state !== "disabled" &&
@@ -189,6 +217,27 @@ function MCPClientActionsMenu({
 						>
 							<KeyRound className="h-4 w-4" />
 							{client.config.auth_type === "per_user_oauth" ? "Refresh admin credential" : "Reauthorize"}
+						</DropdownMenuItem>
+					)}
+				{hasUpdateAccess &&
+					client.state !== "pending_verification" &&
+					client.state !== "disabled" &&
+					supportsClientReregistration(client.config.auth_type) && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							disabled={isReauthorizing}
+							data-testid={`mcp-client-reregister-${client.config.client_id}-menu-item`}
+							onSelect={(e) => {
+								e.preventDefault();
+								onReregister(client);
+								setIsOpen(false);
+							}}
+						>
+							{/* Not KeyRound like the item above it: this one replaces the
+							    credential rather than redoing consent with it, and the two
+							    sat side by side with identical icons. */}
+							<RotateCcwKey className="h-4 w-4" />
+							Reauthorize with a new client
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
@@ -317,10 +366,16 @@ export default function MCPClientsTable({
 	// get from OAuth2Authorizer/MCPHeadersAuthorizer before we exchange their
 	// identity token.
 	const [exchangeVerifyClient, setExchangeVerifyClient] = useState<MCPClient | null>(null);
+	// Drives the "Reauthorize with a new client" confirm dialog. Confirmed
+	// rather than fired straight from the menu because registering a
+	// replacement client discards the current one, which signs out every
+	// credential bound to this server, not just the admin's.
+	const [reregisterTarget, setReregisterTarget] = useState<MCPClient | null>(null);
 	const [showDetailSheet, setShowDetailSheet] = useState(false);
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
+	const [refreshingToolsClients, setRefreshingToolsClients] = useState<string[]>([]);
 	const [authorizingClients, setAuthorizingClients] = useState<string[]>([]);
 	const [reauthorizingClients, setReauthorizingClients] = useState<string[]>([]);
 	const [verifyingExchangeClients, setVerifyingExchangeClients] = useState<string[]>([]);
@@ -342,6 +397,8 @@ export default function MCPClientsTable({
 	const [reauthorizeFlow, setReauthorizeFlow] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
+		flowId?: string;
+		expiresAt?: string;
 		mcpClientId: string;
 		isPerUserOauth: boolean;
 	} | null>(null);
@@ -355,7 +412,9 @@ export default function MCPClientsTable({
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
+	const [refreshMCPClientTools] = useRefreshMCPClientToolsMutation();
 	const [reauthorizeMCPClient] = useReauthorizeMCPClientMutation();
+	const [reregisterMCPClient] = useReregisterMCPClientMutation();
 	const [verifyMCPClientExchange] = useVerifyMCPClientExchangeMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
@@ -378,6 +437,28 @@ export default function MCPClientsTable({
 		} catch (error) {
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+		}
+	};
+
+	// Re-discovers the client's tools from its upstream server immediately.
+	// Distinct from Reconnect, which recycles the connection and does not apply
+	// to per-call clients at all: this works for every client type, and is what
+	// an operator reaches for after adding or removing a tool upstream.
+	const handleRefreshTools = async (client: MCPClient) => {
+		setRefreshingToolsClients((prev) => [...prev, client.config.client_id]);
+		try {
+			const result = await refreshMCPClientTools(client.config.client_id).unwrap();
+			toast({
+				title: "Tools refreshed",
+				description: `Client ${client.config.name} is now serving ${result.tool_count} ${result.tool_count === 1 ? "tool" : "tools"}.`,
+			});
+			if (refetch) {
+				await refetch();
+			}
+		} catch (error) {
+			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+		} finally {
+			setRefreshingToolsClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
 	};
 
@@ -425,14 +506,21 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const handleReauthorize = async (client: MCPClient) => {
+	// registerNewClient picks the endpoint: the plain one reuses the stored
+	// client_id, the other registers a replacement first. Both return the same
+	// pending_oauth payload and drive the same popup, so only the call differs.
+	const handleReauthorize = async (client: MCPClient, registerNewClient = false) => {
 		try {
 			setReauthorizingClients((prev) => [...prev, client.config.client_id]);
-			const response = await reauthorizeMCPClient(client.config.client_id).unwrap();
+			const response = registerNewClient
+				? await reregisterMCPClient(client.config.client_id).unwrap()
+				: await reauthorizeMCPClient(client.config.client_id).unwrap();
 			if (response.status === "pending_oauth" && response.authorize_url) {
 				setReauthorizeFlow({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
+					flowId: response.flow_id,
+					expiresAt: response.expires_at,
 					mcpClientId: client.config.client_id,
 					isPerUserOauth: client.config.auth_type === "per_user_oauth",
 				});
@@ -624,6 +712,35 @@ export default function MCPClientsTable({
 					hasNext={(selectedMCPClientIndex >= 0 && selectedMCPClientIndex < mcpClients.length - 1) || offset + limit < totalCount}
 				/>
 			)}
+			<AlertDialog open={!!reregisterTarget} onOpenChange={(open) => !open && setReregisterTarget(null)}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Reauthorize {reregisterTarget?.config.name} with a new client</AlertDialogTitle>
+						<AlertDialogDescription>
+							Bifrost will register a new OAuth client with this server&apos;s provider and run the consent flow against it, replacing the
+							client it currently uses. Use this when the provider no longer recognises the client it issued, which shows up as
+							&quot;invalid_client&quot; on refresh and leaves a plain reauthorize unable to recover the connection.
+							{reregisterTarget?.config.auth_type === "per_user_oauth"
+								? " Every user of this server will be signed out and will have to authenticate again."
+								: " Every credential currently issued for this server will be signed out."}{" "}
+							Otherwise use Reauthorize, which keeps the current client.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							data-testid="mcp-client-reregister-confirm"
+							onClick={() => {
+								const target = reregisterTarget;
+								setReregisterTarget(null);
+								if (target) void handleReauthorize(target, true);
+							}}
+						>
+							Register and reauthorize
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
@@ -1136,14 +1253,17 @@ export default function MCPClientsTable({
 													hasUpdateAccess={hasUpdateMCPClientAccess}
 													hasDeleteAccess={hasDeleteMCPClientAccess}
 													isReconnecting={reconnectingClients.includes(c.config.client_id)}
+													isRefreshingTools={refreshingToolsClients.includes(c.config.client_id)}
 													isAuthorizing={authorizingClients.includes(c.config.client_id)}
 													isReauthorizing={reauthorizingClients.includes(c.config.client_id)}
 													isVerifyingExchange={verifyingExchangeClients.includes(c.config.client_id)}
 													canReconnect={canReconnect}
 													onEdit={handleRowClick}
 													onReconnect={(client) => void handleReconnect(client)}
+													onRefreshTools={(client) => void handleRefreshTools(client)}
 													onAuthorize={(client) => void handleStartBootstrap(client)}
 													onReauthorize={(client) => void handleReauthorize(client)}
+													onReregister={(client) => setReregisterTarget(client)}
 													onRefreshHeaders={handleRefreshHeaders}
 													onVerifyExchange={handleRequestVerifyExchange}
 													onDelete={setClientToDelete}
@@ -1216,22 +1336,35 @@ export default function MCPClientsTable({
 					onError={(error) => {
 						toast({ title: "Reauthorization failed", description: error, variant: "destructive" });
 					}}
-					onConflict={() => {
-						// 409: the flow's completion raced (popup postMessage vs.
-						// status polling both call complete-oauth) or this was a
-						// double submit. Either way the credential is already live
-						// server-side, so treat it as success rather than an error.
-						toast({
-							title: "Success",
-							description: reauthorizeFlow.isPerUserOauth
-								? "Admin discovery credential refreshed successfully."
-								: "MCP client re-authorized successfully",
-						});
+					onConflict={(error) => {
+						// 409: the server refused to complete because the consent
+						// never actually finished (the flow is still pending, or no
+						// fresh credential was written). Nothing was repaired, so
+						// say so instead of claiming success.
+						toast({ title: "Reauthorization did not complete", description: error, variant: "destructive" });
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
+					onRetry={async () => {
+						// A timed-out or denied flow is dead server-side. Start a
+						// fresh one so the confirm step reopens on a live authorize
+						// URL with a new flow id and deadline.
+						const response = await reauthorizeMCPClient(reauthorizeFlow.mcpClientId).unwrap();
+						setReauthorizeFlow(
+							(prev) =>
+								prev && {
+									...prev,
+									authorizeUrl: response.authorize_url,
+									oauthConfigId: response.oauth_config_id,
+									flowId: response.flow_id,
+									expiresAt: response.expires_at,
+								},
+						);
+					}}
 					authorizeUrl={reauthorizeFlow.authorizeUrl}
 					oauthConfigId={reauthorizeFlow.oauthConfigId}
+					flowId={reauthorizeFlow.flowId}
+					expiresAt={reauthorizeFlow.expiresAt}
 					mcpClientId={reauthorizeFlow.mcpClientId}
 					isPerUserOauth={reauthorizeFlow.isPerUserOauth}
 					isReauthorize

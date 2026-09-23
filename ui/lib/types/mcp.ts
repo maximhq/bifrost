@@ -259,6 +259,10 @@ export interface OAuthFlowResponse {
 	status: "pending_oauth";
 	message: string;
 	oauth_config_id: string;
+	// Set by /reauthorize: the flow row driving this consent. Passed back on
+	// status polls so they report the flow's own state instead of the config's
+	// bootstrap status, which stays "authorized" for an already-verified client.
+	flow_id?: string;
 	authorize_url: string;
 	expires_at: string;
 	mcp_client_id: string;
@@ -268,6 +272,8 @@ export interface OAuthStatusResponse {
 	id: string;
 	status: "pending" | "authorized" | "failed" | "expired" | "revoked";
 	created_at: string;
+	flow_id?: string;
+	flow_status?: string;
 	token_id?: string;
 	token_expires_at?: string;
 	token_scopes?: string;

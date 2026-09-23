@@ -13,6 +13,9 @@
   },
   "providers": {
     "openai": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -27,6 +30,9 @@
       }
     },
     "elevenlabs": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "ElevenLabs API Key",
@@ -41,6 +47,9 @@
       }
     },
     "typesafe": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Typesafe API Key",
@@ -55,6 +64,9 @@
       }
     },
     "xai": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Xai API Key",
@@ -69,6 +81,9 @@
       }
     },
     "huggingface": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Hugging Face API Key",
@@ -83,6 +98,9 @@
       }
     },
     "anthropic": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -100,6 +118,9 @@
       }
     },
     "gemini": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Gemini API Key",
@@ -114,6 +135,9 @@
       }
     },
     "vertex": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Vertex API Key",
@@ -133,7 +157,11 @@
             "gemini-3.6-flash",
             "claude-fable-5-1",
             "gemini-3-pro-image",
-            "gemini-3.7-flash"
+            "gemini-3.7-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview"
           ]
         },
         {
@@ -160,7 +188,15 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["gemini-3.6-flash", "gemini-3-pro-image", "gemini-3.7-flash"]
+          "models": [
+            "gemini-3.6-flash",
+            "gemini-3-pro-image",
+            "gemini-3.7-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview"
+          ]
         }
       ],
       "network_config": {
@@ -172,6 +208,9 @@
       }
     },
     "mistral": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Mistral API Key",
@@ -185,6 +224,9 @@
       }
     },
     "cohere": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Cohere API Key",
@@ -198,6 +240,9 @@
       }
     },
     "parasail": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Parasail API Key",
@@ -211,6 +256,9 @@
       }
     },
     "groq": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Groq API Key",
@@ -224,6 +272,9 @@
       }
     },
     "perplexity": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Perplexity API Key",
@@ -237,6 +288,9 @@
       }
     },
     "cerebras": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Cerebras API Key",
@@ -250,6 +304,9 @@
       }
     },
     "openrouter": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenRouter API Key",
@@ -267,6 +324,9 @@
       }
     },
     "azure": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Azure API Key",
@@ -275,22 +335,39 @@
             "endpoint": "env.AZURE_ENDPOINT",
             "deployments": {
               "gpt-4o": "gpt-4o",
+              "gpt-4o-low-cap": "gpt-4o-low-cap",
+              "gpt-4o-batch": "gpt-4o-2",
               "gpt-4o-mini": "gpt-4o-mini",
               "gpt-4o-mini-tts": "gpt-4o-mini-tts",
-              "o1": "o1",
-              "gpt-4o-batch": "gpt-4o-batch",
+              "gpt-4o-transcribe": "gpt-4o-transcribe",
+              "gpt-4.1": "gpt-4.1",
               "whisper": "whisper",
-              "text-embedding-3-small": "text-embedding-3-small",
-              "gpt-image-1": "gpt-image-1",
+              "text-embedding-ada-002": "text-embedding-ada-002",
+              "gpt-image-2": "gpt-image-2",
+              "gpt-realtime": "gpt-realtime",
+              "gpt-realtime-1.5": "gpt-realtime-1.5",
+              "gpt-5.2": "gpt-5.2",
+              "gpt-5.3-chat": "gpt-5.3-chat",
+              "gpt-5.4": "gpt-5.4",
+              "gpt-5.4-mini": "gpt-5.4-mini",
+              "gpt-5.4-nano": "gpt-5.4-nano",
+              "gpt-5.4-pro": "gpt-5.4-pro",
+              "gpt-5.5": "gpt-5.5",
               "gpt-5.6-sol": "gpt-5.6-sol",
               "gpt-5.6-terra": "gpt-5.6-terra",
               "gpt-5.6-luna": "gpt-5.6-luna",
-              "gpt-5.5": "gpt-5.5",
-              "gpt-5.4": "gpt-5.4",
               "claude-opus-5": "claude-opus-5",
               "claude-sonnet-5": "claude-sonnet-5",
               "claude-opus-4-8": "claude-opus-4-8",
-              "claude-haiku-4-5": "claude-haiku-4-5"
+              "claude-opus-4-7": "claude-opus-4-7-1",
+              "claude-opus-4-6": "claude-opus-4-6",
+              "claude-opus-4-5": "claude-opus-4-5",
+              "claude-sonnet-4-6": "claude-sonnet-4-6",
+              "claude-sonnet-4-5": "claude-sonnet-4-5",
+              "claude-haiku-4-5": "claude-haiku-4-5",
+              "DeepSeek-V3.2": "DeepSeek-V3.2",
+              "DeepSeek-V4-Pro": "DeepSeek-V4-Pro",
+              "DeepSeek-V4-Flash-0731": "DeepSeek-V4-Flash-0731"
             }
           },
           "weight": 1,
@@ -307,6 +384,9 @@
       }
     },
     "bedrock": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -325,6 +405,9 @@
       }
     },
     "bedrock_mantle": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock Mantle API Key",
@@ -343,6 +426,9 @@
       }
     },
     "replicate": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Replicate API Key",
@@ -355,6 +441,9 @@
       }
     },
     "runware": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Runware API Key",
@@ -367,6 +456,9 @@
       }
     },
     "runway": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Runway API Key",
@@ -379,6 +471,9 @@
       }
     },
     "nebius": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Nebius API Key",
@@ -391,6 +486,9 @@
       }
     },
     "deepseek": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "DeepSeek API Key",
@@ -405,6 +503,9 @@
       }
     },
     "anthropic_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -426,6 +527,9 @@
       }
     },
     "gemini_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Gemini API Key",
@@ -447,6 +551,9 @@
       }
     },
     "anthropic_pc_points": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -478,6 +585,9 @@
       }
     },
     "bedrock_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -503,6 +613,9 @@
       }
     },
     "bedrock_pc_points": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -538,6 +651,9 @@
       }
     },
     "bedrock_openai_ep": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -560,6 +676,9 @@
       }
     },
     "openai_dnsdm": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -579,6 +698,9 @@
       }
     },
     "openai_dnsdm_wait": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -599,6 +721,9 @@
       }
     },
     "openai_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -620,6 +745,9 @@
       }
     },
     "openai_pc_points": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -651,6 +779,9 @@
       }
     },
     "anthropic_pc_edge": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -690,6 +821,9 @@
       }
     },
     "anthropic_pc_overflow": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -737,6 +871,9 @@
       }
     },
     "anthropic_pc_absent": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
