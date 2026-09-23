@@ -109,6 +109,21 @@ OAuthFlowInitiation:
       items:
         type: string
       description: Human-readable steps to complete the flow (authorize, poll, complete)
+    registered_client_id:
+      type: string
+      description: |
+        The OAuth client_id the provider issued for the replacement client,
+        which is the one authorize_url runs consent against. Returned only by
+        POST /api/mcp/client/{id}/reregister. This is the provider's OAuth
+        client_id, not the MCP client ID in mcp_client_id.
+    previous_client_id:
+      type: string
+      description: |
+        The OAuth client_id that registered_client_id replaced. Returned only
+        by POST /api/mcp/client/{id}/reregister. Equal to
+        registered_client_id when the provider answered the registration with
+        the client it already held, in which case nothing was replaced and no
+        token was invalidated.
 
 OAuthConfigStatus:
   type: object

@@ -569,6 +569,102 @@ client-reauthorize:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+client-reregister:
+  post:
+    operationId: reregisterMCPClient
+    summary: Reauthorize an MCP client against a newly registered OAuth client
+    description: |
+      Registers a replacement OAuth client (RFC 7591 Dynamic Client
+      Registration) at the config's registration_url, writes it over the
+      stored credentials, and then runs the same consent flow
+      POST /api/mcp/client/{id}/reauthorize runs, against the new client.
+
+      This exists for a provider that no longer recognises the client_id it
+      issued, which is common with Dynamic Client Registration because the
+      provider's client registry is often in memory and does not survive a
+      restart. Once that happens the stored client_id is rejected at the token
+      endpoint on every refresh and at the authorize endpoint on every
+      reauthorization, so plain reauthorize cannot recover the connection.
+
+      Replacing the client_id marks every credential stored under the OAuth
+      config needs_reauth and stops using it, since none of them can be
+      refreshed against a client the provider no longer associates them
+      with. It does not revoke access tokens the provider already issued
+      (Bifrost never calls the provider's revocation endpoint), so those can
+      stay valid at the provider until they expire. For auth_type
+      "per_user_oauth" that includes every end-user credential, not just the
+      retained admin one, and each user must authenticate again. Plain
+      reauthorize leaves end-user credentials untouched; this endpoint does
+      not.
+
+      Complete the returned flow exactly like reauthorize's: open
+      authorize_url in a browser, poll status_url until "authorized", then
+      POST complete_url.
+    tags:
+      - MCP
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: |
+          Reauthorization flow initiated against the newly registered client.
+          Carries the same fields as reauthorize, plus registered_client_id
+          and previous_client_id so the caller can confirm which client the
+          consent it is about to run belongs to.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
+      '400':
+        description: Client is not an OAuth-based auth type (oauth, per_user_oauth), has never completed initial OAuth authorization (use initiate-verification instead), the OAuth config has no registration_url, or the provider refused the registration request (answered it with a 4xx). Nothing is changed in any of these cases. A provider that could not be reached, or that answered with a 5xx, is a 500 instead
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: MCP client not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '503':
+        description: OAuth provider not configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        description: |
+          Internal failure. The message tells two cases apart, and they call
+          for opposite responses.
+
+          Nothing was changed in Bifrost: the stored client_id is what it was
+          and no token was invalidated, whether the OAuth config could not be
+          loaded, the provider's registration endpoint could not be reached or
+          answered with a 5xx, or the replacement client could not be stored.
+          Safe to retry. One of these leaves something behind at the provider: a
+          message starting "failed to persist the newly registered oauth client"
+          means the provider did register a replacement and only storing it
+          locally failed, so the provider now holds a registration Bifrost will
+          never use, and each retry adds one more. Bifrost cannot delete those
+          (it implements no RFC 7592 client management); remove them at the
+          provider if it lists registered clients. Every other message here
+          means nothing was registered anywhere.
+
+          The replacement was installed, but consent could not be started:
+          registration and rotation are committed before the consent flow is
+          opened, and the registration made at the provider cannot be undone.
+          The new client_id is stored and every token bound to the config is
+          already needs_reauth. The message says so and names both
+          client_ids. Do NOT retry this endpoint, which would register yet
+          another client: call POST /api/mcp/client/{id}/reauthorize, which
+          runs consent against whatever client is stored, now the
+          replacement.
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 client-verify-headers:
   post:
     operationId: verifyMCPClientHeaders

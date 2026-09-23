@@ -827,6 +827,8 @@ paths:
     $ref: "./paths/management/mcp.yaml#/client-initiate-verification"
   /api/mcp/client/{id}/reauthorize:
     $ref: "./paths/management/mcp.yaml#/client-reauthorize"
+  /api/mcp/client/{id}/reregister:
+    $ref: "./paths/management/mcp.yaml#/client-reregister"
   /api/mcp/client/{id}/verify-headers:
     $ref: "./paths/management/mcp.yaml#/client-verify-headers"
   /api/mcp/client/{id}/verify-exchange:
