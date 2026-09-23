@@ -226,6 +226,94 @@ func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
 	assert.NotEqual(t, float64(float32(want)), got)
 }
 
+func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
+	// Vertex :embedContent reports usage here and omits Statistics entirely.
+	t.Run("usageMetadata is surfaced", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1, 0.2}},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: 9,
+				TotalTokenCount:  9,
+			},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 9, resp.Usage.PromptTokens)
+		assert.Equal(t, 9, resp.Usage.TotalTokens)
+	})
+
+	t.Run("usageMetadata without a total falls back to the prompt count", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding:     &gemini.GeminiEmbedding{Values: []float64{0.1}},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 4},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 4, resp.Usage.PromptTokens)
+		assert.Equal(t, 4, resp.Usage.TotalTokens)
+	})
+
+	// Defensive: no observed Vertex or Gemini response omits promptTokenCount, but a total
+	// with a zero prompt would otherwise bill the request as free.
+	t.Run("usageMetadata with only a total fills the prompt count from it", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding:     &gemini.GeminiEmbedding{Values: []float64{0.1}},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 7},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 7, resp.Usage.PromptTokens)
+		assert.Equal(t, 7, resp.Usage.TotalTokens)
+	})
+
+	t.Run("a total-only usageMetadata prefers per-embedding statistics", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embeddings: []gemini.GeminiEmbedding{
+				{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2}},
+				{Values: []float64{0.2}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 3}},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 5},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 5, resp.Usage.PromptTokens)
+		assert.Equal(t, 5, resp.Usage.TotalTokens)
+	})
+
+	t.Run("usageMetadata wins over per-embedding statistics", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{
+				Values:     []float64{0.1},
+				Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 9, TotalTokenCount: 9},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 9, resp.Usage.PromptTokens)
+	})
+
+	t.Run("statistics still drive usage when usageMetadata is absent", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embeddings: []gemini.GeminiEmbedding{
+				{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2}},
+				{Values: []float64{0.2}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 3}},
+			},
+		}, "gemini-embedding-001")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 5, resp.Usage.PromptTokens)
+	})
+
+	t.Run("no usage reported leaves usage unset", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1}},
+		}, "gemini-embedding-001")
+
+		assert.Nil(t, resp.Usage)
+	})
+}
+
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
 // for both streaming and non-streaming responses to enable round-trip compatibility
 func TestThoughtSignatureInToolCalls(t *testing.T) {

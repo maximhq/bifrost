@@ -269,7 +269,24 @@ func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model strin
 			break
 		}
 	}
-	if geminiResp.Metadata != nil || hasStats {
+	if um := geminiResp.UsageMetadata; um != nil && (um.PromptTokenCount > 0 || um.TotalTokenCount > 0) {
+		prompt := int(um.PromptTokenCount)
+		total := int(um.TotalTokenCount)
+		if prompt == 0 {
+			for _, emb := range embeddings {
+				if emb.Statistics != nil {
+					prompt += int(emb.Statistics.TokenCount)
+				}
+			}
+			if prompt == 0 {
+				prompt = total
+			}
+		}
+		if total == 0 {
+			total = prompt
+		}
+		bifrostResp.Usage = &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
+	} else if geminiResp.Metadata != nil || hasStats {
 		bifrostResp.Usage = &schemas.BifrostLLMUsage{}
 		var totalTokens int
 		for _, emb := range embeddings {
