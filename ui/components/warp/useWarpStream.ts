@@ -8,6 +8,7 @@ import {
 	type WarpEvent,
 	type WarpQuestion,
 	type WarpUsage,
+	isPartialAnswer,
 } from "@/components/warp/warpStream.utils";
 import { useWarp, type WarpTurn, type WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { getApiBaseUrl } from "@/lib/utils/port";
@@ -30,11 +31,13 @@ interface UseWarpStreamResult {
 	question: WarpQuestion | null;
 	clearQuestion: () => void;
 	send: (history: WarpTurn[], question: string) => Promise<void>;
-	/** Abandons the in-flight request and its partial answer. See discard(). */
-	discard: () => void;
 	stop: () => void;
+	/** Abort and drop whatever the aborted request produced. */
+	discard: () => void;
 	/** Forgets the current thread, so the next question opens a new one. */
 	resetConversation: () => void;
+	/** Continues a stored thread: the next question is filed under it. */
+	openConversation: (id: string) => void;
 }
 
 /**
@@ -98,19 +101,14 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 		abortRef.current = null;
 	}, []);
 
-	/**
-	 * Abandons the in-flight request outright.
-	 *
-	 * Distinct from stop(): stop only aborts, leaving requestIdRef untouched, so
-	 * isCurrent() still passes and the completion path commits the partial answer
-	 * it already has. That is right for "stop generating" - you keep what arrived
-	 * - and wrong for New Chat, where warp.clear() empties the transcript and the
-	 * abandoned turn is then appended straight back into it through appendTurn's
-	 * functional update.
-	 *
-	 * Incrementing the id first is what makes the abort final: every later guard
-	 * on that request sees a stale id and declines to write.
-	 */
+	// discard is stop plus "and do not keep what it produced".
+	//
+	// The composer's Stop wants the opposite: a half-written answer is usually
+	// still worth reading, so stop() leaves the request current and its finally
+	// block files the partial turn. Switching or deleting a thread is the case
+	// where that turn must not land - it belongs to the conversation being left,
+	// and committing it files someone's answer under whichever thread is
+	// selected by the time the abort unwinds.
 	const discard = useCallback(() => {
 		requestIdRef.current++;
 		abortRef.current?.abort();
@@ -118,7 +116,6 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 		setStreamingText("");
 		setStreamingToolCalls([]);
 		setIsStreaming(false);
-		setError(null);
 	}, []);
 
 	// Unmount is the one exit nothing else covers. Closing the desktop dock
@@ -164,6 +161,7 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 			let sawTerminal = false;
 			let posed: WarpQuestion | null = null;
 			let usage: WarpUsage | undefined;
+			let partial = false;
 
 			const applyEvent = (event: WarpEvent) => {
 				// A read() that resolved before discard() can still deliver its frames
@@ -194,6 +192,7 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						// finished answering" over a turn that had finished perfectly.
 						sawTerminal = true;
 						usage = event.usage;
+						partial = isPartialAnswer(event.finish_reason);
 						// The server mints the id when a thread is new, so this is the only
 						// place the client learns it.
 						if (event.conversation_id) {
@@ -313,6 +312,7 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						content: text,
 						toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
 						error: terminalError ?? undefined,
+						partial: partial || undefined,
 						// Recorded on the turn so a reopened thread shows the question that
 						// was asked, not just the gap where an answer would be.
 						question: posed ?? undefined,
@@ -339,5 +339,29 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 		setConversationID?.("");
 	}, [discard, setConversationID]);
 
-	return { streamingText, streamingToolCalls, isStreaming, error, question, clearQuestion, send, stop, discard, resetConversation };
+	const openConversation = useCallback(
+		(id: string) => {
+			conversationRef.current = id;
+			setConversationID?.(id);
+			// The pending question belongs to the thread being left. Leaving it on
+			// screen means its answer is sent with the newly selected conversation
+			// id, filing a reply under a thread that never asked.
+			setQuestion(null);
+		},
+		[setConversationID],
+	);
+
+	return {
+		discard,
+		streamingText,
+		streamingToolCalls,
+		isStreaming,
+		error,
+		question,
+		clearQuestion,
+		send,
+		stop,
+		resetConversation,
+		openConversation,
+	};
 }

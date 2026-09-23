@@ -410,6 +410,12 @@ func ValidateConfigInput(input *ConfigInput) error {
 			return fmt.Errorf("%w: embedding_dimension must be positive when warp is enabled", ErrInvalidConfig)
 		}
 	}
+	// One is refused rather than silently corrected: the loop reserves its last
+	// step for answering, so a single step is spent researching and the run ends
+	// out of iterations with nothing to show. Zero still means "use the default".
+	if input.MaxIterations == 1 {
+		return fmt.Errorf("%w: max_iterations must be at least %d, because the last step is reserved for answering; use 0 for the default", ErrInvalidConfig, schemas.WarpMinMaxIterations)
+	}
 	if input.MaxIterations < 0 || input.MaxIterations > schemas.WarpMaxIterationsCeiling {
 		return fmt.Errorf("%w: max_iterations must be between 0 and %d", ErrInvalidConfig, schemas.WarpMaxIterationsCeiling)
 	}

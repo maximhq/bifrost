@@ -96,7 +96,19 @@ type WarpMessage struct {
 	// same provenance the live one did. Serialised rather than a child table:
 	// it is only ever read and written whole, alongside its message.
 	ToolCallsJSON string `gorm:"type:text" json:"-"`
-	Error         string `gorm:"type:text" json:"error,omitempty"`
+	// QuestionJSON is the structured clarifying question a turn ended with,
+	// serialised whole like the tool trace: a reopened thread rebuilds the same
+	// selectable card the live turn showed, hints included.
+	QuestionJSON string `gorm:"type:text" json:"-"`
+	Error        string `gorm:"type:text" json:"error,omitempty"`
+	// FinishReason records how the turn ended ("partial" when Warp ran out of
+	// research steps and answered with what it had). Empty for user turns and
+	// for answers that settled normally.
+	FinishReason string `gorm:"type:varchar(32)" json:"finish_reason,omitempty"`
+	// TotalTokens and Cost are what the answer cost to produce. Filed per
+	// message so the history list can sum a thread's spend in one query.
+	TotalTokens int     `gorm:"not null;default:0" json:"total_tokens,omitempty"`
+	Cost        float64 `gorm:"not null;default:0" json:"cost,omitempty"`
 }
 
 // TableName sets the table name for the Warp message model.
@@ -124,6 +136,11 @@ type WarpConversationStore interface {
 	AppendWarpMessages(ctx context.Context, ownerID, conversationID string, messages []WarpMessage) error
 	// DeleteWarpConversation removes a thread and its messages.
 	DeleteWarpConversation(ctx context.Context, ownerID, id string) error
+	// DeleteWarpConversationIfEmpty removes a thread only if it has no messages,
+	// checking and deleting as one operation, and reports whether it did. It is
+	// the cleanup for a thread whose first append failed: a separate count and
+	// delete let a concurrent append land in between and be deleted with it.
+	DeleteWarpConversationIfEmpty(ctx context.Context, ownerID, id string) (bool, error)
 	// PruneWarpConversations drops an owner's oldest threads beyond keep.
 	PruneWarpConversations(ctx context.Context, ownerID string, keep int) (int64, error)
 	// DeleteWarpConversationsOlderThan drops threads last touched before the
@@ -138,6 +155,25 @@ type WarpConversationStore interface {
 	// CountWarpMessages returns message counts for the given threads in one
 	// query, so a list view does not issue a count per row.
 	CountWarpMessages(ctx context.Context, conversationIDs []string) (map[string]int, error)
+	// SumWarpMessageUsage returns each thread's total tokens and cost in one
+	// query, for the same reason as CountWarpMessages.
+	SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error)
+}
+
+// DistributedLocker is mutual exclusion shared by every Bifrost instance that
+// uses the same stores. configstore.DistributedLockManager satisfies it; it is
+// declared here, not imported, because configstore already imports logstore.
+type DistributedLocker interface {
+	// Acquire blocks until key is held or ctx ends. It returns a context to run
+	// the critical section on, cancelled if the lock is lost while held, and the
+	// release.
+	Acquire(ctx context.Context, key string) (held context.Context, release func(), err error)
+}
+
+// WarpUsageTotals is what a thread has cost so far.
+type WarpUsageTotals struct {
+	TotalTokens int
+	Cost        float64
 }
 
 // ListWarpConversations returns an owner's threads, most recent first.
@@ -189,6 +225,35 @@ func (s *RDBLogStore) CountWarpMessages(ctx context.Context, conversationIDs []s
 		counts[r.ConversationID] = r.Total
 	}
 	return counts, nil
+}
+
+// SumWarpMessageUsage returns each thread's total tokens and cost in one
+// grouped query. Threads with no messages, or that do not exist, are absent
+// from the result rather than reported as zero.
+func (s *RDBLogStore) SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error) {
+	totals := make(map[string]WarpUsageTotals, len(conversationIDs))
+	if len(conversationIDs) == 0 {
+		return totals, nil
+	}
+	type row struct {
+		ConversationID string
+		TotalTokens    int
+		Cost           float64
+	}
+	var rows []row
+	err := s.db.WithContext(ctx).
+		Model(&WarpMessage{}).
+		Select("conversation_id, coalesce(sum(total_tokens), 0) as total_tokens, coalesce(sum(cost), 0) as cost").
+		Where("conversation_id IN ?", conversationIDs).
+		Group("conversation_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		totals[r.ConversationID] = WarpUsageTotals{TotalTokens: r.TotalTokens, Cost: r.Cost}
+	}
+	return totals, nil
 }
 
 // GetWarpConversation returns one thread with its newest messages in order,
@@ -314,6 +379,42 @@ func (s *RDBLogStore) DeleteWarpConversation(ctx context.Context, ownerID, id st
 		// asked to remove.
 		return tx.Where("conversation_id = ?", id).Delete(&WarpMessage{}).Error
 	})
+}
+
+// DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
+//
+// The conversation row is locked FOR UPDATE on postgres, the same lock
+// AppendWarpMessages takes before inserting, so an append either commits first
+// and the count sees its messages, or waits and then finds the thread gone.
+// SQLite needs no lock: it serializes writers at the database level.
+func (s *RDBLogStore) DeleteWarpConversationIfEmpty(ctx context.Context, ownerID, id string) (bool, error) {
+	deleted := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		query := tx.Where("id = ? AND owner_id = ?", id, ownerID)
+		if tx.Dialector.Name() == "postgres" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var existing WarpConversation
+		if err := query.First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrWarpConversationNotFound
+			}
+			return err
+		}
+		var count int64
+		if err := tx.Model(&WarpMessage{}).Where("conversation_id = ?", id).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		if err := tx.Where("id = ? AND owner_id = ?", id, ownerID).Delete(&WarpConversation{}).Error; err != nil {
+			return err
+		}
+		deleted = true
+		return nil
+	})
+	return deleted, err
 }
 
 // PruneWarpConversations drops an owner's oldest threads beyond keep.

@@ -65,12 +65,22 @@ func semanticSearchLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{
+			response := map[string]any{
 				"rows":      result.Rows,
 				"returned":  result.Returned,
 				"threshold": result.Threshold,
 				"scope":     scopeNote(filters, deps.scope),
-			}, nil
+				"logs_link": logsViewLink(filters),
+			}
+			if result.Returned == 0 {
+				// Four bare fields read as "search is useless here", and the
+				// model went off counting and listing logs instead. Say what
+				// happened and what the legitimate next moves are.
+				response["hint"] = fmt.Sprintf("No stored conversation scored above the similarity threshold of %.2f. "+
+					"Do not fall back to count_logs or query_logs to answer a question about meaning. "+
+					"Widen the time range once, rephrase the query, or report that no matching conversations were found.", result.Threshold)
+			}
+			return response, nil
 		},
 	}
 }
@@ -134,8 +144,9 @@ func queryLogsTool() Tool {
 				// Stated rather than left to be inferred from the two counts above.
 				// The prompt asks the model to caveat a partial answer, and a caveat
 				// it has to derive by comparing numbers is the one it forgets.
-				"sampled": int64(len(rows)) < result.Pagination.TotalCount,
-				"scope":   scopeNote(filters, deps.scope),
+				"sampled":   int64(len(rows)) < result.Pagination.TotalCount,
+				"scope":     scopeNote(filters, deps.scope),
+				"logs_link": logsViewLink(filters),
 			}, nil
 		},
 	}
@@ -224,6 +235,7 @@ func countLogsTool() Tool {
 				"success_rate":       stats.SuccessRate,
 				"average_latency_ms": stats.AverageLatency,
 				"scope":              scopeNote(filters, deps.scope),
+				"logs_link":          logsViewLink(filters),
 			}
 			// The advice travels with the number rather than living only in the
 			// prompt: this is the moment the decision gets made, and the threshold
@@ -304,7 +316,8 @@ func queryMetricsTool() Tool {
 			}
 
 			out := map[string]any{
-				"scope": scopeNote(filters, deps.scope),
+				"scope":     scopeNote(filters, deps.scope),
+				"logs_link": logsViewLink(filters),
 				"window": map[string]string{
 					"start": filters.StartTime.UTC().Format("2006-01-02T15:04:05Z"),
 					"end":   filters.EndTime.UTC().Format("2006-01-02T15:04:05Z"),
@@ -466,16 +479,20 @@ func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, d
 	// "rankings" key produced rankings.rankings and pushed the dimension and the
 	// totals a level down. The model consumes this JSON directly, and a shape it
 	// does not expect does not fail - it answers from whatever it can find.
-	return withScopeNote(result, scopeNote(filters, deps.scope))
+	return flattenWithFields(result, map[string]any{
+		"scope":     scopeNote(filters, deps.scope),
+		"logs_link": logsViewLink(filters),
+	})
 }
 
-// withScopeNote returns a result's own fields with the scope note alongside
+// flattenWithFields returns a result's own fields with extra ones alongside
 // them, rather than nested beneath a key.
 //
 // It round-trips through JSON deliberately: the tool results are typed structs
 // whose wire shape is what the model reads, so composing on the encoded form is
-// what keeps the note additive instead of restructuring the answer around it.
-func withScopeNote(result any, note string) (any, error) {
+// what keeps the additions additive instead of restructuring the answer around
+// them.
+func flattenWithFields(result any, extra map[string]any) (any, error) {
 	encoded, err := sonic.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("could not encode rankings: %w", err)
@@ -484,7 +501,9 @@ func withScopeNote(result any, note string) (any, error) {
 	if err := sonic.Unmarshal(encoded, &out); err != nil {
 		return nil, fmt.Errorf("could not read back rankings: %w", err)
 	}
-	out["scope"] = note
+	for key, value := range extra {
+		out[key] = value
+	}
 	return out, nil
 }
 
@@ -521,7 +540,7 @@ func queryModelsTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
-			out := map[string]any{"models": rankings, "scope": scopeNote(filters, deps.scope)}
+			out := map[string]any{"models": rankings, "scope": scopeNote(filters, deps.scope), "logs_link": logsViewLink(filters)}
 
 			includePerformance, err := boolArg(args, "include_performance")
 			if err != nil {

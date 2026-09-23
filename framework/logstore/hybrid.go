@@ -1612,6 +1612,19 @@ func (h *HybridLogStore) DeleteWarpConversation(ctx context.Context, ownerID, id
 	return h.inner.DeleteWarpConversation(ctx, ownerID, id)
 }
 
+// SetDistributedLocker hands the locker to the inner store when it has use for
+// one (ClickHouse); the SQL stores serialize with row locks instead.
+func (h *HybridLogStore) SetDistributedLocker(locker DistributedLocker) {
+	if lockable, ok := h.inner.(interface{ SetDistributedLocker(DistributedLocker) }); ok {
+		lockable.SetDistributedLocker(locker)
+	}
+}
+
+// DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
+func (h *HybridLogStore) DeleteWarpConversationIfEmpty(ctx context.Context, ownerID, id string) (bool, error) {
+	return h.inner.DeleteWarpConversationIfEmpty(ctx, ownerID, id)
+}
+
 // PruneWarpConversations drops an owner's oldest threads beyond keep.
 func (h *HybridLogStore) PruneWarpConversations(ctx context.Context, ownerID string, keep int) (int64, error) {
 	return h.inner.PruneWarpConversations(ctx, ownerID, keep)
@@ -1627,4 +1640,9 @@ func (h *HybridLogStore) DeleteWarpConversationsOlderThan(ctx context.Context, c
 // CountWarpMessages returns message counts for the given threads in one query.
 func (h *HybridLogStore) CountWarpMessages(ctx context.Context, conversationIDs []string) (map[string]int, error) {
 	return h.inner.CountWarpMessages(ctx, conversationIDs)
+}
+
+// SumWarpMessageUsage returns each thread's total tokens and cost in one query.
+func (h *HybridLogStore) SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error) {
+	return h.inner.SumWarpMessageUsage(ctx, conversationIDs)
 }

@@ -67,17 +67,17 @@ func consecutiveQuestions(messages []ChatMessage) int {
 
 // ChatResponse is the non-streaming body: the same events, assembled.
 type ChatResponse struct {
-	Answer         string         `json:"answer"`
-	ToolCalls      []ChatToolCall `json:"tool_calls"`
-	Iterations     int            `json:"iterations"`
-	ConversationID string         `json:"conversation_id,omitempty"`
-	FinishReason   string         `json:"finish_reason,omitempty"`
-	// Question is set when the turn ended by asking rather than answering. It is
-	// part of the response because a question is a real outcome of a turn: the
-	// buffered caller needs it, and history has to file it.
-	Question *Question                `json:"question,omitempty"`
-	Usage    *schemas.BifrostLLMUsage `json:"usage,omitempty"`
-	Error    *ChatError               `json:"error,omitempty"`
+	Answer         string                   `json:"answer"`
+	ToolCalls      []ChatToolCall           `json:"tool_calls"`
+	Iterations     int                      `json:"iterations"`
+	ConversationID string                   `json:"conversation_id,omitempty"`
+	FinishReason   string                   `json:"finish_reason,omitempty"`
+	Usage          *schemas.BifrostLLMUsage `json:"usage,omitempty"`
+	// Question is set when the turn ended by asking rather than answering. The
+	// JSON transport needs it to show the picker, and history needs it so the
+	// thread is filed from its first turn.
+	Question *Question  `json:"question,omitempty"`
+	Error    *ChatError `json:"error,omitempty"`
 }
 
 type ChatToolCall struct {

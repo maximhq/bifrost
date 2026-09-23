@@ -107,3 +107,66 @@ export interface WarpBackfillIdle {
 }
 
 export type WarpBackfillStatus = WarpBackfillIdle | WarpBackfillJob;
+
+/** One saved thread, without its transcript. Mirrors schemas.WarpConversation. */
+export interface WarpConversation {
+	id: string;
+	title: string;
+	message_count: number;
+	total_tokens: number;
+	total_cost: number;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WarpStoredToolCall {
+	name: string;
+	duration_ms?: number;
+	failed?: boolean;
+}
+
+/** One persisted turn. Mirrors schemas.WarpStoredMessage. */
+export interface WarpStoredMessage {
+	role: "user" | "assistant";
+	content: string;
+	tool_calls?: WarpStoredToolCall[];
+	error?: string;
+	finish_reason?: string;
+	/**
+	 * The structured clarifying question this turn ended with, when it ended by
+	 * asking. Mirrors the live question event's shape, so a reopened thread
+	 * rebuilds the same selectable card with its hints intact.
+	 */
+	question?: {
+		question: string;
+		options?: { label: string; hint?: string }[];
+		allow_other?: boolean;
+		kind?: string;
+	};
+	total_tokens?: number;
+	cost?: number;
+	created_at: string;
+}
+
+export interface WarpConversationDetail extends WarpConversation {
+	messages: WarpStoredMessage[];
+	/**
+	 * The transcript hit the repository bound and older messages were cut.
+	 * message_count still reports the thread's real size, so a bounded
+	 * transcript renders as bounded rather than complete.
+	 */
+	truncated?: boolean;
+}
+
+/**
+ * Whether semantic search is usable, in one word. Mirrors the states the
+ * log-index status endpoint reports.
+ */
+export type WarpLogIndexState = "unavailable" | "not_configured" | "indexing" | "failed" | "ready";
+
+export interface WarpLogIndexStatus {
+	state: WarpLogIndexState;
+	vector_store_connected: boolean;
+	embedding_configured: boolean;
+	backfill?: WarpBackfillStatus;
+}

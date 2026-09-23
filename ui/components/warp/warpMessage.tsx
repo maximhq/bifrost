@@ -1,6 +1,8 @@
 import {
 	decodeTurnError,
 	formatWarpUsage,
+	isInternalWarpLink,
+	isPlainLeftClick,
 	splitWarpAnswer,
 	warpErrorDetail,
 	warpToolLabel,
@@ -8,8 +10,9 @@ import {
 } from "@/components/warp/warpStream.utils";
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { cn } from "@/lib/utils";
+import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Brain, Check, ChevronDown, Info, Loader2 } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useState, type AnchorHTMLAttributes } from "react";
 
 // Shiki is heavy and most Warp answers are prose, so the renderer is loaded on
 // demand. This mirrors how the prompt playground handles the same component.
@@ -59,10 +62,11 @@ export function WarpMessage({ turn, isLatest }: { turn: WarpTurn; isLatest?: boo
 		// is the one thing in a chat transcript with no natural width limit, and
 		// letting it set the row's width breaks the padding for every message.
 		<div
-			className={cn("min-w-0 space-y-2 [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto", enter)}
+			className={cn("min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full", enter)}
 			data-testid="warp-message-assistant"
 		>
 			{turn.toolCalls && turn.toolCalls.length > 0 && <WarpToolCallList calls={turn.toolCalls} />}
+			{turn.partial && <WarpPartialNote />}
 			{turn.content && <WarpAnswer content={turn.content} />}
 			{/* What this answer cost. Warp's own calls never appear in the logs it
 			    reads - by design, so it does not corrupt the numbers it reports - so
@@ -94,8 +98,14 @@ export function WarpStreamingMessage({
 	isStreaming: boolean;
 }) {
 	return (
+		// overflow-x-auto on the container, not [&_table]:block. The Warp
+		// ScrollArea renders only a vertical scrollbar, and Radix will not scroll
+		// its viewport horizontally without a horizontal one - so a wide table was
+		// clipped by the viewport and again by the dock's overflow-x-clip. Making
+		// the table a block would scroll it but drops native table layout and
+		// undoes the .no-table viewport fix; a container-level scroller keeps both.
 		<div
-			className="min-w-0 space-y-2 [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto"
+			className="min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full"
 			data-testid="warp-message-streaming"
 		>
 			{toolCalls.length > 0 && <WarpToolCallList calls={toolCalls} />}
@@ -202,6 +212,47 @@ function WarpToolCallRow({ call }: { call: WarpTurnToolCall }) {
 }
 
 /**
+ * A link inside an answer.
+ *
+ * Warp's tools give the model root-relative links into the Logs view - a row's
+ * detail sheet, or the same filters it just counted. The markdown renderer
+ * opens every anchor in a new tab, which for those would mean a second copy of
+ * the dashboard; they are followed with the router instead, so the Logs page
+ * opens beside the tray with the conversation still there. External links keep
+ * the new-tab behaviour.
+ */
+function WarpAnswerLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
+	const navigate = useNavigate();
+	// `node` is the markdown AST element; it must not reach the DOM.
+	const { node: _node, ...anchorProps } = rest;
+	if (isInternalWarpLink(href)) {
+		return (
+			<a
+				{...anchorProps}
+				href={href}
+				className="text-primary underline underline-offset-2"
+				data-testid="warp-answer-link"
+				onClick={(event) => {
+					// A modified or middle click is the browser's to handle: it is how
+					// someone opens a cited link in a new tab without losing the answer
+					// they are reading.
+					if (!isPlainLeftClick(event)) return;
+					event.preventDefault();
+					void navigate({ href: href! });
+				}}
+			>
+				{children}
+			</a>
+		);
+	}
+	return (
+		<a {...anchorProps} href={href} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">
+			{children}
+		</a>
+	);
+}
+
+/**
  * An answer, with its provenance folded away.
  *
  * The window, scope and filters are what make a number checkable, so they must
@@ -216,7 +267,7 @@ function WarpAnswer({ content }: { content: string }) {
 	return (
 		<div className="space-y-2">
 			<Suspense fallback={<div className="text-muted-foreground text-sm">{answer}</div>}>
-				<LazyMarkdown content={answer} />
+				<LazyMarkdown content={answer} components={{ a: WarpAnswerLink }} />
 			</Suspense>
 
 			{provenance && (
@@ -254,6 +305,30 @@ function WarpAnswer({ content }: { content: string }) {
  * and the specific things that change the outcome - and it stays collapsed by
  * default because most failures are self-explanatory in one line.
  */
+/**
+ * Sits above an answer Warp gave on its last research step. The model was told
+ * to stop querying and say what it had, so the text below is honest but may not
+ * cover everything asked; the note is what keeps a reader from quoting it as
+ * settled.
+ */
+function WarpPartialNote() {
+	return (
+		<div
+			className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs"
+			data-testid="warp-partial-answer"
+		>
+			<Info className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+			<div className="space-y-0.5">
+				<p className="font-medium">Partial answer</p>
+				<p className="text-muted-foreground">
+					Warp used all of its research steps before it finished checking. This is what it found so far, and it says what it could not
+					confirm. A narrower question usually completes.
+				</p>
+			</div>
+		</div>
+	);
+}
+
 function WarpTurnError({ error }: { error: string }) {
 	const [expanded, setExpanded] = useState(false);
 	// decodeTurnError rather than a bare split: a message with no colon is a
