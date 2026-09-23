@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { isFiniteNumber, isValidBaseURL, validateWarpRetentionDays } from "./warpView.utils";
@@ -176,15 +176,12 @@ export default function WarpView() {
 	const embeddingProviders = providers.filter(supportsWarpEmbedding);
 
 	// Memoized by the id, not rebuilt inline: every form edit rerenders this
-	// component, and ModelMultiselect refetches whenever the `keys` reference
+	// component, and ModelSelector refetches whenever the `keys` reference
 	// changes - so an inline array turned each unrelated edit into a models
 	// request for the same key.
 	const modelKeys = useMemo(() => (form.apiKeyID ? [form.apiKeyID] : undefined), [form.apiKeyID]);
 	// Same reasoning for the embedding picker's pinned key.
-	const embeddingModelKeys = useMemo(
-		() => (form.embeddingAPIKeyID ? [form.embeddingAPIKeyID] : undefined),
-		[form.embeddingAPIKeyID],
-	);
+	const embeddingModelKeys = useMemo(() => (form.embeddingAPIKeyID ? [form.embeddingAPIKeyID] : undefined), [form.embeddingAPIKeyID]);
 
 	// Keys are provider-scoped, so the query waits for a provider rather than
 	// firing a request for "".
@@ -582,10 +579,10 @@ export default function WarpView() {
 									Warp reasons over query results and writes the answer, so a capable model pays for itself here.
 								</p>
 							</div>
-							<ModelMultiselect
+							<ModelSelector
 								inputId="warp-model"
 								data-testid="warp-model-select"
-								isSingleSelect
+								allowCustomModel
 								provider={form.provider || undefined}
 								// Scoped to the pinned key, because /api/models filters by each
 								// key's model restrictions: without this the picker offered - and
@@ -730,10 +727,10 @@ export default function WarpView() {
 
 								<div className="space-y-2">
 									<Label htmlFor="warp-embedding-model">Embedding Model</Label>
-									<ModelMultiselect
+									<ModelSelector
 										inputId="warp-embedding-model"
 										data-testid="warp-embedding-model-select"
-										isSingleSelect
+										allowCustomModel
 										provider={form.embeddingProvider || undefined}
 										// Scoped to the pinned key, same as the chat model above:
 										// /api/models filters by each key's models and
