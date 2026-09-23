@@ -943,4 +943,17 @@ export const RenderProviderIcon = ({ provider, ...props }: IconProps & { provide
 };
 
 export type ProviderIconType = keyof typeof ProviderIcons;
+
+// A custom provider has no mark of its own, so it borrows the one for the wire format it
+// speaks. Without the fallback RenderProviderIcon draws nothing at all for it.
+export const resolveProviderIconKey = (name: string, baseProviderType?: string): ProviderIconType | undefined => {
+	// Own-property checks, not `in`: `in` walks the prototype chain, so a provider named
+	// `__proto__` or `toString` would resolve to something off Object.prototype that
+	// RenderProviderIcon then calls as a component.
+	const candidate = (hasIcon(name) ? name : baseProviderType) as ProviderIconType | undefined;
+	return candidate && hasIcon(candidate) ? candidate : undefined;
+};
+
+const hasIcon = (name: string) => Object.prototype.hasOwnProperty.call(ProviderIcons, name);
+
 export default ProviderIcons;
