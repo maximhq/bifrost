@@ -83264,6 +83264,24 @@
             }
           },
           {
+            "name": "roots_only",
+            "in": "query",
+            "description": "Hide rows whose parent_request_id points at another row matching the same filters, so each fallback chain lists as its root request. The root carries child_count, children_cost and children_tokens for the rows it hides. Ignored when parent_request_id or request_id is set.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "group_sessions",
+            "in": "query",
+            "description": "Collapse every row sharing a session_id onto that session's earliest root request, which carries session_child_count, session_total_cost and session_total_tokens. Requires roots_only=true, and is ignored when session_id, parent_request_id or request_id is set. Sorting orders the collapsed rows by the root row's own value, not by the session total.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Number of logs to return (default 50, max 1000)",
@@ -115984,6 +116002,30 @@
             "type": "string",
             "description": "Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.",
             "nullable": true
+          },
+          "child_count": {
+            "type": "integer",
+            "description": "Rows nesting under this one (fallback attempts, and settled async cost rows). Present only on roots_only responses."
+          },
+          "children_cost": {
+            "type": "number",
+            "description": "Cost summed over those nested rows, under the same filters as the listing. Present only on roots_only responses."
+          },
+          "children_tokens": {
+            "type": "integer",
+            "description": "Tokens summed over those nested rows, under the same filters as the listing. Present only on roots_only responses."
+          },
+          "session_child_count": {
+            "type": "integer",
+            "description": "Rows in this session other than this one. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row."
+          },
+          "session_total_cost": {
+            "type": "number",
+            "description": "Cost summed over the whole session, this row included, under the same filters as the listing. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row or when the total is zero."
+          },
+          "session_total_tokens": {
+            "type": "integer",
+            "description": "Tokens summed over the whole session, this row included, under the same filters as the listing. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row or when the total is zero."
           },
           "stream": {
             "type": "boolean"
