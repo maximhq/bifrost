@@ -110,6 +110,23 @@ ClientConfig:
         initialize response, scoped to the tools the calling client can see.
         `all` additionally injects them into chat and responses requests that
         carry MCP tools, which adds tokens to every such request.
+    mcp_max_instructions_per_client:
+      type: integer
+      minimum: 0
+      default: 0
+      description: >
+        Byte bound on a single MCP server's forwarded instructions. Longer text
+        is truncated on a rune boundary with a notice. 0 uses the built-in
+        default of 4096.
+    mcp_max_instructions_total:
+      type: integer
+      minimum: 0
+      default: 0
+      description: >
+        Byte bound on the whole forwarded aggregate across every MCP server the
+        caller can see. At mcp_server_instructions_mode 'all' this rides on every
+        MCP-bearing request, so raising it raises per-request tokens. 0 uses the
+        built-in default of 16384.
     required_headers:
       type: array
       items:

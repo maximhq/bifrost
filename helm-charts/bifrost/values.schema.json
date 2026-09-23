@@ -759,6 +759,18 @@
                   "enum": ["off", "gateway", "all"],
                   "description": "How far an upstream MCP server's initialize instructions travel. \"off\" (default) drops them; \"gateway\" forwards them on the /mcp handshake, scoped to what the caller may see; \"all\" also injects them into chat and responses requests.",
                   "default": "off"
+                },
+                "maxInstructionsPerClient": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Byte bound on a single MCP server's forwarded instructions. Longer text is truncated with a notice. 0 uses the built-in default of 4096.",
+                  "default": 0
+                },
+                "maxInstructionsTotal": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. At serverInstructionsMode \"all\" this rides on every MCP-bearing request. 0 uses the built-in default of 16384.",
+                  "default": 0
                 }
               }
             },

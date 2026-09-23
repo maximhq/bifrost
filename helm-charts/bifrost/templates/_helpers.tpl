@@ -1412,6 +1412,12 @@ false
 {{- if .Values.bifrost.mcp.toolManagerConfig.serverInstructionsMode }}
 {{- $_ := set $tmConfig "server_instructions_mode" .Values.bifrost.mcp.toolManagerConfig.serverInstructionsMode }}
 {{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- $_ := set $tmConfig "max_instructions_per_client" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- $_ := set $tmConfig "max_instructions_total" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
 {{- end }}

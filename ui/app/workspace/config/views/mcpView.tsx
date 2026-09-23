@@ -38,6 +38,8 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: string;
 		mcp_code_mode_binding_level: string;
 		mcp_tool_sync_interval: string;
+		mcp_max_instructions_per_client: string;
+		mcp_max_instructions_total: string;
 		oauth2_auth_code_ttl: string;
 		oauth2_access_token_ttl: string;
 	}>({
@@ -45,6 +47,8 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: "30",
 		mcp_code_mode_binding_level: "server",
 		mcp_tool_sync_interval: "10",
+		mcp_max_instructions_per_client: "0",
+		mcp_max_instructions_total: "0",
 		oauth2_auth_code_ttl: "300",
 		oauth2_access_token_ttl: "600",
 	});
@@ -57,6 +61,8 @@ export default function MCPView() {
 				mcp_tool_execution_timeout: config?.mcp_tool_execution_timeout?.toString() || "30",
 				mcp_code_mode_binding_level: config?.mcp_code_mode_binding_level || "server",
 				mcp_tool_sync_interval: config?.mcp_tool_sync_interval?.toString() || "10",
+				mcp_max_instructions_per_client: (config?.mcp_max_instructions_per_client ?? 0).toString(),
+				mcp_max_instructions_total: (config?.mcp_max_instructions_total ?? 0).toString(),
 				// Coerce a stored 0 (which the backend treats as "use default") to the
 				// displayed default so the inputs never show a confusing 0.
 				oauth2_auth_code_ttl: (config?.oauth2_server_config?.auth_code_ttl || 300).toString(),
@@ -74,7 +80,10 @@ export default function MCPView() {
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
+			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
+			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
+			(localConfig.mcp_server_instructions_mode ?? "off") !== (config.mcp_server_instructions_mode ?? "off") ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
 			clientURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
@@ -122,11 +131,36 @@ export default function MCPView() {
 		}
 	}, []);
 
+	const handleMaxInstructionsPerClientChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_max_instructions_per_client: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0) {
+			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_per_client: numValue }));
+		}
+	}, []);
+
+	const handleMaxInstructionsTotalChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_max_instructions_total: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0) {
+			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_total: numValue }));
+		}
+	}, []);
+
 	const handleDisableAutoToolInjectChange = useCallback((checked: boolean) => {
 		setLocalConfig((prev) => ({
 			...prev,
 			mcp_disable_auto_tool_inject: checked,
 		}));
+	}, []);
+
+	const handleServerInstructionsModeChange = useCallback((value: string) => {
+		if (value === "off" || value === "gateway" || value === "all") {
+			setLocalConfig((prev) => ({
+				...prev,
+				mcp_server_instructions_mode: value,
+			}));
+		}
 	}, []);
 
 	const handleTempTokenAuthChange = useCallback((checked: boolean) => {
@@ -356,6 +390,75 @@ export default function MCPView() {
 						onCheckedChange={handleTempTokenAuthChange}
 						disabled={!hasSettingsUpdateAccess}
 						data-testid="mcp-enable-temp-token-auth-switch"
+					/>
+				</div>
+
+				{/* Server Instructions Forwarding */}
+				<div className="space-y-4 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-server-instructions-mode" className="text-sm font-medium">
+							Forward Server Instructions
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Upstream MCP servers can return an <code className="text-xs">instructions</code> string describing how to use their tools.
+							Off drops it. Gateway forwards it on the <code className="text-xs">/mcp</code> handshake, labeled per source server and scoped
+							to what the caller may see. All also injects it into chat and responses requests as a system message &mdash; this adds tokens
+							to every MCP-bearing request and changes the prompt prefix, which can invalidate provider-side prompt caching.
+						</p>
+					</div>
+					<Select value={localConfig.mcp_server_instructions_mode ?? "off"} onValueChange={handleServerInstructionsModeChange}>
+						<SelectTrigger id="mcp-server-instructions-mode" data-testid="mcp-server-instructions-mode" className="w-56">
+							<SelectValue placeholder="Select mode" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="off">Off</SelectItem>
+							<SelectItem value="gateway">Gateway only</SelectItem>
+							<SelectItem value="all">Gateway and LLM requests</SelectItem>
+						</SelectContent>
+					</Select>
+				</div>
+
+				{/* Instruction Size Bounds */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-max-instructions-per-client" className="text-sm font-medium">
+							Max Instructions Per Server (bytes)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Longer text is truncated with a notice. Set to 0 to use the default of 4096.
+						</p>
+					</div>
+					<Input
+						id="mcp-max-instructions-per-client"
+						data-testid="mcp-max-instructions-per-client-input"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_max_instructions_per_client}
+						onChange={(e) => handleMaxInstructionsPerClientChange(e.target.value)}
+						min="0"
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-max-instructions-total" className="text-sm font-medium">
+							Max Instructions Total (bytes)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Ceiling across every server a caller can see. At <code className="text-xs">Gateway and LLM requests</code> this rides on every
+							MCP-bearing request, so raising it raises per-request tokens. Set to 0 to use the default of 16384.
+						</p>
+					</div>
+					<Input
+						id="mcp-max-instructions-total"
+						data-testid="mcp-max-instructions-total-input"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_max_instructions_total}
+						onChange={(e) => handleMaxInstructionsTotalChange(e.target.value)}
+						min="0"
+						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>
 

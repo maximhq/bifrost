@@ -4265,6 +4265,16 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 	return bifrost.MCPManager.GetAvailableTools(ctx)
 }
 
+// GetMCPServerInstructions returns the aggregated initialize `instructions` of every MCP
+// client this request may see, ready to hand to a caller. Empty when nothing is visible,
+// nothing advertises instructions, or no MCP manager is configured.
+func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) string {
+	if bifrost.MCPManager == nil {
+		return ""
+	}
+	return bifrost.MCPManager.GetAggregatedServerInstructions(ctx)
+}
+
 // AddMCPClient adds a new MCP client to the Bifrost instance.
 // This allows for dynamic MCP client management at runtime.
 //
@@ -4546,17 +4556,19 @@ func (bifrost *Bifrost) SetClientTools(clientID string, tools map[string]schemas
 // This allows for hot-reloading of the tool manager config at runtime.
 // Pass the current value of disableAutoToolInject and serverInstructionsMode whenever
 // only other fields change so neither is silently reset to its zero value.
-func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, serverInstructionsMode string) error {
+func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, serverInstructionsMode string, maxInstructionsPerClient int, maxInstructionsTotal int) error {
 	if bifrost.MCPManager == nil {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-		MaxAgentDepth:          maxAgentDepth,
-		ToolExecutionTimeout:   schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
-		CodeModeBindingLevel:   schemas.CodeModeBindingLevel(codeModeBindingLevel),
-		DisableAutoToolInject:  disableAutoToolInject,
-		ServerInstructionsMode: schemas.MCPServerInstructionsMode(serverInstructionsMode),
+		MaxAgentDepth:            maxAgentDepth,
+		ToolExecutionTimeout:     schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
+		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(codeModeBindingLevel),
+		DisableAutoToolInject:    disableAutoToolInject,
+		ServerInstructionsMode:   schemas.MCPServerInstructionsMode(serverInstructionsMode),
+		MaxInstructionsPerClient: maxInstructionsPerClient,
+		MaxInstructionsTotal:     maxInstructionsTotal,
 	})
 	return nil
 }

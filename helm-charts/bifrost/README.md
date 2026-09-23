@@ -10,6 +10,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### Upcoming
 
+- Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
 - Added `bifrost.mcp.toolManagerConfig.serverInstructionsMode` (renders `mcp.tool_manager_config.server_instructions_mode`, default `off`) — how far an upstream MCP server's `initialize` instructions travel: `off` drops them, `gateway` forwards them on the `/mcp` handshake scoped to what the caller may see, `all` also injects them into chat and responses requests. The deprecated `bifrost.client.mcpServerInstructionsMode` twin renders `client.mcp_server_instructions_mode`.
 - Added `instructions` and `instructions_mode` to `bifrost.mcp.virtualMcps[]` (renders `mcp.virtual_mcps[].instructions` / `.instructions_mode`) — model-facing guidance served with a Virtual MCP's tools, either appended to what its source servers advertise or replacing it.
 
