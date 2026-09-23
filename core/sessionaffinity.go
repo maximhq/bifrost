@@ -46,8 +46,9 @@ type sessionResolution struct {
 // registers none. It knows nothing beyond what requests show it: a session stays on the
 // provider that last served it, when routing still offers that provider, and on the key that
 // last served it within a provider, while that key stays eligible. Bindings are written when
-// a request is served, never when it fails, so a fallback that served becomes the session's
-// new home and a key that only ever failed is never bound.
+// a request is served, so a fallback that served becomes the session's new home and a key that
+// only ever failed is never bound. A binding the request followed into a failure is dropped:
+// a session is never held on a provider or key that just failed it for the rest of the TTL.
 type sessionAffinity struct {
 	kv     schemas.KVStore
 	logger schemas.Logger
@@ -62,8 +63,9 @@ func NewSessionAffinity(kv schemas.KVStore, logger schemas.Logger) schemas.Sessi
 }
 
 // ResolveRoute implements schemas.SessionAffinity: for a request that left the provider to
-// routing, the provider that last served the session for that model moves to the front of the
-// chain when the chain offers it. A request that named its provider is left as it is.
+// routing, the route that last served the session for that model, provider and model together,
+// moves to the front of the chain when the chain offers it. A request that named its provider
+// is left as it is.
 func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested schemas.Route, chain []schemas.Route) []schemas.Route {
 	if a == nil || a.kv == nil || ctx == nil {
 		return chain
@@ -94,15 +96,21 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 		}
 		return chain
 	}
-	at := slices.IndexFunc(chain, func(route schemas.Route) bool { return route.Provider == boundRoute.Provider })
+	// A binding names a route, provider and model together, and only that route counts as the
+	// session's. A chain offering the provider on another model does not offer it: following the
+	// provider alone would move a session bound to vertex/opus-4-8 onto a vertex/opus-4-7
+	// fallback entry, an older model than the primary routing proposed, and keep it there.
+	at := slices.IndexFunc(chain, func(route schemas.Route) bool {
+		return route.Provider == boundRoute.Provider && route.Model == boundRoute.Model
+	})
 	if at < 0 {
 		// The chain is what this request may use, so a binding outside it is stale. Dropping it
 		// lets the next served request bind afresh and the session converge there, instead of
 		// scattering across routing's picks until the binding expires.
 		if _, err := a.kv.Delete(key); err != nil {
-			a.logger.Warn("error dropping session route binding to %s: %s", boundRoute.Provider, err.Error())
+			a.logger.Warn("error dropping session route binding to %s: %s", bound, err.Error())
 		}
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session was last served by %s for %s, which this request cannot use, so the routing decision stands and the session rebinds on its next served request", boundRoute.Provider, requested.Model))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session was last served by %s for %s, which this request cannot use, so the routing decision stands and the session rebinds on its next served request", bound, requested.Model))
 		// Refusing a stale binding, and dropping it, is as much a decision as following one: the
 		// engine is listed so a trail entry is never attributed to an engine the request does not
 		// record. The paths that write no entry, an unreadable binding and no binding at all, stay
@@ -116,14 +124,14 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 		// The session and routing agree, so the chain is left as it is. Say so anyway: a trail that
 		// falls silent here cannot be told apart from one where the session was never consulted,
 		// and the key level below reports every reuse whether or not it changed anything.
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session stays on %s for %s, which routing also proposed", chain[0].Provider, requested.Model))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session stays on %s for %s, which routing also proposed", bound, requested.Model))
 		return chain
 	}
 	resolved := make([]schemas.Route, 0, len(chain))
 	resolved = append(resolved, chain[at])
 	resolved = append(resolved, chain[:at]...)
 	resolved = append(resolved, chain[at+1:]...)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session stays on %s for %s; routing proposed %s", chain[at].Provider, requested.Model, chain[0].Provider))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session stays on %s for %s; routing proposed %s", bound, requested.Model, RouteStateValue(chain[0])))
 	return resolved
 }
 
@@ -166,13 +174,36 @@ func (a *sessionAffinity) ResolveKey(ctx *schemas.BifrostContext, provider schem
 // and key that served it. A binding the request followed is refreshed when it served and
 // replaced when something else did; a session with no binding takes the first that lands. A
 // fallback that served replaces the key binding on its provider, since it picked that key
-// without the session. Failures write nothing.
+// without the session. A binding the request followed and did not serve on is dropped, whether
+// the request failed outright or a fallback rescued it: the provider or key it named just
+// failed this session, and keeping it would send every request for the rest of the TTL back
+// there first. A failure writes nothing else, a binding the request did not follow says
+// nothing about the failure and is left alone, and a request the caller cancelled keeps
+// everything, since that failure is not the provider's.
 func (a *sessionAffinity) Observe(ctx *schemas.BifrostContext, requested schemas.Route, outcome schemas.RouteOutcome) {
-	if a == nil || a.kv == nil || ctx == nil || outcome.Served == nil {
+	if a == nil || a.kv == nil || ctx == nil {
 		return
 	}
 	ttl := sessionTTLFromContext(ctx)
 	resolved, _ := ctx.Value(sessionAffinityResolvedKey).(sessionResolution)
+
+	// A caller that gave up on the request says nothing about the provider or key it followed,
+	// so a cancellation keeps both bindings. A deadline is the provider's failure to answer in
+	// time, and is treated like any other failure below.
+	if outcome.Served == nil && cancelledByCaller(outcome.Err) {
+		return
+	}
+	if resolved.keyID != "" && (outcome.Served == nil || *outcome.Served != resolved.keyRoute) {
+		a.forget(SessionStateKey(ctx, SessionStateKindKey, string(resolved.keyRoute.Provider), resolved.keyRoute.Model), fmt.Sprintf("key binding to %s on %s/%s", resolved.keyID, resolved.keyRoute.Provider, resolved.keyRoute.Model))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("The key this session followed for %s/%s failed, so the session forgets it and a key is picked normally next time", resolved.keyRoute.Provider, resolved.keyRoute.Model))
+	}
+	if outcome.Served == nil {
+		if resolved.route != "" && requested.Provider == "" {
+			a.forget(SessionStateKey(ctx, SessionStateKindRoute, string(requested.Provider), requested.Model), fmt.Sprintf("route binding to %s", resolved.route))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("The provider this session followed for %s failed, so the session forgets it and the next request follows the routing decision", requested.Model))
+		}
+		return
+	}
 	served := *outcome.Served
 
 	// Only a request that left the provider to routing binds a route; one that named it has
@@ -211,6 +242,19 @@ func (a *sessionAffinity) settle(key, value, followed string, ttl time.Duration)
 		a.logger.Debug("session moved from %s to %s", followed, value)
 	}
 	a.replace(key, value, ttl)
+}
+
+// cancelledByCaller reports whether the request ended because the caller abandoned it, which
+// core records as schemas.RequestCancelled, as opposed to a deadline (schemas.RequestTimedOut).
+func cancelledByCaller(err *schemas.BifrostError) bool {
+	return err != nil && err.Error != nil && err.Error.Type != nil && *err.Error.Type == schemas.RequestCancelled
+}
+
+// forget drops the binding under key, and says so if the store refuses.
+func (a *sessionAffinity) forget(key, what string) {
+	if _, err := a.kv.Delete(key); err != nil {
+		a.logger.Warn("error dropping failed session %s: %s", what, err.Error())
+	}
 }
 
 // replace binds the session to value under key over whatever was there.

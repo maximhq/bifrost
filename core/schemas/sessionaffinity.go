@@ -40,8 +40,8 @@ func IsSessionAffinityActive(ctx *BifrostContext) bool {
 // SessionAffinity keeps a request that carries a session id on what served that session
 // before. Core asks it at three points and applies the answers; the policy behind them
 // belongs to the implementation. The one Bifrost ships keeps a session on the provider and
-// key that last served it, as far as the request's own outcome shows, and is installed when
-// nothing else is. A deployment that knows more, such as the health of its providers and
+// key that last served it, as far as the request's own outcome shows, forgets a binding the
+// request followed into a failure, and is installed when nothing else is. A deployment that knows more, such as the health of its providers and
 // keys, registers its own through BifrostConfig.SessionAffinity.
 //
 // Core asks only for requests IsSessionAffinityActive reports as taking part: ones that carry
