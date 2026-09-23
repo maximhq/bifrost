@@ -3,6 +3,7 @@ package warp
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -23,7 +24,7 @@ How to work:
 - Prefer query_metrics for totals and trends; it is far cheaper than listing rows. Reach for query_logs only when the question is about specific requests.
 - If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error.
 - Your own queries against this deployment are themselves logged, as app "Warp". count_logs and query_metrics include them like any other traffic. On a busy deployment this is noise; on a quiet one, or a total scoped narrowly enough, it can be a real share of the number. Mention it when it might matter, and filter it out with apps if it does (everything except "Warp" gets there fastest by naming the apps you do want, via describe_filter_space).
-- Time ranges accept relative offsets like -24h, -7d or -30m - use those for a phrase like "last week" or "yesterday" rather than computing a matching absolute date yourself. For a specific calendar date ("on sept 3rd", "since August 1st"), pass start_time and end_time as RFC3339 timestamps for that date, using the current time below to resolve the year.
+- Time ranges accept relative offsets like -24h, -7d or -30m - use those for a rolling window: "the last 24 hours", "the last 7 days". A calendar concept is a different claim and a relative offset cannot express it: "today" means since local midnight, not the last 24 hours, and "yesterday" means the previous local calendar day, not 24-48 hours ago. For "today", "yesterday", "this week", or a named date ("on sept 3rd", "since August 1st"), compute absolute start_time and end_time as RFC3339 timestamps at the right calendar boundary. When the asker's time zone is given below, work out that specific date's own UTC offset in that zone - daylight saving can put it at a different offset than the one shown for the current time - rather than reusing the current offset for a date it was never measured on. Only fall back to the current offset (or UTC, if that is zero) when no time zone is given.
 - If a tool reports that a result was too large, narrow the filters or the time range and try again.
 - Before listing individual requests, call count_logs. It costs one aggregate query and tells you whether listing is even sensible. If the count is large, answer from aggregates where you can. A sorted top-N - "slowest requests", "most expensive calls" - is answered with one query_logs call using sort_by and limit regardless of how large the count is; that is not the same as paging through the full set, and count_logs will not tell you otherwise. If you genuinely need rows beyond what a single sorted call returns, split the window into at most three slices and handle them one at a time - never page through a large set looking for something an aggregate or a sorted call could have told you.
 - For questions about what people ask about, what conversations are about, or which topics are most common, there is no aggregate that answers them. Take one bounded sample, summarise the themes you see, and say it is a sample. Do not slice the window and list slice after slice. Which sample to take is stated below.
@@ -77,6 +78,73 @@ When you cannot answer:
 
 - Offer the link only for things you genuinely cannot reach. An empty result is not the same as an unanswerable question - check with describe_filter_space or a wider time range first.`
 
+// Real-world UTC offsets run from UTC-12:00 (Baker Island) to UTC+14:00
+// (Line Islands). A client-sent value outside that range is not a timezone,
+// it is bad input from a broken or hostile client, so it is ignored rather
+// than trusted - the model falls back to reasoning in UTC, same as before
+// this existed, rather than computing calendar boundaries against a
+// nonsensical offset.
+const (
+	minUTCOffsetMinutes = -12 * 60
+	maxUTCOffsetMinutes = 14 * 60
+)
+
+// sanitizeUTCOffsetMinutes rejects an out-of-range offset to zero (UTC)
+// rather than clamping it to the nearest valid bound - a clamped-but-wrong
+// offset would compute a plausible-looking but incorrect calendar boundary,
+// which is worse than plainly falling back to UTC.
+func sanitizeUTCOffsetMinutes(minutes int) int {
+	if minutes < minUTCOffsetMinutes || minutes > maxUTCOffsetMinutes {
+		return 0
+	}
+	return minutes
+}
+
+// sanitizeTimezone rejects a zone name tzdata does not recognize, returning
+// "" rather than a name that would make the prompt's "work out that date's
+// offset in <zone>" instruction meaningless. LoadLocation itself carries the
+// validation - there is no separate allow-list to keep in sync with tzdata.
+// "Local" is dropped before it gets there: LoadLocation accepts it as the
+// gateway host's zone, which says nothing about where the asker is.
+func sanitizeTimezone(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.EqualFold(name, "UTC") || strings.EqualFold(name, "Local") {
+		return ""
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return ""
+	}
+	return name
+}
+
+// formatUTCOffset renders a UTC offset the way a person would type it
+// ("+05:30", "-08:00"). Zero is the empty string, so callers that write
+// "(UTC" + formatUTCOffset(0) + ")" get plain "(UTC)" rather than "(UTC+00:00)".
+func formatUTCOffset(minutes int) string {
+	if minutes == 0 {
+		return ""
+	}
+	sign := "+"
+	if minutes < 0 {
+		sign = "-"
+		minutes = -minutes
+	}
+	return fmt.Sprintf("%s%02d:%02d", sign, minutes/60, minutes%60)
+}
+
+// timeContext is what systemInstructions needs to resolve calendar concepts
+// for the asker.
+type timeContext struct {
+	// timezone is the asker's IANA zone (e.g. "Asia/Kolkata"), already
+	// sanitized. It is what a named date is resolved against, since daylight
+	// saving can put that date at a different offset than the current one.
+	timezone string
+	// utcOffsetMinutes is the offset actually in effect right now, minutes
+	// east of UTC, already sanitized. It only labels the "current time is"
+	// line; it is not used to resolve a named date.
+	utcOffsetMinutes int
+}
+
 // systemInstructions builds the system prompt, appending the operator's suffix.
 //
 // The suffix is additive only. An operator can teach Warp local vocabulary, but
@@ -104,7 +172,24 @@ const SemanticSearchGuidance = "\n- Warp's own queries are in the aggregates (se
 // won - so it could take the weaker sample, or take both.
 const NoSemanticSampleGuidance = "\n- For a themes question, take the sample with one query_logs call using include_content and limit 25."
 
-func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool) string {
+// systemInstructions assembles the prompt for one turn.
+//
+// tc carries the asker's time zone and current offset, and is variadic only so
+// the many callers that do not care about it - most of the tests in this
+// package - are not forced to pass a zero value explicitly. At most the first
+// value is used; the same pattern NewAgent already uses for semantic.
+func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc ...timeContext) string {
+	var ctx timeContext
+	if len(tc) > 0 {
+		ctx = tc[0]
+	}
+	offset := sanitizeUTCOffsetMinutes(ctx.utcOffsetMinutes)
+	timezone := sanitizeTimezone(ctx.timezone)
+	// Shifting the instant by the offset and formatting the result gives the
+	// asker's local wall-clock digits directly - there is no need for a
+	// time.Location or tzdata lookup for a bare numeric offset.
+	local := Now().Add(time.Duration(offset) * time.Minute)
+
 	var builder strings.Builder
 	builder.WriteString(SystemPrompt)
 	if semanticAvailable {
@@ -113,7 +198,13 @@ func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool) stri
 		builder.WriteString(NoSemanticSampleGuidance)
 	}
 	builder.WriteString(QuestionGuidance)
-	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC).", Now().Format("2006-01-02 15:04:05")))
+	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC%s).", local.Format("2006-01-02 15:04:05"), formatUTCOffset(offset)))
+	if timezone != "" {
+		// Named so the "work out that date's own UTC offset" instruction above
+		// has a zone to compute against - the numeric offset alone cannot say
+		// whether a different date falls inside or outside daylight saving.
+		builder.WriteString(fmt.Sprintf(" The asker's time zone is %s.", timezone))
+	}
 	if config != nil && strings.TrimSpace(config.SystemPromptSuffix) != "" {
 		builder.WriteString("\n\nDeployment-specific notes from the operator:\n")
 		builder.WriteString(strings.TrimSpace(config.SystemPromptSuffix))

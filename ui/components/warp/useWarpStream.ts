@@ -248,6 +248,19 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						// server to open a thread rather than append to one.
 						conversation_id: conversationRef.current || undefined,
 						stream: true,
+						// The asker's IANA zone (e.g. "Asia/Kolkata"), sent every turn rather
+						// than once per thread - a laptop can cross timezones mid
+						// conversation. A named date ("on sept 3rd") needs the zone's
+						// identity, not just today's numeric offset: daylight saving can put
+						// that date at a different offset than right now, and only the zone
+						// name lets the server work that out per-date instead of reusing a
+						// stale snapshot.
+						timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+						// Minutes east of UTC right now (e.g. +330 for IST). Kept only so the
+						// server can label "the current time is ..." without a tzdata lookup;
+						// the timezone above, not this, is what a named date is resolved
+						// against.
+						utc_offset_minutes: -new Date().getTimezoneOffset(),
 					}),
 				});
 
