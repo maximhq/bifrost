@@ -2,14 +2,45 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
+
+func TestAnthropicMessagesBillingHeaderNormalizedBeforeDispatch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli;"
+	var incoming anthropic.AnthropicMessageRequest
+	raw := []byte(`{"model":"openai/gpt-4o-mini","max_tokens":64,"system":[{"type":"text","text":"` + header + `"},{"type":"text","text":"Stable instructions"}],"messages":[{"role":"user","content":"Hello"}]}`)
+	if err := sonic.Unmarshal(raw, &incoming); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+		request, err := route.RequestConverter(ctx, &incoming)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks := request.ResponsesRequest.Input[0].Content.ContentBlocks
+		if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Stable instructions" {
+			t.Fatalf("billing header survived ingress: %+v", blocks)
+		}
+		restored := request.ResponsesRequest.WithAnthropicBillingHeader()
+		if got := *restored.Input[0].Content.ContentBlocks[0].Text; got != header {
+			t.Fatalf("billing header not retained for Anthropic fallback: %q", got)
+		}
+	}
+	// Normalization only owns the newly converted slices, not the parsed source.
+	if len(incoming.System.ContentBlocks) != 2 || *incoming.System.ContentBlocks[0].Text != header {
+		t.Fatal("parsed Anthropic request was mutated")
+	}
+}
 
 // TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta verifies the codec preserves provider-native event structure.
 func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
@@ -41,13 +72,12 @@ func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
 	}
 }
 
-// TestAnthropicRawStreamTextCodecIgnoresNonTextEvents verifies reasoning, tool JSON, and lifecycle events remain opaque.
+// TestAnthropicRawStreamTextCodecIgnoresNonTextEvents verifies reasoning and lifecycle events remain opaque.
 func TestAnthropicRawStreamTextCodecIgnoresNonTextEvents(t *testing.T) {
 	codec := anthropicRawStreamTextCodec{}
 	cases := []string{
 		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"alice@example.com"}}`,
 		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"alice@example.com"}}`,
-		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"email\":\"alice@example.com\"}"}}`,
 		`{"type":"content_block_stop","index":2}`,
 		`{"type":"message_stop"}`,
 	}
@@ -73,7 +103,7 @@ func TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents(t *testing.T)
 	}
 }
 
-// TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields verifies native redaction covers conversation content without touching request metadata or tool arguments.
+// TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields verifies native redaction covers conversation content and tool argument values without touching request metadata.
 func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	rawBody := []byte(`{
 		"model":"claude-sonnet-4-5",
@@ -103,6 +133,7 @@ func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	}
 
 	redactedPaths := []string{
+		"messages.1.content.4.input.email",
 		"prompt",
 		"system.0.text",
 		"messages.0.content",
@@ -117,13 +148,12 @@ func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	}
 
 	untouchedPaths := map[string]string{
-		"messages.1.content.0.thinking":    "reason alice@example.com",
-		"messages.1.content.0.signature":   "alice@example.com",
-		"messages.1.content.1.data":        "alice@example.com",
-		"messages.1.content.2.content":     "summary alice@example.com",
-		"messages.1.content.4.input.email": "alice@example.com",
-		"metadata.user_id":                 "alice@example.com",
-		"tools.0.description":              "alice@example.com",
+		"messages.1.content.0.thinking":  "reason alice@example.com",
+		"messages.1.content.0.signature": "alice@example.com",
+		"messages.1.content.1.data":      "alice@example.com",
+		"messages.1.content.2.content":   "summary alice@example.com",
+		"metadata.user_id":               "alice@example.com",
+		"tools.0.description":            "alice@example.com",
 	}
 	for path, expected := range untouchedPaths {
 		if value := gjson.GetBytes(got, path).String(); value != expected {
@@ -159,6 +189,114 @@ func TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want duplicate-key error")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText verifies provider transforms update one exact native field.
+func TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText(t *testing.T) {
+	rawBody := []byte(`{
+		"messages":[
+			{"role":"user","content":"email alice@example.com"},
+			{"role":"user","content":"email alice@example.com"}
+		],
+		"metadata":{"user_id":"alice@example.com"}
+	}`)
+
+	rewritten, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(1),
+		Original:    "email alice@example.com",
+		Replacement: "email [EMAIL]",
+	}})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawRequestBodyTransforms() error = %v", err)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.0.content").String(); got != "email alice@example.com" {
+		t.Errorf("first duplicate = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.1.content").String(); got != "email [EMAIL]" {
+		t.Errorf("second duplicate = %q, want transformed", got)
+	}
+	if got := gjson.GetBytes(rewritten, "metadata.user_id").String(); got != "alice@example.com" {
+		t.Errorf("metadata.user_id = %q, want unchanged", got)
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyTransformsRejectsOriginalMismatch verifies stale normalized text cannot rewrite raw passthrough.
+func TestRewriteAnthropicRawRequestBodyTransformsRejectsOriginalMismatch(t *testing.T) {
+	rawBody := []byte(`{"messages":[{"role":"user","content":"email alice@example.com"}]}`)
+	_, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(0),
+		Original:    "email bob@example.com",
+		Replacement: "email [EMAIL]",
+	}})
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBodyTransforms() error = nil, want original mismatch")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyTransformsPreservesHistory verifies a selected tool-result target does not rewrite adjacent history.
+func TestRewriteAnthropicRawRequestBodyTransformsPreservesHistory(t *testing.T) {
+	rawBody := []byte(`{
+		"system":"system secret",
+		"messages":[
+			{"role":"user","content":"history secret"},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"tool secret"}]}
+		]
+	}`)
+
+	rewritten, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(2),
+		Original:    "tool secret",
+		Replacement: "tool [SAFE]",
+	}})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawRequestBodyTransforms() error = %v", err)
+	}
+	if got := gjson.GetBytes(rewritten, "system").String(); got != "system secret" {
+		t.Errorf("system = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.0.content").String(); got != "history secret" {
+		t.Errorf("history = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.1.content.0.content").String(); got != "tool [SAFE]" {
+		t.Errorf("tool result = %q, want transformed", got)
+	}
+}
+
+// TestRewriteAnthropicRawResponseTransformsTargetsDuplicateText verifies native non-stream output preserves exact target identity.
+func TestRewriteAnthropicRawResponseTransformsTargetsDuplicateText(t *testing.T) {
+	rawResponse := json.RawMessage(`{
+		"id":"msg_1",
+		"content":[
+			{"type":"thinking","thinking":"email alice@example.com","signature":"sig"},
+			{"type":"text","text":"email alice@example.com"},
+			{"type":"text","text":"email alice@example.com"}
+		]
+	}`)
+
+	rewritten, err := rewriteAnthropicRawResponseTransforms(rawResponse, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(1),
+		Original:    "email alice@example.com",
+		Replacement: "email [EMAIL]",
+	}})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawResponseTransforms() error = %v", err)
+	}
+	result, ok := rewritten.(json.RawMessage)
+	if !ok {
+		t.Fatalf("rewritten response type = %T, want json.RawMessage", rewritten)
+	}
+	if got := gjson.GetBytes(result, "content.0.thinking").String(); got != "email alice@example.com" {
+		t.Errorf("thinking = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(result, "content.1.text").String(); got != "email alice@example.com" {
+		t.Errorf("first text = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(result, "content.2.text").String(); got != "email [EMAIL]" {
+		t.Errorf("second text = %q, want transformed", got)
+	}
+	if got := gjson.GetBytes(rawResponse, "content.2.text").String(); got != "email alice@example.com" {
+		t.Errorf("provider-original raw response changed to %q", got)
 	}
 }
 
@@ -342,6 +480,8 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
 			}
 			_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			_, hasRequestTransformer := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextTransformer).(schemas.RawRequestBodyTextTransformer)
+			_, hasResponseTransformer := bifrostCtx.Value(schemas.BifrostContextKeyRawResponseTextTransformer).(schemas.RawResponseTextTransformer)
 			_, hasStreamCodec := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec)
 			if tc.wantRawOff && hasRewriter {
 				t.Errorf("expected raw request body text rewriter to remain unset for %s", tc.model)
@@ -349,11 +489,23 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 			if !tc.wantRawOff && !hasRewriter {
 				t.Errorf("expected Anthropic raw request body text rewriter for %s", tc.model)
 			}
+			if tc.wantRawOff && hasRequestTransformer {
+				t.Errorf("expected raw request body text transformer to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasRequestTransformer {
+				t.Errorf("expected Anthropic raw request body text transformer for %s", tc.model)
+			}
 			if tc.wantRawOff && hasStreamCodec {
 				t.Errorf("expected raw stream text codec to remain unset for %s", tc.model)
 			}
 			if !tc.wantRawOff && !hasStreamCodec {
 				t.Errorf("expected Anthropic raw stream text codec for %s", tc.model)
+			}
+			if tc.wantRawOff && hasResponseTransformer {
+				t.Errorf("expected raw response text transformer to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasResponseTransformer {
+				t.Errorf("expected Anthropic raw response text transformer for %s", tc.model)
 			}
 		})
 	}
@@ -585,6 +737,236 @@ func TestCheckAnthropicPassthrough_ProviderPrefixedClaudeModel(t *testing.T) {
 			useRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
 			if useRaw != tc.wantRawOn {
 				t.Errorf("UseRawRequestBody = %v, want %v for %s", useRaw, tc.wantRawOn, tc.model)
+			}
+		})
+	}
+}
+
+// TestAnthropicRawArgumentDelta verifies partial JSON is replaced without changing its event envelope.
+func TestAnthropicRawArgumentDelta(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	raw := `{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"grep alice@"}}`
+	event, eligible, err := codec.Inspect(raw)
+	if err != nil || !eligible || event.Text != `{"command":"grep alice@` {
+		t.Fatalf("unexpected inspection: %+v %v %v", event, eligible, err)
+	}
+	result, err := codec.Rewrite(raw, `{"command":"grep [EMAIL]"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.Get(result, "delta.partial_json").String() != `{"command":"grep [EMAIL]"}` || gjson.Get(result, "index").Int() != 2 {
+		t.Fatal(result)
+	}
+}
+
+// TestAnthropicMessagesRawResponseCarriesExtraFields verifies the verbatim Claude body keeps extra_fields unless Claude Code passthrough is active.
+func TestAnthropicMessagesRawResponseCarriesExtraFields(t *testing.T) {
+	converter := createAnthropicMessagesRouteConfig("/anthropic", nil)[0].ResponsesResponseConverter
+	rawResponse := `{"model":"claude-haiku-4-5-20251001","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1},"future_field":{"kept":true}}`
+	newResp := func(raw any) *schemas.BifrostResponsesResponse {
+		return &schemas.BifrostResponsesResponse{
+			ID: schemas.Ptr("msg_1"),
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:    schemas.Anthropic,
+				RawRequest:  json.RawMessage(`{"model":"claude-haiku-4-5","max_tokens":16}`),
+				RawResponse: raw,
+			},
+		}
+	}
+
+	t.Run("raw capture requested", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		out, err := converter(ctx, newResp(json.RawMessage(rawResponse)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := sonic.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := gjson.GetBytes(body, "extra_fields.raw_request.model").String(); got != "claude-haiku-4-5" {
+			t.Fatalf("raw_request not echoed: %s", body)
+		}
+		if got := gjson.GetBytes(body, "extra_fields.raw_response.id").String(); got != "msg_1" {
+			t.Fatalf("raw_response not echoed: %s", body)
+		}
+		withoutExtraFields, err := sjson.DeleteBytes(body, "extra_fields")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(withoutExtraFields) != rawResponse {
+			t.Fatalf("Anthropic body changed:\n got %s\nwant %s", withoutExtraFields, rawResponse)
+		}
+	})
+
+	t.Run("claude code passthrough stays byte-identical", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+		out, err := converter(ctx, newResp(json.RawMessage(rawResponse)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := sonic.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != rawResponse {
+			t.Fatalf("passthrough body changed:\n got %s\nwant %s", body, rawResponse)
+		}
+	})
+
+	t.Run("no raw response uses the converted shape", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		out, err := converter(ctx, newResp(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := out.(*anthropic.AnthropicMessageResponse); !ok {
+			t.Fatalf("expected converted AnthropicMessageResponse, got %T", out)
+		}
+	})
+}
+
+// TestAnthropicRefuseThreadContinue_EdgeCases exercises the short-circuit
+// directly: only a parsed messages request whose thread.type is "continue"
+// is refused; everything else falls through untouched so the provider's
+// raw-body strip handles the field.
+func TestAnthropicRefuseThreadContinue_EdgeCases(t *testing.T) {
+	parse := func(t *testing.T, body string) *anthropic.AnthropicMessageRequest {
+		t.Helper()
+		req := &anthropic.AnthropicMessageRequest{}
+		if err := sonic.Unmarshal([]byte(body), req); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+		return req
+	}
+
+	cases := []struct {
+		name     string
+		path     string
+		req      interface{}
+		ctxSetup func(*schemas.BifrostContext)
+		refused  bool
+	}{
+		{
+			name:    "continue_is_refused",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"continue","previous_message_id":"msg_1"}}`),
+			refused: true,
+		},
+		{
+			name:    "create_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"create"}}`),
+			refused: false,
+		},
+		{
+			name:    "no_thread_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[]}`),
+			refused: false,
+		},
+		{
+			name:    "malformed_thread_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":"continue"}`),
+			refused: false,
+		},
+		{
+			name: "nil_extra_params_falls_through",
+			path: "/anthropic/v1/messages",
+			// Large-payload mode skips body parsing, leaving an almost-empty request.
+			req:     &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			refused: false,
+		},
+		{
+			// Large-payload mode never parses the body, so the enterprise
+			// extractor surfaces the thread type through the routing metadata.
+			name: "large_payload_continue_refused_from_metadata",
+			path: "/anthropic/v1/messages",
+			req:  &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{ThreadType: "continue"})
+			},
+			refused: true,
+		},
+		{
+			name: "large_payload_create_falls_through",
+			path: "/anthropic/v1/messages",
+			req:  &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{ThreadType: "create"})
+			},
+			refused: false,
+		},
+		{
+			// An extractor that has not been taught about threads leaves the
+			// field empty; behavior must stay unchanged rather than refuse.
+			name: "large_payload_without_thread_metadata_falls_through",
+			path: "/anthropic/v1/messages",
+			req:  &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{Model: "claude-opus-4-8"})
+			},
+			refused: false,
+		},
+		{
+			// The parsed thread field wins over stale metadata: a normally
+			// parsed request must never consult large-payload metadata.
+			name: "parsed_thread_wins_over_metadata",
+			path: "/anthropic/v1/messages",
+			req:  parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"create"}}`),
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{ThreadType: "continue"})
+			},
+			refused: false,
+		},
+		{
+			name:    "wrong_request_type_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     &anthropic.AnthropicTextRequest{Model: "claude-haiku-4-5"},
+			refused: false,
+		},
+		{
+			// The count_tokens endpoint has its own static route without this
+			// short-circuit; the path guard keeps the wildcard /v1/messages/{path:*}
+			// route from ever refusing token counting if registration changes.
+			name:    "count_tokens_path_never_refused",
+			path:    "/anthropic/v1/messages/count_tokens",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"continue","previous_message_id":"msg_1"}}`),
+			refused: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.SetRequestURI(tc.path)
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if tc.ctxSetup != nil {
+				tc.ctxSetup(bifrostCtx)
+			}
+
+			handled, err := anthropicRefuseThreadContinue(reqCtx, bifrostCtx, tc.req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if handled != tc.refused {
+				t.Fatalf("expected refused=%v, got handled=%v", tc.refused, handled)
+			}
+			if tc.refused {
+				if got := reqCtx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+					t.Errorf("expected 400, got %d", got)
+				}
+				if body := string(reqCtx.Response.Body()); !strings.Contains(body, "thread_unsupported_request") {
+					t.Errorf("expected thread_unsupported_request in body, got %s", body)
+				}
 			}
 		})
 	}

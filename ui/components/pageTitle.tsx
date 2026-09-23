@@ -59,7 +59,10 @@ export default function PageTitle({
 	return createPortal(
 		<>
 			{beta && (
-				<Badge className="shrink-0" aria-label={label ? `${label} is in beta` : "This page is in beta"}>
+				<Badge
+					className="shrink-0 dark:border-green-950 dark:bg-green-900"
+					aria-label={label ? `${label} is in beta` : "This page is in beta"}
+				>
 					Beta
 				</Badge>
 			)}

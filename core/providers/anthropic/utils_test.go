@@ -1,19 +1,32 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
+	"github.com/valyala/fasthttp"
 )
 
 func TestExtractTypesFromValue(t *testing.T) {
@@ -1253,13 +1266,13 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		}
 	})
 
-	t.Run("Bedrock/drops_tool_search_beta_header", func(t *testing.T) {
-		// tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
-		// only per AWS's docs; classic Bedrock always uses Converse here, so this
-		// must never reach AWS regardless of what the client sends.
+	t.Run("Bedrock/keeps_tool_search_beta_header", func(t *testing.T) {
+		// tool-search-tool-2025-10-19 is InvokeModel-only per AWS's docs; the
+		// Bedrock provider routes tool_search requests to InvokeModel, so the
+		// header must survive (#6825).
 		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Bedrock)
-		if len(result) != 0 {
-			t.Errorf("expected %q to be dropped for Bedrock, got %v", AnthropicToolSearchBetaHeader, result)
+		if !slices.Contains(result, AnthropicToolSearchBetaHeader) {
+			t.Errorf("expected %q to be kept for Bedrock, got %v", AnthropicToolSearchBetaHeader, result)
 		}
 	})
 
@@ -1374,6 +1387,22 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			}
 		})
 	}
+
+	// Claude Code auto mode sends two betas: dangerous-tool-use-* pairs with the
+	// safeguards body field, and auto-mode-classifier-* rides on the classifier's
+	// follow-up requests. Every surface that forwards safeguards must forward both.
+	t.Run("auto_mode_classifier_follows_safeguards_gate", func(t *testing.T) {
+		const classifierBeta = "auto-mode-classifier-2026-07-16"
+		for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure} {
+			result := FilterBetaHeadersForProvider([]string{classifierBeta}, provider)
+			if !ProviderFeatures[provider].Safeguards {
+				t.Fatalf("precondition: %s is expected to support safeguards", provider)
+			}
+			if !containsHeader(result, classifierBeta) {
+				t.Errorf("expected %q forwarded to %s, got %v", classifierBeta, provider, result)
+			}
+		}
+	})
 }
 
 // TestNetworkConfigBetaOverridesFlow proves the production sequence
@@ -1491,6 +1520,40 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		}
 	})
 
+	t.Run("safeguards_gated_via_feature_map", func(t *testing.T) {
+		// safeguards is the Claude Code auto-mode classifier request field —
+		// supported providers retain it for Sonnet 5 / Opus 4.7+ / Fable only.
+		const body = `{"model":"claude-opus-4-8","safeguards":{"check":"auto_mode"}}`
+		const haikuBody = `{"model":"claude-haiku-4-5","safeguards":{"check":"auto_mode"}}`
+		result, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Anthropic, "claude-opus-4-8")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "safeguards") {
+			t.Errorf("expected safeguards to be kept for Anthropic, got: %s", string(result))
+		}
+		// Anthropic direct is model-gated too: haiku is outside the auto-mode set.
+		result, err = StripUnsupportedFieldsFromRawBody([]byte(haikuBody), schemas.Anthropic, "claude-haiku-4-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "safeguards") {
+			t.Errorf("expected safeguards to be stripped for Anthropic on haiku, got: %s", string(result))
+		}
+		// Cloud surfaces retain safeguards on supported models with the required beta.
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex} {
+			for _, b := range []string{body, haikuBody} {
+				result, err := StripUnsupportedFieldsFromRawBody([]byte(b), provider, "")
+				if err != nil {
+					t.Fatalf("unexpected error for %s: %v", provider, err)
+				}
+				if providerUtils.JSONFieldExists(result, "safeguards") != (b == body) {
+					t.Errorf("unexpected safeguards model gate on %s, got: %s", provider, string(result))
+				}
+			}
+		}
+	})
+
 	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
 		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
 		// inference_geo (no InferenceGeo), mcp_servers (no MCP), container.skills
@@ -1590,9 +1653,10 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	})
 
 	t.Run("bedrock_keeps_input_examples_via_standalone_flag", func(t *testing.T) {
-		// Bedrock has InputExamples=true via tool-examples-2025-10-29 but
-		// AdvancedToolUse=false. input_examples should be KEPT; defer_loading
-		// and allowed_callers (bundle-only) should be STRIPPED.
+		// Bedrock has InputExamples=true via tool-examples-2025-10-29 and
+		// ToolSearch=true via InvokeModel routing (#6825), but
+		// AdvancedToolUse=false. input_examples and defer_loading should be
+		// KEPT; allowed_callers (bundle-only) should be STRIPPED.
 		input := []byte(`{
 			"model":"claude-opus-4-6",
 			"tools":[{"name":"t1","input_examples":[{"input":{"a":1}}],"defer_loading":true,"allowed_callers":["direct"]}]
@@ -1601,13 +1665,13 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !providerUtils.JSONFieldExists(result, "tools.0.input_examples") {
-			t.Errorf("expected tools[0].input_examples to survive on Bedrock, got: %s", string(result))
-		}
-		for _, path := range []string{"tools.0.defer_loading", "tools.0.allowed_callers"} {
-			if providerUtils.JSONFieldExists(result, path) {
-				t.Errorf("expected %q to be stripped for Bedrock (AdvancedToolUse bundle unsupported), got: %s", path, string(result))
+		for _, path := range []string{"tools.0.input_examples", "tools.0.defer_loading"} {
+			if !providerUtils.JSONFieldExists(result, path) {
+				t.Errorf("expected %q to survive on Bedrock, got: %s", path, string(result))
 			}
+		}
+		if providerUtils.JSONFieldExists(result, "tools.0.allowed_callers") {
+			t.Errorf("expected tools[0].allowed_callers to be stripped for Bedrock (AdvancedToolUse bundle unsupported), got: %s", string(result))
 		}
 	})
 
@@ -1768,6 +1832,38 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	})
 }
 
+// TestStripUnsupportedAnthropicFields_DiagnosticsGating mirrors the raw-path
+// diagnostics test on the typed path. Claude Code sends
+// diagnostics.previous_message_id on every request; the /anthropic integration
+// force-disables raw-body passthrough for non-native providers, so a Bedrock or
+// Vertex request reaches the typed sanitizer and 400s with
+// "diagnostics: Extra inputs are not permitted" if the field survives.
+func TestStripUnsupportedAnthropicFields_DiagnosticsGating(t *testing.T) {
+	t.Run("anthropic_keeps_diagnostics", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:       "claude-opus-4-7",
+			Diagnostics: &AnthropicDiagnostics{PreviousMessageID: nil},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-7")
+		if req.Diagnostics == nil {
+			t.Error("expected diagnostics preserved for Anthropic")
+		}
+	})
+
+	t.Run("non_native_providers_strip_diagnostics", func(t *testing.T) {
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.Vertex} {
+			req := &AnthropicMessageRequest{
+				Model:       "claude-opus-4-7",
+				Diagnostics: &AnthropicDiagnostics{PreviousMessageID: nil},
+			}
+			stripUnsupportedAnthropicFields(req, provider, "claude-opus-4-7")
+			if req.Diagnostics != nil {
+				t.Errorf("expected diagnostics stripped for %s", provider)
+			}
+		}
+	})
+}
+
 // TestStripUnsupportedAnthropicFields_ContainerSkillsGating mirrors the raw-path
 // tests above on the typed path — ensures the typed sanitizer treats explicit
 // empty skills arrays as a stripable (not drop-triggering) signal.
@@ -1846,7 +1942,9 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 		}
 	})
 
-	t.Run("bedrock_tool_search_false_strips_defer_loading", func(t *testing.T) {
+	t.Run("bedrock_tool_search_true_keeps_defer_loading", func(t *testing.T) {
+		// defer_loading rides on tool search, which Bedrock serves via
+		// InvokeModel routing (#6825), so it survives stripping.
 		req := &AnthropicMessageRequest{
 			Model: "claude-sonnet-4-5",
 			Tools: []AnthropicTool{
@@ -1854,8 +1952,8 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 			},
 		}
 		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-sonnet-4-5")
-		if req.Tools[0].DeferLoading != nil {
-			t.Errorf("expected defer_loading to be stripped for Bedrock (ToolSearch=false), got %v", *req.Tools[0].DeferLoading)
+		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
+			t.Errorf("expected defer_loading to survive for Bedrock (ToolSearch=true via InvokeModel routing), got %v", req.Tools[0].DeferLoading)
 		}
 	})
 }
@@ -3354,6 +3452,11 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"global.anthropic.claude-opus-4-7", ComputerUseGen20251124},
 		{"global.anthropic.claude-sonnet-4-6", ComputerUseGen20251124},
 		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", ComputerUseGen20250124},
+		// Opus 5.5 rejects every dated computer_* tool, so it resolves to the toolset.
+		{"claude-opus-5-5", ComputerUseGenToolset20260801},
+		{"claude-opus-5.5", ComputerUseGenToolset20260801},
+		{"claude-opus-5-5-20260901", ComputerUseGenToolset20260801},
+		{"global.anthropic.claude-opus-5-5", ComputerUseGenToolset20260801},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
@@ -3362,6 +3465,23 @@ func TestComputerUseGeneration(t *testing.T) {
 				t.Errorf("ComputerUseGeneration(schemas.Anthropic, %q) = %q, want %q", tc.model, got, tc.want)
 			}
 		})
+	}
+}
+
+// The toolset replaced the dated computer_* tools on the Claude API and Google
+// Cloud only; AWS and Microsoft Foundry still serve computer_20251124 for the
+// same model, so the generation is scoped to the surface as well as the model.
+func TestComputerUseGeneration_ToolsetIsProviderScoped(t *testing.T) {
+	const model = "claude-opus-5-5"
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex} {
+		if got := ComputerUseGeneration(schemas.ResolveModelCaps(provider, model)); got != ComputerUseGenToolset20260801 {
+			t.Errorf("%s: got %q, want the toolset — the dated tools are rejected there", provider, got)
+		}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
+		if got := ComputerUseGeneration(schemas.ResolveModelCaps(provider, model)); got != ComputerUseGen20251124 {
+			t.Errorf("%s: got %q, want computer_20251124 — that surface still serves it", provider, got)
+		}
 	}
 }
 
@@ -3380,6 +3500,10 @@ func TestNormalizedToolSpec(t *testing.T) {
 		{ComputerUseGen20250124, "computer", "computer_20250124", "computer"},
 		{ComputerUseGen20250124, "text_editor", "text_editor_20250124", "str_replace_editor"},
 		{ComputerUseGen20250124, "bash", "bash_20250124", "bash"},
+		// A toolset is named by its type alone; a name on the entry is a 400.
+		{ComputerUseGenToolset20260801, "computer", "computer_toolset_20260801", ""},
+		// Toolsets have no text_editor/bash members, so those stay on their own generation.
+		{ComputerUseGenToolset20260801, "bash", "bash_20250124", "bash"},
 		{ComputerUseGen20251124, "web_search", "", ""},
 		{ComputerUseGen20250124, "", "", ""},
 	}
@@ -3797,6 +3921,258 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 	}
 }
 
+// TestStripEmptyThinkingBlocks_AllocationScaling pins the allocation SHAPE of the
+// strip, not a byte count.
+//
+// The original implementation called sjson Delete once per stripped block, and each
+// of those reserialises the whole request body, so stripping N blocks from an S-byte
+// body allocated N*S. A production heap profile attributed 23.6% of every byte the
+// gateway had ever allocated to this one loop, all of it garbage: long agentic
+// conversations carry hundreds of unsigned thinking blocks in a multi-megabyte body.
+//
+// memtest compares allocation growth against input growth, so it fails on the
+// complexity class rather than on an absolute threshold that would encode this
+// machine and today's Go version. Measured on the real before/after: 13.6x vs 3.9x.
+func TestStripEmptyThinkingBlocks_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(turns int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","messages":[`)
+		for i := range turns {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// One unsigned thinking block (stripped) plus one text block carrying
+			// the bulk of the bytes (kept), so both N and the payload size scale.
+			b.WriteString(`{"role":"assistant","content":[`)
+			b.WriteString(`{"type":"thinking","thinking":"cross-provider reasoning","signature":""},`)
+			b.WriteString(`{"type":"text","text":"` + strings.Repeat("x", 500) + `"}]}`)
+		}
+		b.WriteString(`]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := StripEmptyThinkingBlocks(body); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestStripAutoInjectableTools_AllocationScaling covers the same rewrite shape on the
+// tools array: the loop deletes one code_execution tool per iteration, and N grows with
+// however many the client sent.
+func TestStripAutoInjectableTools_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(tools int) []byte {
+		var b bytes.Buffer
+		// A web_search tool is what makes Anthropic auto-inject code_execution, which
+		// is the precondition for this function doing anything at all. It also keeps
+		// at least one tool un-stripped, avoiding the delete-the-whole-array fast path.
+		b.WriteString(`{"model":"claude-opus-4-8","tools":[{"type":"web_search_20260209","name":"web_search"}`)
+		for range tools {
+			b.WriteString(`,{"type":"code_execution_20250522","name":"code_execution","description":"`)
+			b.WriteString(strings.Repeat("d", 400))
+			b.WriteString(`"}`)
+		}
+		b.WriteString(`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := StripAutoInjectableTools(body); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestRemapRawToolVersionsForProvider_AllocationScaling covers the tool-version remap,
+// which writes tools.N.type and tools.N.name one tool at a time.
+func TestRemapRawToolVersionsForProvider_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(tools int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","tools":[`)
+		for i := range tools {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// An outdated bash version, which NormalizedToolSpec remaps to
+			// bash_20250124, so every tool in the array triggers a write.
+			b.WriteString(`{"type":"bash_20241022","name":"wrong_name","description":"`)
+			b.WriteString(strings.Repeat("d", 400))
+			b.WriteString(`"}`)
+		}
+		b.WriteString(`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := RemapRawToolVersionsForProvider(body, schemas.Anthropic, "claude-opus-4-8"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestStripUnsupportedFieldsFromRawBody_AllocationScaling covers the system-block
+// cache_control scope strip, whose loop walks every system block in the request.
+func TestStripUnsupportedFieldsFromRawBody_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(blocks int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-sonnet-4-5","system":[`)
+		for i := range blocks {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"type":"text","text":"`)
+			b.WriteString(strings.Repeat("s", 400))
+			b.WriteString(`","cache_control":{"type":"ephemeral","scope":"organization"}}`)
+		}
+		b.WriteString(`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		// Bedrock gates PromptCachingScope off, which is what makes the strip run.
+		if _, err := StripUnsupportedFieldsFromRawBody(body, schemas.Bedrock, "claude-sonnet-4-5"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// betaHeaderTestProviders is every provider the beta-header gating knows about, derived
+// from ProviderFeatures rather than hardcoded.
+//
+// A hardcoded list silently goes stale: a provider added to ProviderFeatures would not be
+// exercised, and a header only that provider allows through FilterBetaHeadersForProvider
+// would look uncovered and get wrongly excused in notEmittedByRequestGating. Reading the
+// map means a new provider is covered the day it is added.
+func betaHeaderTestProviders() []schemas.ModelProvider {
+	out := make([]schemas.ModelProvider, 0, len(ProviderFeatures))
+	for provider := range ProviderFeatures {
+		out = append(out, provider)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// betaHeaderCorpus is the shared set of request bodies exercising every beta-header
+// signal. Shared so TestEveryBetaHeaderIsCoveredByTheCorpus can assert it reaches every
+// declared header, which is what keeps a newly added header from going unasserted.
+func betaHeaderCorpus() map[string]string {
+	const model = "claude-opus-4-8"
+	return map[string]string{
+		"bare request": `{"model":"` + model + `","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+
+		// --- the two messages-derived signals, which are the ones the gjson scan recovers ---
+		"scoped cache_control in message block":                      `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"organization"}}]}]}`,
+		"unscoped cache_control in message block (must NOT trigger)": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}]}`,
+		// gjson's Exists() is `Type != Null || len(Raw) != 0`, so an explicit null is
+		// present-but-null and reports true, while a missing key reports false. Typed
+		// decoding puts nil in *string for both. Without an explicit null check the raw
+		// path injects a prompt-caching-scope beta header the typed path never would.
+		"explicit null scope in message block (must NOT trigger)": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":null}}]}]}`,
+		// Same present-but-null shape on the other signal. These already agree (gjson
+		// .String() and a Go string field both yield ""), so this pins that agreement.
+		"explicit null source type in message block (must NOT trigger)": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"document","source":{"type":null}}]}]}`,
+		"file source in message block":                                  `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"file_123"}}]}]}`,
+		"base64 source in message block (must NOT trigger)":             `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]}]}`,
+		"both message signals at once":                                  `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"organization"}},{"type":"document","source":{"type":"file","file_id":"file_123"}}]}]}`,
+		"signals on a later message, not the first":                     `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"one"}]},{"role":"assistant","content":[{"type":"text","text":"two"}]},{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"file_9"}}]}]}`,
+		"string content messages are skipped":                           `{"model":"` + model + `","messages":[{"role":"user","content":"plain string"}]}`,
+		"no messages field at all":                                      `{"model":"` + model + `","max_tokens":64}`,
+
+		// --- scope found elsewhere; the messages branch must not double-add or mask it ---
+		"scoped cache_control in system": `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"scoped cache_control on a tool": `{"model":"` + model + `","tools":[{"name":"t","description":"d","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"scope in system AND messages":   `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"organization"}}]}]}`,
+
+		// --- top-level signals: these still go through the decode, so they guard the
+		//     "drop messages before decoding" half of the change ---
+		"computer use tool":                    `{"model":"` + model + `","tools":[{"type":"computer_20250124","name":"computer"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"computer use tool (newer generation)": `{"model":"` + model + `","tools":[{"type":"computer_20251124","name":"computer"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"advisor tool":                         `{"model":"` + model + `","tools":[{"type":"advisor_20260301","name":"advisor"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"safeguards (dangerous tool use)":      `{"model":"claude-sonnet-5","safeguards":[{"type":"opaque","payload":"x"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"native server-side fallbacks":         `{"model":"` + model + `","fallbacks":[{"model":"claude-haiku-4-5"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"default fallback routing":             `{"model":"claude-opus-5","fallbacks":"default","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"strict tool":                          `{"model":"` + model + `","tools":[{"name":"t","input_schema":{"type":"object"},"strict":true}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"defer_loading tool":                   `{"model":"` + model + `","tools":[{"name":"t","input_schema":{"type":"object"},"defer_loading":true}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"input_examples tool":                  `{"model":"` + model + `","tools":[{"name":"t","input_schema":{"type":"object"},"input_examples":[{"a":1}]}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"allowed_callers tool":                 `{"model":"` + model + `","tools":[{"name":"t","input_schema":{"type":"object"},"allowed_callers":["assistant"]}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"eager_input_streaming":                `{"model":"` + model + `","tools":[{"name":"t","input_schema":{"type":"object"},"eager_input_streaming":true}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"context_management compact":           `{"model":"` + model + `","context_management":{"edits":[{"type":"compact_20260112"}]},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"context_management clear":             `{"model":"` + model + `","context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"mcp_servers":                          `{"model":"` + model + `","mcp_servers":[{"type":"url","url":"https://example.com","name":"s"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"thinking enabled":                     `{"model":"` + model + `","thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"speed":                                `{"model":"` + model + `","speed":"fast","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"output_config task_budget":            `{"model":"` + model + `","output_config":{"task_budget":{"type":"tokens","value":100}},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"output_format":                        `{"model":"` + model + `","output_format":{"type":"json_schema","schema":{"type":"object"}},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"diagnostics":                          `{"model":"` + model + `","diagnostics":{"cache":true},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		"fallback_credit_token":                `{"model":"` + model + `","fallback_credit_token":"tok_1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+
+		// --- everything at once, to catch ordering/dedup divergence ---
+		"kitchen sink": `{"model":"` + model + `","thinking":{"type":"enabled","budget_tokens":1024},` +
+			`"tools":[{"type":"computer_20250124","name":"computer"},{"name":"t","input_schema":{"type":"object"},"strict":true,"defer_loading":true,"input_examples":[{"a":1}],"allowed_callers":["assistant"],"eager_input_streaming":true}],` +
+			`"context_management":{"edits":[{"type":"compact_20260112"},{"type":"clear_thinking_20251015"}]},` +
+			`"mcp_servers":[{"type":"url","url":"https://example.com","name":"s"}],` +
+			`"output_format":{"type":"json_schema","schema":{"type":"object"}},"diagnostics":{"cache":true},` +
+			`"system":[{"type":"text","text":"sys"}],` +
+			`"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"organization"}},{"type":"document","source":{"type":"file","file_id":"file_1"}}]}]}`,
+	}
+}
+
+// TestAddMissingBetaHeadersFromRawBody_MatchesTypedPath is the safety net for replacing
+// the raw-body probe-unmarshal with a gjson scan.
+//
+// BuildAnthropicResponsesRequestBody used to decode the entire request into an
+// AnthropicMessageRequest purely to decide which anthropic-beta headers to inject, then
+// throw the struct away. On a long agentic conversation that decode expands the messages
+// array several-fold into structs; a production heap profile had it holding ~526 MB live.
+// AddMissingBetaHeadersToContextFromRawBody drops the messages array before decoding and
+// recovers the two signals the gating actually reads from it via gjson.
+//
+// Getting that wrong is not a performance bug, it is a hard 400 from Anthropic (either a
+// header for an unsupported feature, or a missing header for a used one). So this asserts
+// the two paths agree exactly, header-for-header, across every signal and several
+// providers — rather than asserting that the new scan looks correct.
+func TestAddMissingBetaHeadersFromRawBody_MatchesTypedPath(t *testing.T) {
+
+	bodies := betaHeaderCorpus()
+
+	providers := betaHeaderTestProviders()
+
+	// headersVia runs one path and returns the anthropic-beta headers it put on a fresh context.
+	headersVia := func(t *testing.T, apply func(ctx *schemas.BifrostContext) error) []string {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		if err := apply(ctx); err != nil {
+			t.Fatalf("applying beta headers failed: %v", err)
+		}
+		extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		if !ok {
+			return nil
+		}
+		got := append([]string(nil), extraHeaders[AnthropicBetaHeader]...)
+		sort.Strings(got)
+		return got
+	}
+
+	for name, body := range bodies {
+		for _, provider := range providers {
+			t.Run(fmt.Sprintf("%s/%s", name, provider), func(t *testing.T) {
+				raw := []byte(body)
+
+				// The pre-change behaviour: full decode, then the typed entry point.
+				want := headersVia(t, func(ctx *schemas.BifrostContext) error {
+					var req AnthropicMessageRequest
+					if err := sonic.Unmarshal(raw, &req); err != nil {
+						t.Fatalf("corpus body is not a decodable AnthropicMessageRequest: %v", err)
+					}
+					return AddMissingBetaHeadersToContext(ctx, &req, provider)
+				})
+
+				got := headersVia(t, func(ctx *schemas.BifrostContext) error {
+					return AddMissingBetaHeadersToContextFromRawBody(ctx, raw, provider)
+				})
+
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("raw-body path disagrees with the typed path.\nraw:   %v\ntyped: %v\nbody:  %s",
+						got, want, body)
+				}
+			})
+		}
+	}
+}
+
 // TestFastMode_StreamingForwardsSpeed verifies the per-event message_delta
 // converter surfaces the served speed on the emitted chunk (client-facing usage
 // visibility). NOTE: billing reads the terminal response.completed chunk, not
@@ -4112,5 +4488,724 @@ func TestMidConversationToolChangesBetaHeaderRouting(t *testing.T) {
 				t.Errorf("FilterBetaHeadersForProvider(%q) kept=%v, want %v (got %v)", tc.provider, kept, tc.want, got)
 			}
 		})
+	}
+}
+
+// Regression tests for maximhq/bifrost#6825 (InvokeModel routing on Bedrock).
+//
+// Bedrock model paths may carry a percent-encoded inference-profile ARN, e.g.
+// /model/arn%3Aaws%3Abedrock%3A...%3Aapplication-inference-profile%2Fabc%2Fglobal.anthropic.claude-sonnet-4-6/invoke.
+// net/http (the Converse path) sends that path verbatim. fasthttp, which the
+// shared anthropic handlers use, normalises the path on parse and re-quotes it
+// on write, so the ARN's %2F and %3A reach AWS as literal "/" and ":" and the
+// request lands on a route AWS does not have (UnknownOperationException). The
+// handlers must send the caller's escaping unchanged whenever the client asks
+// for it (fasthttp.Client.DisablePathNormalizing), including through the
+// streaming and large-response client clones the handlers build per request.
+
+const encodedARNModel = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123/global.anthropic.claude-sonnet-4-6"
+
+type recordedRequestURI struct {
+	mu  sync.Mutex
+	uri string
+}
+
+func (r *recordedRequestURI) set(v string) { r.mu.Lock(); r.uri = v; r.mu.Unlock() }
+func (r *recordedRequestURI) get() string  { r.mu.Lock(); defer r.mu.Unlock(); return r.uri }
+
+func encodedPathServer(t *testing.T, rec *recordedRequestURI, streaming bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// r.RequestURI is the request-target exactly as it arrived on the wire.
+		rec.set(r.RequestURI)
+		if streaming {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(anthropicMessageStart + anthropicTextDelta + anthropicMessageStop))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+}
+
+func assertEncodedPathPreserved(t *testing.T, got string) {
+	t.Helper()
+	want := "/model/" + url.PathEscape(encodedARNModel) + "/invoke"
+	if !strings.HasPrefix(got, want) {
+		t.Errorf("wire request-target lost the caller's percent-encoding\n got:  %s\n want: %s", got, want)
+	}
+}
+
+func TestHandleAnthropicResponsesRequest_PreservesEncodedPath(t *testing.T) {
+	rec := &recordedRequestURI{}
+	server := encodedPathServer(t, rec, false)
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Input:    makeSimpleInput("Hello!"),
+	}
+	requestURL := server.URL + "/model/" + url.PathEscape(encodedARNModel) + "/invoke"
+
+	_, bifrostErr := HandleAnthropicResponsesRequest(ctx, &fasthttp.Client{DisablePathNormalizing: true}, requestURL, request,
+		AnthropicRequestBuildConfig{Provider: schemas.Bedrock, Model: "global.anthropic.claude-sonnet-4-6"},
+		map[string]string{}, nil, nil, truncationTestLogger{})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+	}
+	assertEncodedPathPreserved(t, rec.get())
+}
+
+func TestHandleAnthropicResponsesStream_PreservesEncodedPath(t *testing.T) {
+	rec := &recordedRequestURI{}
+	server := encodedPathServer(t, rec, true)
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Input:    makeSimpleInput("Hello!"),
+	}
+	jsonData, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider: schemas.Bedrock, Model: "global.anthropic.claude-sonnet-4-6", IsStreaming: true,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("build: %s", bifrostErr.Error.Message)
+	}
+	requestURL := server.URL + "/model/" + url.PathEscape(encodedARNModel) + "/invoke-with-response-stream"
+
+	stream, bifrostErr := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{DisablePathNormalizing: true}, requestURL, jsonData,
+		map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
+		truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+	}
+	collectTruncationChunks(t, stream)
+	assertEncodedPathPreserved(t, rec.get())
+}
+
+func TestHandleAnthropicChatCompletionStreaming_PreservesEncodedPath(t *testing.T) {
+	rec := &recordedRequestURI{}
+	server := encodedPathServer(t, rec, true)
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")}}},
+	}
+	jsonData, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider: schemas.Bedrock, Model: "global.anthropic.claude-sonnet-4-6", IsStreaming: true,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("build: %s", bifrostErr.Error.Message)
+	}
+	requestURL := server.URL + "/model/" + url.PathEscape(encodedARNModel) + "/invoke-with-response-stream"
+
+	stream, bifrostErr := HandleAnthropicChatCompletionStreaming(ctx, &fasthttp.Client{DisablePathNormalizing: true}, requestURL, jsonData,
+		map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
+		truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+	}
+	collectTruncationChunks(t, stream)
+	assertEncodedPathPreserved(t, rec.get())
+}
+
+// Automatic beta injection follows the strip gate and existing header policies.
+func TestSafeguardsBetaGatesAndOverrides(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure, schemas.DeepSeek} {
+		for _, model := range []string{"claude-opus-4-8", "claude-haiku-4-5"} {
+			for _, present := range []bool{false, true} {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				req := &AnthropicMessageRequest{Model: model}
+				if present {
+					req.Safeguards = json.RawMessage(`{}`)
+				}
+				stripUnsupportedAnthropicFields(req, provider, model)
+				if err := AddMissingBetaHeadersToContext(ctx, req, provider); err != nil {
+					t.Fatal(err)
+				}
+				got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+				want := present && model == "claude-opus-4-8" && provider != schemas.DeepSeek
+				if slices.Contains(got, AnthropicDangerousToolUseBetaHeader) != want {
+					t.Fatalf("%s/%s present=%v: %v", provider, model, present, got)
+				}
+			}
+		}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{AnthropicBetaHeader: {AnthropicDangerousToolUseBetaHeader, AnthropicCompactionBetaHeader}})
+	req := &AnthropicMessageRequest{Model: "claude-opus-4-8", Safeguards: json.RawMessage(`{}`)}
+	for range 2 {
+		if err := AddMissingBetaHeadersToContext(ctx, req, schemas.Bedrock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Bedrock)
+	if len(got) != 2 {
+		t.Fatalf("beta deduplication lost existing headers: %v", got)
+	}
+	got = FilterBetaHeadersForProvider(got, schemas.Bedrock, map[string]bool{AnthropicDangerousToolUseBetaHeaderPrefix: false})
+	if slices.Contains(got, AnthropicDangerousToolUseBetaHeader) || !slices.Contains(got, AnthropicCompactionBetaHeader) {
+		t.Fatalf("explicit override not respected: %v", got)
+	}
+}
+
+func TestSafeguardsStreamHandler(t *testing.T) {
+	const update = `{"type":"safeguards_update","safeguard_results":[{"id":"sg_1","verdict":"allow"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(AnthropicBetaHeader) != AnthropicDangerousToolUseBetaHeader {
+			t.Errorf("missing beta on wire: %q", r.Header.Get(AnthropicBetaHeader))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, frame := range []string{ptMsgStart(), update, `{"type":"future_unknown_event","safeguard_results":[]}`, ptMsgEnd()[0], ptMsgEnd()[1]} {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", gjson.Get(frame, "type").String(), frame)
+		}
+	}))
+	defer server.Close()
+	for _, raw := range []bool{false, true} {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		body, buildErr := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic, Model: "claude-opus-4-8", Input: makeSimpleInput("hi"),
+			Params: &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"safeguards": json.RawMessage(`{}`)}},
+		}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic, IsStreaming: true})
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		stream, err := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL, body, nil, nil, 30, nil, false, raw, schemas.Anthropic, truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updates := 0
+		for _, chunk := range collectTruncationChunks(t, stream) {
+			if chunk.BifrostError != nil {
+				t.Fatal(chunk.BifrostError)
+			}
+			response := chunk.BifrostResponsesStreamResponse
+			if response == nil {
+				continue
+			}
+			if response.Type == schemas.ResponsesStreamResponseTypeProviderRawEvent {
+				t.Fatal("unknown event forwarded")
+			}
+			if response.Type == schemas.ResponsesStreamResponseTypeSafeguardsUpdate {
+				updates++
+				if raw && response.ExtraFields.RawResponse != update {
+					t.Fatalf("raw frame lost: %v", response.ExtraFields.RawResponse)
+				}
+				out := ToAnthropicResponsesStreamResponse(ctx, response)
+				if len(out) != 1 || string(out[0].SafeguardResults) != `[{"id":"sg_1","verdict":"allow"}]` {
+					t.Fatalf("typed update lost: %#v", out)
+				}
+			}
+		}
+		if updates != 1 {
+			t.Fatalf("raw=%v: got %d updates", raw, updates)
+		}
+	}
+}
+
+func TestStripUnsupportedAnthropicFieldsSafeguards(t *testing.T) {
+	mk := func(model string) *AnthropicMessageRequest {
+		var req AnthropicMessageRequest
+		if err := sonic.Unmarshal([]byte(`{"model":"`+model+`","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"safeguards":{"check":"auto_mode"}}`), &req); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		return &req
+	}
+
+	req := mk("claude-opus-4-8")
+	stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-8")
+	out, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if !gjson.GetBytes(out, "safeguards").Exists() {
+		t.Errorf("expected safeguards to be kept for Anthropic, got: %s", string(out))
+	}
+
+	// Anthropic direct is still model-gated: Haiku is outside the auto-mode model
+	// set, so the field is stripped rather than sent to a model that refuses it.
+	req = mk("claude-haiku-4-5")
+	stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+	out, err = sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if gjson.GetBytes(out, "safeguards").Exists() {
+		t.Errorf("expected safeguards to be stripped for Anthropic on haiku, got: %s", string(out))
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex} {
+		for _, model := range []string{"claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"} {
+			req := mk(model)
+			stripUnsupportedAnthropicFields(req, provider, model)
+			out, err := sonic.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal request for %s/%s: %v", provider, model, err)
+			}
+			if gjson.GetBytes(out, "safeguards").Exists() != (model != "claude-haiku-4-5") {
+				t.Errorf("unexpected safeguards model gate on %s/%s, got: %s", provider, model, string(out))
+			}
+		}
+	}
+}
+
+// notEmittedByRequestGating records beta headers that AddMissingBetaHeadersToContext
+// cannot produce from a request body, with the reason. Everything else must be exercised
+// by the corpus in TestAddMissingBetaHeadersFromRawBody_MatchesTypedPath.
+var notEmittedByRequestGating = map[string]string{
+	"AnthropicFallbackCreditBetaHeaderAWS": "FilterBetaHeadersForProvider rewrites the canonical " +
+		"fallback-credit date to the AWS one on Bedrock/Mantle; gating emits only the canonical value",
+	"AnthropicMCPClientBetaHeaderDeprecated": "superseded version constant kept for inbound matching; " +
+		"gating emits AnthropicMCPClientBetaHeader",
+	"AnthropicContext1MBetaHeader":                  "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicRedactThinkingBetaHeader":             "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicSkillsBetaHeader":                     "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicMidConversationToolChangesBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
+}
+
+// TestEveryBetaHeaderIsCoveredByTheCorpus makes a newly added beta header loud.
+//
+// The equivalence corpus is only as good as its coverage: a header added next quarter with
+// no corpus entry would be asserted by nothing, and the raw-body path could stop emitting
+// it silently. This enumerates every Anthropic*BetaHeader constant in the package and
+// requires each to be either produced by the corpus or explicitly recorded as
+// not-gating-emitted with a reason.
+//
+// Prefix constants are excluded: they are matching helpers for FilterBetaHeadersForProvider,
+// not values that gating emits.
+func TestEveryBetaHeaderIsCoveredByTheCorpus(t *testing.T) {
+	// 1. Every header value the corpus puts ON THE WIRE, across every provider.
+	//
+	// Deliberately measured after MergeBetaHeaders + FilterBetaHeadersForProvider rather
+	// than off the context. The gating computing a header is not the same as the request
+	// carrying it: the filter can drop a value the provider does not support, or rewrite
+	// it (that is how the AWS fallback-credit date is produced). Stopping at the context
+	// would pass for a header that is computed correctly and then silently discarded
+	// before req.Header.Set(AnthropicBetaHeader, ...) in anthropic.go.
+	providers := betaHeaderTestProviders()
+	emitted := map[string]bool{}
+	for _, body := range betaHeaderCorpus() {
+		for _, provider := range providers {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(body), provider); err != nil {
+				continue
+			}
+			// The exact pipeline anthropic.go runs before setting the header.
+			for _, h := range FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider) {
+				emitted[h] = true
+			}
+		}
+	}
+	if len(emitted) == 0 {
+		t.Fatal("the corpus put no beta headers on the wire at all, so this test is measuring nothing")
+	}
+
+	// 2. Every beta-header constant declared in the package.
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing package: %v", err)
+	}
+	constRe := regexp.MustCompile(`^Anthropic[A-Za-z0-9]*BetaHeader[A-Za-z0-9]*$`)
+	declared := map[string]string{} // ident -> value
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				gen, ok := decl.(*ast.GenDecl)
+				if !ok || gen.Tok != token.CONST {
+					continue
+				}
+				for _, spec := range gen.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, name := range vs.Names {
+						if !constRe.MatchString(name.Name) || i >= len(vs.Values) {
+							continue
+						}
+						lit, ok := vs.Values[i].(*ast.BasicLit)
+						if !ok || lit.Kind != token.STRING {
+							continue
+						}
+						declared[name.Name] = strings.Trim(lit.Value, `"`)
+					}
+				}
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("found no Anthropic*BetaHeader constants; the scan has broken")
+	}
+
+	var uncovered []string
+	for ident, value := range declared {
+		switch {
+		case ident == "AnthropicBetaHeader":
+			continue // the HTTP header name, not a beta value
+		case strings.HasSuffix(ident, "Prefix"):
+			continue // matcher for FilterBetaHeadersForProvider, never emitted
+		case emitted[value]:
+			continue
+		}
+		if _, excused := notEmittedByRequestGating[ident]; excused {
+			continue
+		}
+		uncovered = append(uncovered, fmt.Sprintf("  %s = %q", ident, value))
+	}
+	sort.Strings(uncovered)
+
+	if len(uncovered) > 0 {
+		t.Errorf("%d beta header(s) never reach the wire from any corpus entry:\n%s\n\n"+
+			"Either add a request body to betaHeaderCorpus() that triggers it (which also puts it "+
+			"under the raw-vs-typed equivalence assertion), or record it in "+
+			"notEmittedByRequestGating with the reason it cannot come from a request body.\n\n"+
+			"A header that IS gated but never survives FilterBetaHeadersForProvider for any "+
+			"provider is dead code on the request path, and shows up here the same way.",
+			len(uncovered), strings.Join(uncovered, "\n"))
+	}
+}
+
+// TestBetaGatingNeverReadsDroppedFields makes dropping messages and tools safe by
+// construction instead of by vigilance.
+//
+// AddMissingBetaHeadersToContextFromRawBody deletes betaProbeDroppedFields from the body
+// before decoding, so on that path req.Messages is nil, and every tool has had its bulk
+// fields (input_schema, description) stripped. Everything the
+// gating needs from them arrives as anthropicMessageBetaSignals. If someone adds a beta
+// header gated on a new tool or message field and reads it off req directly, the typed
+// path emits the header and the raw path silently does not — a passthrough request quietly
+// loses it.
+//
+// The equivalence test catches that only when the corpus happens to contain a triggering
+// body, and TestEveryBetaHeaderIsCoveredByTheCorpus can be silenced by an entry in
+// notEmittedByRequestGating. This closes that gap at the source: the gating simply may not
+// reference the dropped fields, so forgetting a signal is a compile-time-shaped failure
+// rather than a behavioural one nobody notices.
+func TestBetaGatingNeverReadsDroppedFields(t *testing.T) {
+	// json field name -> Go struct field on AnthropicMessageRequest.
+	// Checked on the source slice, not on `forbidden`: the tool bulk fields below are
+	// added unconditionally, so a length check after them can never fire and an emptied
+	// betaProbeDroppedFields would silently stop being covered.
+	if len(betaProbeDroppedFields) == 0 {
+		t.Fatal("betaProbeDroppedFields is empty; this guard would stop covering the dropped message fields")
+	}
+	forbidden := map[string]string{}
+	for _, field := range betaProbeDroppedFields {
+		forbidden[strings.ToUpper(field[:1])+field[1:]] = field
+	}
+	// Tool bulk fields are stripped from every tool before the probe decode, so the
+	// gating must not read them either. Go field names for the json keys.
+	for goName, jsonName := range map[string]string{"InputSchema": "input_schema", "Description": "description"} {
+		forbidden[goName] = jsonName
+	}
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing package: %v", err)
+	}
+
+	var violations []string
+	found := false
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Name.Name != "addMissingBetaHeadersToContext" || fn.Body == nil {
+					continue
+				}
+				found = true
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					recv, ok := sel.X.(*ast.Ident)
+					if !ok || (recv.Name != "req" && recv.Name != "tool") {
+						return true
+					}
+					if jsonName, bad := forbidden[sel.Sel.Name]; bad {
+						violations = append(violations, fmt.Sprintf(
+							"  %s reads %s.%s at %s (%q is removed on the raw-body path)",
+							fn.Name.Name, recv.Name, sel.Sel.Name, fset.Position(sel.Pos()), jsonName))
+					}
+					return true
+				})
+			}
+		}
+	}
+	if !found {
+		t.Fatal("addMissingBetaHeadersToContext not found; this guard has broken and is asserting nothing")
+	}
+
+	sort.Strings(violations)
+	if len(violations) > 0 {
+		t.Errorf("the beta-header gating reads a field that the raw-body path removes before "+
+			"decoding, so the raw and typed paths will disagree:\n%s\n\n"+
+			"For a messages field: add it to anthropicMessageBetaSignals and compute it in BOTH "+
+			"scanMessagesForBetaSignals (typed) and scanRawMessagesForBetaSignals (gjson).\n"+
+			"For a tool field: remove it from betaProbeStrippedToolFields so the probe keeps it.",
+			strings.Join(violations, "\n"))
+	}
+}
+
+// signalFieldsAssignedIn returns the anthropicMessageBetaSignals fields a function sets.
+func signalFieldsAssignedIn(t *testing.T, fnName string) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing package: %v", err)
+	}
+	assigned := map[string]bool{}
+	found := false
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Name.Name != fnName || fn.Body == nil {
+					continue
+				}
+				found = true
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					assign, ok := n.(*ast.AssignStmt)
+					if !ok {
+						return true
+					}
+					for _, lhs := range assign.Lhs {
+						sel, ok := lhs.(*ast.SelectorExpr)
+						if !ok {
+							continue
+						}
+						if recv, ok := sel.X.(*ast.Ident); ok && recv.Name == "signals" {
+							assigned[sel.Sel.Name] = true
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("%s not found; this guard has broken and is asserting nothing", fnName)
+	}
+	return assigned
+}
+
+// TestTypedAndRawSignalScansStayInLockstep closes the last way a stale signal list can
+// silently lose a beta header.
+//
+// TestBetaGatingNeverReadsDroppedFields stops the gating reading req.Tools/req.Messages
+// directly, so every value must arrive as a signal. That leaves one gap: adding a signal
+// to the TYPED scan and forgetting the RAW one. The typed path would then emit the header
+// and the raw path would not, which is invisible unless the corpus happens to contain a
+// body that triggers it — and TestEveryBetaHeaderIsCoveredByTheCorpus can be silenced via
+// notEmittedByRequestGating.
+//
+// Requiring both scans to populate the identical field set makes that impossible to miss,
+// independent of any corpus.
+//
+// Tools are deliberately absent here: they are no longer reduced to signals at all. The
+// raw path keeps the tools array and strips only input_schema and description from each
+// tool, so there is no list of needed tool fields that can go stale.
+func TestTypedAndRawSignalScansStayInLockstep(t *testing.T) {
+	for _, pair := range []struct{ typed, raw string }{
+		{"scanMessagesForBetaSignals", "scanRawMessagesForBetaSignals"},
+	} {
+		typed := signalFieldsAssignedIn(t, pair.typed)
+		raw := signalFieldsAssignedIn(t, pair.raw)
+		if len(typed) == 0 {
+			t.Errorf("%s sets no signals at all; the guard is measuring nothing", pair.typed)
+			continue
+		}
+		for field := range typed {
+			if !raw[field] {
+				t.Errorf("%s sets signals.%s but %s does not: the typed path would emit the "+
+					"beta header and the raw (passthrough) path would silently not. Add the "+
+					"equivalent gjson check to %s.", pair.typed, field, pair.raw, pair.raw)
+			}
+		}
+		for field := range raw {
+			if !typed[field] {
+				t.Errorf("%s sets signals.%s but %s does not: the raw path would emit the beta "+
+					"header and the typed path would silently not. Add the equivalent check to %s.",
+					pair.raw, field, pair.typed, pair.typed)
+			}
+		}
+	}
+}
+
+// TestEveryOutboundPathSetsBetaHeadersIdentically stops the streaming and unary request
+// builders drifting apart on beta headers.
+//
+// anthropic.go builds outbound requests in several places — unary chat, streaming chat,
+// unary responses, streaming responses — and each sets anthropic-beta with its own copy of
+// the same three lines. Copies drift: a fix applied to the unary path and not the streaming
+// one means streaming requests silently go out with a different beta set, which surfaces as
+// a feature working on one call shape and not the other.
+//
+// Rather than trust that they match, this extracts every block that sets the header and
+// requires them to be textually identical.
+func TestEveryOutboundPathSetsBetaHeadersIdentically(t *testing.T) {
+	source, err := os.ReadFile("anthropic.go")
+	if err != nil {
+		t.Fatalf("reading anthropic.go: %v", err)
+	}
+	lines := strings.Split(string(source), "\n")
+
+	// Each site is the `if betaHeaders := ...` guard plus its Set/else/Del body.
+	var blocks []string
+	var at []int
+	for i, line := range lines {
+		if !strings.Contains(line, "FilterBetaHeadersForProvider(MergeBetaHeaders(") {
+			continue
+		}
+		end := i
+		// end+1, not end: the body reads lines[end] AFTER incrementing, so a matching
+		// call inside the final few lines of the file would index one past the slice.
+		for end+1 < len(lines) && end < i+6 {
+			end++
+			if strings.TrimSpace(lines[end]) == "}" {
+				break
+			}
+		}
+		var b strings.Builder
+		for _, l := range lines[i : end+1] {
+			b.WriteString(strings.TrimSpace(l))
+			b.WriteByte('\n')
+		}
+		blocks = append(blocks, b.String())
+		at = append(at, i+1)
+	}
+
+	if len(blocks) < 2 {
+		t.Fatalf("found %d beta-header blocks in anthropic.go; expected several (unary and "+
+			"streaming, chat and responses). The guard has broken, or the call was renamed.", len(blocks))
+	}
+
+	for i := 1; i < len(blocks); i++ {
+		if blocks[i] != blocks[0] {
+			t.Errorf("the beta-header block at anthropic.go:%d differs from the one at "+
+				"anthropic.go:%d, so these request paths can send different anthropic-beta "+
+				"values for the same request.\n\nfirst:\n%s\ndiffering:\n%s",
+				at[i], at[0], blocks[0], blocks[i])
+		}
+	}
+	t.Logf("%d outbound beta-header blocks, all identical (lines %v)", len(blocks), at)
+}
+
+// TestRawPathWithCallerBetaHeadersMatchesTypedPath covers prefix suppression.
+//
+// When the caller supplies its own anthropic-beta, betaHeaderPrefixExists suppresses every
+// derived header sharing a prefix with it. Both paths must reach the same answer: the raw
+// path decodes a body whose tools have been stripped of input_schema and description, the
+// typed path decodes them whole, and neither difference may change which headers survive.
+// Checked for every corpus body and provider.
+//
+// A divergence here means the bet is wrong: some tool-derived header whose prefix the
+// caller did not claim is emitted by the typed path and lost by the raw one.
+func TestRawPathWithCallerBetaHeadersMatchesTypedPath(t *testing.T) {
+	// A caller header that claims one unrelated prefix, so most derived headers are still
+	// eligible. This is the adversarial case: if dropping tools loses anything, it shows here.
+	callerBeta := []string{AnthropicContext1MBetaHeader}
+
+	for name, body := range betaHeaderCorpus() {
+		for _, provider := range betaHeaderTestProviders() {
+			t.Run(fmt.Sprintf("%s/%s", name, provider), func(t *testing.T) {
+				raw := []byte(body)
+
+				headersOf := func(apply func(ctx *schemas.BifrostContext) error) []string {
+					ctx := schemas.NewBifrostContext(nil, time.Time{})
+					ctx.SetValue(schemas.BifrostContextKeyExtraHeaders,
+						map[string][]string{AnthropicBetaHeader: callerBeta})
+					if err := apply(ctx); err != nil {
+						t.Fatalf("applying beta headers: %v", err)
+					}
+					extra, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+					got := append([]string(nil), extra[AnthropicBetaHeader]...)
+					sort.Strings(got)
+					return got
+				}
+
+				want := headersOf(func(ctx *schemas.BifrostContext) error {
+					var req AnthropicMessageRequest
+					if err := sonic.Unmarshal(raw, &req); err != nil {
+						t.Fatalf("corpus body is not decodable: %v", err)
+					}
+					return AddMissingBetaHeadersToContext(ctx, &req, provider)
+				})
+				got := headersOf(func(ctx *schemas.BifrostContext) error {
+					return AddMissingBetaHeadersToContextFromRawBody(ctx, raw, provider)
+				})
+
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("with a caller-supplied anthropic-beta the raw path drops tools and "+
+						"disagrees with the typed path.\nraw:   %v\ntyped: %v\nbody:  %s",
+						got, want, body)
+				}
+			})
+		}
+	}
+}
+
+// TestBetaProbeNeverMutatesTheOutboundBody is the blast-radius check on stripping
+// input_schema and description.
+//
+// Those fields are removed only from a local copy used for the probe decode. If the strip
+// ever reached the body that goes upstream, every tool would arrive at Anthropic with no
+// schema and no description: tool calling would break outright, on every request, for
+// every passthrough client. That is a far worse failure than the memory it saves, so it is
+// asserted rather than assumed.
+func TestBetaProbeNeverMutatesTheOutboundBody(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","tools":[` +
+		`{"type":"custom","name":"lookup","description":"Look something up",` +
+		`"input_schema":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}},` +
+		`{"type":"computer_20250124","name":"computer","description":"Use the computer",` +
+		`"input_schema":{"type":"object"}}` +
+		`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	// Byte-for-byte snapshot: aliasing bugs show up as in-place edits, not just as a
+	// different length.
+	original := append([]byte(nil), body...)
+
+	for _, provider := range betaHeaderTestProviders() {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, body, provider); err != nil {
+			t.Fatalf("%s: %v", provider, err)
+		}
+		if !bytes.Equal(body, original) {
+			t.Fatalf("%s: the probe mutated the caller's body in place.\ngot:  %s\nwant: %s",
+				provider, body, original)
+		}
+	}
+
+	// Belt and braces: the fields the probe strips are still present and intact.
+	for i, want := range []string{"Look something up", "Use the computer"} {
+		if got := providerUtils.GetJSONField(body, fmt.Sprintf("tools.%d.description", i)).String(); got != want {
+			t.Errorf("tools.%d.description = %q, want %q", i, got, want)
+		}
+		if !providerUtils.JSONFieldExists(body, fmt.Sprintf("tools.%d.input_schema", i)) {
+			t.Errorf("tools.%d.input_schema was removed from the outbound body", i)
+		}
+	}
+	if got := providerUtils.GetJSONField(body, "tools.0.input_schema.properties.q.type").String(); got != "string" {
+		t.Errorf("the nested schema was altered: tools.0.input_schema.properties.q.type = %q, want \"string\"", got)
 	}
 }

@@ -19,6 +19,7 @@ exclude_dir = [
     "tests",
     "docs",
     "npx",
+    "examples/mcps",
     "test-reports",
     "playwright-report",
 ]

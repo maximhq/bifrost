@@ -1,9 +1,14 @@
 package gemini
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -249,4 +254,72 @@ func TestGeminiGenerateContentToBatchResultBody(t *testing.T) {
 		_, hasUsage := body["usage"]
 		assert.False(t, hasUsage)
 	})
+}
+
+func TestGeminiResourcePath(t *testing.T) {
+	t.Parallel()
+
+	valid := []struct{ id, collection, want string }{
+		{"abc123", "batches", "batches/abc123"},
+		{"batches/abc123", "batches", "batches/abc123"},
+		{"files/abc", "files", "files/abc"},
+		{"cachedContents/abc", "cachedContents", "cachedContents/abc"},
+	}
+	for _, tc := range valid {
+		got, bifrostErr := geminiResourcePath(tc.id, tc.collection, "id")
+		if bifrostErr != nil || got != tc.want {
+			t.Fatalf("geminiResourcePath(%q) = %q, %v; want %q", tc.id, got, bifrostErr, tc.want)
+		}
+	}
+
+	for _, id := range []string{"", "..", "../files/abc", "batches/../files/abc", "abc?x=1", "abc#", "abc%2Fdef", "files/abc"} {
+		if got, bifrostErr := geminiResourcePath(id, "batches", "batch_id"); bifrostErr == nil {
+			t.Fatalf("geminiResourcePath(%q) = %q, want error", id, got)
+		}
+	}
+}
+
+// A 200 that is not a batch object (no metadata) must become an error, not a nil dereference.
+func TestGeminiBatchResponsesWithoutMetadataDoNotPanic(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/batches/no-metadata"):
+			_, _ = w.Write([]byte(`{"files":[{"name":"files/abc"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/batches/no-stats"):
+			_, _ = w.Write([]byte(`{"name":"batches/no-stats","metadata":{"name":"batches/no-stats","state":"BATCH_STATE_PENDING","createTime":"2026-07-01T00:00:00Z"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"operations":[{"name":"batches/a"},{"name":"batches/b","metadata":{"state":"BATCH_STATE_SUCCEEDED","createTime":"2026-07-01T00:00:00Z"}}]}`))
+		}
+	}))
+	defer ts.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+	}, testNoopLogger{})
+	keys := []schemas.Key{{Value: *schemas.NewSecretVar("dummy-key")}}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	_, bifrostErr := provider.BatchRetrieve(newCtx(), keys, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.Gemini, BatchID: "no-metadata"})
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "missing metadata")
+
+	_, bifrostErr = provider.BatchResults(newCtx(), keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "no-metadata"})
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "missing metadata")
+
+	retrieved, bifrostErr := provider.BatchRetrieve(newCtx(), keys, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.Gemini, BatchID: "no-stats"})
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "batches/no-stats", retrieved.ID)
+	assert.Equal(t, 0, retrieved.RequestCounts.Total)
+
+	listed, bifrostErr := provider.BatchList(newCtx(), keys, &schemas.BifrostBatchListRequest{Provider: schemas.Gemini})
+	require.Nil(t, bifrostErr)
+	require.Len(t, listed.Data, 2)
+	assert.Equal(t, "batches/a", listed.Data[0].ID)
+	assert.Equal(t, schemas.BatchStatusCompleted, listed.Data[1].Status)
 }

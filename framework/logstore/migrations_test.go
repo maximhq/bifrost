@@ -527,3 +527,205 @@ func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	assert.Equal(t, "logs", tables["idx_logs_project_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
 }
+
+// TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
+// additive, idempotent, and leave rows written before them intact — those rows
+// keep their bare ids, which is the accepted cost of not rewriting history.
+func TestMigrationAddMCPGovernanceSnapshots(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPGovernanceSnapshots(ctx, db, testLogger{}))
+	for _, field := range []string{
+		"UserName", "TeamName", "CustomerName", "BusinessUnitName",
+		"TeamIDs", "TeamNames", "CustomerIDs", "CustomerNames",
+		"BusinessUnitIDs", "BusinessUnitNames", "BudgetIDs", "RateLimitIDs",
+	} {
+		require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, field), "missing column for %s", field)
+	}
+	require.NoError(t, migrationAddMCPGovernanceSnapshots(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("mcp_tool_logs").Where("id = ?", "mcp-existing").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+// TestMCPGovernanceSnapshotsMigrationIsRegistered keeps the migration reachable:
+// an unregistered step leaves the columns missing on every real deployment while
+// every unit test that calls it directly still passes.
+func TestMCPGovernanceSnapshotsMigrationIsRegistered(t *testing.T) {
+	for _, step := range logstoreMigrationSteps {
+		for _, id := range step.IDs {
+			if id == "mcp_tool_logs_add_governance_snapshots" {
+				return
+			}
+		}
+	}
+	t.Fatal("mcp_tool_logs_add_governance_snapshots is not registered in logstoreMigrationSteps")
+}
+
+// TestMigrationAddWarpConversationTables_NonRollbackable pins that rolling the
+// history tables back is refused while they hold anything. warp_conversations
+// and warp_messages are persistent user content - saved chats someone can
+// reopen - so dropping them is not a schema reversal, it is deleting the data.
+// An empty pair is still safe to drop, which keeps a failed upgrade reversible.
+func TestMigrationAddWarpConversationTables_NonRollbackable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, migrationAddWarpConversationTables(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasTable(&WarpConversation{}))
+	require.True(t, db.Migrator().HasTable(&WarpMessage{}))
+
+	// Empty: the rollback is a genuine reversal and must be allowed.
+	require.NoError(t, rollbackWarpConversationTables(db))
+	require.False(t, db.Migrator().HasTable(&WarpConversation{}),
+		"an empty history is safe to drop")
+
+	// Re-create via AutoMigrate, not the migration: migration ids are write-once,
+	// so a second run of the same id is recorded as already applied and does
+	// nothing. Then seed a saved conversation, so the drop would destroy content.
+	require.NoError(t, db.AutoMigrate(&WarpConversation{}, &WarpMessage{}))
+	require.NoError(t, db.Create(&WarpConversation{
+		ID: "c-1", OwnerID: "u-1", Title: "how much did we spend?",
+	}).Error)
+
+	err = rollbackWarpConversationTables(db)
+	require.Error(t, err, "rollback must refuse while saved conversations exist")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasTable(&WarpConversation{}),
+		"a refused rollback must leave the table intact")
+
+	var surviving int64
+	require.NoError(t, db.Model(&WarpConversation{}).Count(&surviving).Error)
+	assert.EqualValues(t, 1, surviving, "the saved conversation must survive")
+}
+
+// TestMigrationAddWarpMessageOutcomeColumns_RollbackGuardsRecordedUsage pins
+// that rolling the outcome columns back is refused once they hold anything.
+//
+// These are not pure schema. finish_reason is what marks an answer partial, and
+// total_tokens/cost are the recorded spend for a saved chat, so dropping a
+// populated set destroys a record rather than reversing a migration. Empty is
+// still reversible, which keeps a failed upgrade recoverable.
+func TestMigrationAddWarpMessageOutcomeColumns_RollbackGuardsRecordedUsage(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&WarpConversation{}, &WarpMessage{}))
+	require.NoError(t, migrationAddWarpMessageOutcomeColumns(ctx, db, testLogger{}))
+	for _, column := range warpMessageOutcomeColumns {
+		require.True(t, db.Migrator().HasColumn(&WarpMessage{}, column.column))
+	}
+
+	// A message with no recorded outcome: the rollback is a genuine reversal.
+	require.NoError(t, db.Create(&WarpMessage{ID: "m-plain", ConversationID: "c-1", Role: "user", Content: "q"}).Error)
+	require.NoError(t, rollbackWarpMessageOutcomeColumns(db))
+	require.False(t, db.Migrator().HasColumn(&WarpMessage{}, "cost"),
+		"columns holding nothing are safe to drop")
+
+	// Re-add them, then record a turn's spend. Now the drop would destroy it.
+	require.NoError(t, db.AutoMigrate(&WarpMessage{}))
+	require.NoError(t, db.Create(&WarpMessage{
+		ID: "m-answer", ConversationID: "c-1", Role: "assistant", Content: "a",
+		FinishReason: "partial", TotalTokens: 1200, Cost: 0.042,
+	}).Error)
+
+	err = rollbackWarpMessageOutcomeColumns(db)
+	require.Error(t, err, "rollback must refuse while a recorded outcome exists")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&WarpMessage{}, "cost"),
+		"a refused rollback must leave the columns intact")
+
+	var got WarpMessage
+	require.NoError(t, db.Where("id = ?", "m-answer").First(&got).Error)
+	assert.Equal(t, 1200, got.TotalTokens, "the recorded usage must survive")
+	assert.InDelta(t, 0.042, got.Cost, 1e-9)
+}
+
+// The cross-owner sweep needs an index it can actually use.
+//
+// DeleteWarpConversationsOlderThan filters on updated_at alone, and the
+// composite index leads with owner_id, so it cannot serve a bare range lookup -
+// the sweep scans the whole table every hour on a deployment where most rows
+// are not stale. AutoMigrate only creates the composite one, and the table
+// migration is write-once, so existing installs never get this without a
+// migration of its own.
+func TestMigrationAddWarpConversationsUpdatedAtIndex(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, migrationAddWarpConversationTables(ctx, db, testLogger{}))
+	require.NoError(t, migrationAddWarpConversationsUpdatedAtIndex(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at"),
+		"the retention sweep filters on updated_at alone and needs it leading")
+
+	// Idempotent: the helper runs on every boot and must not fail on an index
+	// that is already there.
+	require.NoError(t, migrationAddWarpConversationsUpdatedAtIndex(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at"))
+}
+
+// sqlRecorder captures every statement gorm executes, so a test can assert on
+// statement order - here, that rollback takes its locks in writer order.
+type sqlRecorder struct {
+	logger.Interface
+	statements []string
+}
+
+func (r *sqlRecorder) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
+	sql, _ := fc()
+	r.statements = append(r.statements, sql)
+}
+
+// The rollback must lock warp_conversations before warp_messages.
+//
+// AppendWarpMessages locks the conversation row first and then inserts
+// messages, so a rollback that grabs ACCESS EXCLUSIVE on warp_messages first
+// acquires the same two tables in the opposite order - a textbook PostgreSQL
+// deadlock, with one side aborted by the server. The drop order stays
+// child-before-parent; only the lock order follows the writers.
+func TestWarpRollbackLocksTablesInWriterOrder(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	ctx := context.Background()
+
+	// The table migration is ID-gated in the shared migrations table, and this
+	// test calls the rollback function directly (no RollbackLast), so the ID row
+	// must be cleared or a repeat run skips creation and finds no tables.
+	db.Exec("DROP TABLE IF EXISTS warp_messages")
+	db.Exec("DROP TABLE IF EXISTS warp_conversations")
+	db.Exec("DELETE FROM migrations WHERE id = 'logs_add_warp_conversation_tables'")
+	require.NoError(t, migrationAddWarpConversationTables(ctx, db, testLogger{}))
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS warp_messages")
+		db.Exec("DROP TABLE IF EXISTS warp_conversations")
+		db.Exec("DELETE FROM migrations WHERE id = 'logs_add_warp_conversation_tables'")
+	})
+
+	recorder := &sqlRecorder{Interface: logger.Default.LogMode(logger.Silent)}
+	session := db.Session(&gorm.Session{Logger: recorder})
+	require.NoError(t, session.Transaction(rollbackWarpConversationTables))
+
+	conversationsLock, messagesLock := -1, -1
+	for i, sql := range recorder.statements {
+		switch sql {
+		case "LOCK TABLE warp_conversations IN ACCESS EXCLUSIVE MODE":
+			conversationsLock = i
+		case "LOCK TABLE warp_messages IN ACCESS EXCLUSIVE MODE":
+			messagesLock = i
+		}
+	}
+	require.NotEqual(t, -1, conversationsLock, "rollback must lock warp_conversations")
+	require.NotEqual(t, -1, messagesLock, "rollback must lock warp_messages")
+	require.Less(t, conversationsLock, messagesLock,
+		"locks must follow writer order (conversation first), or a concurrent append can deadlock the rollback")
+}

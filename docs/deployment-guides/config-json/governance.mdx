@@ -95,8 +95,9 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 | Field | Required | Description |
 |-------|----------|-------------|
 | `provider` | Yes | Provider name (e.g. `"openai"`) |
-| `allowed_models` | No | Model allow-list. `["*"]` = all models; `[]` = deny all |
-| `key_ids` | No | Provider key names allowed for this VK. `["*"]` = all keys; `[]` = deny all. Use key `name` values (not UUIDs) in `config.json` |
+| `allowed_models` | No | Model allow-list. `["*"]` = all models; `[]` = deny all; `"regex:<pattern>"` entries are RE2 patterns matched case-insensitively against the whole model name |
+| `blacklisted_models` | No | Model deny-list, which wins over `allowed_models`. `["*"]` = block all; `[]` or omission = block none; `"regex:<pattern>"` entries are RE2 patterns matched case-insensitively against the whole model name |
+| `key_ids` | No | Provider key IDs allowed for this VK. `["*"]` = all keys; `[]` or omission = deny all. Use each provider key's `id` value |
 | `weight` | No | Load-balancing weight when multiple provider configs are present |
 | `rate_limit_id` | No | Attach a per-provider-config rate limit |
 
@@ -258,7 +259,7 @@ Routing rules dynamically select the provider and model for each request based o
 | `scope` | No | `"global"` (default), `"team"`, `"customer"`, `"virtual_key"` |
 | `scope_id` | Conditional | Required when `scope` is not `"global"` |
 | `chain_rule` | No | If `true`, re-evaluates the chain after this rule matches |
-| `fallbacks` | No | Ordered fallback provider list if primary target fails |
+| `fallbacks` | No | Ordered fallback list if the primary target fails. See [Fallback Fields](#fallback-fields) |
 
 ### Target Fields
 
@@ -267,7 +268,26 @@ Routing rules dynamically select the provider and model for each request based o
 | `weight` | Yes | Fraction of traffic (all weights in a rule must sum to `1.0`) |
 | `provider` | No | Target provider. Omit to keep the incoming request's provider |
 | `model` | No | Target model. Omit to keep the incoming request's model |
-| `key_id` | No | Pin a specific API key by name |
+| `provider_key_name` | No | Pin a specific provider key by name. Requires `provider`, and is resolved to an internal key ID at load time |
+
+### Fallback Fields
+
+Each entry is either the string `"provider/model"` (use `"provider/"` to keep the incoming model), or an object when it needs to pin a key:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `provider` | Yes | Fallback provider |
+| `model` | No | Fallback model. Omit to keep the incoming request's model |
+| `provider_key_name` | No | Pin a specific provider key by name, resolved to an internal key ID at load time. Omit for load-balanced key selection |
+
+```json
+"fallbacks": [
+  "anthropic/claude-sonnet-4-5",
+  { "provider": "vertex", "provider_key_name": "vertex-prod" }
+]
+```
+
+A fallback whose pinned key is missing from that provider's pool is skipped, and the chain moves to the next entry.
 
 ---
 
@@ -344,7 +364,7 @@ Declare projects that requests opt into for access and accounting. A project com
           }
         ],
         "mcp_configs": [{ "mcp_client_name": "github", "tools_to_execute": ["*"] }],
-        "virtual_mcps": [{ "virtual_mcp_id": 3 }]
+        "virtual_mcps": [{ "virtual_mcp_name": "Platform Tools" }]
       }
     ]
   }
@@ -370,7 +390,7 @@ Requests reference a project by name with the `x-bf-project-name` header.
 | `rate_limit` | No | Request and token limits: `request_max_limit`, `request_reset_duration`, `token_max_limit`, `token_reset_duration` |
 | `provider_configs` | No | One entry per provider, see below |
 | `mcp_configs` | No | One entry per MCP client: `mcp_client_name` (as declared under `mcp.client_configs`) and `tools_to_execute` (`["*"]` allows every tool; empty or omitted allows none, regardless of the top-level `version`) |
-| `virtual_mcps` | No | Virtual MCPs assigned to the project, one `virtual_mcp_id` per entry. A scoped request can reach each at its `/mcp/<slug>` endpoint |
+| `virtual_mcps` | No | Virtual MCPs assigned to the project, one `virtual_mcp_name` per entry, resolved on startup. A scoped request can reach each at its `/mcp/<slug>` endpoint. `virtual_mcp_id` is accepted as an alternative and wins when both are set |
 
 Budgets and rate limits inside a project are declared without ids.
 
@@ -380,8 +400,8 @@ Budgets and rate limits inside a project are declared without ids.
 |-------|----------|-------------|
 | `provider_name` | Yes | Provider this entry allows. A project names each provider at most once |
 | `all_models_allowed` | No | Allow every model of the provider |
-| `allowed_models` | No | Allowed model names, ignored when `all_models_allowed` is true |
-| `blacklisted_models` | No | Models blocked even if allowed; `["*"]` blocks all |
+| `allowed_models` | No | Allowed model names, ignored when `all_models_allowed` is true; `"regex:<pattern>"` entries are RE2 patterns matched case-insensitively against the whole model name |
+| `blacklisted_models` | No | Models blocked even if allowed; `["*"]` blocks all; `"regex:<pattern>"` entries are RE2 patterns matched case-insensitively against the whole model name |
 | `key_ids` | No | Keys that may serve the request; `["*"]` allows all, empty or omitted allows none, regardless of the top-level `version`. Each id must belong to this provider |
 | `weight` | No | Load-balancer seed weight; omit to leave the caller's own preference standing |
 | `budgets` | No | Spend caps on this provider inside the project |
@@ -460,7 +480,7 @@ Budgets and rate limits inside a project are declared without ids.
         "name": "Fallback on error",
         "cel_expression": "true",
         "targets": [{ "provider": "openai", "weight": 1.0 }],
-        "fallbacks": ["anthropic"]
+        "fallbacks": ["anthropic/"]
       }
     ]
   },

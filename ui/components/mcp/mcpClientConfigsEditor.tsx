@@ -143,9 +143,8 @@ export function MCPClientConfigsEditor({
 								<Info className="mt-0.5 h-3 w-3 shrink-0" />
 								<span>
 									The following MCP servers are allowed by default, with all tools enabled, on any virtual key that doesn't configure them
-									explicitly:{" "}
-									<span className="text-foreground font-medium">{defaultMCPClients.map((c) => c.config.name).join(", ")}</span>. Adding an
-									explicit config for one below overrides that all-tools default.
+									explicitly: <span className="text-foreground font-medium">{defaultMCPClients.map((c) => c.config.name).join(", ")}</span>.
+									Adding an explicit config for one below overrides that all-tools default.
 								</span>
 							</div>
 						</div>

@@ -51,7 +51,7 @@ These metrics track requests forwarded to AI providers:
 | ---------------------------------- | --------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
 | `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers                    | Base Labels, custom labels                            |
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
-| `bifrost_error_requests_total`     | Counter   | Total failed requests to upstream providers                       | Base Labels, `status_code`, custom labels             |
+| `bifrost_error_requests_total`     | Counter   | Total failed requests, by raw status and normalized reason         | Base Labels, `status_code`, `error_type`, custom labels |
 | `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
 | `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
 | `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |
@@ -72,6 +72,7 @@ Base Labels:
 - `model`: Model name (e.g., `gpt-4o-mini`, `claude-3-sonnet`)
 - `alias`: Alias resolved to this model (empty if none)
 - `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
+- `app`: Calling client classified from the User-Agent (`Claude Code`, `Cursor`, `Codex CLI`, ..., `API`, or `Other`); empty when no User-Agent was sent
 - `virtual_key_id`: Virtual key ID
 - `virtual_key_name`: Virtual key name
 - `routing_engine_used`: Comma-separated routing engines used (`routing-rule`, `governance`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — i.e. a fallback transition or a retry transition.
@@ -85,6 +86,8 @@ Base Labels:
 - `team_id` / `team_name`: Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name`: Customer identifiers (empty when governance is not used)
 - custom labels: Custom labels configured in the Bifrost configuration
+
+`user_id` / `user_name` are not Base Labels. They are opt-in via the telemetry plugin's `user_labels_enabled` config field, because user identity has unbounded cardinality and multiplies series count. See [Prometheus → User Labels](/features/observability/prometheus#user-labels).
 
 <Note>
 `bifrost_overhead_component_microseconds` is off by default. Enable it with the telemetry plugin's `overhead_breakdown_enabled` config field (a sibling of `metrics_enabled`). It carries the Base Labels above plus an `overhead_component` label whose value is one of ten fixed categories (`serialization`, `conversion`, `plugins`, `middleware`, `routing`, `processing`, `networking`, `streaming`, `miscellaneous`, `other`), the same categories the Bifrost UI's log-detail overhead breakdown groups into; summing the components for a given label set reconstructs `bifrost_overhead_latency_microseconds`. Because the breakdown is derived from completed trace spans, it only populates when tracing is active for the request. See [Prometheus → Overhead Breakdown](/features/observability/prometheus#overhead-breakdown).
@@ -264,7 +267,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 - Label name: Any string after the prefix, except reserved metric labels like `path` and `method`
 - Value: String value for the label
 
-These runtime dimensions are also forwarded to the other observability backends. The same `x-bf-dim-*` values appear in internal logs, OpenTelemetry span attributes, and Maxim tags.
+These runtime dimensions are also forwarded to the other observability backends. The same `x-bf-dim-*` values appear in internal logs, OpenTelemetry span attributes, Datadog spans, and Maxim tags.
 
 <Note>
 Legacy `x-bf-prom-*` headers still work for Prometheus-only behavior, but they are deprecated. When both prefixes provide the same label, `x-bf-dim-*` wins.
@@ -340,7 +343,13 @@ Configure alerts for critical scenarios using the new metrics:
 
 ```yaml
 - alert: BifrostHighErrorRate
-  expr: sum by (provider) (rate(bifrost_error_requests_total[5m])) / sum by (provider) (rate(bifrost_upstream_requests_total[5m])) > 0.05
+  # Excludes caller_* (bad model names, malformed requests) and policy_* (governance
+  # refusals: budgets, rate limits, blocked models). Neither is a provider or gateway
+  # failure, and policy refusals short-circuit before any provider call while still
+  # counting in bifrost_upstream_requests_total — so without this they inflate both
+  # sides of the ratio. provider_* and bifrost_* are what this alert is for. See the
+  # error_type reference: /features/observability/prometheus#error-types
+  expr: sum by (provider) (rate(bifrost_error_requests_total{error_type!~"(caller|policy)_.*"}[5m])) / sum by (provider) (rate(bifrost_upstream_requests_total[5m])) > 0.05
   for: 2m
   labels:
     severity: warning

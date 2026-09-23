@@ -91,10 +91,13 @@ type TestScenarios struct {
 	ContainerFileDelete          bool // Container File API delete functionality
 	PassThroughExtraParams       bool // Pass through extra params functionality
 	Rerank                       bool // Rerank functionality
+	Decision                     bool // Decision functionality (annotated function-tool evaluation)
+	DecisionEmulation            bool // Decision emulated via a general LLM (tool-calling / structured output)
 	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
 	Compaction                   bool // Server-side compaction (context management)
+	ToolSearch                   bool // Anthropic server-side tool search + defer_loading (on Bedrock via InvokeModel routing)
 	ExternalCompaction           bool // OpenAI /v1/responses/compact endpoint
 	InterleavedThinking          bool // Interleaved thinking between tool calls (beta)
 	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
@@ -113,6 +116,8 @@ type ComprehensiveTestConfig struct {
 	ReasoningModel           string
 	EmbeddingModel           string
 	RerankModel              string
+	DecisionModel            string
+	DecisionEmulationModel   string // a general LLM model used to emulate a decision
 	TranscriptionModel       string
 	SpeechSynthesisModel     string
 	ChatAudioModel           string
@@ -123,6 +128,7 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisFallbacks []schemas.Fallback         // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback         // for embedding tests
 	RerankFallbacks          []schemas.Fallback         // for rerank tests
+	DecisionFallbacks        []schemas.Fallback         // for decision tests
 	SkipReason               string                     // Reason to skip certain tests
 	ImageGenerationModel     string                     // Model for image generation
 	ImageGenerationFallbacks []schemas.Fallback         // Fallbacks for image generation
@@ -141,6 +147,7 @@ type ComprehensiveTestConfig struct {
 	ExpectRawRequestResponse bool                       // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
+	ToolSearchModel          string                     // Model for tool search tests; defaults to claude-sonnet-4-6
 	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
@@ -196,6 +203,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Wafer,
 		schemas.Databricks,
 		schemas.GithubCopilot,
+		schemas.Typesafe,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -590,6 +598,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Typesafe:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
 			},
 		}, nil
 	case schemas.Fireworks:
@@ -1050,6 +1066,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Runware:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Typesafe:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 300,

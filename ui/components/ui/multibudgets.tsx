@@ -24,6 +24,9 @@ interface MultiBudgetLinesProps {
 	options?: { label: string; value: string }[];
 	onReset?: () => void;
 	showReset?: boolean;
+	// How many lines this holder can carry; Add Budget disappears once they are all there. Left out
+	// where there is no ceiling - a team, a customer or a virtual key may carry one per reset window.
+	maxLines?: number;
 }
 
 export default function MultiBudgetLines({
@@ -34,6 +37,7 @@ export default function MultiBudgetLines({
 	options = budgetResetDurationOptions,
 	onReset,
 	showReset,
+	maxLines,
 }: MultiBudgetLinesProps) {
 	// Track which reset durations are already used (for duplicate detection)
 	const usedDurations = useMemo(() => {
@@ -94,10 +98,12 @@ export default function MultiBudgetLines({
 							Reset
 						</Button>
 					)}
-					<Button data-testid={`${testId}-add-btn`} variant="outline" size="sm" type="button" onClick={addLine}>
-						<Plus className="mr-1 h-3 w-3" />
-						Add Budget
-					</Button>
+					{(maxLines === undefined || lines.length < maxLines) && (
+						<Button data-testid={`${testId}-add-btn`} variant="outline" size="sm" type="button" onClick={addLine}>
+							<Plus className="mr-1 h-3 w-3" />
+							Add Budget
+						</Button>
+					)}
 				</div>
 			</div>
 

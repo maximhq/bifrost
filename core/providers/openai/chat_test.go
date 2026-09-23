@@ -1663,7 +1663,7 @@ func TestOpenAIInbound_MaxCompletionTokensTakesPriorityOverMaxTokens(t *testing.
 	}
 }
 
-func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
+func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider schemas.ModelProvider
@@ -1671,6 +1671,7 @@ func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
 		{name: "Go", provider: schemas.OpencodeGo},
 		{name: "Zen", provider: schemas.OpencodeZen},
 		{name: "Ollama", provider: schemas.Ollama},
+		{name: "DeepSeek", provider: schemas.DeepSeek},
 	}
 
 	for _, tt := range tests {

@@ -908,6 +908,9 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 												return (
 													<CommandItem
 														key={option.value}
+														// Without this cmdk keys the row by its text, so options sharing a label highlight together.
+														value={option.value}
+														keywords={[option.label]}
 														onSelect={() => toggleOption(option.value)}
 														role="option"
 														aria-selected={isSelected}
@@ -941,6 +944,9 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 											return (
 												<CommandItem
 													key={option.value}
+													// Without this cmdk keys the row by its text, so options sharing a label highlight together.
+													value={option.value}
+													keywords={option.description ? [option.label, option.description] : [option.label]}
 													onSelect={() => toggleOption(option.value)}
 													role="option"
 													aria-selected={isSelected}

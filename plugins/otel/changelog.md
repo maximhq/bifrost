@@ -1,1 +1,1 @@
-- feat: optionally merge `x-bf-dim-*` dimensions from `trace.Attributes[bifrost.dimensions]` onto every exported span when `propagate_trace_attributes` is enabled; span-level attributes win on conflict, reserved `path`/`method` suffixes are skipped (#3770)
+- feat: optionally merge `x-bf-dim-*` dimensions from `trace.Attributes[bifrost.dimensions]` onto every exported span when `apply_trace_dimensions_to_child_spans` is enabled; span-level attributes win on conflict, reserved `path`/`method` suffixes are skipped (#3770)

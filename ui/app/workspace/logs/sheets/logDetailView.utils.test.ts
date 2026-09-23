@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import { extractProviderErrorMessage, parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
 
 const base = {
 	hasProvidersAccess: true,
@@ -27,15 +27,13 @@ describe("resolveRawJsonNoticeState", () => {
 	});
 
 	it("is storage-disabled when the provider explicitly disables raw storage", () => {
-		expect(
-			resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: false }] }),
-		).toBe("storage-disabled");
+		expect(resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: false }] })).toBe(
+			"storage-disabled",
+		);
 	});
 
 	it("is unknown when the provider has raw storage enabled", () => {
-		expect(
-			resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: true }] }),
-		).toBe("unknown");
+		expect(resolveRawJsonNoticeState({ ...base, providers: [{ name: "openai", store_raw_request_response: true }] })).toBe("unknown");
 	});
 
 	it("is unknown when the setting is absent on the provider", () => {
@@ -43,9 +41,7 @@ describe("resolveRawJsonNoticeState", () => {
 	});
 
 	it("is unknown when this log's provider is not in the list", () => {
-		expect(
-			resolveRawJsonNoticeState({ ...base, providers: [{ name: "anthropic", store_raw_request_response: false }] }),
-		).toBe("unknown");
+		expect(resolveRawJsonNoticeState({ ...base, providers: [{ name: "anthropic", store_raw_request_response: false }] })).toBe("unknown");
 	});
 });
 
@@ -91,5 +87,41 @@ describe("parseRoutingDecisionLine", () => {
 
 	it("falls back to the raw line when it does not match the trail shape", () => {
 		expect(parseRoutingDecisionLine("free-form note")).toEqual({ timestamp: null, engine: null, level: null, message: "free-form note" });
+	});
+});
+
+describe("extractProviderErrorMessage", () => {
+	it("reads AWS's flat error shape, which is what left the Bedrock invoke path with no message", () => {
+		expect(extractProviderErrorMessage({ message: "data retention mode 'default' is not available for this model" })).toBe(
+			"data retention mode 'default' is not available for this model",
+		);
+	});
+
+	it("reads the nested error envelope", () => {
+		expect(extractProviderErrorMessage({ type: "error", error: { type: "invalid_request_error", message: "bad request" } })).toBe(
+			"bad request",
+		);
+	});
+
+	it("parses a JSON string body", () => {
+		expect(extractProviderErrorMessage('{"message":"rate exceeded"}')).toBe("rate exceeded");
+	});
+
+	it("falls back to the raw text when the body is not JSON", () => {
+		expect(extractProviderErrorMessage("  upstream connect error  ")).toBe("upstream connect error");
+	});
+
+	it("returns null when there is nothing readable", () => {
+		expect(extractProviderErrorMessage(null)).toBeNull();
+		expect(extractProviderErrorMessage("")).toBeNull();
+		expect(extractProviderErrorMessage({ id: "resp_123", output: [] })).toBeNull();
+		expect(extractProviderErrorMessage({ message: "   " })).toBeNull();
+	});
+
+	// JSON.parse("null") yields null, which typeof still reports as "object" - without an
+	// explicit null check the property read below the guard throws and takes the whole
+	// detail view down with it.
+	it("returns null for a body that is literally JSON null", () => {
+		expect(extractProviderErrorMessage("null")).toBeNull();
 	});
 });

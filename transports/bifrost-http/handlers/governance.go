@@ -170,6 +170,13 @@ func lookupManagedByResolver(scope string) (ManagedByResolver, bool) {
 // tracked OUTSIDE the VK's own budget rows
 type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
 
+// VirtualKeyAssigneeResolver returns the user each of the given virtual keys is
+// assigned to, keyed by virtual key ID. Keys with no assignee are simply absent
+// from the map. Batched rather than per-key because the list endpoint resolves a
+// whole page at once, and a per-key hook would reintroduce the N+1 the UI used to
+// do over the /virtual-keys/{id}/users endpoint.
+type VirtualKeyAssigneeResolver func(ctx context.Context, vkIDs []string) (map[string]*configstoreTables.AssignedUser, error)
+
 // SourcedBudget pairs a budget with what governs it (e.g. an access profile), for
 // quota responses that can be composed from more than one source. The embedded
 // SourceRef is the same one model configs carry, so both APIs describe an origin
@@ -221,6 +228,10 @@ type GovernanceHandler struct {
 	// but whose usage lives outside the VK's own budget rows (enterprise
 	// access-profile-managed VKs). Injected at construction; nil on OSS builds.
 	externalQuotaBudgetResolver ExternalQuotaBudgetResolver
+	// virtualKeyAssigneeResolver, when non-nil, supplies the user each VK is
+	// assigned to (enterprise: the enterprise_virtual_key_users link). Injected at
+	// construction; nil on OSS builds, which have no user directory.
+	virtualKeyAssigneeResolver VirtualKeyAssigneeResolver
 }
 
 // GovernanceRouteRegistrar registers one replaceable governance route family.
@@ -247,10 +258,12 @@ type GovernanceRouteOverrides struct {
 // externalQuotaBudgetResolver is optional (may be nil); when supplied the quota
 // endpoint uses it to resolve budgets/usage for VKs whose authoritative usage
 // is tracked outside their own budget rows.
+// virtualKeyAssigneeResolver is optional (may be nil); when supplied the virtual
+// key read paths use it to fill in each key's assigned user.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver, virtualKeyAssigneeResolver VirtualKeyAssigneeResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -269,6 +282,7 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 		configStore:                 configStore,
 		logManager:                  logManager,
 		externalQuotaBudgetResolver: externalQuotaBudgetResolver,
+		virtualKeyAssigneeResolver:  virtualKeyAssigneeResolver,
 	}, nil
 }
 
@@ -290,9 +304,12 @@ type CreateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
-	TeamID            *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
-	CustomerID        *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
-	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
+	TeamID     *string `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID and BusinessUnitID
+	CustomerID *string `json:"customer_id,omitempty"` // Mutually exclusive with TeamID and BusinessUnitID
+	// BusinessUnitID is the third owner a key can have. Business units are an enterprise table this
+	// handler does not model, so the id is stored as given; whoever owns business units validates it.
+	BusinessUnitID    *string                 `json:"business_unit_id,omitempty"`
+	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
 	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive          *bool                   `json:"is_active,omitempty"`
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
@@ -338,6 +355,7 @@ type UpdateVirtualKeyRequest struct {
 	} `json:"mcp_configs,omitempty"`
 	TeamID            schemas.OptionalJSON[string] `json:"team_id,omitempty"`
 	CustomerID        schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
+	BusinessUnitID    schemas.OptionalJSON[string] `json:"business_unit_id,omitempty"`
 	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
 	IsActive          *bool                        `json:"is_active,omitempty"`
@@ -347,31 +365,54 @@ type UpdateVirtualKeyRequest struct {
 	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 }
 
-var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
+var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
 
-// optionalJSONStringHasValue reports whether a presence-aware string contains a non-empty value.
+// optionalJSONStringHasValue reports whether a presence-aware string names something. Blank is not
+// a name, and neither is whitespace: an update saying `"team_id": " "` means the same thing as one
+// saying `"team_id": ""` - clear the owner - which is also what create makes of it, and what
+// BeforeSave persists. Counting it as a named owner would refuse an update that named one real
+// owner beside a blank one, while the identical create succeeded.
 func optionalJSONStringHasValue(value schemas.OptionalJSON[string]) bool {
-	return value.Set && !value.Null && value.Value != ""
+	return value.Set && !value.Null && strings.TrimSpace(value.Value) != ""
 }
 
-// applyVirtualKeyOwnershipUpdate applies presence-aware team/customer ownership changes.
+// virtualKeyOwnerCount counts the owners a create request names. A key belongs to at most one.
+func virtualKeyOwnerCount(owners ...*string) int {
+	count := 0
+	for _, owner := range owners {
+		if owner != nil {
+			count++
+		}
+	}
+	return count
+}
+
+// namedVirtualKeyOwners counts the owners an update request sets to a value.
+func namedVirtualKeyOwners(req *UpdateVirtualKeyRequest) int {
+	named := 0
+	for _, owner := range []schemas.OptionalJSON[string]{req.TeamID, req.CustomerID, req.BusinessUnitID} {
+		if optionalJSONStringHasValue(owner) {
+			named++
+		}
+	}
+	return named
+}
+
+// applyVirtualKeyOwnershipUpdate applies presence-aware team/customer/business-unit ownership
+// changes. Naming one owner clears the other two, because a key belongs to at most one.
 func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
-	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
+	if namedVirtualKeyOwners(req) > 1 {
 		return errVirtualKeyDualAssociation
 	}
-	if optionalJSONStringHasValue(req.TeamID) {
-		vk.TeamID = new(req.TeamID.Value)
-		vk.CustomerID = nil
-		return nil
-	}
-	if optionalJSONStringHasValue(req.CustomerID) {
-		vk.CustomerID = new(req.CustomerID.Value)
-		vk.TeamID = nil
-		return nil
-	}
-	if req.TeamID.Set || req.CustomerID.Set {
-		vk.TeamID = nil
-		vk.CustomerID = nil
+	switch {
+	case optionalJSONStringHasValue(req.TeamID):
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = new(req.TeamID.Value), nil, nil
+	case optionalJSONStringHasValue(req.CustomerID):
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = nil, new(req.CustomerID.Value), nil
+	case optionalJSONStringHasValue(req.BusinessUnitID):
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = nil, nil, new(req.BusinessUnitID.Value)
+	case req.TeamID.Set || req.CustomerID.Set || req.BusinessUnitID.Set:
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = nil, nil, nil
 	}
 	return nil
 }
@@ -426,8 +467,41 @@ type UpdateRateLimitRequest struct {
 	RequestResetDuration *string `json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 }
 
+// teamUpdateSetsOwnLimits reports whether this update would leave the team with a budget or a rate
+// limit of its own.
+//
+// An empty budget list, or a rate limit carrying neither maximum, clears rather than sets: that is
+// what an operator sends to take a team off its own limits, usually just before attaching an access
+// profile, so it must not be read as setting one.
+func teamUpdateSetsOwnLimits(req *UpdateTeamRequest) bool {
+	if len(req.Budgets) > 0 {
+		return true
+	}
+	return req.RateLimit != nil && (req.RateLimit.TokenMaxLimit != nil || req.RateLimit.RequestMaxLimit != nil)
+}
+
+// customerUpdateSetsOwnLimits reports whether this update would leave the customer with a budget or a
+// rate limit of its own. It looks at all three ways an update can carry one: the budget list, the
+// deprecated single budget, and the rate limit.
+//
+// Only an outright removal does not count - an empty list, a rate limit with neither maximum, or a
+// deprecated budget carrying neither field. A deprecated budget that names just one field is not a
+// removal: coerceLegacyBudget merges it with the stored budget and keeps the maximum already there.
+func customerUpdateSetsOwnLimits(req *UpdateCustomerRequest) bool {
+	if req.Budgets != nil && len(*req.Budgets) > 0 {
+		return true
+	}
+	if req.Budget != nil && !isBudgetRemovalRequest(req.Budget) {
+		return true
+	}
+	return req.RateLimit != nil && (req.RateLimit.TokenMaxLimit != nil || req.RateLimit.RequestMaxLimit != nil)
+}
+
+// isBudgetRemovalRequest reports whether a deprecated single-budget update asks for the budget to be
+// removed, which it does by naming no field at all. A request that names any field - including only
+// reset_config - is an edit of the budget that is there, not a removal of it.
 func isBudgetRemovalRequest(req *UpdateBudgetRequest) bool {
-	return req != nil && req.MaxLimit == nil && req.ResetDuration == nil
+	return req != nil && req.MaxLimit == nil && req.ResetDuration == nil && req.ResetConfig == nil
 }
 
 // budgetLastReset returns the appropriate LastReset for a new budget.
@@ -595,12 +669,19 @@ func coerceLegacyBudget(req *UpdateBudgetRequest, existing *configstoreTables.Ta
 		b.ID = existing.ID
 		b.MaxLimit = existing.MaxLimit
 		b.ResetDuration = existing.ResetDuration
+		// Carried like the other two: an update that names only one field keeps the rest of the budget
+		// as it is, and dropping the window settings here would silently move a quarterly budget's
+		// fiscal start back to the default.
+		b.ResetConfig = existing.ResetConfig
 	}
 	if req.MaxLimit != nil {
 		b.MaxLimit = *req.MaxLimit
 	}
 	if req.ResetDuration != nil {
 		b.ResetDuration = *req.ResetDuration
+	}
+	if req.ResetConfig != nil {
+		b.ResetConfig = req.ResetConfig
 	}
 	if b.MaxLimit == 0 || b.ResetDuration == "" {
 		return nil
@@ -966,6 +1047,35 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			}
 			mc.RateLimit = &rl
 		default:
+			// Adopt the VK's existing rate limit (config.json flow) instead of creating a duplicate.
+			if isNew && vk.RateLimitID != nil {
+				rl := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rl, "id = ?", *vk.RateLimitID).Error; err != nil {
+					if !errors.Is(err, gorm.ErrRecordNotFound) {
+						return err
+					}
+				} else {
+					rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
+					rl.TokenResetDuration = d.rateLimit.TokenResetDuration
+					rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
+					rl.RequestResetDuration = d.rateLimit.RequestResetDuration
+					if err := validateRateLimit(&rl); err != nil {
+						return err
+					}
+					if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
+						return err
+					}
+					if err := tx.Model(&configstoreTables.TableVirtualKey{}).
+						Where("id = ?", vk.ID).
+						Update("rate_limit_id", nil).Error; err != nil {
+						return fmt.Errorf("failed to clear VK rate limit reference: %w", err)
+					}
+					vk.RateLimitID = nil
+					mc.RateLimitID = &rl.ID
+					mc.RateLimit = &rl
+					break
+				}
+			}
 			rl := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
 				TokenMaxLimit:        d.rateLimit.TokenMaxLimit,
@@ -1017,6 +1127,24 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	if isNew {
 		if err := h.configStore.CreateModelConfig(ctx, &mc, tx); err != nil {
 			return err
+		}
+		// Adopt standalone VK budgets (config.json flow) into this MC so UpdateBudget sees the correct owner.
+		if len(vk.Budgets) > 0 && d.provider == nil {
+			ids := make([]string, len(vk.Budgets))
+			for i, b := range vk.Budgets {
+				ids[i] = b.ID
+			}
+			if err := tx.Model(&configstoreTables.TableBudget{}).
+				Where("id IN ? AND virtual_key_id = ?", ids, vk.ID).
+				Updates(map[string]interface{}{
+					"model_config_id": mc.ID,
+					"virtual_key_id":  nil,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to adopt standalone VK budgets into model config: %w", err)
+			}
+			if err := tx.Where("model_config_id = ?", mc.ID).Find(&mc.Budgets).Error; err != nil {
+				return fmt.Errorf("failed to reload adopted budgets for model config: %w", err)
+			}
 		}
 	} else {
 		mc.UpdatedAt = time.Now()
@@ -1307,6 +1435,61 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	vk.RateLimit = ext.RateLimit
 }
 
+// applyAssignees fills in the AssignedUser of each virtual key from the injected
+// resolver, in one batched call. A resolver error logs and leaves every AssignedUser
+// nil rather than failing the whole read, matching applyExternalBudgets: a missing
+// assignee degrades one column, a failed read degrades the page.
+//
+// It also marks AssigneeResolved, which decides whether assigned_user is serialized at
+// all. Every key gets marked on the paths that settle the question - a successful
+// lookup, and OSS, where the VK-user link does not exist so "unassigned" is the whole
+// truth. Only a resolver error leaves keys unresolved, so the field drops out and the
+// UI refetches per key instead of reading nil as "nobody is assigned".
+func (h *GovernanceHandler) applyAssignees(ctx context.Context, vks []*configstoreTables.TableVirtualKey) {
+	if len(vks) == 0 {
+		return
+	}
+	if h.virtualKeyAssigneeResolver == nil {
+		for _, vk := range vks {
+			if vk != nil {
+				vk.AssigneeResolved = true
+			}
+		}
+		return
+	}
+	vkIDs := make([]string, 0, len(vks))
+	for _, vk := range vks {
+		if vk != nil {
+			vkIDs = append(vkIDs, vk.ID)
+		}
+	}
+	if len(vkIDs) == 0 {
+		return
+	}
+	assignees, err := h.virtualKeyAssigneeResolver(ctx, vkIDs)
+	if err != nil {
+		logger.Error("failed to resolve assigned users for %d virtual keys: %v", len(vkIDs), err)
+		return
+	}
+	for _, vk := range vks {
+		if vk == nil {
+			continue
+		}
+		vk.AssignedUser = assignees[vk.ID]
+		vk.AssigneeResolved = true
+	}
+}
+
+// virtualKeyPtrs adapts a slice of virtual keys to the pointer slice applyAssignees
+// writes through, so the store's value slices are updated in place.
+func virtualKeyPtrs(vks []configstoreTables.TableVirtualKey) []*configstoreTables.TableVirtualKey {
+	ptrs := make([]*configstoreTables.TableVirtualKey, len(vks))
+	for i := range vks {
+		ptrs[i] = &vks[i]
+	}
+	return ptrs
+}
+
 func collectProviderConfigDeleteIDs(
 	config configstoreTables.TableVirtualKeyProviderConfig,
 	budgetIDs []string,
@@ -1529,6 +1712,10 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			h.applyExternalBudgets(ctx, &clone)
 			hydratedVKs[i] = &clone
 		}
+		// Resolved here too, even though the rest of this branch is served from the
+		// cache: the cache holds no assignments, and emitting an unresolved
+		// assigned_user would read as "assigned to nobody" rather than "unknown".
+		h.applyAssignees(ctx, hydratedVKs)
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": hydratedVKs,
 			"count":        len(hydratedVKs),
@@ -1544,6 +1731,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
+	businessUnitID := string(ctx.QueryArgs().Peek("business_unit_id"))
 	userID := string(ctx.QueryArgs().Peek("user_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
@@ -1552,12 +1740,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
 			CustomerID:                         customerID,
 			TeamID:                             teamID,
+			BusinessUnitID:                     businessUnitID,
 			UserID:                             userID,
 			SortBy:                             sortBy,
 			Order:                              order,
@@ -1607,6 +1796,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		for i := range virtualKeys {
 			h.applyExternalBudgets(ctx, &virtualKeys[i])
 		}
+		h.applyAssignees(ctx, virtualKeyPtrs(virtualKeys))
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
@@ -1628,6 +1818,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	for i := range virtualKeys {
 		h.applyExternalBudgets(ctx, &virtualKeys[i])
 	}
+	h.applyAssignees(ctx, virtualKeyPtrs(virtualKeys))
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
@@ -1649,9 +1840,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Virtual key name is required")
 		return
 	}
-	// Validate mutually exclusive TeamID and CustomerID
-	if req.TeamID != nil && req.CustomerID != nil {
-		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
+	// A blank owner id is no owner, and is normalized away before it can be counted as one - an
+	// update says the same thing by treating "" as a clear. Without this, a create body carrying
+	// "team_id": "" would either store an owner nothing resolves, or be refused for naming two.
+	req.TeamID = configstoreTables.NormalizeVirtualKeyOwnerID(req.TeamID)
+	req.CustomerID = configstoreTables.NormalizeVirtualKeyOwnerID(req.CustomerID)
+	req.BusinessUnitID = configstoreTables.NormalizeVirtualKeyOwnerID(req.BusinessUnitID)
+	// A key belongs to at most one of a team, a customer or a business unit.
+	if virtualKeyOwnerCount(req.TeamID, req.CustomerID, req.BusinessUnitID) > 1 {
+		SendError(ctx, 400, errVirtualKeyDualAssociation.Error())
 		return
 	}
 	// Validate budgets if provided
@@ -1705,6 +1902,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			Description:       req.Description,
 			TeamID:            req.TeamID,
 			CustomerID:        req.CustomerID,
+			BusinessUnitID:    req.BusinessUnitID,
 			IsActive:          isActive,
 			CalendarAligned:   req.CalendarAligned,
 			AllowAllProviders: req.AllowAllProviders,
@@ -1876,6 +2074,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 				clone.ProviderConfigs = pcs
 				applyVKGovernanceFromModelConfigs(&clone, byKey, perModelByKey)
 				h.applyExternalBudgets(ctx, &clone)
+				h.applyAssignees(ctx, []*configstoreTables.TableVirtualKey{&clone})
 				SendJSON(ctx, map[string]interface{}{
 					"virtual_key": &clone,
 				})
@@ -1899,6 +2098,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	// Surface the effective (e.g. access-profile) budgets in place of the VK's own
 	// untracked rows so the admin detail panel matches the self-service quota view.
 	h.applyExternalBudgets(ctx, vk)
+	h.applyAssignees(ctx, []*configstoreTables.TableVirtualKey{vk})
 
 	// The Virtual MCPs this key is assigned to, so the detail view can show and edit them.
 	vmcpIDs, err := h.configStore.GetVirtualMCPIDsForVirtualKey(ctx, vkID)
@@ -2013,9 +2213,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
-	// Validate mutually exclusive TeamID and CustomerID
-	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
-		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
+	// A key belongs to at most one of a team, a customer or a business unit. Checked before anything
+	// is read or written; applyVirtualKeyOwnershipUpdate enforces the same rule where it applies it.
+	if namedVirtualKeyOwners(&req) > 1 {
+		SendError(ctx, 400, errVirtualKeyDualAssociation.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
@@ -2114,10 +2315,14 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return err
 		}
 		if req.ProviderConfigs != nil {
-			// Get existing provider configs for comparison
+			// Get existing provider configs for comparison. Keys must be
+			// preloaded: a PUT that omits key_ids leaves existing.Keys as the
+			// source of truth, and the store update replaces the association
+			// with whatever this row carries.
 			var existingConfigs []configstoreTables.TableVirtualKeyProviderConfig
 			if err := tx.Where("virtual_key_id = ?", vk.ID).
 				Preload("Budgets").
+				Preload("Keys").
 				Find(&existingConfigs).Error; err != nil {
 				return err
 			}
@@ -2229,23 +2434,30 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					existing.AllowedModels = pc.AllowedModels
 					existing.BlacklistedModels = pc.BlacklistedModels
 
-					// Get keys for this provider config if specified
-					var keys []configstoreTables.TableKey
-					allowAllKeys := false
-					if pc.KeyIDs.IsUnrestricted() {
-						allowAllKeys = true
-					} else if !pc.KeyIDs.IsEmpty() {
-						var err error
-						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-						if err != nil {
-							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+					// Only touch the key associations when the request actually carries
+					// key_ids. A nil list means the client never sent the field (the GET
+					// response exposes allow_all_keys/keys but not key_ids), so treating
+					// "absent" as deny-all silently drops every key on a GET -> edit ->
+					// PUT round-trip. An explicit [] still clears the associations.
+					if pc.KeyIDs != nil {
+						// Get keys for this provider config if specified
+						var keys []configstoreTables.TableKey
+						allowAllKeys := false
+						if pc.KeyIDs.IsUnrestricted() {
+							allowAllKeys = true
+						} else if !pc.KeyIDs.IsEmpty() {
+							var err error
+							keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+							if err != nil {
+								return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+							}
+							if len(keys) != len(pc.KeyIDs) {
+								return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+							}
 						}
-						if len(keys) != len(pc.KeyIDs) {
-							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
-						}
+						existing.AllowAllKeys = allowAllKeys
+						existing.Keys = keys
 					}
-					existing.AllowAllKeys = allowAllKeys
-					existing.Keys = keys
 
 					// Provider-config governance is stored in the VK-scoped model config for this
 					// provider (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
@@ -2832,6 +3044,24 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	// reconciliation and collected there, so the in-memory store can be cleared
 	// once the transaction commits.
 	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
+	// A team governed another way - by an access profile attached to it, in the enterprise build -
+	// cannot also carry budgets and a rate limit of its own: they would be a second cap on the same
+	// keys, and one that is invisible in the profile's editor. Every other field here, and every edit
+	// to a team that holds no profile, is untouched.
+	if teamUpdateSetsOwnLimits(&req) {
+		governedBy, err := governance.LegacyLimitsGovernedBy(ctx, governance.LegacyLimitHolderTeam, teamID)
+		if err != nil {
+			// Fail closed: without knowing whether something else governs this team, accepting a budget
+			// could put a second cap on its keys.
+			logger.Error("failed to check whether team %s is governed: %v", teamID, err)
+			SendError(ctx, 503, "unable to verify whether an access profile governs this team, please retry")
+			return
+		}
+		if governedBy != "" {
+			SendError(ctx, 409, "this team is governed by access profile \""+governedBy+"\", so it cannot have budgets or a rate limit of its own - edit the access profile instead")
+			return
+		}
+	}
 	// Whether this request switches alignment on. Captured before the update so the
 	// open windows can be adopted onto the calendar grid afterwards instead of
 	// being reset out from under the operator; see adoptCalendarAlignment.
@@ -3273,6 +3503,24 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	if req.Budgets != nil && req.Budget != nil {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
+	}
+	// A customer governed another way - by an access profile, in the enterprise build - cannot also
+	// carry budgets and a rate limit of its own: they would be a second cap on the same keys, and one
+	// that is invisible in the profile's editor. Editing a customer that holds no profile is
+	// untouched, and so is every field here but these two.
+	if customerUpdateSetsOwnLimits(&req) {
+		governedBy, err := governance.LegacyLimitsGovernedBy(ctx, governance.LegacyLimitHolderCustomer, customerID)
+		if err != nil {
+			// Fail closed: without knowing whether something else governs this customer, accepting a
+			// budget could put a second cap on its keys.
+			logger.Error("failed to check whether customer %s is governed: %v", customerID, err)
+			SendError(ctx, 503, "unable to verify whether an access profile governs this customer, please retry")
+			return
+		}
+		if governedBy != "" {
+			SendError(ctx, 409, "this customer is governed by access profile \""+governedBy+"\", so it cannot have budgets or a rate limit of its own - edit the access profile instead")
+			return
+		}
 	}
 	// Fetching customer from database
 	customer, err := h.configStore.GetCustomer(ctx, customerID)

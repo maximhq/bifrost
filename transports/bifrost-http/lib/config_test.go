@@ -372,10 +372,12 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
@@ -527,11 +529,11 @@ func (m *MockConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (
 func (m *MockConfigStore) RevokeOAuth2Session(ctx context.Context, id string) error {
 	return nil
 }
-func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
-func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
-func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
-func (m *MockConfigStore) DB() *gorm.DB                                   { return nil }
-func (m *MockConfigStore) ScopedDB(ctx context.Context) *gorm.DB          { return nil }
+func (m *MockConfigStore) Ping(ctx context.Context) error                        { return nil }
+func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error        { return nil }
+func (m *MockConfigStore) Close(ctx context.Context) error                       { return nil }
+func (m *MockConfigStore) DB() *gorm.DB                                          { return nil }
+func (m *MockConfigStore) ScopedDB(ctx context.Context, tx ...*gorm.DB) *gorm.DB { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
@@ -955,7 +957,7 @@ func (m *MockConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*
 	return nil
 }
 
-func (m *MockConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
+func (m *MockConfigStore) GetCustomer(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableCustomer, error) {
 	return nil, nil
 }
 
@@ -984,7 +986,7 @@ func (m *MockConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm
 	return nil
 }
 
-func (m *MockConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
+func (m *MockConfigStore) GetTeam(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableTeam, error) {
 	return nil, nil
 }
 
@@ -1097,6 +1099,10 @@ func (m *MockConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Tabl
 
 func (m *MockConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
 	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	return nil, configstore.ErrNotFound
 }
 
 func (m *MockConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params configstore.VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
@@ -1942,6 +1948,10 @@ func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBef
 }
 
 func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
 	return nil, nil
 }
 
@@ -13859,6 +13869,107 @@ func TestSQLite_Customer_NewFromFile(t *testing.T) {
 	t.Log("✓ New customer from file added to DB with hash")
 }
 
+// A customer an access profile governs keeps the budgets it already has, whatever config.json still
+// declares for it. The file is stale, not authoritative, and every path that would write over those
+// rows - the inline reconcile, the budget_id link, and the unlink the file's silence would trigger -
+// has to leave them alone.
+func TestSQLite_Customer_GovernedByProfileKeepsItsStoredBudgets(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Customers: []tables.TableCustomer{
+			{ID: "customer-1", Name: "Test Customer", Budgets: []tables.TableBudget{
+				{ID: "customer-1-budget", MaxLimit: 100, ResetDuration: "1M"},
+			}},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	// From here on an access profile governs the customer, the way the enterprise build reports it.
+	governance.RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		if holderKind == governance.LegacyLimitHolderCustomer && holderID == "customer-1" {
+			return "Finance Cap", nil
+		}
+		return "", nil
+	})
+	defer governance.RegisterLegacyLimitGuard(nil)
+
+	// The file changes - a new budget declared for the same customer, and the customer itself edited so
+	// the reconcile takes the update path.
+	configData.Governance.Customers[0].Name = "Renamed Customer"
+	configData.Governance.Customers[0].Budgets = []tables.TableBudget{
+		{ID: "customer-1-budget-from-file", MaxLimit: 999, ResetDuration: "1M"},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	var stored tables.TableBudget
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "customer-1-budget").First(&stored).Error,
+		"the budget the customer already had was deleted while a profile governed it")
+	require.NotNil(t, stored.CustomerID, "the stored budget was unlinked from the customer it belongs to")
+	assert.Equal(t, "customer-1", *stored.CustomerID)
+
+	var fromFile int64
+	require.NoError(t, config2.ConfigStore.DB().Model(&tables.TableBudget{}).
+		Where("id = ?", "customer-1-budget-from-file").Count(&fromFile).Error)
+	assert.Zero(t, fromFile, "config.json's budget was applied to a customer an access profile governs")
+}
+
+// The rate-limit rows are written before the customers that link them, so a governed customer's row
+// has to be known to be off-limits before the file's version of it is applied.
+func TestSQLite_Customer_GovernedByProfileKeepsItsStoredRateLimit(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		RateLimits: []tables.TableRateLimit{
+			{ID: "customer-1-rl", TokenMaxLimit: int64Ptr(1000), TokenResetDuration: stringPtr("1m")},
+		},
+		Customers: []tables.TableCustomer{
+			{ID: "customer-1", Name: "Test Customer", RateLimitID: stringPtr("customer-1-rl")},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		if holderKind == governance.LegacyLimitHolderCustomer && holderID == "customer-1" {
+			return "Finance Cap", nil
+		}
+		return "", nil
+	})
+	defer governance.RegisterLegacyLimitGuard(nil)
+
+	// The file raises the cap on the row the governed customer links.
+	configData.Governance.RateLimits[0].TokenMaxLimit = int64Ptr(999999)
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	var stored tables.TableRateLimit
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "customer-1-rl").First(&stored).Error)
+	require.NotNil(t, stored.TokenMaxLimit)
+	assert.EqualValues(t, 1000, *stored.TokenMaxLimit,
+		"config.json's rate limit was written onto the row a governed customer links")
+}
+
 // TestSQLite_Customer_HashMismatch_FileSync tests file sync when hash differs
 func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	initTestLogger()
@@ -18937,7 +19048,7 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
 	},
 	"governance.virtual_keys": {
-		"access_profile_id": true, // Enterprise access-profile assignment; not on OSS TableVirtualKey
+		"access_profile_id": true, // Stale: direct access-profile assignment reverted in v1.5.9 (#3669/#3670); kept deprecated in schema for backward-compatible validation
 	},
 	"governance.virtual_keys.provider_configs": {
 		"keys":    true, // Complex nested type, validated separately
@@ -22488,4 +22599,48 @@ func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vmcps, 1, "duplicate name with a different ID must be deduped")
 	require.Equal(t, "Dup", vmcps[0].Name)
+}
+
+// lockableLogStore records the locker a ClickHouse-backed store would receive.
+type lockableLogStore struct {
+	logstore.LogStore
+	locker logstore.DistributedLocker
+}
+
+func (s *lockableLogStore) SetDistributedLocker(locker logstore.DistributedLocker) {
+	s.locker = locker
+}
+
+// A ClickHouse logs store shared by several replicas only serializes Warp
+// history writes if it is handed the config-store lock at startup.
+func TestAttachWarpHistoryLock(t *testing.T) {
+	initTestLogger()
+	store := &lockableLogStore{}
+	attachWarpHistoryLock(&Config{ConfigStore: createTestSQLiteConfigStore(t, t.TempDir()), LogsStore: store})
+	require.IsType(t, &configstore.DistributedLockManager{}, store.locker)
+
+	// No config store means nothing shared to lock on.
+	bare := &lockableLogStore{}
+	attachWarpHistoryLock(&Config{LogsStore: bare})
+	require.Nil(t, bare.locker)
+}
+
+// Warp ships behind a feature flag that is off until an operator turns it on.
+// registerFeatureFlags runs on every LoadConfig, and tests call LoadConfig many
+// times per process, so a second registration must not surface as an error.
+func TestRegisterFeatureFlags_WarpIsRegisteredOffAndIdempotent(t *testing.T) {
+	require.NoError(t, registerFeatureFlags(context.Background()))
+	require.NoError(t, registerFeatureFlags(context.Background()), "re-registering on a later LoadConfig must not fail")
+
+	def, ok := featureflags.LookupDef(FeatureFlagWarp)
+	require.True(t, ok, "warp flag must be registered")
+	require.False(t, def.Default, "Warp must be off unless an operator enables it")
+	require.False(t, def.EnterpriseOnly)
+
+	store, err := featureflags.New(featureflags.Config{})
+	require.NoError(t, err)
+	require.False(t, store.IsEnabled(FeatureFlagWarp))
+	_, err = store.Set(context.Background(), FeatureFlagWarp, true)
+	require.NoError(t, err)
+	require.True(t, store.IsEnabled(FeatureFlagWarp))
 }

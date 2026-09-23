@@ -1,7 +1,7 @@
 import type { CoreConfig } from "@/lib/types/config";
 import type { VirtualKey } from "@/lib/types/governance";
 import type { MCPClient } from "@/lib/types/mcp";
-import type { HarnessPlatform, ServerScope } from "./types";
+import type { AuthMethod, HarnessPlatform, ServerScope } from "./types";
 
 /** Default port Bifrost serves on; used when guessing the gateway URL in local dev. */
 const DEFAULT_BIFROST_PORT = "8080";
@@ -99,4 +99,34 @@ export function getIncludeClients(selectedServers?: MCPClient[]): string | undef
 
 export function getUserHomePrefix(platform: HarnessPlatform): string {
 	return platform === "windows" ? "%USERPROFILE%" : "~";
+}
+
+/** Stand-in for the identity-provider bearer the user pastes into their own config. */
+export const IDP_TOKEN_PLACEHOLDER = "<YOUR_IDP_ACCESS_TOKEN>";
+
+/**
+ * Headers the generated client config must send, derived from the chosen
+ * authentication method. OAuth clients carry no credential at all: the token
+ * arrives from the consent flow, and sending a virtual key alongside it is
+ * rejected by the gateway as conflicting credentials. The server filter is a
+ * credential-free header, but it is only offered on the virtual-key path, where
+ * the allowed server list can be resolved from the key.
+ */
+export function buildMCPHeaders({
+	authMethod,
+	selectedServers,
+	virtualKey,
+}: {
+	authMethod: AuthMethod;
+	selectedServers?: MCPClient[];
+	virtualKey?: VirtualKey;
+}): Record<string, string> {
+	if (authMethod === "oauth") return {};
+	if (authMethod === "idp_token") return { Authorization: `Bearer ${IDP_TOKEN_PLACEHOLDER}` };
+
+	if (!virtualKey) return {};
+	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
+	const includeClients = getIncludeClients(selectedServers);
+	if (includeClients) headers["x-bf-mcp-include-clients"] = includeClients;
+	return headers;
 }

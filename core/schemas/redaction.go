@@ -3,6 +3,7 @@ package schemas
 import (
 	"maps"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -11,6 +12,36 @@ import (
 // guardrail-visible normalized text. Callers must pass owned rawBody bytes and use only the returned
 // slice because implementations may mutate the input in place; any rewrite error is unsafe to forward.
 type RawRequestBodyTextRewriter func(rawBody []byte, replacements map[string]string) ([]byte, error)
+
+// TextTargetID identifies one integration-owned text field that mirrors normalized guardrail content.
+// It is opaque outside the integration/guardrail boundary so callers cannot infer native JSON paths
+// or replace a similarly-valued field by accident.
+type TextTargetID string
+
+// TextTargetIDForIndex returns the stable identifier for one guardrail-visible text row.
+// Native integrations and guardrail extraction use the same row order only within one request or response phase.
+func TextTargetIDForIndex(index int) TextTargetID {
+	return TextTargetID(strconv.Itoa(index))
+}
+
+// TextRewrite replaces one exact guardrail-visible text field after its original value is verified.
+// Unlike literal redaction maps, repeated originals may have distinct replacements because TargetID
+// identifies the field rather than its content.
+type TextRewrite struct {
+	TargetID    TextTargetID
+	Original    string
+	Replacement string
+}
+
+// RawRequestBodyTextTransformer synchronizes exact provider-managed transformations into provider-native JSON.
+// Integrations must verify TargetID ownership and Original before returning a body; a rewrite error is unsafe to
+// forward because raw passthrough would otherwise retain the untransformed value.
+type RawRequestBodyTextTransformer func(rawBody []byte, rewrites []TextRewrite) ([]byte, error)
+
+// RawResponseTextTransformer synchronizes exact provider-managed transformations into a native client response.
+// Integrations preserve the concrete raw response type and may rewrite only fields they own; errors must prevent
+// forwarding the original native response when its normalized counterpart has changed.
+type RawResponseTextTransformer func(rawResponse any, rewrites []TextRewrite) (any, error)
 
 // RawStreamTextEvent identifies guardrail-visible text carried by one provider-native stream event.
 type RawStreamTextEvent struct {
@@ -124,6 +155,119 @@ func SetRedactionDataOnContext(ctx *BifrostContext, data RedactionData) bool {
 // IsContentAttribute reports whether a span attribute may carry user or model content.
 func IsContentAttribute(key string) bool {
 	return traceContentAttributeScopeForKey(key) != traceContentAttributeScopeNone
+}
+
+// AllContentAttributeKeys returns every key IsContentAttribute treats as content.
+// Exported so callers and tests derive the set instead of hand-copying it.
+func AllContentAttributeKeys() []string {
+	return []string{
+		AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
+		AttrPrompt, AttrInstructions,
+		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
+		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
+		AttrOutputMessages, AttrRespReasoningText,
+		AttrToolName, AttrToolCallID, AttrToolCallArguments, AttrToolCallResult, AttrToolType,
+		AttrBifrostRawRequest, AttrBifrostRawResponse,
+	}
+}
+
+// StripSpanContent returns a copy of span without its content attributes, per
+// IsContentAttribute. LLM is dropped entirely — it is content by construction.
+//
+// Connectors serializing a whole trace must use this rather than a local key
+// list. The copy is explicit because Span embeds a sync.Mutex; attribute values
+// are shared by reference and must be treated as read-only.
+func StripSpanContent(src *Span) *Span {
+	if src == nil {
+		return nil
+	}
+	attrs := make(map[string]any, len(src.Attributes))
+	for k, v := range src.Attributes {
+		if IsContentAttribute(k) {
+			continue
+		}
+		attrs[k] = v
+	}
+	events := src.Events
+	if len(events) > 0 {
+		events = make([]SpanEvent, 0, len(src.Events))
+		for _, e := range src.Events {
+			events = append(events, SpanEvent{
+				Name:       e.Name,
+				Timestamp:  e.Timestamp,
+				Attributes: stripContentAttrs(e.Attributes),
+			})
+		}
+	}
+	return &Span{
+		SpanID:     src.SpanID,
+		ParentID:   src.ParentID,
+		TraceID:    src.TraceID,
+		Name:       src.Name,
+		Kind:       src.Kind,
+		StartTime:  src.StartTime,
+		EndTime:    src.EndTime,
+		Status:     src.Status,
+		StatusMsg:  src.StatusMsg,
+		Attributes: attrs,
+		Enrichment: src.Enrichment,
+		Events:     events,
+	}
+}
+
+// stripContentAttrs filters one attribute map, returning nil rather than an empty
+// map so a content-only event serializes as if it had no attributes.
+func stripContentAttrs(attrs map[string]any) map[string]any {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(attrs))
+	for k, v := range attrs {
+		if IsContentAttribute(k) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// StripTraceContent strips every span in the trace, preserving RootSpan/Spans
+// pointer identity.
+func StripTraceContent(src *Trace) *Trace {
+	if src == nil {
+		return nil
+	}
+	stripped := &Trace{
+		RequestID:      src.RequestID,
+		TraceID:        src.TraceID,
+		InternalID:     src.InternalID,
+		ParentID:       src.ParentID,
+		StartTime:      src.StartTime,
+		EndTime:        src.EndTime,
+		Attributes:     src.Attributes,
+		RequestHeaders: src.RequestHeaders,
+		PluginLogs:     src.PluginLogs,
+	}
+	if src.Spans != nil {
+		copies := make(map[*Span]*Span, len(src.Spans))
+		stripped.Spans = make([]*Span, len(src.Spans))
+		for i, s := range src.Spans {
+			cp := StripSpanContent(s)
+			copies[s] = cp
+			stripped.Spans[i] = cp
+		}
+		if cp, ok := copies[src.RootSpan]; ok {
+			stripped.RootSpan = cp
+		} else {
+			stripped.RootSpan = StripSpanContent(src.RootSpan)
+		}
+	} else {
+		stripped.RootSpan = StripSpanContent(src.RootSpan)
+	}
+	return stripped
 }
 
 // ApplyLiteralReplacements performs deterministic best-effort string redaction.

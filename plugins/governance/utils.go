@@ -227,3 +227,69 @@ func PresentedAnyCredential(ctx *schemas.BifrostContext) bool {
 	}
 	return presentedGrantBearingCredential(ctx) || hasDirectKeyAuth(ctx)
 }
+
+// PresentedCredentialResolved reports whether the credential the request presented resolved to
+// usable access. It is the second admission question realtime asks after PresentedAnyCredential:
+// not "was something presented" but "did what was presented turn out to exist". It reads the
+// answer ResolveAccess recorded on the request's grant rather than resolving anything itself, so
+// callers must run the per-request pipeline (PreRequestHook) first; asked earlier it reports the
+// credential unresolved, because it is.
+//
+// A direct provider key resolves to nothing by design (nothing in the governance model describes
+// it), so it counts as resolved here: refusing it for lacking an access it was never meant to
+// have would close direct-key requests entirely. A grant-bearing credential that resolved to no
+// access, or to access whose permit is unusable (revoked, expired, inactive), is exactly the
+// forged-or-revoked case this question exists to catch. Like PresentedAnyCredential, it settles
+// no limits, so admission cannot double-count usage against the turns that follow.
+func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if hasDirectKeyAuth(ctx) {
+		return true
+	}
+	if !presentedGrantBearingCredential(ctx) {
+		return false
+	}
+	g := ctx.Grant()
+	if g == nil {
+		return false
+	}
+	access := g.Access()
+	return access != nil && unusablePermit(access) == nil
+}
+
+// AppendAllProviderPermits completes a permit that grants every provider. Such a permit names none,
+// so the providers it grants by the flag alone are materialised here, from what the deployment has
+// configured, and the permit then carries its whole grant in one readable list.
+//
+// Doing it at permit construction rather than where a consumer reads the permit is what keeps every
+// consumer honest: enumerating provider permits and asking whether the permit allows a provider give
+// the same answer, so a listing cannot refuse what the request path admits. Built per request, so a
+// provider added after the permit was last written is granted by the same rule.
+//
+// A provider the permit already names keeps its own entry: those are overrides, and the flag widens
+// the set rather than relaxing them. A materialised entry narrows nothing - every model, every key,
+// nothing blocked - and carries no weight, because a weight is a routing preference a provider
+// config expresses and this one expresses none.
+func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []string) []schemas.ProviderPermit {
+	named := make(map[string]struct{}, len(permits))
+	for i := range permits {
+		named[permits[i].Provider] = struct{}{}
+	}
+	for _, provider := range configured {
+		if provider == "" {
+			continue
+		}
+		if _, dup := named[provider]; dup {
+			continue
+		}
+		named[provider] = struct{}{}
+		permits = append(permits, schemas.ProviderPermit{
+			Provider:      provider,
+			AllowedModels: schemas.WhiteList{"*"},
+			KeyIDs:        schemas.WhiteList{"*"},
+		})
+	}
+	return permits
+}

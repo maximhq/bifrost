@@ -152,6 +152,7 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  typesafe: ["typesafe", "/typesafe", "jev-"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness

@@ -145,6 +145,7 @@ func (provider *FireworksProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.Fireworks,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -241,6 +242,8 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.Fireworks,
+				ValidateTools:             true,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -273,6 +276,7 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Fireworks,
+			ValidateTools:             true,
 			IsStreaming:               true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -349,6 +353,11 @@ func (provider *FireworksProvider) Speech(ctx *schemas.BifrostContext, key schem
 // Rerank is not supported by the Fireworks AI provider.
 func (provider *FireworksProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Fireworks provider.
+func (provider *FireworksProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Fireworks provider.

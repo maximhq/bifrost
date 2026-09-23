@@ -487,3 +487,63 @@ func TestResolvePromptCacheConfig(t *testing.T) {
 		assert.Len(t, got.InjectionPoints, 1, "the header only flips auto_inject; points remain config-level")
 	})
 }
+
+func TestStripChatCachePoints(t *testing.T) {
+	cachePoint := &schemas.CachePoint{Type: "default"}
+	input := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("sys")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hi"), CachePoint: cachePoint},
+			{CachePoint: cachePoint},
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("there")},
+		}}},
+	}
+
+	out, stripped := StripChatCachePoints(input)
+	require.True(t, stripped)
+	require.Len(t, out[1].Content.ContentBlocks, 2)
+	assert.Nil(t, out[1].Content.ContentBlocks[0].CachePoint)
+	assert.Equal(t, "there", *out[1].Content.ContentBlocks[1].Text)
+	assert.Same(t, input[0].Content, out[0].Content)
+
+	// The caller's request is shared with fallbacks, so it must keep its markers.
+	require.Len(t, input[1].Content.ContentBlocks, 3)
+	assert.NotNil(t, input[1].Content.ContentBlocks[0].CachePoint)
+	assert.NotNil(t, input[1].Content.ContentBlocks[1].CachePoint)
+
+	same, stripped := StripChatCachePoints(out)
+	assert.False(t, stripped)
+	assert.Equal(t, &out[0], &same[0])
+}
+
+func TestChatCachePointsSupported(t *testing.T) {
+	t.Run("no datasheet row falls back to the name", func(t *testing.T) {
+		assert.True(t, ChatCachePointsSupported(schemas.Bedrock, "anthropic.claude-3-5-haiku-20241022-v1:0"))
+		assert.True(t, ChatCachePointsSupported(schemas.Bedrock, "amazon.nova-pro-v1:0"))
+		assert.False(t, ChatCachePointsSupported(schemas.Bedrock, "meta.llama3-70b-instruct-v1:0"))
+	})
+
+	t.Run("only Converse takes the marker", func(t *testing.T) {
+		// The name fallback matches a Claude model whatever serves it, so the
+		// provider gate is what keeps a cachePoint off the Anthropic wire.
+		for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.BedrockMantle, schemas.Vertex, schemas.OpenAI} {
+			assert.False(t, ChatCachePointsSupported(provider, "claude-3-5-haiku-20241022"), string(provider))
+		}
+	})
+
+	t.Run("the datasheet overrides the name in both directions", func(t *testing.T) {
+		withResolver(t, func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+			switch model {
+			case "meta.llama3-70b-instruct-v1:0":
+				return &schemas.ModelCapabilities{SupportsCachePoint: schemas.Ptr(true)}
+			case "anthropic.claude-3-5-haiku-20241022-v1:0":
+				return &schemas.ModelCapabilities{SupportsCachePoint: schemas.Ptr(false)}
+			}
+			return nil
+		})
+		assert.True(t, ChatCachePointsSupported(schemas.Bedrock, "meta.llama3-70b-instruct-v1:0"))
+		assert.False(t, ChatCachePointsSupported(schemas.Bedrock, "anthropic.claude-3-5-haiku-20241022-v1:0"))
+		// A row saying yes still cannot put a Converse element on another wire.
+		assert.False(t, ChatCachePointsSupported(schemas.Anthropic, "meta.llama3-70b-instruct-v1:0"))
+	})
+}

@@ -269,24 +269,22 @@ Use this pattern when you want enterprise access-profile configuration to be see
     },
     {
       "name": "platform-readonly-mcp",
-      "description": "Profile for validating MCP include/exclude behavior",
+      "description": "Profile granting a Virtual MCP and a narrowed tool allowlist",
       "is_active": true,
       "tags": ["mcp", "test"],
-      "mcp_servers": [
+      "virtual_mcps": [
         {
-          "mcp_server_id": "echo_http"
+          "virtual_mcp_name": "Platform Tools"
         }
       ],
-      "mcp_tool_overrides": [
+      "mcp_configs": [
         {
           "mcp_client_id": "echo_http",
-          "tool_name": "echo",
-          "action": "include"
+          "tools_to_execute": ["*"]
         },
         {
           "mcp_client_id": "github",
-          "tool_name": "create_pull_request",
-          "action": "exclude"
+          "tools_to_execute": ["list_issues"]
         }
       ]
     }

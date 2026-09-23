@@ -234,7 +234,7 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
-| `bifrost_error_requests_total` | Counter | Failed provider requests |
+| `bifrost_error_requests_total` | Counter | Failed requests, by raw `status_code` and normalized `error_type` — see [Error Types](#error-types) |
 | `bifrost_input_tokens_total` | Counter | Total input tokens processed |
 | `bifrost_output_tokens_total` | Counter | Total output tokens generated |
 | `bifrost_cost_total` | Counter | Total cost in USD |
@@ -247,6 +247,87 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
 | `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing. Labels: `provider`, `model` (the embedding provider/model, not the request's), `phase` (`request` classification vs `warmup` exemplar embedding). |
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic routing embeddings (same labels as above). Recorded regardless of whether embedding usage counts toward budgets. |
+
+### Error Types
+
+`bifrost_error_requests_total` carries two error dimensions. `status_code` is the raw fact. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+
+Values are prefixed by fault domain, so a success-rate alarm that should ignore caller mistakes is one clause rather than a list of reasons that grows over time:
+
+```promql
+# Failure rate, excluding faults the caller caused
+sum(rate(bifrost_error_requests_total{error_type!~"caller_.*"}[5m]))
+  / sum(rate(bifrost_upstream_requests_total[5m]))
+
+# What are callers getting wrong, and which teams
+sum by (error_type, team_name, model) (rate(bifrost_error_requests_total{error_type=~"caller_.*"}[5m]))
+
+# Our policy refusals vs the upstream's
+sum by (error_type) (rate(bifrost_error_requests_total{error_type=~"policy_.*|provider_.*"}[5m]))
+```
+
+#### Vocabulary
+
+The set is closed, so this list is exhaustive. **Declared** values are stated by the code that produced the failure — it knew the reason, so there is no guessing. **Inferred** values are derived from the upstream's status code, because a provider's own error vocabulary cannot be trusted to mean the same thing twice. Three values are both. `caller_cancelled` and `provider_timeout` are named by the code that recognises them and are also implied by status 499 and 504. `bifrost_internal` is named on the paths that recognise themselves and is otherwise the fallback for a Bifrost-origin failure that named nothing.
+
+| `error_type` | Meaning | Precision |
+|---|---|---|
+| `caller_model_not_available` | No configured key serves the requested model | Declared |
+| `caller_model_unknown` | The provider rejected the model name | Inferred |
+| `caller_invalid_request` | Malformed or unsatisfiable request (4xx) | Inferred |
+| `caller_cancelled` | The caller hung up before the response completed | Declared or Inferred (status 499) |
+| `policy_model_blocked` | The grant does not permit this model on this provider | Declared |
+| `policy_provider_blocked` | The grant does not permit this provider | Declared |
+| `policy_access_denied` | The credential did not resolve, or the grant refuses the caller | Declared |
+| `policy_budget_exceeded` | A configured budget is spent | Declared |
+| `policy_rate_limited` | A configured governance limit refused the request | Declared |
+| `policy_tool_blocked` | The grant does not permit this MCP tool | Declared |
+| `provider_auth_failed` | The upstream rejected the credential (401/403) | Inferred |
+| `provider_billing` | The upstream account cannot pay (402) | Inferred |
+| `provider_rate_limited` | The upstream rate-limited us (429) | Inferred |
+| `provider_overloaded` | The upstream is at capacity (503, Anthropic's 529) | Inferred |
+| `provider_server_error` | The upstream failed (other 5xx) | Inferred |
+| `provider_timeout` | The upstream did not answer in time | Declared or Inferred (status 504) |
+| `provider_connection_failed` | The connection never established (DNS, refused, TLS) | Declared |
+| `provider_credentials_exhausted` | Every key in the pool returned a permanent per-key error | Declared |
+| `bifrost_dropped` | Request shed because the provider queue was full | Declared |
+| `bifrost_internal` | Bifrost failed for a reason of its own | Declared or Inferred (fallback) |
+| `_OTHER` | No rule matched | — |
+
+<Note>
+**Alarm on `_OTHER` directly.** It means no producer declared a reason and no rule inferred one. The name is the OTel catch-all, matching the `error_type` label on the MCP metrics. It should be flat at zero; a rise means failures are going unclassified — most likely a new refusal reason was added somewhere without declaring its type — not that a new kind of failure is benign.
+</Note>
+
+#### What the distinction buys you
+
+The same status code means different things depending on who produced it, and `error_type` is what separates them:
+
+- A **429** is `policy_rate_limited` when a governance limit refused the request and `provider_rate_limited` when the upstream did. The first means your own limits are too tight; the second means you need more upstream capacity.
+- A **403** is `policy_model_blocked` when a grant refuses the model and `provider_auth_failed` when the upstream rejects the key.
+- A **503** is `bifrost_dropped` when Bifrost shed the request under queue pressure and `provider_overloaded` when the upstream is at capacity.
+
+Classification always prefers what Bifrost knows over what a status code suggests, so a decision Bifrost made itself is never re-attributed to the provider.
+
+The same value is stamped on the provider-attempt span as `bifrost.error.type`, so trace-based exporters (OpenTelemetry, Datadog) classify identically instead of re-deriving from the raw provider `error.type`. Pre-dispatch refusals produce no attempt span, so they reach the metrics but not the span.
+
+#### Precision caveats on the inferred values
+
+`caller_model_unknown` requires HTTP **404** on a request whose only addressable resource is the model: text completion, embedding, speech, transcription, image generation, rerank, count-tokens, and their streaming variants.
+
+Everything else classifies as `caller_invalid_request`, because its 404 may be about something other than the model:
+
+- file, batch, video and container operations address that resource directly;
+- OCR, image edit/variation and video generation reference a remote source asset (`document_url`, `image.url`, `input_reference`, `video_uri`);
+- chat completions and responses carry file ids, and responses additionally carry `previous_response_id`, which 404s on its own when stale.
+
+Chat and responses are the notable absence. A wrong model name there lands in `caller_invalid_request` rather than being distinguished, because a 404 on those requests is genuinely ambiguous. Distinguishing it needs the provider to say so explicitly rather than Bifrost inferring it from a status code — see the per-provider normalization note above. The exact `caller_model_not_available` is unaffected: it is declared by Bifrost, not inferred, and covers every request type.
+
+The inferred values deliberately do not key off the provider's own `error.type` / `error.code`. Those are passed through verbatim and disagree across providers for the same condition — OpenAI sends `type="invalid_request_error"` with `code="model_not_found"`, Anthropic sends `type="not_found_error"` and has no `code` field at all, and Bedrock and Databricks each use their own vocabulary. OpenAI even sends `invalid_request_error` for a 401. Both fields remain available per-request on the span and in the logs.
+
+Two consequences, both accepted rather than papered over:
+
+- A provider that rejects an unknown model with a **400** lands in `caller_invalid_request`, not `caller_model_unknown`. This under-counts rather than mislabelling generic invalid-request traffic as a bad model name.
+- Some providers (Vertex) use 404 for *"not found **or** your project does not have access to it"*, so a permissions problem can land in `caller_model_unknown`. Separating the two needs per-provider error normalization; the **Declared** rows above do not depend on it.
 
 ### Overhead Breakdown
 
@@ -307,6 +388,7 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `model` - Model identifier
 - `alias` - Alias resolved to this model (empty if none)
 - `method` - Request type (chat, completion, embedding, etc.)
+- `app` - Calling client classified from the User-Agent (`Claude Code`, `Cursor`, `Codex CLI`, `Cline`, `Windsurf`, ..., `API`, or `Other`); empty when no User-Agent was sent
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
 - `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — fallback transitions or retry transitions.
 - `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
@@ -318,8 +400,34 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
 - `project_id` / `project_name` - Project the request was scoped to (empty when the request named no project). A request is scoped to at most one project, so these stay singular where team and customer identifiers can fan out
 
+`user_id` / `user_name` are **not** included by default — see [User Labels](#user-labels).
+
 <Note>
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.
+</Note>
+
+### User Labels
+
+`user_id` and `user_name` identify the end user a request was made on behalf of. They are available on every other observability surface — BigQuery columns, Splunk event fields, Datadog tags, span attributes — but are **off by default** on Prometheus metrics.
+
+Enable them with the telemetry plugin's `user_labels_enabled` config field, or toggle **User labels** on the pull-based tab of the **Observability → Prometheus** page in the UI.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "user_labels_enabled": true
+      }
+    }
+  ]
+}
+```
+
+<Note>
+  Values are populated by the enterprise auth middleware that resolves the calling user. On an OSS build with no user resolution, the labels are present but empty.
 </Note>
 
 ### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>

@@ -86,6 +86,8 @@ tags:
     description: Optical character recognition for documents and images
   - name: Rerank
     description: Document reranking by relevance to a query
+  - name: Decisions
+    description: Structured decisions evaluated against annotated function-tool definitions
   - name: Embeddings
     description: Text embedding generation
   - name: Images
@@ -119,6 +121,8 @@ tags:
     description: AWS Bedrock compatible API endpoints (/bedrock/*)
   - name: Cohere Integration
     description: Cohere compatible API endpoints (/cohere/*)
+  - name: Typesafe Integration
+    description: Typesafe compatible API endpoints (/typesafe/*)
   - name: LiteLLM Integration
     description: LiteLLM proxy endpoints with multi-provider support (/litellm/*)
   - name: LangChain Integration
@@ -156,6 +160,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: Warp
+    description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
 
 paths:
   # ==================== Unified Inference API ====================
@@ -171,6 +177,8 @@ paths:
     $ref: "./paths/inference/ocr.yaml#/ocr"
   /v1/rerank:
     $ref: "./paths/inference/rerank.yaml#/rerank"
+  /v1/decisions:
+    $ref: "./paths/inference/decisions.yaml#/decisions"
   /v1/embeddings:
     $ref: "./paths/inference/embeddings.yaml#/embeddings"
   /v1/audio/speech:
@@ -519,6 +527,12 @@ paths:
   /cohere/v2/rerank:
     $ref: "./paths/integrations/cohere/rerank.yaml#/rerank"
 
+  # Typesafe Integration
+  /typesafe/v1/systemone:
+    $ref: "./paths/integrations/typesafe/systemone.yaml#/systemone"
+  /typesafe/v1/models:
+    $ref: "./paths/integrations/typesafe/systemone.yaml#/models"
+
   # Tokenize (v1)
   /cohere/v1/tokenize:
     $ref: "./paths/integrations/cohere/tokenize.yaml#/tokenize"
@@ -807,12 +821,16 @@ paths:
     $ref: "./paths/management/mcp.yaml#/client-by-id"
   /api/mcp/client/{id}/reconnect:
     $ref: "./paths/management/mcp.yaml#/client-reconnect"
+  /api/mcp/client/{id}/refresh-tools:
+    $ref: "./paths/management/mcp.yaml#/client-refresh-tools"
   /api/mcp/client/{id}/complete-oauth:
     $ref: "./paths/management/mcp.yaml#/client-complete-oauth"
   /api/mcp/client/{id}/initiate-verification:
     $ref: "./paths/management/mcp.yaml#/client-initiate-verification"
   /api/mcp/client/{id}/reauthorize:
     $ref: "./paths/management/mcp.yaml#/client-reauthorize"
+  /api/mcp/client/{id}/reregister:
+    $ref: "./paths/management/mcp.yaml#/client-reregister"
   /api/mcp/client/{id}/verify-headers:
     $ref: "./paths/management/mcp.yaml#/client-verify-headers"
   /api/mcp/client/{id}/verify-exchange:
@@ -1295,6 +1313,18 @@ paths:
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
 
+  # Warp
+  /api/warp/config:
+    $ref: "./paths/management/warp.yaml#/warp-config"
+  /api/warp/log-index/backfill:
+    $ref: "./paths/management/warp.yaml#/warp-backfill"
+  /api/warp/log-index/backfill/status:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-status"
+  /api/warp/log-index/backfill/cancel:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
+  /api/warp/chat:
+    $ref: "./paths/management/warp.yaml#/warp-chat"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1514,6 +1544,16 @@ components:
       $ref: "./schemas/inference/rerank.yaml#/RerankDocument"
     RerankResult:
       $ref: "./schemas/inference/rerank.yaml#/RerankResult"
+
+    # ==================== Decisions ====================
+    DecisionRequest:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionRequest"
+    DecisionResponse:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionResponse"
+    DecisionQuestion:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionQuestion"
+    DecisionAnswer:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionAnswer"
 
     # ==================== Embeddings ====================
     EmbeddingRequest:
@@ -2005,3 +2045,18 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # Warp
+    WarpConfig:
+      $ref: "./schemas/management/warp.yaml#/WarpConfig"
+    WarpConfigInput:
+      $ref: "./schemas/management/warp.yaml#/WarpConfigInput"
+    WarpBackfillRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillRequest"
+    WarpBackfillStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillStatus"
+    WarpUnavailable:
+      $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
+    WarpChatRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpChatRequest"
+    WarpChatResponse:
+      $ref: "./schemas/management/warp.yaml#/WarpChatResponse"

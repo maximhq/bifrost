@@ -98,6 +98,11 @@ type TableKey struct {
 	// endpoints instead of its OpenAI-compatible ones.
 	UseAnthropicEndpoints *bool `gorm:"default:false" json:"use_anthropic_endpoints,omitempty"`
 
+	// UseOpenAIEndpoints routes Bedrock inference through the OpenAI-compatible endpoints
+	// instead of Converse. Column name is pinned: the default naming strategy does not
+	// split OpenAI the way the JSON tag does.
+	UseOpenAIEndpoints *bool `gorm:"column:use_openai_endpoints;default:false" json:"use_openai_endpoints,omitempty"`
+
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 
@@ -162,6 +167,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if k.UseAnthropicEndpoints == nil {
 		useAnthropicEndpoints := false // DB default
 		k.UseAnthropicEndpoints = &useAnthropicEndpoints
+	}
+	if k.UseOpenAIEndpoints == nil {
+		useOpenAIEndpoints := false // DB default
+		k.UseOpenAIEndpoints = &useOpenAIEndpoints
 	}
 	// IMPORTANT: All *SecretVar fields assigned from provider config structs (AzureKeyConfig,
 	// VertexKeyConfig, BedrockKeyConfig) MUST be value-copied before assignment. The caller
@@ -864,6 +873,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	if k.UseAnthropicEndpoints == nil {
 		useAnthropicEndpoints := false // DB default
 		k.UseAnthropicEndpoints = &useAnthropicEndpoints
+	}
+	if k.UseOpenAIEndpoints == nil {
+		useOpenAIEndpoints := false // DB default
+		k.UseOpenAIEndpoints = &useOpenAIEndpoints
 	}
 	// Reconstruct Azure config if fields are present
 	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {

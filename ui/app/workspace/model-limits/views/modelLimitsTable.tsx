@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -13,16 +14,15 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
-import PageTitle from "@/components/pageTitle";
 import { getModelLimitScope, getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
 import { getErrorMessage, useDeleteModelConfigMutation, useGetModelConfigQuery } from "@/lib/store";
-import { ModelProvider } from "@/lib/types/config";
 import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
@@ -36,8 +36,8 @@ import ModelLimitSheet from "./modelLimitSheet";
 import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
 // Side-effect import: pull in downstream scope registrations (enterprise
 // "user" deep-link, etc.). No-op for OSS builds.
-import "@enterprise/lib/registrations/modelLimitScopes";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import "@enterprise/lib/registrations/modelLimitScopes";
 import { useNavigate } from "@tanstack/react-router";
 
 // Helper to format reset duration for display
@@ -116,10 +116,14 @@ function ModelLimitActionsMenu({
 	);
 }
 
+// The filter spells "no provider filter" as a sentinel, since the control needs a value to
+// show for it. Module level so its identity is stable across renders.
+const ALL_PROVIDERS_VALUE = "all";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All Providers" };
+
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
 	totalCount: number;
-	providers: ModelProvider[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
@@ -136,7 +140,6 @@ interface ModelLimitsTableProps {
 export default function ModelLimitsTable({
 	modelConfigs,
 	totalCount,
-	providers,
 	search,
 	debouncedSearch,
 	onSearchChange,
@@ -303,39 +306,31 @@ export default function ModelLimitsTable({
 						</SelectContent>
 					</Select>
 
-					<Select value={provider || "all"} onValueChange={(v) => onProviderChange(v === "all" ? "" : v)}>
-						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-provider">
-							<SelectValue placeholder="All Providers" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="all">All Providers</SelectItem>
-							{(providers ?? []).map((p) => (
-								<SelectItem key={p.name} value={p.name}>
-									<div className="flex items-center gap-2">
-										<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-										<span>{ProviderLabels[p.name as ProviderName] || p.name}</span>
-									</div>
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<ProviderSelector
+						data-testid="model-limits-filter-provider"
+						className="h-9 w-[160px]"
+						size="sm"
+						allOption={ALL_PROVIDERS_OPTION}
+						value={provider || ALL_PROVIDERS_VALUE}
+						onChange={(v: string) => onProviderChange(v === ALL_PROVIDERS_VALUE ? "" : v)}
+					/>
 
 					{hasActiveFilters && (
 						<Button
 							variant="ghost"
-							size="sm"
 							onClick={() => {
 								onSearchChange("");
 								onScopeChange("");
 								onProviderChange("");
 							}}
+							className="h-9"
 							data-testid="model-limits-filter-clear"
 						>
 							Clear filters
 						</Button>
 					)}
 
-					<Button className="ml-auto" onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
+					<Button className="ml-auto h-9" onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
 						<Plus className="h-4 w-4" />
 						Add Limit
 					</Button>
@@ -423,39 +418,39 @@ export default function ModelLimitsTable({
 											</TableCell>
 											<TableCell>
 												<div className="flex flex-col items-start gap-1">
-												{config.scope !== "global" && config.scope_id && config.scope_name ? (
-													<TooltipProvider>
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<Badge
-																	variant="secondary"
-																	className={cn(
-																		"flex max-w-[160px] items-center gap-1",
-																		getModelLimitScope(config.scope ?? "global")?.buildDeepLink && "cursor-pointer hover:opacity-80",
-																	)}
-																	data-testid={`model-limit-scope-target-${config.scope_id}`}
-																	onClick={() => {
-																		if (!config.scope_id) return;
-																		const target = getModelLimitScope(config.scope ?? "global")?.buildDeepLink?.(config.scope_id);
-																		if (target) navigate(target as never);
-																	}}
-																>
-																	<span className="truncate">{config.scope_name}</span>
-																	{getModelLimitScope(config.scope ?? "global")?.buildDeepLink && (
-																		<ArrowUpRight className="h-3 w-3 shrink-0" />
-																	)}
-																</Badge>
-															</TooltipTrigger>
-															<TooltipContent className="max-w-[320px] break-all">{config.scope_name}</TooltipContent>
-														</Tooltip>
-													</TooltipProvider>
-												) : (
-													<span className="text-muted-foreground text-sm">-</span>
-												)}
-												{(() => {
-													const ManagedBy = getModelLimitScope(config.scope ?? "global")?.ManagedByComponent;
-													return ManagedBy ? <ManagedBy modelConfig={config} /> : null;
-												})()}
+													{config.scope !== "global" && config.scope_id && config.scope_name ? (
+														<TooltipProvider>
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<Badge
+																		variant="secondary"
+																		className={cn(
+																			"flex max-w-[160px] items-center gap-1",
+																			getModelLimitScope(config.scope ?? "global")?.buildDeepLink && "cursor-pointer hover:opacity-80",
+																		)}
+																		data-testid={`model-limit-scope-target-${config.scope_id}`}
+																		onClick={() => {
+																			if (!config.scope_id) return;
+																			const target = getModelLimitScope(config.scope ?? "global")?.buildDeepLink?.(config.scope_id);
+																			if (target) navigate(target as never);
+																		}}
+																	>
+																		<span className="truncate">{config.scope_name}</span>
+																		{getModelLimitScope(config.scope ?? "global")?.buildDeepLink && (
+																			<ArrowUpRight className="h-3 w-3 shrink-0" />
+																		)}
+																	</Badge>
+																</TooltipTrigger>
+																<TooltipContent className="max-w-[320px] break-all">{config.scope_name}</TooltipContent>
+															</Tooltip>
+														</TooltipProvider>
+													) : (
+														<span className="text-muted-foreground text-sm">-</span>
+													)}
+													{(() => {
+														const ManagedBy = getModelLimitScope(config.scope ?? "global")?.ManagedByComponent;
+														return ManagedBy ? <ManagedBy modelConfig={config} /> : null;
+													})()}
 												</div>
 											</TableCell>
 											<TableCell className="min-w-[180px]">

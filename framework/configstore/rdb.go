@@ -154,6 +154,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		Enabled:                dbKey.Enabled,
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
 		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     dbKey.UseOpenAIEndpoints,
 		AzureKeyConfig:         dbKey.AzureKeyConfig,
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -185,6 +186,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		Enabled:                key.Enabled,
 		UseForBatchAPI:         key.UseForBatchAPI,
 		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 		AzureKeyConfig:         key.AzureKeyConfig,
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -354,15 +356,24 @@ func (s *RDBConfigStore) DB() *gorm.DB {
 }
 
 // ScopedDB returns the DB bound to ctx with any QueryScope on ctx
-// pre-applied. Use this in read paths that should respect caller-
-// driven row visibility. Use DB().WithContext(ctx) for writes and for
-// internal lookups (e.g. inference VK auth) that must bypass scoping.
-func (s *RDBConfigStore) ScopedDB(ctx context.Context) *gorm.DB {
-	db := s.DB().WithContext(ctx)
-	if scope := queryscope.FromContext(ctx); scope != nil {
-		db = scope(db)
+// pre-applied, or the caller's transaction when one is passed, so a read
+// taken inside a transaction sees that transaction's own writes instead of
+// the state it started from. The scope is applied either way: reading
+// through a transaction does not widen what the caller may see.
+//
+// Use this in read paths that should respect caller-driven row visibility.
+// Use DB().WithContext(ctx) for writes and for internal lookups (e.g.
+// inference VK auth) that must bypass scoping.
+func (s *RDBConfigStore) ScopedDB(ctx context.Context, tx ...*gorm.DB) *gorm.DB {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
 	}
-	return db
+	scoped := db.WithContext(ctx)
+	if scope := queryscope.FromContext(ctx); scope != nil {
+		scoped = scope(scoped)
+	}
+	return scoped
 }
 
 // RunMigration opens a throwaway connection against the same
@@ -757,6 +768,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				Enabled:                key.Enabled,
 				UseForBatchAPI:         key.UseForBatchAPI,
 				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+				UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 				AzureKeyConfig:         key.AzureKeyConfig,
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1001,6 +1013,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1157,6 +1170,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -2897,6 +2911,9 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - OCR
 	"ocr_cost_per_page",
 	"annotation_cost_per_page",
+	// Costs - Time of day
+	"off_peak_cost_multiplier",
+	"peak_hours",
 }
 
 // UpsertModelPrices creates or updates a model pricing record in the database.
@@ -3630,6 +3647,39 @@ func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]
 	}
 }
 
+// VirtualKeySearchTerm normalizes a raw search string into the LIKE pattern the
+// virtual key search clauses match against. Exported so downstream stores build
+// their extra clauses against exactly the same pattern.
+func VirtualKeySearchTerm(search string) string {
+	return "%" + strings.ToLower(search) + "%"
+}
+
+// VirtualKeySearchConditions builds the OR group that a virtual key search
+// narrows on: the key's own name, its team's name, or its customer's name - i.e.
+// everything the "Assigned To" column can display in OSS, so anything visible on
+// screen is also findable.
+//
+// It returns the condition rather than applying it so downstream stores can OR in
+// clauses of their own (enterprise adds the assigned user, whose link table it
+// alone knows about) without restating these three.
+//
+// Subqueries rather than joins: a join against teams/customers would multiply
+// rows and collide with the budget_spent sort join. The subqueries go through
+// Model() so GORM's soft-delete scope applies and a deleted team cannot
+// resurrect its keys into the results.
+func VirtualKeySearchConditions(db *gorm.DB, search string) *gorm.DB {
+	term := VirtualKeySearchTerm(search)
+	teamIDs := db.Model(&tables.TableTeam{}).
+		Select("id").
+		Where("LOWER(name) LIKE ?", term)
+	customerIDs := db.Model(&tables.TableCustomer{}).
+		Select("id").
+		Where("LOWER(name) LIKE ?", term)
+	return db.Where("LOWER(governance_virtual_keys.name) LIKE ?", term).
+		Or("governance_virtual_keys.team_id IN (?)", teamIDs).
+		Or("governance_virtual_keys.customer_id IN (?)", customerIDs)
+}
+
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
 	// Build base query with filters
@@ -3653,6 +3703,10 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		assignmentClauses = append(assignmentClauses, "team_id = ?")
 		assignmentArgs = append(assignmentArgs, params.TeamID)
 	}
+	if params.BusinessUnitID != "" {
+		assignmentClauses = append(assignmentClauses, "business_unit_id = ?")
+		assignmentArgs = append(assignmentArgs, params.BusinessUnitID)
+	}
 	if params.UserID != "" {
 		assignmentClauses = append(assignmentClauses, "1 = 0")
 	}
@@ -3660,8 +3714,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		baseQuery = baseQuery.Where("("+strings.Join(assignmentClauses, " OR ")+")", assignmentArgs...)
 	}
 	if params.Search != "" {
-		search := "%" + strings.ToLower(params.Search) + "%"
-		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+		baseQuery = baseQuery.Where(VirtualKeySearchConditions(s.DB().WithContext(ctx), params.Search))
 	}
 
 	// Get total count before pagination
@@ -3865,6 +3918,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			virtualKey.PreviousValueHash = existing.PreviousValueHash
 			virtualKey.PreviousValueExpiresAt = existing.PreviousValueExpiresAt
 			virtualKey.RotatedAt = existing.RotatedAt
+		}
+		// Preserve NULL when a VK-scoped MC already owns the rate limit; prevents config sync from reverting migration.
+		if existing.RateLimitID == nil && virtualKey.RateLimitID != nil {
+			var mcCount int64
+			if err := txDB.WithContext(ctx).Model(&tables.TableModelConfig{}).
+				Where("scope = 'virtual_key' AND scope_id = ? AND model_name = '*' AND provider IS NULL AND rate_limit_id IS NOT NULL", virtualKey.ID).
+				Count(&mcCount).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			if mcCount > 0 {
+				virtualKey.RateLimitID = nil
+			}
 		}
 		if err := txDB.WithContext(ctx).
 			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
@@ -4597,6 +4662,18 @@ func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*table
 	return &def, nil
 }
 
+func (s *RDBConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	var def tables.TableVirtualMCP
+	err := s.ScopedDB(ctx).Where("name = ?", name).First(&def).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
 func (s *RDBConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
 	q := s.ScopedDB(ctx).Model(&tables.TableVirtualMCP{})
 	if params.Search != "" {
@@ -4839,9 +4916,9 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 // returns ErrNotFound; the caller cannot distinguish "doesn't exist"
 // from "not visible," matching the leak-prevention contract used by
 // the other governance entities.
-func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
+func (s *RDBConfigStore) GetTeam(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableTeam, error) {
 	var team tables.TableTeam
-	if err := s.ScopedDB(ctx).
+	if err := s.ScopedDB(ctx, tx...).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit").
 		First(&team, "governance_teams.id = ?", id).Error; err != nil {
@@ -5033,9 +5110,9 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 // scope returns ErrNotFound; the caller cannot distinguish "doesn't
 // exist" from "not visible," matching the leak-prevention contract
 // used by the other governance entities.
-func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
+func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer
-	if err := preloadCustomerRelations(s.ScopedDB(ctx), "").
+	if err := preloadCustomerRelations(s.ScopedDB(ctx, tx...), "").
 		First(&customer, "governance_customers.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -5359,6 +5436,11 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		// Preserve MC ownership if already migrated; config.json sync would otherwise revert it.
+		if existing.ModelConfigID != nil {
+			budget.ModelConfigID = existing.ModelConfigID
+			budget.VirtualKeyID = nil
+		}
 		// Overrides are managed by the dedicated override path, not UpdateBudget;
 		// carry them forward so partial updates can't wipe an active override.
 		// The grant columns must travel with the derived remaining count: dropping

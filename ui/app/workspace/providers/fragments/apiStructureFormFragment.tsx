@@ -1,6 +1,6 @@
+import { BaseProviderSelector } from "@/components/ui/baseProviderSelector";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
@@ -37,6 +37,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 			base_provider_type: provider.custom_provider_config?.base_provider_type ?? "openai",
 			is_key_less: provider.custom_provider_config?.is_key_less ?? false,
 			does_not_send_done_marker: provider.custom_provider_config?.does_not_send_done_marker ?? false,
+			wait_for_usage: provider.custom_provider_config?.wait_for_usage ?? false,
 			allowed_requests: {
 				text_completion: provider.custom_provider_config?.allowed_requests?.text_completion ?? true,
 				text_completion_stream: provider.custom_provider_config?.allowed_requests?.text_completion_stream ?? true,
@@ -78,6 +79,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					base_provider_type: data.base_provider_type as unknown as BaseProvider,
 					is_key_less: data.is_key_less ?? false,
 					does_not_send_done_marker: data.does_not_send_done_marker ?? false,
+					wait_for_usage: data.wait_for_usage ?? false,
 					allowed_requests: data.allowed_requests,
 					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 				},
@@ -106,6 +108,18 @@ export function ApiStructureFormFragment({ provider }: Props) {
 		[provider.custom_provider_config?.base_provider_type],
 	);
 
+	// wait_for_usage only has meaning once the stream ends on finish_reason, so the
+	// toggle is nested under does_not_send_done_marker rather than offered on its own.
+	const doesNotSendDoneMarker = form.watch("does_not_send_done_marker");
+
+	// Clear the nested flag whenever its parent goes away: the update replaces
+	// custom_provider_config wholesale, so a stale true would otherwise be persisted.
+	useEffect(() => {
+		if (isDoneMarkerToggleDisabled || !doesNotSendDoneMarker) {
+			form.setValue("wait_for_usage", false);
+		}
+	}, [isDoneMarkerToggleDisabled, doesNotSendDoneMarker, form]);
+
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-4 pb-6 md:px-6">
@@ -116,21 +130,9 @@ export function ApiStructureFormFragment({ provider }: Props) {
 						render={({ field }) => (
 							<FormItem>
 								<FormLabel>Base Provider Type</FormLabel>
-								<Select onValueChange={field.onChange} value={field.value}>
-									<FormControl>
-										<SelectTrigger disabled={true}>
-											<SelectValue placeholder="Select base provider" />
-										</SelectTrigger>
-									</FormControl>
-									<SelectContent>
-										<SelectItem value="openai">OpenAI</SelectItem>
-										<SelectItem value="anthropic">Anthropic</SelectItem>
-										<SelectItem value="bedrock">AWS Bedrock</SelectItem>
-										<SelectItem value="cohere">Cohere</SelectItem>
-										<SelectItem value="gemini">Gemini</SelectItem>
-										<SelectItem value="replicate">Replicate</SelectItem>
-									</SelectContent>
-								</Select>
+								<FormControl>
+									<BaseProviderSelector placeholder="Select base provider" value={field.value} onChange={field.onChange} disabled />
+								</FormControl>
 								<FormDescription>The underlying provider this custom provider will use</FormDescription>
 								<FormMessage />
 							</FormItem>
@@ -142,7 +144,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 							name="is_key_less"
 							render={({ field }) => (
 								<FormItem>
-									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="drop-excess-requests" className="text-sm font-medium">
 												Is Keyless?
@@ -167,7 +169,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 							name="does_not_send_done_marker"
 							render={({ field }) => (
 								<FormItem>
-									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="does-not-send-done-marker" className="text-sm font-medium">
 												Does Not Send [DONE] Marker?
@@ -178,6 +180,34 @@ export function ApiStructureFormFragment({ provider }: Props) {
 										</div>
 										<Switch
 											id="does-not-send-done-marker"
+											size="md"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+										/>
+									</div>
+								</FormItem>
+							)}
+						/>
+					)}
+					{!isDoneMarkerToggleDisabled && doesNotSendDoneMarker && (
+						<FormField
+							control={form.control}
+							name="wait_for_usage"
+							render={({ field }) => (
+								<FormItem>
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
+										<div className="space-y-0.5">
+											<label htmlFor="wait-for-usage" className="text-sm font-medium">
+												Wait For Trailing Usage Chunk?
+											</label>
+											<p className="text-muted-foreground text-sm">
+												Keep reading after finish_reason so the trailing usage chunk is collected. Without this the request records zero
+												tokens and zero cost
+											</p>
+										</div>
+										<Switch
+											id="wait-for-usage"
 											size="md"
 											checked={field.value}
 											onCheckedChange={field.onChange}

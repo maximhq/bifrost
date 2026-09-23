@@ -26,14 +26,31 @@ trap cleanup_docker EXIT
 echo "🔧 Starting dependencies of framework tests..."
 # Use docker compose (v2) if available, fallback to docker-compose (v1)
 if command -v docker-compose >/dev/null 2>&1; then
-  docker-compose -f tests/docker-compose.yml up -d
+  COMPOSE="docker-compose"
 elif docker compose version >/dev/null 2>&1; then
-  docker compose -f tests/docker-compose.yml up -d
+  COMPOSE="docker compose"
 else
   echo "❌ Neither docker-compose nor docker compose is available"
   exit 1
 fi
+$COMPOSE -f tests/docker-compose.yml up -d
 sleep 20
+
+# The framework logstore tests fail (not skip) in CI when ClickHouse is
+# unreachable, and `up -d` does not wait for health, so gate on its /ping.
+echo "⏳ Waiting for ClickHouse to become ready..."
+for attempt in $(seq 1 60); do
+  if $COMPOSE -f tests/docker-compose.yml exec -T clickhouse wget --spider -q http://127.0.0.1:8123/ping 2>/dev/null; then
+    echo "✅ ClickHouse is ready"
+    break
+  fi
+  if [ "$attempt" -eq 60 ]; then
+    echo "❌ ClickHouse did not become ready within 120s"
+    $COMPOSE -f tests/docker-compose.yml logs --tail=50 clickhouse || true
+    exit 1
+  fi
+  sleep 2
+done
 
 # Validate framework build
 echo "🔨 Validating framework build..."

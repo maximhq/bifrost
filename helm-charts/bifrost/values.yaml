@@ -347,6 +347,11 @@ bifrost:
   #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
   #                                         # and responses through Anthropic-compatible endpoints (also
   #                                         # settable per-alias alongside use_deployments_endpoint)
+  #       # use_openai_endpoints: false     # bedrock keys only: route chat completions and responses
+  #                                         # through Bedrock's OpenAI-compatible endpoints (/openai/v1)
+  #                                         # instead of Converse, for models that serve them. Guardrails,
+  #                                         # performanceConfig and requestMetadata apply only on Converse
+  #                                         # (also settable per-alias)
   #     - name: "secondary-key"
   #       value: "env.OPENAI_KEY"     # Reference to environment variable
   #       weight: 1
@@ -354,7 +359,9 @@ bifrost:
   #   network_config:
   #     base_url: ""                                  # Custom base URL (required for Ollama)
   #     extra_headers: {}                             # Additional headers to send with requests
-  #     default_request_timeout_in_seconds: 300       # Request timeout
+  #     default_request_timeout_in_seconds: 300       # Request timeout. On streams this bounds connect, request
+  #                                                   # write and wait-for-headers; after headers arrive,
+  #                                                   # stream_idle_timeout_in_seconds governs the body
   #     max_retries: 3                                # Maximum number of retries
   #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
   #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
@@ -553,6 +560,15 @@ bifrost:
       #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
       #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
+      # - name: "example-per-user-headers-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://my-mcp.corp/mcp"
+      #   # authType "per_user_headers": each caller submits their own header values (API keys,
+      #   # signed tokens) through the Bifrost auth flow; perUserHeaderKeys declares which header
+      #   # names are required. Values are collected and stored per-identity by Bifrost, not here.
+      #   authType: "per_user_headers"
+      #   perUserHeaderKeys: ["Authorization"]
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Virtual MCPs: bundle tools from one or more MCP clients into a single endpoint
     # served at /mcp/<endpointSlug> and attach it to virtual keys.
@@ -587,6 +603,14 @@ bifrost:
       config:
         custom_labels: []
         # metrics_enabled: true   # Serve the Prometheus /metrics scrape endpoint (default: true)
+        # Export the per-component overhead histogram bifrost_overhead_component_microseconds
+        # (overhead latency split by the overhead_component label). Requires tracing to be active,
+        # since the breakdown is computed from completed trace spans (default: false)
+        # overhead_breakdown_enabled: false
+        # Add user_id and user_name labels to every bifrost_* metric. Off by default:
+        # unbounded values multiply metric series by end-user count, and Prometheus
+        # cannot drop a label afterwards (default: false)
+        # user_labels_enabled: false
         # push_gateway:
         #   enabled: false
         #   push_gateway_url: ""
@@ -668,8 +692,9 @@ bifrost:
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
-        #     propagate_trace_attributes: false # Merge x-bf-dim-* onto every exported span (not just the root)
+        #     apply_trace_dimensions_to_child_spans: false # Merge x-bf-dim-* onto child spans as well as the root
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
+        #     overhead_breakdown_enabled: false # Export the per-component overhead histogram bifrost_overhead_component_microseconds (requires metrics_enabled and an active trace)
         #
         # Single-profile shape:
         service_name: "bifrost"
@@ -701,11 +726,15 @@ bifrost:
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
-        # Merge x-bf-dim-* request dimensions onto every exported span (not just the root HTTP span)
-        propagate_trace_attributes: false
+        # Merge x-bf-dim-* request dimensions onto child spans as well as the root HTTP span
+        apply_trace_dimensions_to_child_spans: false
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
+        # Export the per-component overhead histogram bifrost_overhead_component_microseconds
+        # (overhead latency split by the overhead_component attribute). Requires metrics_enabled
+        # and an active trace, since the breakdown is computed from completed spans (default: false)
+        # overhead_breakdown_enabled: false
       # Cap on concurrent in-flight trace injects the tracer will send this plugin;
       # a saturated cap drops new traces for this plugin only, not process-wide (default: 10000)
       # semaphore_size: 10000
@@ -742,6 +771,7 @@ bifrost:
         # agentless: true
         # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
         # site: "datadoghq.com"       # Datadog site/region (e.g. datadoghq.eu)
+        # metric_dimensions: []        # x-bf-dim-* names to add as metric tags; each multiplies series
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -840,6 +870,7 @@ bifrost:
       #   max_limit: 100
       #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Q, 1Y
       #   calendar_aligned: false  # Snap reset to calendar boundaries (e.g. 1M resets on the 1st)
+      #   virtual_key_id: "vk-1"  # Optional owner; set this on the budget, not budget_id on the virtual key
       #   # reset_config only applies to quarterly ("1Q") budgets:
       #   reset_config:
       #     quarter_start_month: 4  # First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). 0/omitted = January.
@@ -882,7 +913,8 @@ bifrost:
       #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
       #   entity_dac:
       #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
-      #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
+      #   access_profiles:                    # Optional: names of all access profiles to grant
+      #     - "analyst-profile"              # Takes precedence over deprecated access_profile
       #   permissions:
       #     - resource: "Logs"
       #       operation: "View"
@@ -902,17 +934,14 @@ bifrost:
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
-      #   # Provider-specific configurations (empty means all providers allowed)
+      #   # Provider-specific configurations (empty means no providers allowed unless allow_all_providers is true)
       #   provider_configs:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
       #       blacklisted_models: []   # Models blocked even if matched by allowed_models; ["*"] blocks all
       #       rate_limit_id: ""
-      #       keys:
-      #         - key_id: "uuid-of-key"
-      #           name: "my-key"
-      #           value: "sk-..."
+      #       key_ids: ["*"]       # Provider key IDs; ["*"] allows all, while empty or omitted allows none
       #   # MCP configurations for this virtual key
       #   mcp_configs:
       #     - mcp_client_id: 1
@@ -969,7 +998,7 @@ bifrost:
       #     - mcp_client_name: "example-mcp"
       #       tools_to_execute: ["*"]
       #   virtual_mcps:
-      #     - virtual_mcp_id: 1
+      #     - virtual_mcp_name: "Platform Tools"
     routingRules: []
       # - id: "route-1"
       #   name: "Route to Azure"
@@ -1091,6 +1120,14 @@ bifrost:
   #   enabled: true
   #   # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
   #   provider: ""
+  #   # Private IP/CIDR allowlist for SSRF-guarded outbound discovery (Enterprise): lets the
+  #   # generic provider's "Discover endpoints"/"Discover claims" reach a self-hosted IdP on an
+  #   # internal network. Declaring this key makes Helm own the whole list — it replaces whatever
+  #   # is stored, and an explicit `trustedNetworks: []` clears dashboard-added ranges. Omit the
+  #   # key to leave them alone.
+  #   trustedNetworks:
+  #     - cidr: "10.20.0.0/16"          # bare IPs are treated as a single host; hostnames are rejected
+  #       description: "On-prem Keycloak"
   #   config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
@@ -1372,14 +1409,20 @@ bifrost:
     #             token_reset_duration: "1h"
     #             request_max_limit: 500
     #             request_reset_duration: "1h"
-    #   mcp_tool_groups:
-    #     - tool_group_id: 1
-    #   mcp_servers:
-    #     - mcp_server_id: "github"
-    #   mcp_tool_overrides:
+    #   virtual_mcps:  # Virtual MCPs this profile grants, by name (as declared under mcp.virtualMcps)
+    #     - virtual_mcp_name: "Platform Tools"
+    #   mcp_configs:  # Per-client tool allowlists: ["*"] all tools, [] none, named list only those
     #     - mcp_client_id: "github"
-    #       tool_name: "create_pull_request"
-    #       action: "include"
+    #       tools_to_execute: ["create_pull_request", "list_issues"]
+    #   # DEPRECATED — folded into virtual_mcps / mcp_configs at load time:
+    #   # mcp_tool_groups:
+    #   #   - tool_group_id: 1
+    #   # mcp_servers:
+    #   #   - mcp_server_id: "github"
+    #   # mcp_tool_overrides:
+    #   #   - mcp_client_id: "github"
+    #   #     tool_name: "create_pull_request"
+    #   #     action: "include"
 
   # Alerting: declarative alert channels and rules seeded from Helm.
   # Rendered directly as top-level `alerting` in config.json.

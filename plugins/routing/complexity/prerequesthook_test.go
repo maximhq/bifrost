@@ -337,7 +337,7 @@ func TestPreRequestHook_SessionStoreFailureFallsBackToCurrentClassification(t *t
 	require.Equal(t, complexity.MechanismSemantic, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 }
 
-func TestPreRequestHook_SessionContinuationReusesButDoesNotInitializeTier(t *testing.T) {
+func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *testing.T) {
 	plugin := newSessionComplexityRuleFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
@@ -360,8 +360,8 @@ func TestPreRequestHook_SessionContinuationReusesButDoesNotInitializeTier(t *tes
 
 	absentCtx := complexitySessionContext("new-session")
 	require.NoError(t, plugin.PreRequestHook(absentCtx, continuationRequest()))
-	require.Nil(t, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
-	require.Equal(t, complexity.MechanismSkipped, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	require.Equal(t, complexity.TierComplex, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismSemantic, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 
 	initialCtx := complexitySessionContext("existing-session")
 	require.NoError(t, plugin.PreRequestHook(initialCtx, chatRequest("a medium request")))

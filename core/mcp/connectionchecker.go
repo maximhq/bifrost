@@ -226,7 +226,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 	steady := c.steadyInterval()
 	c.manager.mu.RLock()
 	clientState, exists := c.manager.clientMap[c.clientID]
-	var isDisabled, needsReauth bool
+	var isDisabled, needsReauth, pendingVerification bool
 	var conn *client.Client
 	var config *schemas.MCPClientConfig
 	var connGeneration uint64
@@ -234,6 +234,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		conn = clientState.Conn
 		isDisabled = clientState.State == schemas.MCPConnectionStateDisabled
 		needsReauth = clientState.State == schemas.MCPConnectionStateNeedsReauth
+		pendingVerification = clientState.State == schemas.MCPConnectionStatePendingVerification
 		config = clientState.ExecutionConfig
 		connGeneration = clientState.ConnGeneration
 	}
@@ -249,7 +250,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		c.Stop()
 		return steady, true
 	}
-	if needsReauth {
+	if needsReauth || pendingVerification {
 		// Stay quiet: the credential is confirmed permanently dead (typed
 		// classification, see connectToMCPClient), so a check here would
 		// just rediscover what's already known and burn a reconnect
@@ -257,6 +258,12 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		// interval so a stalled reauthorize eventually gets picked up by
 		// something, but do no work — only an explicit reauthorize (or a
 		// direct UpdateClientCredentials success) moves this out.
+		//
+		// pending_verification is the same shape for the opposite reason:
+		// the one-time admin flow has not run yet, so there is no credential
+		// to check with at all. A check could only fail, and replace an
+		// actionable "an admin must authorize this" (which the UI surfaces
+		// as a Verify CTA) with a generic Unstable.
 		return steady, true
 	}
 	if config == nil {
@@ -270,6 +277,11 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		if c.checkLiveConnection(conn, clientName, connGeneration) {
 			return steady, true
 		}
+		// The connection that just failed is still installed on the entry, so
+		// this is the only place that can repair it: every later tick would
+		// otherwise re-probe the same dead session, and the Conn == nil
+		// branch below is unreachable while a connection is installed.
+		c.reconnectAfterFailedCheck(clientName, connGeneration)
 		return UnstableConnectionCheckInterval, false
 	case c.manager.credStore.RequiresPerCallConnection(config):
 		if c.checkPerCall(config, connGeneration) {
@@ -290,6 +302,38 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		}()
 		return UnstableConnectionCheckInterval, false
 	}
+}
+
+// reconnectAfterFailedCheck starts the background reconnect a failed live
+// check owes, under the same staleness guard setState and writeBackTools
+// apply: a check that began before a reconnect swapped in a fresh connection
+// can only have proved the replaced one dead, and must not tear down its
+// successor. Disabled and NeedsReauth are authoritative here for the same
+// reason setState refuses to overwrite them, and are checked separately from
+// the generation because neither DisableClient nor CloseAndMarkNeedsReauth
+// bumps ConnGeneration when it clears the connection.
+//
+// "Already in progress" (another trigger, e.g. the reactive per-request path,
+// beat this tick to it) is expected and fine to ignore: ReconnectClient
+// dedupes concurrent attempts per client through its own exclusive-op guard,
+// and whichever attempt finishes is authoritative.
+func (c *ClientConnectionChecker) reconnectAfterFailedCheck(clientName string, connGeneration uint64) {
+	c.manager.mu.RLock()
+	clientState, exists := c.manager.clientMap[c.clientID]
+	stale := !exists ||
+		clientState.ConnGeneration != connGeneration ||
+		clientState.State == schemas.MCPConnectionStateDisabled ||
+		clientState.State == schemas.MCPConnectionStateNeedsReauth
+	c.manager.mu.RUnlock()
+	if stale {
+		c.logger.Debug("%s Skipping reconnect for %s: the connection was replaced during the check, or the client is no longer reconnectable", MCPLogPrefix, clientName)
+		return
+	}
+	go func() {
+		if err := c.manager.ReconnectClient(c.clientID); err != nil {
+			c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
+		}
+	}()
 }
 
 // checkLiveConnection runs ping (if supported) + list_tools over an
@@ -332,7 +376,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		return false
 	}
 
-	c.writeBackTools(connGeneration, newTools, newMapping)
+	c.manager.writeBackDiscoveredTools(c.clientID, connGeneration, newTools, newMapping)
 	c.recordSuccess(clientName, connGeneration)
 	return true
 }
@@ -355,7 +399,7 @@ func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, 
 		return false
 	}
 
-	c.writeBackTools(connGeneration, newTools, newMapping)
+	c.manager.writeBackDiscoveredTools(c.clientID, connGeneration, newTools, newMapping)
 	c.recordSuccess(config.Name, connGeneration)
 	return true
 }
@@ -368,46 +412,6 @@ func (c *ClientConnectionChecker) markAsCheck(ctx context.Context) *schemas.Bifr
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 	return bfCtx
-}
-
-// writeBackTools mirrors the old tool-syncer's generation-guarded
-// write-back: if a reconnect swapped in a fresh connection while this check
-// was in flight, the fresh generation no longer matches what was captured
-// before the check ran, and these (now stale) results are dropped silently
-// — the next tick syncs against whatever is current.
-func (c *ClientConnectionChecker) writeBackTools(connGeneration uint64, newTools map[string]schemas.ChatTool, newMapping map[string]string) {
-	// Precompute serialized JSON before the lock (see precomputeToolSerialization),
-	// so per-request logging/marshal reuse the bytes and the manager mutex isn't
-	// held across N marshals.
-	precomputeToolSerialization(newTools)
-
-	c.manager.mu.Lock()
-
-	clientState, exists := c.manager.clientMap[c.clientID]
-	if !exists {
-		c.manager.mu.Unlock()
-		return
-	}
-	if clientState.ConnGeneration != connGeneration {
-		c.manager.mu.Unlock()
-		c.logger.Debug("%s Skipping tool write-back for %s: connection was replaced during check", MCPLogPrefix, c.clientID)
-		return
-	}
-	clientState.ToolMap = newTools
-	clientState.ToolNameMapping = newMapping
-	fire := c.manager.toolsChangedCallback(clientState, c.clientID, newTools, newMapping)
-	c.manager.mu.Unlock()
-
-	// Fired outside the lock — see toolsChangeCallback's field doc. Covers
-	// the periodic checker's own refresh for both sticky (checkLiveConnection)
-	// and per-call (checkPerCall) clients — previously the one path where a
-	// client's tools could drift out of sync with the DB indefinitely, since
-	// nothing else revisits a per-call client after its first discovery.
-	// Gated on genuine content change: this is the highest-frequency firing
-	// point (every checker tick), and most ticks rediscover identical tools.
-	if fire != nil {
-		fire()
-	}
 }
 
 // recordFailure marks the client Unstable — a single transient-classified
@@ -438,9 +442,10 @@ func (c *ClientConnectionChecker) recordSuccess(clientName string, connGeneratio
 }
 
 // setState is the guarded writer every transition in this file funnels
-// through — Disabled and NeedsReauth are authoritative and never silently
-// overwritten by a check result racing against a DisableClient call or a
-// credential already confirmed dead.
+// through — Disabled, NeedsReauth and PendingVerification are authoritative
+// and never silently overwritten by a check result racing against a
+// DisableClient call, a credential already confirmed dead, or a client parked
+// awaiting its one-time admin verification.
 //
 // connGeneration is dropped if it no longer matches the client's current
 // ConnGeneration, mirroring writeBackTools' own guard: StopChecking does not
@@ -468,7 +473,9 @@ func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, con
 		c.logger.Debug("%s Skipping state write for %s: connection was replaced during check", MCPLogPrefix, c.clientID)
 		return
 	}
-	if clientState.State == schemas.MCPConnectionStateDisabled || clientState.State == schemas.MCPConnectionStateNeedsReauth {
+	if clientState.State == schemas.MCPConnectionStateDisabled ||
+		clientState.State == schemas.MCPConnectionStateNeedsReauth ||
+		clientState.State == schemas.MCPConnectionStatePendingVerification {
 		c.manager.mu.Unlock()
 		return
 	}

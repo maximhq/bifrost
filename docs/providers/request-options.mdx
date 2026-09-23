@@ -14,12 +14,14 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeyAPIKeyName`              | `x-bf-api-key`                                       | `string`              | Explicit API key name selection                                                                                                       |
 | `BifrostContextKeyAPIKeyID`                | `x-bf-api-key-id`                                    | `string`              | Explicit API key ID selection (takes priority over name)                                                                              |
 | `BifrostContextKeyDirectKey`               | `x-bf-direct-key` (+ `Authorization` / `x-api-key` / `x-goog-api-key`) | `schemas.Key`         | Use a caller-supplied raw provider key directly, bypassing the registered key pool. On the gateway, requires `allow_direct_keys` server-side |
-| `BifrostContextKeySessionID`               | `x-bf-session-id` (falls back to coding-harness session headers) | `string`              | Session ID for key stickiness (requires KV store)                                                                                     |
-| `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session-to-key cache TTL (duration string or seconds)                                                                                 |
+| `BifrostContextKeySessionID`               | `x-bf-session-id` (falls back to coding-harness session headers) | `string`              | Session ID for provider and key session affinity (requires KV store)                                                                  |
+| `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session binding TTL (duration string or seconds)                                                                                      |
+| `BifrostContextKeySessionAffinity`         | `x-bf-session-affinity`                              | `bool`                | Whether the session decides routing for this request: `on` (default) or `off`                                                         |
 | `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
 | `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
 | `BifrostContextKeySendBackRawResponse`     | `x-bf-send-back-raw-response`                        | `bool`                | Include raw provider response in the response                                                                                         |
 | `BifrostContextKeyStoreRawRequestResponse` | `x-bf-store-raw-request-response`                    | `bool`                | Persist raw request/response in log records                                                                                           |
+| `BifrostContextKeyPromptCacheAutoInject`   | `x-bf-prompt-cache-auto-inject`                      | `bool`                | Per-request override of the provider's `prompt_cache.auto_inject`; only honored when the provider has a `prompt_cache` block configured |
 | `BifrostContextKeyDisableContentLogging`   | `x-bf-disable-content-logging`                       | `bool`                | Per-request override for content logging; only honored when `allow_per_request_content_storage_override` is enabled in logging config |
 | `BifrostContextKeyPassthroughExtraParams`  | `x-bf-passthrough-extra-params`                      | `bool`                | Enable passthrough for extra parameters                                                                                               |
 | `BifrostContextKeyExtraHeaders`            | `x-bf-eh-*`                                          | `map[string][]string` | Custom headers forwarded to provider                                                                                                  |
@@ -37,7 +39,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `maxim.TraceIDKey`                         | `x-bf-maxim-trace-id`                                | `string`              | Maxim trace ID                                                                                                                        |
 | `maxim.GenerationIDKey`                    | `x-bf-maxim-generation-id`                           | `string`              | Maxim generation ID                                                                                                                   |
 | `maxim.TagsKey`                            | `x-bf-maxim-*`                                       | `map[string]string`   | Maxim tags (custom tag names)                                                                                                         |
-| `BifrostContextKeyDimensions` | `x-bf-dim-*` | `map[string]string` | Unified per-request dimensions forwarded to logs, spans, Prometheus custom labels, and Maxim tags |
+| `BifrostContextKeyDimensions` | `x-bf-dim-*` | `map[string]string` | Unified per-request dimensions forwarded to logs, spans, Prometheus custom labels, Datadog metric dimensions, and Maxim tags |
 | `BifrostContextKey(labelName)` | `x-bf-prom-*` | `string` | Deprecated Prometheus-only label headers for backward compatibility |
 
 ## Request Configuration Options
@@ -228,13 +230,20 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 **Type:** `string`
 **Required:** No
 
-Bind a session to a specific API key so that requests with the same session ID consistently use the same key. Useful for predictable rate-limit buckets, cost attribution per user, and consistent model routing per session.
+Keep a session on what served it before, so a conversation keeps hitting the same provider prompt cache. Affinity works at two levels:
 
-On the first request for a session ID, Bifrost selects a key and caches the binding in the KV store. Subsequent requests with the same session ID reuse the cached key as long as it remains valid.
+- **Provider**: when routing offers more than one provider for what the caller asked for (virtual key weights, load balancing, model catalog candidates), the provider that last served the session is tried first, as long as routing still offers it. Routing decides which providers are allowed; the session only decides their order. A request that names its provider (`openai/gpt-4o`) is never reordered: the caller asked for that provider, so only the key level applies to it, even when a fallback served an earlier turn.
+- **Key**: within a provider, the key that last served the session is used while it stays eligible.
+
+Bindings are written when a request is served, never when it fails, and are scoped to the virtual key and user the request is attributed to. A fallback that serves becomes the session's new home. Bindings live in the KV store for the session TTL, refreshed by every served request.
 
 **Retry and Fallback Behavior:**
-- **Retries**: Session stickiness persists across retry attempts. If a request fails and is retried, the same sticky key is used.
-- **Fallbacks**: When falling back to a different provider (e.g., from OpenAI to Anthropic), session stickiness is disabled and a new key is selected for the fallback provider. This ensures availability when the primary provider's keys are exhausted or failing.
+- **Retries**: A bound key is used for every retry of a request. A session with no key binding yet rotates keys on rate limits like any other request, and the key that serves is the one that gets bound.
+- **Fallbacks**: Fallback providers select keys freely. When a fallback serves, the session is rebound to that provider and its key, so the next request starts there.
+- **Switch**: `x-bf-session-affinity: off` turns affinity off for a request, at both levels; `on` is the default.
+- **Routing trail**: Decisions the session made appear in the request's routing logs under the `session-affinity` engine, which is also listed among the routing engines used. The UI labels it **Session**.
+
+The [Session Affinity](/providers/session-affinity) guide covers the full lifecycle of a binding, how affinity composes with each routing engine, and the health checks Bifrost Enterprise runs before following one.
 
 **Coding Harness Headers:**
 
@@ -293,7 +302,7 @@ Input: messages,
 **Type:** `time.Duration` (header value: duration string like `"30m"` or `"1h"`, or seconds as integer)
 **Required:** No
 
-Optional. Controls how long the session-to-key binding is cached. If not set, Bifrost uses 1 hour. The TTL is refreshed on each request so active sessions do not expire.
+Optional. Controls how long the session bindings are kept. If not set, Bifrost uses 1 hour. The TTL is refreshed by each served request so active sessions do not expire.
 
 Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds).
 
@@ -549,6 +558,47 @@ Input: messages,
 
 `x-bf-store-raw-request-response` and `x-bf-send-back-raw-*` are orthogonal - you can enable any combination. Enabling store does not send data back to the caller; enabling send-back does not persist data in logs. Enable both to do both.
 </Note>
+
+### Prompt Cache Auto-Inject
+
+**Context Key:** `BifrostContextKeyPromptCacheAutoInject`
+**Header:** `x-bf-prompt-cache-auto-inject`
+**Type:** `bool` (header values: `"true"` or `"false"`)
+**Required:** No
+
+Flip the provider's `prompt_cache.auto_inject` setting for this request only. Send `"true"` to inject a cache breakpoint on a request to a provider that has it off, or `"false"` to leave a request untouched when the provider has it on. The model capability gate still applies, so a marker is never forced onto a model that cannot use one.
+
+<Note>
+The override only takes effect on a provider that already has a `prompt_cache` block configured. A provider with no block has expressed no opinion, and a request header cannot spend a cache marker on the operator's behalf. Configure `"prompt_cache": {"auto_inject": false}` on the provider if you want callers to opt in per request. Only `auto_inject` is overridable; the TTL and injection points stay a config-level decision. See [Prompt caching](/features/prompt-caching).
+</Note>
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-prompt-cache-auto-inject: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "anthropic/claude-sonnet-4-5",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyPromptCacheAutoInject, true)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+	Provider: schemas.Anthropic,
+	Model:    "claude-sonnet-4-5",
+	Input:    messages,
+})
+```
+
+</Tab>
+</Tabs>
 
 ### Disable Content Logging (Per-Request)
 

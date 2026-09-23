@@ -591,7 +591,11 @@ false
 {{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
 {{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
 {{- if .entity_dac }}{{- $_ := set $role "entity_dac" .entity_dac }}{{- end }}
-{{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
+{{- if hasKey . "access_profiles" }}
+{{- $_ := set $role "access_profiles" .access_profiles }}
+{{- else if .access_profile }}
+{{- $_ := set $role "access_profile" .access_profile }}
+{{- end }}
 {{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
 {{- $roles = append $roles $role }}
 {{- end }}
@@ -802,6 +806,11 @@ false
 {{- end }}
 {{- if $scimValues.config }}
 {{- $_ := set $scim "config" $scimValues.config }}
+{{- end }}
+{{- /* Gate on key presence, not truthiness: an explicit empty list means "clear the stored
+       allowlist" and must still render, while an undeclared key leaves it untouched. */ -}}
+{{- if hasKey $scimValues "trustedNetworks" }}
+{{- $_ := set $scim "trusted_networks" (default (list) $scimValues.trustedNetworks) }}
 {{- end }}
 {{- $_ := set $config "scim_config" $scim }}
 {{- end }}
@@ -1348,6 +1357,9 @@ false
 {{- if $client.allowedExtraHeaders }}
 {{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
 {{- end }}
+{{- if $client.perUserHeaderKeys }}
+{{- $_ := set $cc "per_user_header_keys" $client.perUserHeaderKeys }}
+{{- end }}
 {{- /* allowByDefault supersedes allowOnAllVirtualKeys. Emit exactly one key so the backend's
        ResolveAllowByDefault sees an unambiguous declaration: the current key when it is given,
        otherwise the deprecated one passed through untranslated. */ -}}
@@ -1605,14 +1617,20 @@ false
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
 {{- end }}
-{{- if hasKey $inputConfig "propagate_trace_attributes" }}
-{{- $_ := set $otelConfig "propagate_trace_attributes" $inputConfig.propagate_trace_attributes }}
+{{- if hasKey $inputConfig "apply_trace_dimensions_to_child_spans" }}
+{{- $_ := set $otelConfig "apply_trace_dimensions_to_child_spans" $inputConfig.apply_trace_dimensions_to_child_spans }}
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- if hasKey $inputConfig "export_overhead_spans" }}
+{{- $_ := set $otelConfig "export_overhead_spans" $inputConfig.export_overhead_spans }}
+{{- end }}
+{{- if hasKey $inputConfig "overhead_breakdown_enabled" }}
+{{- $_ := set $otelConfig "overhead_breakdown_enabled" $inputConfig.overhead_breakdown_enabled }}
 {{- end }}
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
@@ -1687,6 +1705,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if hasKey $inputConfig "metric_dimensions" }}
+{{- $_ := set $datadogConfig "metric_dimensions" $inputConfig.metric_dimensions }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $datadogConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}

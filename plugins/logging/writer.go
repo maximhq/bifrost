@@ -50,6 +50,10 @@ type pendingInjectEntries struct {
 	mu        sync.Mutex
 	entries   []*logstore.Log
 	createdAt time.Time
+	// drained is set by Inject under mu once entries has been handed to the write
+	// queue. A storeOrEnqueueEntry that appends after that point would be writing
+	// into a slice nobody reads again; it writes directly instead.
+	drained bool
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
@@ -306,6 +310,14 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 // normal async write queue.
 func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 	p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+}
+
+// EnqueueMCPToolLogEntry pushes a completed MCP log through the normal async write queue.
+func (p *LoggerPlugin) EnqueueMCPToolLogEntry(entry *logstore.MCPToolLog) {
+	p.mu.Lock()
+	callback := p.mcpToolLogCallback
+	p.mu.Unlock()
+	p.enqueueMCPToolLogEntry(entry, callback)
 }
 
 // enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.

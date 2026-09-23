@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -178,6 +179,8 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"gpt-6-astra keeps max", "gpt-6-astra", "max", "max"},
 		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
 		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
+		{"grok-4.7 keeps xhigh", "grok-4.7", "xhigh", "xhigh"},
+		{"grok-4.7 maps max to xhigh", "grok-4.7", "max", "xhigh"},
 		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
 		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
 		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},
@@ -1160,6 +1163,53 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 	}
 }
 
+// TestAllTurnsContextPredicateAgainstCatalogIDs pins the name default
+// for reasoning.context "all_turns" against model IDs as they appear in the
+// datasheet, prefixed and dated variants included. Substring matching, for the
+// same reason as the xhigh/max needles above.
+func TestAllTurnsContextPredicateAgainstCatalogIDs(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// original gpt-5 family and its variants: only auto/current_turn
+		{"gpt-5", false},
+		{"gpt-5-pro", false},
+		{"gpt-5-pro-2025-10-06", false},
+		{"gpt-5-mini-2025-08-07", false},
+		{"gpt-5-codex", false},
+		{"azure/gpt-5-pro", false},
+		// dot-revisions before 5.4
+		{"gpt-5.1", false},
+		{"gpt-5.2-pro", false},
+		{"gpt-5.3-codex", false},
+		// o-series and non-reasoning models
+		{"o1", false},
+		{"o3-pro", false},
+		{"gpt-4o", false},
+		// families that accept all_turns
+		{"gpt-5.4", true},
+		{"azure/eu/gpt-5.4", true},
+		{"gpt-5.4-mini-2026-03-17", true},
+		{"gpt-5.5-pro-2026-04-23", true},
+		{"gpt-5.6-terra", true},
+		{"openai.gpt-5.6-sol", true},
+		{"gpt-6", true},
+	}
+	for _, c := range cases {
+		if got := acceptsAllTurnsContext(c.model); got != c.want {
+			t.Errorf("acceptsAllTurnsContext(%q) = %v, want %v", c.model, got, c.want)
+		}
+		contexts := defaultReasoningContexts(c.model)
+		if !slices.Contains(contexts, schemas.ReasoningContextAuto) || !slices.Contains(contexts, schemas.ReasoningContextCurrentTurn) {
+			t.Errorf("defaultReasoningContexts(%q) = %v, must always carry auto and current_turn", c.model, contexts)
+		}
+		if got := slices.Contains(contexts, schemas.ReasoningContextAllTurns); got != c.want {
+			t.Errorf("defaultReasoningContexts(%q) lists all_turns = %v, want %v", c.model, got, c.want)
+		}
+	}
+}
+
 // TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint is the
 // Responses-path parallel of TestToOpenAIChatRequest_CacheControl_OpenRouterOnly
 // (added by the Chat-path fix in #4203). Regression test for #6290.
@@ -1264,6 +1314,56 @@ func TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint(t *testing.T)
 		}
 		if _, present := unmarked["prompt_cache_breakpoint"]; present {
 			t.Errorf("unmarked block must not receive a prompt_cache_breakpoint; raw=%s", raw)
+		}
+	})
+
+	t.Run("openrouter non-claude model strips cache_control and adds no breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "openai/gpt-5.4"))
+
+		for i, b := range blocks {
+			block, ok := b.(map[string]any)
+			if !ok {
+				t.Fatalf("expected content[%d] to be an object; raw=%s", i, raw)
+			}
+			if _, present := block["cache_control"]; present {
+				t.Errorf("OpenRouter gpt-5.4: cache_control must be stripped on content[%d]; raw=%s", i, raw)
+			}
+			if _, present := block["prompt_cache_breakpoint"]; present {
+				t.Errorf("OpenRouter gpt-5.4: upstream rejects prompt_cache_breakpoint, none may be synthesized on content[%d]; raw=%s", i, raw)
+			}
+		}
+	})
+
+	t.Run("openrouter gpt-5.6 converts cache_control to prompt_cache_breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "openai/gpt-5.6"))
+
+		marked, _ := blocks[0].(map[string]any)
+		if _, ok := marked["prompt_cache_breakpoint"].(map[string]any); !ok {
+			t.Fatalf("OpenRouter gpt-5.6: cache_control must be converted to prompt_cache_breakpoint; raw=%s", raw)
+		}
+	})
+
+	t.Run("datasheet can disable breakpoints on an openrouter claude model", func(t *testing.T) {
+		no := false
+		setToolChoiceCaps(t, schemas.OpenRouter, "anthropic/claude-sonnet-4", schemas.ModelCapabilities{SupportsPromptCacheBreakpoints: &no})
+
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "anthropic/claude-sonnet-4"))
+		for i, b := range blocks {
+			block, _ := b.(map[string]any)
+			if _, present := block["prompt_cache_breakpoint"]; present {
+				t.Errorf("datasheet false must suppress prompt_cache_breakpoint on content[%d]; raw=%s", i, raw)
+			}
+		}
+	})
+
+	t.Run("datasheet can enable breakpoints on an openrouter model the fallback rejects", func(t *testing.T) {
+		yes := true
+		setToolChoiceCaps(t, schemas.OpenRouter, "openai/gpt-5.4", schemas.ModelCapabilities{SupportsPromptCacheBreakpoints: &yes})
+
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "openai/gpt-5.4"))
+		marked, _ := blocks[0].(map[string]any)
+		if _, ok := marked["prompt_cache_breakpoint"].(map[string]any); !ok {
+			t.Fatalf("datasheet true must produce prompt_cache_breakpoint; raw=%s", raw)
 		}
 	})
 
@@ -1855,4 +1955,64 @@ func TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints(
 			t.Errorf("an Anthropic-based provider must not gain prompt_cache_options; raw=%s", raw)
 		}
 	})
+}
+
+// Gemini's per-part media resolution rides on the shared ResponsesMessageContentBlock, and
+// OpenAI's Responses input is those blocks marshalled straight onto the wire behind a denylist.
+// A /genai request that falls back to OpenAI must therefore have the field stripped, exactly as
+// cache_control and citations are, or OpenAI 400s with "Unknown parameter".
+func TestOpenAIResponsesRequest_MarshalJSON_StripsMediaResolution(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleUser
+	imageURL := "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+	callID := "call_1"
+
+	input := OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: &messageType,
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+						ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+							ImageURL: &imageURL,
+						},
+						MediaResolution: &schemas.MediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH"},
+					}},
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+							},
+							MediaResolution: &schemas.MediaResolution{Level: "MEDIA_RESOLUTION_HIGH"},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+	if strings.Contains(string(data), "media_resolution") {
+		t.Errorf("media_resolution must not reach OpenAI's wire, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), "image_url") {
+		t.Errorf("stripping media_resolution must not drop the image itself, got: %s", string(data))
+	}
+
+	// The source request is shared across retries and fallbacks, so sanitizing must copy.
+	if input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].MediaResolution == nil {
+		t.Error("sanitization must not mutate the caller's request")
+	}
 }

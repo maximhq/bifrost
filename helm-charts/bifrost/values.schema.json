@@ -805,6 +805,16 @@
                       "default": true,
                       "description": "Serve the Prometheus /metrics scrape endpoint. Default true."
                     },
+                    "overhead_breakdown_enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans."
+                    },
+                    "user_labels_enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Add user_id and user_name labels to every bifrost_* metric. Off by default: these are unbounded, so they multiply metric series by end-user count on top of a virtual_key_id label that already reaches tens of thousands of values in large deployments. Prometheus holds every label combination in memory for the retention period and cannot drop a label afterwards."
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -1179,6 +1189,16 @@
                         "type": "string"
                       },
                       "description": "Request header names to capture as Datadog span tags"
+                    },
+                    "metric_dimensions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$"
+                      },
+                      "uniqueItems": true,
+                      "description": "x-bf-dim-* dimension names to forward as DogStatsD metric tags. Off by default; each name multiplies metric series cardinality."
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
@@ -1887,6 +1907,13 @@
                   },
                   "access_profile": {
                     "type": "string"
+                  },
+                  "access_profiles": {
+                    "type": "array",
+                    "description": "Names of all access profiles granted by this role. When present, this field takes precedence over access_profile; an empty list removes all profile grants.",
+                    "items": {
+                      "type": "string"
+                    }
                   },
                   "permissions": {
                     "type": "array",
@@ -2794,6 +2821,25 @@
             "config": {
               "type": "object",
               "description": "Provider-specific configuration"
+            },
+            "trustedNetworks": {
+              "type": "array",
+              "description": "Private IP/CIDR allowlist the SSRF guard consults before outbound discovery calls, so a self-hosted IdP on an internal network can be reached. Declaring this key makes Helm own the whole list; an explicit empty array clears dashboard-added ranges. Renders into scim_config.trusted_networks.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "cidr": {
+                    "type": "string",
+                    "description": "IP or CIDR range to trust (e.g. 10.20.0.0/16). A bare IP is a single host; hostnames are not accepted."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Optional admin-facing label for this range"
+                  }
+                },
+                "required": ["cidr"],
+                "additionalProperties": false
+              }
             }
           },
           "required": ["enabled"],
@@ -3914,8 +3960,39 @@
                   "additionalProperties": false
                 }
               },
+              "virtual_mcps": {
+                "type": "array",
+                "description": "Virtual MCPs this profile grants. An explicit empty array detaches every Virtual MCP from the profile.",
+                "items": {
+                  "$ref": "#/$defs/access_profile_virtual_mcp"
+                }
+              },
+              "mcp_configs": {
+                "type": "array",
+                "description": "Per-MCP-client tool allowlists this profile grants. Canonical key; supersedes the deprecated mcp_servers and mcp_tool_overrides aliases.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "mcp_client_id": {
+                      "type": "string",
+                      "description": "MCP client ID or name (names are resolved to client ids at startup)"
+                    },
+                    "tools_to_execute": {
+                      "type": "array",
+                      "description": "Tools the profile may execute. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["mcp_client_id"],
+                  "additionalProperties": false
+                }
+              },
               "mcp_tool_groups": {
                 "type": "array",
+                "description": "DEPRECATED: use virtual_mcps instead. Folded into virtual_mcps at load time; ignored when virtual_mcps is present.",
+                "deprecated": true,
                 "items": {
                   "type": "object",
                   "properties": {
@@ -3929,6 +4006,8 @@
               },
               "mcp_servers": {
                 "type": "array",
+                "description": "DEPRECATED: use mcp_configs instead. Folded into mcp_configs at load time as [\"*\"] allowlists.",
+                "deprecated": true,
                 "items": {
                   "type": "object",
                   "properties": {
@@ -3942,6 +4021,8 @@
               },
               "mcp_tool_overrides": {
                 "type": "array",
+                "description": "DEPRECATED: use mcp_configs instead. Folded into mcp_configs allowlists at load time.",
+                "deprecated": true,
                 "items": {
                   "type": "object",
                   "properties": {
@@ -5762,9 +5843,9 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
-        "propagate_trace_attributes": {
+        "apply_trace_dimensions_to_child_spans": {
           "type": "boolean",
-          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto every exported span (not just the root). Reserved suffixes path and method are skipped. Default false.",
+          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto child spans as well as the root. Reserved suffixes path and method are skipped. Default false.",
           "default": false
         },
         "request_headers": {
@@ -5780,6 +5861,11 @@
         "export_overhead_spans": {
           "type": "boolean",
           "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
+        },
+        "overhead_breakdown_enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component attribute). Off by default. Requires metrics_enabled and an active trace, since the breakdown is computed from completed spans."
         }
       },
       "allOf": [
@@ -5930,9 +6016,9 @@
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
         },
-        "propagate_trace_attributes": {
+        "apply_trace_dimensions_to_child_spans": {
           "type": "boolean",
-          "description": "Deprecated in the profiles wrapper; configure propagate_trace_attributes per profile instead."
+          "description": "Deprecated in the profiles wrapper; configure apply_trace_dimensions_to_child_spans per profile instead."
         },
         "request_headers": {
           "type": "array",
@@ -6075,6 +6161,10 @@
               "type": "boolean",
               "description": "Whether the provider ends streams on finish_reason without sending a data: [DONE] marker"
             },
+            "wait_for_usage": {
+              "type": "boolean",
+              "description": "With does_not_send_done_marker, keep reading past finish_reason so the trailing usage-only chunk is collected instead of dropped. Without it the request records zero tokens and zero cost"
+            },
             "base_provider_type": {
               "type": "string"
             },
@@ -6126,7 +6216,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name."
         },
         "weight": {
           "type": "number",
@@ -6140,6 +6231,11 @@
         "use_anthropic_endpoints": {
           "type": "boolean",
           "description": "For deepseek, fireworks, vllm, and sgl keys: route chat completions and responses requests through Anthropic-compatible endpoints.",
+          "default": false
+        },
+        "use_openai_endpoints": {
+          "type": "boolean",
+          "description": "For bedrock keys: route chat completions and responses requests through Bedrock's OpenAI-compatible endpoints (/openai/v1) instead of Converse, for models that serve them. Converse is used for everything else, and Bedrock Guardrails, performanceConfig and requestMetadata apply only on Converse.",
           "default": false
         },
         "azure_key_config": {
@@ -6515,6 +6611,10 @@
                   "use_anthropic_endpoints": {
                     "type": "boolean",
                     "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
+                  },
+                  "use_openai_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias override of use_openai_endpoints."
                   }
                 },
                 "required": ["model_id"],
@@ -6666,7 +6766,7 @@
         "default_request_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Default request timeout in seconds"
+          "description": "Default request timeout in seconds. For streaming requests this bounds the connection, the request write and the wait for response headers; once headers arrive, stream_idle_timeout_in_seconds governs the body."
         },
         "max_retries": {
           "type": "integer",
@@ -7005,6 +7105,14 @@
           },
           "description": "Allowlist of request-level headers that callers may forward to this MCP server. Use ['*'] to allow all headers."
         },
+        "perUserHeaderKeys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "description": "Header names each caller must individually supply when authType is 'per_user_headers' (e.g. ['Authorization']). Required (non-empty) for that auth type; ignored otherwise."
+        },
         "allowOnAllVirtualKeys": {
           "type": "boolean",
           "deprecated": true,
@@ -7086,6 +7194,24 @@
           },
           "then": {
             "required": ["connectionString"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "per_user_headers"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["perUserHeaderKeys"],
+            "properties": {
+              "perUserHeaderKeys": {
+                "minItems": 1
+              }
+            }
           }
         }
       ]
@@ -7292,14 +7418,14 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all.",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none. An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
@@ -7346,7 +7472,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
+                "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name."
               },
               "weight": {
                 "type": "number",
@@ -7982,15 +8108,36 @@
     },
     "project_virtual_mcp": {
       "type": "object",
-      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "description": "A Virtual MCP assigned to a project. Assignments are a set, so a repeat collapses rather than doubling.",
       "properties": {
+        "virtual_mcp_name": {
+          "type": "string",
+          "description": "Name of the Virtual MCP (as declared under bifrost.mcp.virtualMcps) the project is assigned. Resolved to the stored Virtual MCP on startup; a name that matches no Virtual MCP is refused."
+        },
         "virtual_mcp_id": {
           "type": "integer",
           "minimum": 1,
-          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+          "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set. Ids are assigned by the database, so prefer the name in a chart that has to be portable across environments."
         }
       },
-      "required": ["virtual_mcp_id"],
+      "anyOf": [{ "required": ["virtual_mcp_name"] }, { "required": ["virtual_mcp_id"] }],
+      "additionalProperties": false
+    },
+    "access_profile_virtual_mcp": {
+      "type": "object",
+      "description": "A Virtual MCP granted to an access profile. Assignments are a set, so a repeat collapses rather than doubling.",
+      "properties": {
+        "virtual_mcp_name": {
+          "type": "string",
+          "description": "Name of the Virtual MCP (as declared under bifrost.mcp.virtualMcps) the profile grants. Resolved to the stored Virtual MCP on startup; a name that matches no Virtual MCP is refused."
+        },
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set. Ids are assigned by the database, so prefer the name in a chart that has to be portable across environments."
+        }
+      },
+      "anyOf": [{ "required": ["virtual_mcp_name"] }, { "required": ["virtual_mcp_id"] }],
       "additionalProperties": false
     },
     "scim_attribute_access_profile_mappings": {

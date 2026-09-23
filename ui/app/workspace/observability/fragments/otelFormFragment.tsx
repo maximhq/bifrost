@@ -42,7 +42,7 @@ interface StoredOtelProfile {
 	export_timeout?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
-	propagate_trace_attributes?: boolean;
+	apply_trace_dimensions_to_child_spans?: boolean;
 	group_traces_by_session?: boolean;
 	disable_root_span_content?: boolean;
 }
@@ -112,7 +112,7 @@ const emptyProfile = (): ProfileForm => ({
 	export_timeout: 5,
 	request_headers: [],
 	disable_content_logging: false,
-	propagate_trace_attributes: false,
+	apply_trace_dimensions_to_child_spans: false,
 	group_traces_by_session: false,
 	disable_root_span_content: false,
 });
@@ -137,7 +137,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	export_timeout: p?.export_timeout ?? 5,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
-	propagate_trace_attributes: p?.propagate_trace_attributes ?? false,
+	apply_trace_dimensions_to_child_spans: p?.apply_trace_dimensions_to_child_spans ?? false,
 	group_traces_by_session: p?.group_traces_by_session ?? false,
 	disable_root_span_content: p?.disable_root_span_content ?? false,
 });
@@ -612,60 +612,60 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										)}
 									/>
 									<div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-									<FormField
-										control={control}
-										name={`${base}.trace_type`}
-										render={({ field }) => (
-											<FormItem className="w-full sm:flex-1">
-												<FormLabel>Format</FormLabel>
-												<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
+										<FormField
+											control={control}
+											name={`${base}.trace_type`}
+											render={({ field }) => (
+												<FormItem className="w-full sm:flex-1">
+													<FormLabel>Format</FormLabel>
+													<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
+														<FormControl>
+															<SelectTrigger className="w-full">
+																<SelectValue placeholder="Select trace type" />
+															</SelectTrigger>
+														</FormControl>
+														<SelectContent>
+															{traceTypeOptions.map((option) => (
+																<SelectItem
+																	key={option.value}
+																	value={option.value}
+																	disabled={option.disabled}
+																	disabledReason={option.disabledReason}
+																>
+																	{option.label}
+																</SelectItem>
+															))}
+														</SelectContent>
+													</Select>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={control}
+											name={`${base}.export_timeout`}
+											render={({ field }) => (
+												<FormItem className="w-full sm:flex-1">
+													<FormLabel>Export Timeout (seconds)</FormLabel>
 													<FormControl>
-														<SelectTrigger className="w-full">
-															<SelectValue placeholder="Select trace type" />
-														</SelectTrigger>
+														<Input
+															type="number"
+															min={1}
+															max={60}
+															disabled={!hasOtelAccess}
+															{...field}
+															value={field.value ?? ""}
+															onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
+														/>
 													</FormControl>
-													<SelectContent>
-														{traceTypeOptions.map((option) => (
-															<SelectItem
-																key={option.value}
-																value={option.value}
-																disabled={option.disabled}
-																disabledReason={option.disabledReason}
-															>
-																{option.label}
-															</SelectItem>
-														))}
-													</SelectContent>
-												</Select>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<FormField
-										control={control}
-										name={`${base}.export_timeout`}
-										render={({ field }) => (
-											<FormItem className="w-full sm:flex-1">
-												<FormLabel>Export Timeout (seconds)</FormLabel>
-												<FormControl>
-													<Input
-														type="number"
-														min={1}
-														max={60}
-														disabled={!hasOtelAccess}
-														{...field}
-														value={field.value ?? ""}
-														onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
-													/>
-												</FormControl>
-												<FormDescription>
-													Maximum time for a single trace export (1-60 seconds). Traces are dropped rather than retried past this limit, so
-													an unreachable collector cannot slow down request handling.
-												</FormDescription>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
+													<FormDescription>
+														Maximum time for a single trace export (1-60 seconds). Traces are dropped rather than retried past this limit,
+														so an unreachable collector cannot slow down request handling.
+													</FormDescription>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
 									</div>
 									<FormField
 										control={control}
@@ -767,14 +767,14 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									/>
 									<FormField
 										control={control}
-										name={`${base}.propagate_trace_attributes`}
+										name={`${base}.apply_trace_dimensions_to_child_spans`}
 										render={({ field }) => (
 											<FormItem className="flex flex-row items-center justify-between">
 												<div className="space-y-0.5">
-													<FormLabel className="text-base">Propagate Dimension Attributes to Child Spans</FormLabel>
+													<FormLabel className="text-base">Apply Dimension Attributes to Child Spans</FormLabel>
 													<FormDescription>
 														When enabled, request dimension attributes (e.g. <code className="text-xs">x-bf-dim-*</code> headers) are
-														merged onto every exported span — not just the root span. Useful for filtering or grouping traces by
+														merged onto child spans as well as the root span. Useful for filtering or grouping traces by
 														dimension in your collector.
 													</FormDescription>
 												</div>
@@ -783,7 +783,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 														checked={field.value}
 														onCheckedChange={field.onChange}
 														disabled={!hasOtelAccess}
-														data-testid={`otel-profile-${index}-propagate-trace-attributes-toggle`}
+														data-testid={`otel-profile-${index}-apply-trace-dimensions-to-child-spans-toggle`}
 													/>
 												</FormControl>
 											</FormItem>
@@ -831,16 +831,12 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										<div className="flex w-full flex-row items-center gap-2">
 											<div className="flex flex-col gap-1">
 												<h3 className="text-sm font-medium">Overhead breakdown</h3>
-												<p className="text-muted-foreground text-xs">
-													Export per-component Bifrost overhead latency as a histogram.
-												</p>
+												<p className="text-muted-foreground text-xs">Export per-component Bifrost overhead latency as a histogram.</p>
 											</div>
 											<div className="ml-auto">
 												<Switch
 													aria-label="Enable overhead breakdown"
-													data-testid={
-														index === 0 ? "otel-overhead-breakdown-toggle" : `otel-profile-${index}-overhead-breakdown-toggle`
-													}
+													data-testid={index === 0 ? "otel-overhead-breakdown-toggle" : `otel-profile-${index}-overhead-breakdown-toggle`}
 													checked={field.value}
 													onCheckedChange={field.onChange}
 													disabled={!hasOtelAccess}

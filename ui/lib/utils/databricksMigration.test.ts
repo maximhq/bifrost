@@ -220,10 +220,9 @@ describe("buildDatabricksMigrationPlan", () => {
 	});
 
 	it("enables migration once a masked key gets a value, and strips paths from an edited workspace url", () => {
-		const plan = buildDatabricksMigrationPlan(
-			custom("my-dbx", { custom_provider_config: { base_provider_type: "openai" } }),
-			[key("k1", "prod")],
-		);
+		const plan = buildDatabricksMigrationPlan(custom("my-dbx", { custom_provider_config: { base_provider_type: "openai" } }), [
+			key("k1", "prod"),
+		]);
 		expect(planNeedsInput(plan)).toBe(true);
 		const filled: MigrationPlan = {
 			...plan,
@@ -284,7 +283,8 @@ const fakeApi = (opts: FakeOptions = {}) => {
 					}) as ModelProvider,
 			),
 		getProviderKeys: (name) => record(["getProviderKeys", name], () => keysByProvider.get(name) ?? []),
-		createProvider: (body) => record(["createProvider", body.provider], () => ({ name: body.provider, provider_status: "active" }) as ModelProvider),
+		createProvider: (body) =>
+			record(["createProvider", body.provider], () => ({ name: body.provider, provider_status: "active" }) as ModelProvider),
 		updateProvider: (name) => record(["updateProvider", name], () => ({ name, provider_status: "active" }) as ModelProvider),
 		deleteProvider: (name) => record(["deleteProvider", name], () => undefined),
 		createProviderKey: (provider, k) =>
@@ -344,7 +344,14 @@ describe("runDatabricksMigration", () => {
 		const steps: string[] = [];
 		const result = await runDatabricksMigration(keyedPlan(), api, (s) => steps.push(s.map((x) => x.status).join(",")));
 		expect(result.ok).toBe(false);
-		expect(names()).toEqual(["createProvider", "updateProvider", "createProviderKey", "createProviderKey", "deleteProviderKey", "deleteProvider"]);
+		expect(names()).toEqual([
+			"createProvider",
+			"updateProvider",
+			"createProviderKey",
+			"createProviderKey",
+			"deleteProviderKey",
+			"deleteProvider",
+		]);
 		expect(calls.find((c) => c[0] === "deleteProvider")?.[1]).toBe("databricks");
 		expect(steps.at(-1)).toContain("failed");
 	});

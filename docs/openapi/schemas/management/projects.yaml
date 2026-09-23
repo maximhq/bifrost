@@ -244,14 +244,14 @@ ProjectProviderConfig:
         type: string
       description: >-
         Allowlist. `["*"]` allows every model. A list may not mix `*` with named
-        entries.
+        entries. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     blacklisted_models:
       type: array
       nullable: true
       items:
         type: string
       description: >-
-        Denylist, which wins over the allowlist. `["*"]` blocks everything.
+        Denylist, which wins over the allowlist. `["*"]` blocks everything. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     key_ids:
       type: array
       nullable: true
@@ -321,16 +321,25 @@ ProjectMCPConfig:
 ProjectVirtualMCP:
   type: object
   description: >-
-    A virtual MCP assigned to the project. A scoped request can reach each one
-    at its `/mcp/<slug>` endpoint. Assignments are a set, so a repeated id is
-    ignored rather than doubled, and the list is replaced wholesale on update
-    rather than diffed.
-  required:
-    - virtual_mcp_id
+    A Virtual MCP assigned to the project. A scoped request can reach each one
+    at its `/mcp/<slug>` endpoint. Assignments are a set, so a repeat collapses
+    rather than doubling, and the list is replaced wholesale on update rather
+    than diffed.
+  anyOf:
+    - required: [virtual_mcp_name]
+    - required: [virtual_mcp_id]
   properties:
+    virtual_mcp_name:
+      type: string
+      description: >-
+        Name of the Virtual MCP. Resolved to the stored Virtual MCP on save; a
+        name that matches none is refused.
     virtual_mcp_id:
       type: integer
       minimum: 1
+      description: >-
+        Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both
+        are set.
   additionalProperties: false
 
 ProjectMemberBudgetShare:

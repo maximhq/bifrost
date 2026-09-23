@@ -55,7 +55,7 @@ Sources:
 - [ ] **File search** (dropped earlier; needs vector_store setup) — `tools: [{ type: "file_search", vector_store_ids: [...] }]`
 - [ ] **Computer use preview** (`tools: [{ type: "computer_use_preview", display_width, display_height, environment }]`)
 - [~] **MCP tool** (`tools: [{ type: "mcp", server_label, server_url }]`) — drop-path covered for non-MCP providers (Bedrock + Vertex) via "MCP Tool Handling cross-cut" (regression #3795); **OpenAI/Anthropic forward-to-connector path still untested**
-- [ ] **Image generation** (`tools: [{ type: "image_generation" }]` requires gpt-image-1 access)
+- [x] **Image generation** (`tools: [{ type: "image_generation" }]` requires gpt-image-1 access) — folder 76 (#7059 / PR #7060): bare-string `action` decode + the settings echoed back on the completed item, across native `/v1/responses` (non-streaming + streaming) and the `/openai` drop-in stream
 - [x] **Reasoning summary** (`reasoning: { summary: "auto" }`) — OpenAI passthrough in "12. Backlog Coverage" (`summary_index + obfuscation preserved`); the `reasoning_summary_*` event fields themselves across Gemini/Vertex/Anthropic/Bedrock in "72. Reasoning Summary Streaming Event Fields"
 - [ ] **Background mode** (`background: true`) — async execution
 - [ ] **Truncation strategy** (`truncation: "auto"`)
@@ -114,7 +114,7 @@ Sources:
 - [~] **Prompt caching persistent / 1-hour** (`cache_control: { type: "ephemeral", ttl: "1h" }`) - folder 64.1 asserts `"ttl":"1h"` reaching the Anthropic, Vertex Claude and Bedrock wires (and being dropped where the dialect cannot carry it) for an **injected** breakpoint via `prompt_cache.ttl`. A client-sent `cache_control.ttl` on the request itself is still uncovered.
 - [ ] **Web fetch tool** (`web_fetch_20250910`, `web_fetch_20260209`, `web_fetch_20260309`)
 - [ ] **Memory tool** (`memory_20250818`)
-- [ ] **Tool search** (`tool_search_tool_bm25`, `tool_search_tool_regex`)
+- [x] **Tool search** (`tool_search_tool_bm25`, `tool_search_tool_regex`) - Anthropic accept-path in folder 12; Bedrock InvokeModel routing (tool_search + defer_loading) pinned in folder 71
 - [ ] **MCP toolset** (`mcp_toolset` server reference)
 - [ ] **Code execution v2** (`code_execution_20250825`)
 - [ ] **Code execution programmatic** (`code_execution_20260120`)
@@ -182,7 +182,7 @@ Sources:
 - [x] Tool config (`toolConfig: { tools: [{ toolSpec: { name, inputSchema } }] }`)
 - [ ] **Streaming** (`POST /model/{modelId}/converse-stream`)
 - [ ] **Vision** (`content: [{ image: { format, source: { bytes } } }]`)
-- [~] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`) — the converter into this block is covered by folder 42 (#5472: OpenAI `type:"file"` / Responses `input_file` document uploads via `/v1/chat/completions` and `/v1/responses`, xlsx/docx/csv/pdf/txt + `file_url`). A native Converse-shaped `document` block posted directly at `/bedrock/model/{id}/converse` is still uncovered.
+- [x] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`) — the converter into this block is covered by folder 42 (#5472: OpenAI `type:"file"` / Responses `input_file` document uploads via `/v1/chat/completions` and `/v1/responses`, xlsx/docx/csv/pdf/txt + `file_url`). A native Converse-shaped `document` block posted directly at `/bedrock/model/{id}/converse` is covered by folder 77 (#7072), which also pins text-format documents (txt/md/csv/html) across every ingress - they shipped as a bare `source.text` and 400d.
 - [ ] **Video input** (`content: [{ video: { format, source } }]`)
 - [ ] **Tool result** (`content: [{ toolResult: { toolUseId, content, status } }]`)
 - [ ] **Stop sequences** (`inferenceConfig: { stopSequences: [...] }`)
@@ -193,7 +193,7 @@ Sources:
 - [ ] **Additional model response field paths** (`additionalModelResponseFieldPaths`)
 - [ ] **Prompt variables** (`promptVariables: { var: { text } }`) — for managed prompts
 - [ ] **Performance config** (`performanceConfig: { latency: "standard" | "optimized" }`)
-- [ ] **Request metadata** (`requestMetadata: { ... }`) — for billing tags
+- [x] **Request metadata** (`requestMetadata: { ... }`) — Anthropic and PydanticAI ingress, folder 113
 
 ### InvokeModel API (`POST /model/{modelId}/invoke`)
 
@@ -418,7 +418,7 @@ These exercise Bifrost's translation layer between provider shapes — every che
 - [~] **Sampling-params normalization** (Bifrost should silently drop temperature for Opus 4.7+; Anthropic-direct + Vertex Claude Opus 4.7 covered; **Bedrock Opus 4.7 via cross-model still missing**)
 - [x] **MCP tool stripping for non-MCP providers** (Bifrost silently drops provider-side `type:"mcp"` server tools from a Responses request for Bedrock + Vertex instead of erroring; function tools — how local/configured MCP servers surface — survive — regression #3795. Folder "11. Cross-Provider Feature Tests / MCP Tool Handling cross-cut": 16-item matrix over {opus, sonnet} × {lone-mcp, mcp+function, multi-tool #3795 shape} plus /openai drop-in and streaming axes)
 - [ ] **Failover scenarios** (request to provider X falls back to provider Y on 5xx)
-- [x] **Virtual keys / governance** (`X-Bifrost-VK` header with allowed_models) - covered by `bifrost-v1-vk-quota` (quota endpoint contract), `bifrost-v1-rate-limit` (429 request/token limits, 402 budget), and `bifrost-v1-vk-rotation-cooldown` (rotation grace windows at 1m/3m); allowed_models enforcement in `bifrost-v1-vk-expiry` and `bifrost-routing-wiring`
+- [x] **Virtual keys / governance** (`X-Bifrost-VK` header with allowed_models) - covered by `bifrost-v1-vk-quota` (quota endpoint contract), `bifrost-v1-rate-limit` (429 request/token limits, 402 budget), and `bifrost-v1-vk-rotation-cooldown` (rotation grace windows at 1m/3m); allowed_models enforcement in `bifrost-v1-vk-expiry` and `bifrost-routing-wiring`; `regex:` entries in `allowed_models` / `blacklisted_models` on VKs and `models` / `blacklisted_models` on provider keys in the `Governance - VK Regex Entries` folder of `bifrost-api-management` (400 on an unparsable pattern or `regex:*`, list-models filtering with no pattern surfaced as a model, 200 for a matched model, 403 for models outside the allow regex or matching the block regex, a PUT mixing an exact name with a regex entry, and a provider-key round-trip)
 - [ ] **Rate limit propagation** (provider 429 → Bifrost 429 with Retry-After preserved)
 
 ---

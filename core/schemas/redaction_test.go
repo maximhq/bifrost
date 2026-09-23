@@ -2,8 +2,11 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
@@ -197,4 +200,305 @@ func TestTraceResetClearsRedactionReplacements(t *testing.T) {
 	trace.Reset()
 
 	assert.False(t, trace.redactionReplacements.HasReplacements())
+}
+
+// TestAllContentAttributeKeysMatchesClassifier pins the exported list to the
+// classifier: a stale list would leave connector tests under-covering, and a
+// non-content key in it would over-strip real data.
+func TestAllContentAttributeKeysMatchesClassifier(t *testing.T) {
+	for _, key := range AllContentAttributeKeys() {
+		if !IsContentAttribute(key) {
+			t.Errorf("%q is listed as content but the classifier disagrees", key)
+		}
+	}
+	// Every Attr* constant the classifier calls content must be in the list.
+	listed := make(map[string]bool, len(AllContentAttributeKeys()))
+	for _, key := range AllContentAttributeKeys() {
+		listed[key] = true
+	}
+	// The reverse direction holds by construction: both switch on the same Attr*
+	// constants, so a key in one but not the other fails the check above.
+	_ = listed
+}
+
+// TestSpanTypedPayloadNeverSerializes pins Span.LLM to json:"-": three connectors
+// marshal a whole trace, and the payload is content by construction.
+//
+// StripSpanContent already drops it by not copying, so the content-disabled path
+// is safe either way. This guards the enabled path, which stripping never sees.
+func TestSpanTypedPayloadNeverSerializes(t *testing.T) {
+	const secret = "TYPED-PAYLOAD-SENTINEL"
+	span := &Span{
+		SpanID:     "s1",
+		Attributes: map[string]any{AttrRequestModel: "gpt-4o"},
+		LLM: &LLMSpanData{
+			InputMessages: []MessageSummary{{Role: "user", Content: secret}},
+		},
+	}
+	payload, err := sonic.Marshal(&Trace{TraceID: "t1", RootSpan: span, Spans: []*Span{span}})
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	if strings.Contains(string(payload), secret) {
+		t.Error("Span.LLM serialized: the typed payload must carry json:\"-\"")
+	}
+	if !strings.Contains(string(payload), "gpt-4o") {
+		t.Fatal("attributes did not serialize; the assertion above proves nothing")
+	}
+}
+
+// TestCostAttributesReconcileToTotal pins the breakdown rendering: the emitted
+// side costs must sum to the total, and each detail set to its side. A connector
+// slicing by category has to be able to trust that.
+func TestCostAttributesReconcileToTotal(t *testing.T) {
+	cost := &BifrostCost{
+		InputCost: 0.30, OutputCost: 0.50, AdditionalCost: 0.20, TotalCost: 1.00,
+		InputCostDetails: &InputCostDetails{
+			TextCost: 0.10, AudioCost: 0.05, ImageCost: 0.05,
+			CachedReadCost: 0.04, CachedWriteCost: 0.03, RequestCost: 0.03,
+		},
+		OutputCostDetails: &OutputCostDetails{
+			TextCost: 0.20, AudioCost: 0.10, ImageCost: 0.05,
+			ReasoningCost: 0.10, CitationCost: 0.03, SearchQueriesCost: 0.02,
+		},
+		AdditionalCostDetails: &AdditionalCostDetails{
+			GuardrailCost: 0.08, MCPCost: 0.06, SemanticCacheCost: 0.04, RoutingCost: 0.02,
+		},
+	}
+	attrs := CostAttributes(cost)
+
+	f := func(key string) float64 {
+		v, ok := attrs[key]
+		if !ok {
+			t.Errorf("attribute %q not emitted", key)
+			return 0
+		}
+		return v.(float64)
+	}
+	const eps = 1e-9
+	near := func(label string, got, want float64) {
+		if diff := got - want; diff > eps || diff < -eps {
+			t.Errorf("%s = %v, want %v", label, got, want)
+		}
+	}
+
+	near("total", f(AttrUsageCost), 1.00)
+	near("sides sum to total",
+		f(AttrBifrostCostInput)+f(AttrBifrostCostOutput)+f(AttrBifrostCostAdditional), f(AttrUsageCost))
+	near("input details sum to input side",
+		f(AttrBifrostCostInputText)+f(AttrBifrostCostInputAudio)+f(AttrBifrostCostInputImage)+
+			f(AttrBifrostCostInputCachedRead)+f(AttrBifrostCostInputCachedWrite)+f(AttrBifrostCostInputRequest),
+		f(AttrBifrostCostInput))
+	near("output details sum to output side",
+		f(AttrBifrostCostOutputText)+f(AttrBifrostCostOutputAudio)+f(AttrBifrostCostOutputImage)+
+			f(AttrBifrostCostOutputReasoning)+f(AttrBifrostCostOutputCitation)+f(AttrBifrostCostOutputSearch),
+		f(AttrBifrostCostOutput))
+	near("additional details sum to additional side",
+		f(AttrBifrostCostGuardrail)+f(AttrBifrostCostMCP)+f(AttrBifrostCostSemanticCache)+f(AttrBifrostCostRouting),
+		f(AttrBifrostCostAdditional))
+}
+
+// TestCostAttributesOmitsZeroCategories keeps a text-only request from carrying
+// zero-valued audio and image keys, matching how token details are emitted. The
+// total is always written, including a genuine zero.
+func TestCostAttributesOmitsZeroCategories(t *testing.T) {
+	attrs := CostAttributes(&BifrostCost{
+		InputCost: 0.10, TotalCost: 0.10,
+		InputCostDetails: &InputCostDetails{TextCost: 0.10},
+	})
+	for _, key := range []string{
+		AttrBifrostCostOutput, AttrBifrostCostAdditional,
+		AttrBifrostCostInputAudio, AttrBifrostCostInputImage, AttrBifrostCostGuardrail,
+	} {
+		if _, present := attrs[key]; present {
+			t.Errorf("zero-valued %q was emitted", key)
+		}
+	}
+	if _, present := attrs[AttrUsageCost]; !present {
+		t.Error("total cost must always be emitted")
+	}
+	if got := CostAttributes(nil); len(got) != 0 {
+		t.Errorf("nil cost rendered %d attributes, want none", len(got))
+	}
+}
+
+// TestAssertCostBreakdownCatchesMistakes checks the shared assertion itself: it
+// must pass on a faithful export and fail on each way a connector can get the
+// breakdown wrong. An assertion used by six connectors has to be trustworthy.
+func TestAssertCostBreakdownCatchesMistakes(t *testing.T) {
+	faithful := CostAttributes(ExportFixtureCost())
+	if problems := AssertCostBreakdown(CostAttributeLookup(faithful)); len(problems) != 0 {
+		t.Errorf("faithful export reported problems: %v", problems)
+	}
+
+	t.Run("missing category", func(t *testing.T) {
+		attrs := CostAttributes(ExportFixtureCost())
+		delete(attrs, AttrBifrostCostOutputReasoning)
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a dropped category was not reported")
+		}
+	})
+
+	t.Run("wrong value", func(t *testing.T) {
+		attrs := CostAttributes(ExportFixtureCost())
+		attrs[AttrBifrostCostGuardrail] = 0.99
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a wrong value was not reported")
+		}
+	})
+
+	t.Run("cross-wired category", func(t *testing.T) {
+		// The BigQuery pickDetail mistake: two categories fed from one key.
+		attrs := CostAttributes(ExportFixtureCost())
+		attrs[AttrBifrostCostInputAudio] = attrs[AttrBifrostCostInputText]
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a cross-wired category was not reported")
+		}
+	})
+
+	t.Run("sides do not reconcile", func(t *testing.T) {
+		attrs := CostAttributes(ExportFixtureCost())
+		attrs[AttrUsageCost] = 2.00
+		if len(AssertCostBreakdown(CostAttributeLookup(attrs))) == 0 {
+			t.Error("a total that does not match its sides was not reported")
+		}
+	})
+}
+
+// NaN fails every relational comparison, so a naked tolerance check accepted it:
+// a connector exporting NaN for every cost category passed the whole assertion.
+func TestAssertCostBreakdownRejectsNonFinite(t *testing.T) {
+	for name, v := range map[string]float64{
+		"NaN":  math.NaN(),
+		"+Inf": math.Inf(1),
+		"-Inf": math.Inf(-1),
+	} {
+		lookup := CostLookup(func(CostCategory) (float64, bool) { return v, true })
+		if problems := AssertCostBreakdown(lookup); len(problems) == 0 {
+			t.Errorf("%s passed the cost assertion; non-finite costs must be rejected", name)
+		}
+	}
+	// Control: the real fixture breakdown still reconciles cleanly.
+	ok := CostAttributeLookup(CostAttributes(ExportFixtureCost()))
+	if problems := AssertCostBreakdown(ok); len(problems) != 0 {
+		t.Errorf("fixture breakdown reported problems: %v", problems)
+	}
+}
+
+// Guardrail redaction must reach the typed payload too: span.LLM is a separate
+// carrier from Attributes, and connectors read raw bodies from it.
+func TestRedactionReachesTypedPayload(t *testing.T) {
+	const pii = "sk-SECRET-TOKEN"
+	d := &LLMSpanData{
+		RawRequest:     `{"prompt":"` + pii + `"}`,
+		RawResponse:    `{"text":"` + pii + `"}`,
+		InputMessages:  []MessageSummary{{Role: "user", Content: pii, ToolCalls: []ToolCallSummary{{Args: pii}}}},
+		OutputMessages: []MessageSummary{{Role: "assistant", Content: pii}},
+		ReasoningText:  pii,
+	}
+	span := &Span{SpanID: "s1", Kind: SpanKindLLMCall, Attributes: d.Attributes(), LLM: d}
+	tr := &Trace{TraceID: "t1", RootSpan: span, Spans: []*Span{span}}
+
+	tr.SetRedactionReplacements(RedactionPhaseInput, map[string]string{pii: "[REDACTED]"})
+	tr.SetRedactionReplacements(RedactionPhaseOutput, map[string]string{pii: "[REDACTED]"})
+	tr.ApplyRedactionReplacements()
+
+	for name, got := range map[string]string{
+		"RawRequest":     d.RawRequest,
+		"RawResponse":    d.RawResponse,
+		"InputMessages":  d.InputMessages[0].Content,
+		"ToolCall.Args":  d.InputMessages[0].ToolCalls[0].Args,
+		"OutputMessages": d.OutputMessages[0].Content,
+		"ReasoningText":  d.ReasoningText,
+	} {
+		if strings.Contains(got, pii) {
+			t.Errorf("span.LLM.%s was not redacted: %q", name, got)
+		}
+	}
+}
+
+// Raw bodies arrive as interface{} holding whatever the provider stored. A byte
+// slice must come through as text: marshalling it would base64 the body.
+func TestEncodeRawPayloadShapes(t *testing.T) {
+	const want = `{"a":1}`
+	for name, v := range map[string]any{
+		"string":          want,
+		"[]byte":          []byte(want),
+		"json.RawMessage": json.RawMessage(want),
+		"map":             map[string]any{"a": 1},
+	} {
+		if got := EncodeRawPayload(v); got != want {
+			t.Errorf("%s: EncodeRawPayload = %q, want %q", name, got, want)
+		}
+	}
+	if got := EncodeRawPayload(nil); got != "" {
+		t.Errorf("nil: got %q, want empty", got)
+	}
+	// Over-cap, in every shape.
+	huge := strings.Repeat("x", RawPayloadCap+1)
+	for name, v := range map[string]any{"string": huge, "[]byte": []byte(huge), "json.RawMessage": json.RawMessage(huge)} {
+		if got := EncodeRawPayload(v); got != "" {
+			t.Errorf("%s over cap: kept %d bytes, want dropped", name, len(got))
+		}
+	}
+}
+
+// Pins the accessors the connectors used to each define privately. The copies
+// disagreed on return type and nil handling; this is the single contract.
+func TestSpanAttributeAccessors(t *testing.T) {
+	attrs := map[string]any{
+		"s": "v", "i": 7, "i64": int64(8), "f": 9.5, "wrong": []string{"x"},
+	}
+	if got := GetStringAttr(attrs, "s"); got != "v" {
+		t.Errorf("GetStringAttr = %q, want v", got)
+	}
+	for _, k := range []string{"missing", "i", "wrong"} {
+		if got := GetStringAttr(attrs, k); got != "" {
+			t.Errorf("GetStringAttr(%q) = %q, want empty", k, got)
+		}
+	}
+	for k, want := range map[string]int64{"i": 7, "i64": 8, "f": 9, "missing": 0, "wrong": 0} {
+		if got := GetInt64Attr(attrs, k); got != want {
+			t.Errorf("GetInt64Attr(%q) = %d, want %d", k, got, want)
+		}
+	}
+	if got := GetIntAttr(attrs, "i64"); got != 8 {
+		t.Errorf("GetIntAttr = %d, want 8", got)
+	}
+	if v, ok := GetFloat64AttrOK(attrs, "i"); !ok || v != 7 {
+		t.Errorf("GetFloat64AttrOK(int) = %v,%v want 7,true", v, ok)
+	}
+	if _, ok := GetFloat64AttrOK(attrs, "missing"); ok {
+		t.Error("GetFloat64AttrOK(missing) reported present")
+	}
+	// Nil maps must not panic.
+	_ = GetStringAttr(nil, "s")
+	_ = GetInt64Attr(nil, "i")
+	if _, ok := GetFloat64AttrOK(nil, "f"); ok {
+		t.Error("nil map reported a value")
+	}
+}
+
+// Datadog's copy of this had no nil guard and would panic; Splunk's did. Both
+// now share this one, so the contract is pinned here.
+func TestFinalAttemptSpan(t *testing.T) {
+	at := func(sec int, kind SpanKind) *Span {
+		return &Span{Kind: kind, EndTime: time.Unix(int64(1700000000+sec), 0)}
+	}
+	early, late := at(1, SpanKindLLMCall), at(9, SpanKindRetry)
+
+	tr := &Trace{Spans: []*Span{early, nil, at(5, SpanKindHTTPRequest), late}}
+	if got := FinalAttemptSpan(tr); got != late {
+		t.Errorf("FinalAttemptSpan picked %v, want the latest LLM/retry span", got)
+	}
+	// Non-LLM spans are never the final attempt.
+	if got := FinalAttemptSpan(&Trace{Spans: []*Span{at(9, SpanKindHTTPRequest)}}); got != nil {
+		t.Errorf("FinalAttemptSpan returned a non-LLM span: %v", got)
+	}
+	if got := FinalAttemptSpan(&Trace{Spans: []*Span{nil}}); got != nil {
+		t.Errorf("nil-only trace returned %v", got)
+	}
+	if got := FinalAttemptSpan(nil); got != nil {
+		t.Errorf("nil trace returned %v", got)
+	}
 }

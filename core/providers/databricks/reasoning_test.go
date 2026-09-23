@@ -1,8 +1,12 @@
 package databricks
 
 import (
+	"bytes"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/tidwall/gjson"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -257,5 +261,36 @@ func TestNormalizeReasoningBlocks(t *testing.T) {
 		if got := normalizeReasoningBlocks([]byte(body)); string(got) != body {
 			t.Errorf("body was rewritten: %s", got)
 		}
+	})
+}
+
+// TestNormalizeReasoningBlocks_AllocationScaling pins the allocation shape of the
+// reasoning-block normalization.
+//
+// The loop writes choices.<i>.<carrier>.content through the whole response body, once
+// per choice per carrier, and each sjson write reserialises the entire document. An
+// n>1 completion therefore costs N copies of the response.
+func TestNormalizeReasoningBlocks_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(choices int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"id":"chatcmpl-1","choices":[`)
+		for i := range choices {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// A reasoning block plus a text block: the reasoning is what triggers the
+			// rewrite, the text carries the bulk of the bytes so the payload scales.
+			b.WriteString(`{"index":`)
+			b.WriteString(strconv.Itoa(i))
+			b.WriteString(`,"message":{"role":"assistant","content":[`)
+			b.WriteString(`{"type":"reasoning","summary":[{"text":"thinking about it","signature":"sig"}]},`)
+			b.WriteString(`{"type":"text","text":"`)
+			b.WriteString(strings.Repeat("x", 400))
+			b.WriteString(`"}]}}`)
+		}
+		b.WriteString(`]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		normalizeReasoningBlocks(body)
 	})
 }

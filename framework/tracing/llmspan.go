@@ -206,6 +206,10 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 }
 
 // PopulateContextAttributes extracts context-related attributes (virtual keys, retries, routing rules, etc.)
+//
+// Deprecated: has no callers. Superseded by the span-based context enrichment in
+// core (applyContextSpanAttributes), which writes the same dimensions straight
+// onto the span instead of into an attribute map.
 func PopulateContextAttributes(
 	attrs map[string]any,
 	virtualKeyID, virtualKeyName string,
@@ -312,7 +316,7 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 	// Extract input messages
 	if req.Input != nil {
 		attrs[schemas.AttrMessageCount] = len(req.Input)
-		messages := extractChatMessages(req.Input)
+		messages := schemas.ExtractChatMessages(req.Input, schemas.AttachmentOptions{})
 		if len(messages) > 0 {
 			if data, err := schemas.MarshalString(messages); err == nil {
 				attrs[schemas.AttrInputMessages] = data
@@ -337,11 +341,11 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 	}
 	attrs[schemas.AttrCreated] = resp.Created
 	if resp.ServiceTier != nil {
-		attrs[schemas.AttrServiceTier] = *resp.ServiceTier
+		attrs[schemas.AttrServiceTier] = string(*resp.ServiceTier)
 	}
 
 	// Extract output messages
-	outputMessages := extractChatResponseMessages(resp)
+	outputMessages := schemas.ExtractChatResponseMessages(resp, schemas.AttachmentOptions{})
 	if len(outputMessages) > 0 {
 		if data, err := schemas.MarshalString(outputMessages); err == nil {
 			attrs[schemas.AttrOutputMessages] = data
@@ -732,7 +736,7 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		attrs[schemas.AttrSafetyIdentifier] = *req.Params.SafetyIdentifier
 	}
 	if req.Params.ServiceTier != nil {
-		attrs[schemas.AttrServiceTier] = *req.Params.ServiceTier
+		attrs[schemas.AttrServiceTier] = string(*req.Params.ServiceTier)
 	}
 	if req.Params.Store != nil {
 		attrs[schemas.AttrStore] = *req.Params.Store
@@ -807,7 +811,7 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrResponseModel] = resp.Model
 	}
 	if resp.ServiceTier != nil {
-		attrs[schemas.AttrServiceTier] = *resp.ServiceTier
+		attrs[schemas.AttrServiceTier] = string(*resp.ServiceTier)
 	}
 
 	// Extract output messages (includes reasoning)
@@ -816,6 +820,14 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		if data, err := schemas.MarshalString(outputMessages); err == nil {
 			attrs[schemas.AttrOutputMessages] = data
 		}
+	}
+
+	// Finish reason: the Responses API carries a single top-level stop_reason
+	// rather than per-choice finish reasons. Emit it under the same
+	// finish_reasons key the chat path uses so the tracer derives the singular
+	// gen_ai.response.finish_reason from it and refusals stay visible in OTEL.
+	if resp.StopReason != nil && *resp.StopReason != "" {
+		attrs[schemas.AttrFinishReasons] = []string{*resp.StopReason}
 	}
 
 	// Additional response fields
@@ -1408,148 +1420,24 @@ func PopulateFileContentResponseAttributes(resp *schemas.BifrostFileContentRespo
 // Helper functions for extracting messages
 // ===============================================
 
-// MessageSummary represents a summarized chat message for tracing
-type MessageSummary struct {
-	Role             string                   `json:"role"`
-	Content          string                   `json:"content"`
-	ToolCalls        []ToolCallSummary        `json:"tool_calls,omitempty"`
-	Reasoning        string                   `json:"reasoning,omitempty"`
-	ReasoningDetails []ReasoningDetailSummary `json:"reasoning_details,omitempty"`
-	Audio            *AudioSummary            `json:"audio,omitempty"`
-	Refusal          string                   `json:"refusal,omitempty"`
-}
-
-// ToolCallSummary represents a summarized tool call for tracing
-type ToolCallSummary struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Name string `json:"name"`
-	Args string `json:"args,omitempty"`
-}
-
-// ReasoningDetailSummary represents a summarized reasoning detail for tracing
-type ReasoningDetailSummary struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
-
-// AudioSummary represents summarized audio data for tracing
-type AudioSummary struct {
-	ID         string `json:"id,omitempty"`
-	Transcript string `json:"transcript,omitempty"`
-}
-
-// extractChatMessages extracts chat messages into a slice of MessageSummary
-func extractChatMessages(messages []schemas.ChatMessage) []MessageSummary {
-	result := make([]MessageSummary, 0, len(messages))
-	for _, msg := range messages {
-		summary := extractMessageSummary(&msg)
-		result = append(result, summary)
-	}
-	return result
-}
-
-// extractChatResponseMessages extracts output messages from chat response
-func extractChatResponseMessages(resp *schemas.BifrostChatResponse) []MessageSummary {
-	if resp == nil {
-		return nil
-	}
-
-	result := make([]MessageSummary, 0, len(resp.Choices))
-	for _, choice := range resp.Choices {
-		if choice.ChatNonStreamResponseChoice == nil || choice.ChatNonStreamResponseChoice.Message == nil {
-			continue
-		}
-		msg := choice.ChatNonStreamResponseChoice.Message
-		summary := extractMessageSummary(msg)
-		result = append(result, summary)
-	}
-	return result
-}
-
-// extractMessageSummary extracts a full MessageSummary from a ChatMessage
-func extractMessageSummary(msg *schemas.ChatMessage) MessageSummary {
-	if msg == nil {
-		return MessageSummary{}
-	}
-
-	summary := MessageSummary{
-		Role:    string(schemas.ChatMessageRoleAssistant),
-		Content: extractMessageContent(msg.Content),
-	}
-
-	if msg.Role != "" {
-		summary.Role = string(msg.Role)
-	}
-
-	// Extract assistant-specific fields
-	if msg.ChatAssistantMessage != nil {
-		am := msg.ChatAssistantMessage
-
-		// Extract refusal
-		if am.Refusal != nil && *am.Refusal != "" {
-			summary.Refusal = *am.Refusal
-		}
-
-		// Extract reasoning
-		if am.Reasoning != nil && *am.Reasoning != "" {
-			summary.Reasoning = *am.Reasoning
-		}
-
-		// Extract reasoning details
-		if len(am.ReasoningDetails) > 0 {
-			summary.ReasoningDetails = make([]ReasoningDetailSummary, 0, len(am.ReasoningDetails))
-			for _, rd := range am.ReasoningDetails {
-				detail := ReasoningDetailSummary{
-					Type: string(rd.Type),
-				}
-				if rd.Text != nil {
-					detail.Text = *rd.Text
-				}
-				summary.ReasoningDetails = append(summary.ReasoningDetails, detail)
-			}
-		}
-
-		// Extract audio
-		if am.Audio != nil {
-			summary.Audio = &AudioSummary{
-				ID:         am.Audio.ID,
-				Transcript: am.Audio.Transcript,
-			}
-		}
-
-		// Extract tool calls
-		if len(am.ToolCalls) > 0 {
-			summary.ToolCalls = make([]ToolCallSummary, 0, len(am.ToolCalls))
-			for _, tc := range am.ToolCalls {
-				toolCall := ToolCallSummary{
-					Type: "function",
-				}
-				if tc.ID != nil {
-					toolCall.ID = *tc.ID
-				}
-				if tc.Type != nil {
-					toolCall.Type = *tc.Type
-				}
-				if tc.Function.Name != nil {
-					toolCall.Name = *tc.Function.Name
-				}
-				toolCall.Args = tc.Function.Arguments
-				summary.ToolCalls = append(summary.ToolCalls, toolCall)
-			}
-		}
-	}
-
-	return summary
-}
+// Aliases kept so existing importers (the Datadog connector reads
+// tracing.MessageSummary) compile unchanged after the types moved to
+// core/schemas.
+type (
+	MessageSummary         = schemas.MessageSummary
+	ToolCallSummary        = schemas.ToolCallSummary
+	ReasoningDetailSummary = schemas.ReasoningDetailSummary
+	AudioSummary           = schemas.AudioSummary
+)
 
 // ResponsesMessageSummary extends MessageSummary with reasoning
 type ResponsesMessageSummary struct {
-	Role       string            `json:"role"`
-	Content    string            `json:"content"`
-	Reasoning  string            `json:"reasoning,omitempty"`
-	ToolCalls  []ToolCallSummary `json:"tool_calls,omitempty"`
-	ToolCallID string            `json:"tool_call_id,omitempty"`
+	Role        string                      `json:"role"`
+	Content     string                      `json:"content"`
+	Attachments []schemas.AttachmentSummary `json:"attachments,omitempty"`
+	Reasoning   string                      `json:"reasoning,omitempty"`
+	ToolCalls   []ToolCallSummary           `json:"tool_calls,omitempty"`
+	ToolCallID  string                      `json:"tool_call_id,omitempty"`
 }
 
 // extractResponsesOutputMessages extracts output messages from a Responses API response.
@@ -1681,9 +1569,10 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 				role = string(*msg.Role)
 			}
 			summary := ResponsesMessageSummary{
-				Role:      role,
-				Content:   extractResponsesMessageTextContent(&msg),
-				Reasoning: extractResponsesReasoning(msg.ResponsesReasoning),
+				Role:        role,
+				Content:     extractResponsesMessageTextContent(&msg),
+				Attachments: schemas.ExtractResponsesAttachments(msg.Content, schemas.AttachmentOptions{}),
+				Reasoning:   extractResponsesReasoning(msg.ResponsesReasoning),
 			}
 			result = append(result, summary)
 
@@ -1878,25 +1767,8 @@ func extractResponsesReasoning(r *schemas.ResponsesReasoning) string {
 	return sb.String()
 }
 
-// extractMessageContent extracts text content from ChatMessageContent
+// extractMessageContent concatenates a chat message's text blocks. Kept as a
+// thin wrapper because tracer.go uses it for root-span propagation.
 func extractMessageContent(content *schemas.ChatMessageContent) string {
-	if content == nil {
-		return ""
-	}
-
-	if content.ContentStr != nil {
-		return *content.ContentStr
-	}
-
-	if content.ContentBlocks != nil {
-		var builder strings.Builder
-		for _, block := range content.ContentBlocks {
-			if block.Text != nil {
-				builder.WriteString(*block.Text)
-			}
-		}
-		return builder.String()
-	}
-
-	return ""
+	return schemas.ExtractChatContentText(content)
 }

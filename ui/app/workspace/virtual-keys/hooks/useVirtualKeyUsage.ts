@@ -7,6 +7,13 @@ import { User } from "@enterprise/lib/types/user";
 import { hasProfileRateLimit, resolveDisplayRateLimit } from "./useVirtualKeyUsage.utils";
 
 /**
+ * The assignee fields every caller actually reads. Narrower than User on purpose: the
+ * VK list resolves assignees itself and carries only id/name/email, so widening this
+ * to User would promise a role, teams and claims that are not there.
+ */
+export type VirtualKeyAssignee = Pick<User, "id" | "name" | "email">;
+
+/**
  * When a VK is attached to users via an access profile, the governance plugin tracks usage on the
  * AP rather than on the VK itself (to avoid double-counting). This hook resolves the managing AP
  * for a VK and returns budget/rate-limit values that prefer AP counters, falling back to the VK's
@@ -14,12 +21,14 @@ import { hasProfileRateLimit, resolveDisplayRateLimit } from "./useVirtualKeyUsa
  *
  * The AP query polls every 5s so bars reflect live usage without manual refresh.
  *
- * `assignedUsers[0]` is safe: the enterprise schema enforces a uniqueIndex on
- * TableVirtualKeyUser.virtual_key_id, so each VK can belong to at most one user. The list is
- * either empty or length 1 — [0] is always the sole assignee when one exists.
+ * The assignee comes off the VK itself (`assigned_user`), which the governance read paths
+ * resolve for a whole page at a time. The per-VK /users request is only a fallback for rows
+ * that came from a path which does not populate that field, so the common case costs no extra
+ * request per row. Either source yields at most one user: the enterprise schema enforces a
+ * uniqueIndex on TableVirtualKeyUser.virtual_key_id.
  */
 export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
-	assignedUsers: User[];
+	assignedUsers: VirtualKeyAssignee[];
 	isManagedByProfile: boolean;
 	managingProfile: UserAccessProfile | undefined;
 	hasApRateLimit: boolean;
@@ -27,8 +36,15 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	displayRateLimit: RateLimit | undefined;
 	isExhausted: boolean;
 } {
-	const { data: vkUsersData } = useGetVirtualKeyUsersQuery(vk?.id ?? "", { skip: !vk?.id });
-	const assignedUsers = vkUsersData?.users ?? [];
+	// `assigned_user` present (user or null) means the response resolved assignees, so
+	// there is nothing left to fetch. Only an absent field falls back to the request.
+	const hasResolvedAssignee = vk ? vk.assigned_user !== undefined : false;
+	const { data: vkUsersData } = useGetVirtualKeyUsersQuery(vk?.id ?? "", { skip: !vk?.id || hasResolvedAssignee });
+	const assignedUsers: VirtualKeyAssignee[] = hasResolvedAssignee
+		? vk?.assigned_user
+			? [vk.assigned_user]
+			: []
+		: (vkUsersData?.users ?? []);
 
 	const managingUserId = assignedUsers[0]?.id;
 	const { data: userAPsData } = useGetUserAccessProfilesQuery(managingUserId ?? "", {
@@ -68,6 +84,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// managingProfile, for the same reason isManagedByProfile is: see resolveDisplayRateLimit.
 	const displayRateLimit: RateLimit | undefined = resolveDisplayRateLimit({
 		isManagedByProfile,
+		isEntityGoverned: assignedUsers.length === 0 && !!(vk?.team_id || vk?.customer_id || vk?.business_unit_id),
 		profileRateLimit: apRL,
 		vkRateLimit: vk?.rate_limit,
 	});

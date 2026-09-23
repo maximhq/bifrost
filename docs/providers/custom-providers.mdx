@@ -261,7 +261,13 @@ Custom providers can be built on these supported providers:
 
 Most OpenAI-compatible providers end a stream with a `data: [DONE]` marker, and Bifrost reads until it arrives so that a trailing usage-only chunk — which many providers send after `finish_reason` — is not lost.
 
-Set `does_not_send_done_marker` to `true` when your upstream instead ends streams on `finish_reason` and never sends `[DONE]`:
+Bifrost also ends the stream on its own, with no configuration, when an upstream omits `[DONE]` after `finish_reason`:
+
+- the upstream closes the connection: the stream ends immediately
+- the upstream keeps the connection open and sends SSE heartbeat comments: the stream ends on the second consecutive comment after `finish_reason`, so a trailing usage chunk is still collected
+- the upstream keeps the connection open and sends nothing: the stream ends cleanly once `stream_idle_timeout_in_seconds` elapses, with the buffered `finish_reason`. Usage is unavailable for that request if it never arrived
+
+Set `does_not_send_done_marker` to `true` when your upstream instead ends streams on `finish_reason` and never sends `[DONE]`. Bifrost then stops reading as soon as `finish_reason` arrives:
 
 ```json
 {
@@ -271,6 +277,24 @@ Set `does_not_send_done_marker` to `true` when your upstream instead ends stream
     }
 }
 ```
+
+<Warning>
+On its own, `does_not_send_done_marker` **discards a trailing usage-only chunk**, because that chunk arrives *after* the `finish_reason` the stream stopped on. The request is then recorded with zero tokens and zero cost, which affects logging, pricing, virtual-key usage, budgets and cost attribution. Add `wait_for_usage` if your upstream sends one.
+</Warning>
+
+Add `wait_for_usage` when your upstream ends on `finish_reason` but still sends that trailing usage chunk. Bifrost requests it on every stream via `stream_options.include_usage`, so this keeps the read loop open just long enough to collect it:
+
+```json
+{
+    "custom_provider_config": {
+        "base_provider_type": "openai",
+        "does_not_send_done_marker": true,
+        "wait_for_usage": true
+    }
+}
+```
+
+With `wait_for_usage` the stream ends on whichever comes first: the usage chunk, two consecutive heartbeat comments, the upstream closing the connection, or `stream_idle_timeout_in_seconds`. If your upstream may go silent without ever sending usage, set `network_config.stream_idle_timeout_in_seconds` low (`5`, say) on that provider so the last case does not hold the request for the default 120 seconds.
 
 
 ### Request Path Overrides

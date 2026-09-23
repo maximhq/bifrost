@@ -223,24 +223,30 @@ export default function DatabricksMigrationDialog({ show, provider, onDeferred, 
 				<AlertDialogHeader>
 					<AlertDialogTitle className="flex items-center gap-2">
 						<RenderProviderIcon provider={DATABRICKS_PROVIDER as ProviderIconType} size="sm" className="h-5 w-5 shrink-0" />
-						{stage === "finished" && result ? (result.ok ? "Migration complete" : "Migration failed") : "Databricks is now a first-party provider"}
+						{stage === "finished" && result
+							? result.ok
+								? "Migration complete"
+								: "Migration failed"
+							: "Databricks is now a first-party provider"}
 					</AlertDialogTitle>
 					<AlertDialogDescription asChild>
 						<div className="space-y-2">
 							{(stage === "intro" || stage === "loading") && (
 								<>
 									<p>
-										<span className="text-foreground font-medium">{provider.name}</span> is a custom provider pointing at a Databricks workspace.
-										Bifrost now supports Databricks natively, with personal access tokens, OAuth service principals, Model Serving and AI Gateway
-										routing. Your existing configuration needs to be migrated to the official provider.
+										<span className="text-foreground font-medium">{provider.name}</span> is a custom provider pointing at a Databricks
+										workspace. Bifrost now supports Databricks natively, with personal access tokens, OAuth service principals, Model
+										Serving and AI Gateway routing. Your existing configuration needs to be migrated to the official provider.
 									</p>
 									<p>
-										Nothing changes until you confirm. You will see exactly what will be copied before the migration runs, and the custom provider is
-										only removed after the new one is verified.
+										Nothing changes until you confirm. You will see exactly what will be copied before the migration runs, and the custom
+										provider is only removed after the new one is verified.
 									</p>
 								</>
 							)}
-							{stage === "preview" && <p>Review what will be migrated. Secrets are masked; anything that could not be read must be entered below.</p>}
+							{stage === "preview" && (
+								<p>Review what will be migrated. Secrets are masked; anything that could not be read must be entered below.</p>
+							)}
 							{stage === "running" && <p>Migrating. Keep this window open until it finishes.</p>}
 							{stage === "finished" && result && <p>{result.message}</p>}
 						</div>
@@ -273,7 +279,11 @@ export default function DatabricksMigrationDialog({ show, provider, onDeferred, 
 								Not now
 							</AlertDialogCancel>
 							<DisabledTooltip reason={migrateDisabledReason}>
-								<Button onClick={loadPlan} disabled={!!migrateDisabledReason || stage === "loading"} data-testid="databricks-migration-start">
+								<Button
+									onClick={loadPlan}
+									disabled={!!migrateDisabledReason || stage === "loading"}
+									data-testid="databricks-migration-start"
+								>
 									{stage === "loading" && <Loader2 className="h-4 w-4 animate-spin" />}
 									Let&apos;s migrate
 								</Button>
@@ -286,7 +296,9 @@ export default function DatabricksMigrationDialog({ show, provider, onDeferred, 
 								Back
 							</Button>
 							<AlertDialogCancel onClick={onDeferred}>Not now</AlertDialogCancel>
-							<DisabledTooltip reason={migrateDisabledReason ?? (plan && planNeedsInput(plan) ? "Fill in the missing values above." : undefined)}>
+							<DisabledTooltip
+								reason={migrateDisabledReason ?? (plan && planNeedsInput(plan) ? "Fill in the missing values above." : undefined)}
+							>
 								<Button onClick={runMigration} disabled={!canMigrate} data-testid="databricks-migration-confirm">
 									Migrate
 								</Button>
@@ -485,7 +497,9 @@ function MigrationProgress({ steps }: { steps: MigrationStep[] }) {
 					<div className="min-w-0 flex-1">
 						<div className={step.status === "pending" ? "text-muted-foreground" : ""}>{step.label}</div>
 						{step.detail && (
-							<div className={`mt-0.5 text-xs whitespace-pre-line ${step.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>
+							<div
+								className={`mt-0.5 text-xs whitespace-pre-line ${step.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+							>
 								{step.detail}
 							</div>
 						)}

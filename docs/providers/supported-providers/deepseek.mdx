@@ -256,6 +256,13 @@ Lists available models from DeepSeek through `/models`.
 
 ## Caveats
 
+<Accordion title="Peak / Off-Peak Pricing">
+**Severity**: Medium
+**Behavior**: DeepSeek bills the V4 models at two different rates depending on the time of day. Peak is Monday-Friday `01:00-04:00` and `06:00-10:00` UTC; every other hour, weekends included, is off-peak at half the peak rate, across cache-hit input, cache-miss input, and output alike
+**Impact**: Bifrost prices this through the generic time-of-day fields (`off_peak_cost_multiplier` and `peak_hours`) on the model's pricing row. If those fields are absent from the pricing datasheet in use, DeepSeek requests bill at the peak rate around the clock, overstating cost for most of the week — set them with a [custom pricing override](/providers/custom-pricing#time-of-day-costs) to correct it. Peak vs off-peak is decided by the request's start time, so a stream crossing a boundary bills entirely at its start-time rate
+**Code**: `offPeakMultiplier` and `scaleUsageCost` in `framework/modelcatalog/datasheet/cost.go`
+</Accordion>
+
 <Accordion title="Default Base URL">
 **Severity**: Low
 **Behavior**: DeepSeek defaults to `https://api.deepseek.com`

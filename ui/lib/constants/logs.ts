@@ -32,6 +32,7 @@ export const KnownProvidersNames = [
 	"wafer",
 	"databricks",
 	"github-copilot",
+	"typesafe",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -86,6 +87,7 @@ export const RequestTypes = [
 	"responses_input_items",
 	"embedding",
 	"rerank",
+	"decisions",
 	"speech",
 	"speech_stream",
 	"transcription",
@@ -171,6 +173,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	wafer: "Wafer",
 	databricks: "Databricks",
 	"github-copilot": "GitHub Copilot",
+	typesafe: "TypeSafe",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -201,6 +204,7 @@ export interface ClientApp {
 // every release, so never match on an exact string. Identifiers are best-effort
 // and meant to be extended as new clients appear.
 const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
+	{ identifiers: ["bifrost-warp"], app: { name: "Warp", icon: "/images/warp.svg" } },
 	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
 	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: "/images/claude-desktop.png" } },
 	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
@@ -225,7 +229,10 @@ export const mapAppToClientApp = (app?: string | null): ClientApp => {
 	if (!app || app.trim() === "") {
 		return { name: "Unknown" };
 	}
-	return appByName.get(app) || { name: app };
+	return (
+		appByName.get(app) ||
+		userAgentAppMatchers.find((matcher) => matcher.identifiers.includes(app.trim().toLowerCase()))?.app || { name: app }
+	);
 };
 
 // mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
@@ -252,15 +259,15 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 };
 
 export const StatusColors = {
-	success: "bg-green-100 text-green-800",
-	error: "bg-red-100 text-red-800",
+	success: "bg-chart-success/15 text-chart-success-ink",
+	error: "bg-chart-error/15 text-chart-error-ink",
 	processing: "bg-blue-100 text-blue-800",
 	cancelled: "bg-gray-100 text-gray-800",
 } as const;
 
 export const StatusBarColors = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 } as const;
@@ -294,6 +301,7 @@ export const RequestTypeLabels = {
 
 	embedding: "Embedding",
 	rerank: "Rerank",
+	decisions: "Decisions",
 
 	speech: "Speech",
 	speech_stream: "Speech Stream",
@@ -383,6 +391,7 @@ export const RequestTypeColors = {
 
 	embedding: "bg-red-100 text-red-800",
 	rerank: "bg-fuchsia-100 text-fuchsia-800",
+	decisions: "bg-cyan-100 text-cyan-800",
 
 	speech: "bg-purple-100 text-purple-800",
 	speech_stream: "bg-pink-100 text-pink-800",
@@ -447,6 +456,7 @@ export const RoutingEngineUsedLabels = {
 	governance: "Governance",
 	loadbalancing: "Loadbalancing",
 	"model-catalog": "Model Catalog",
+	"session-affinity": "Session",
 	core: "Core",
 } as const;
 
@@ -455,6 +465,7 @@ export const RoutingEngineUsedColors = {
 	governance: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
 	loadbalancing: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300",
 	"model-catalog": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
+	"session-affinity": "bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300",
 	core: "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-300",
 } as const;
 

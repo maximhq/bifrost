@@ -128,7 +128,7 @@ export function AllowedRequestsFields({
 				name={`${namePrefix}.${requestType.key}`}
 				render={({ field: allowedField }) => (
 					<FormItem
-						className={`flex flex-row items-center justify-between rounded-lg border p-3 ${isDisabled ? "bg-muted/30 opacity-60" : ""}`}
+						className={`flex flex-row items-center justify-between rounded-sm border p-3 ${isDisabled ? "bg-muted/30 opacity-60" : ""}`}
 					>
 						<div className="space-y-0.5">
 							<FormLabel className={isDisabled ? "cursor-not-allowed" : ""}>{requestType.label}</FormLabel>

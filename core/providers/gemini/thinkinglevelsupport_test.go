@@ -1,6 +1,8 @@
 package gemini_test
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -80,6 +82,14 @@ func TestGeminiThinkingLevelClampedToModelSupport(t *testing.T) {
 		// gemini-3-flash-preview supports the full set including minimal.
 		{"3-flash-preview keeps minimal", "gemini-3-flash-preview", "minimal", "minimal"},
 
+		// Text Flash-Lite supports all four levels; its image variant does not.
+		{"3.1-flash-lite keeps minimal", "gemini-3.1-flash-lite", "minimal", "minimal"},
+		{"3.1-flash-lite low", "gemini-3.1-flash-lite", "low", "low"},
+		{"3.1-flash-lite medium", "gemini-3.1-flash-lite", "medium", "medium"},
+		{"3.1-flash-lite high", "gemini-3.1-flash-lite", "high", "high"},
+		{"3.1-flash-lite-preview keeps minimal", "gemini-3.1-flash-lite-preview", "minimal", "minimal"},
+		{"unknown model retains conservative floor", "gemini-3-unknown", "minimal", "low"},
+
 		// gemini-3.1-flash-lite-image is the one documented Gemini 3 model with NO "low"
 		// rung at all - Google lists exactly "minimal, high" for it. It is the reason the
 		// defaultGemini3ThinkingLevels comment cannot claim every documented Gemini 3
@@ -117,6 +127,7 @@ func TestGeminiEffortNoneDoesNotDisableThinkingOnGemini3(t *testing.T) {
 		{"gemini-3.6-flash", "minimal"}, // floor is minimal
 		{"gemini-3-pro-preview", "low"}, // floor is low
 		{"gemini-3-flash-preview", "minimal"},
+		{"gemini-3.1-flash-lite", "minimal"},
 	}
 
 	for _, tc := range cases {
@@ -212,4 +223,70 @@ func TestNotEveryDocumentedGemini3ModelAcceptsLow(t *testing.T) {
 		`gemini-3.1-flash-lite-image has no "low" rung, so "low" must never reach the wire for it`)
 	assert.Equal(t, "minimal", *out.GenerationConfig.ThinkingConfig.ThinkingLevel,
 		`"minimal" is the nearest rung below "low" that this model implements`)
+}
+
+// GenAI requests for Gemini and Vertex share the native schema and normalize to
+// Responses before routing. Changing the provider must preserve supported levels,
+// including on the second conversion when a request is retried or falls back.
+func TestFlashLiteThinkingRoundTripAcrossProviders(t *testing.T) {
+	cases := []struct {
+		name       string
+		config     *gemini.GenerationConfigThinkingConfig
+		wantLevel  string
+		wantBudget *int32
+	}{
+		{"minimal", &gemini.GenerationConfigThinkingConfig{ThinkingLevel: schemas.Ptr("MINIMAL")}, "minimal", nil},
+		{"low", &gemini.GenerationConfigThinkingConfig{ThinkingLevel: schemas.Ptr("LOW")}, "low", nil},
+		{"medium", &gemini.GenerationConfigThinkingConfig{ThinkingLevel: schemas.Ptr("MEDIUM")}, "medium", nil},
+		{"high", &gemini.GenerationConfigThinkingConfig{ThinkingLevel: schemas.Ptr("HIGH")}, "high", nil},
+		{"zero budget uses floor", &gemini.GenerationConfigThinkingConfig{ThinkingBudget: schemas.Ptr(int32(0))}, "minimal", nil},
+		{"dynamic budget", &gemini.GenerationConfigThinkingConfig{ThinkingBudget: schemas.Ptr(int32(-1))}, "", schemas.Ptr(int32(-1))},
+		{"explicit budget wins over level", &gemini.GenerationConfigThinkingConfig{ThinkingBudget: schemas.Ptr(int32(1024)), ThinkingLevel: schemas.Ptr("HIGH")}, "", schemas.Ptr(int32(1024))},
+		{"unspecified", nil, "", nil},
+	}
+	for _, source := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, target := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+			for _, tc := range cases {
+				t.Run(string(source)+" to "+string(target)+"/"+tc.name, func(t *testing.T) {
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					native := &gemini.GeminiGenerationRequest{
+						Model:            string(source) + "/gemini-3.1-flash-lite",
+						Contents:         []gemini.Content{{Role: "user", Parts: []*gemini.Part{{Text: "Say OK."}}}},
+						GenerationConfig: gemini.GenerationConfig{ThinkingConfig: tc.config},
+					}
+					normalized := native.ToBifrostResponsesRequest(ctx)
+					require.Equal(t, source, normalized.Provider)
+					require.Equal(t, "gemini-3.1-flash-lite", normalized.Model)
+					normalized.Provider = target
+					for range 2 {
+						var out *gemini.GeminiGenerationRequest
+						var err error
+						if target == schemas.Vertex {
+							out, err = gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, normalized, "http", "https", "gs")
+						} else {
+							out, err = gemini.ToGeminiResponsesRequest(ctx, normalized)
+						}
+						require.NoError(t, err)
+						got := out.GenerationConfig.ThinkingConfig
+						if tc.config == nil {
+							require.Nil(t, got)
+							continue
+						}
+						require.NotNil(t, got)
+						if tc.wantLevel == "" {
+							assert.Nil(t, got.ThinkingLevel)
+						} else {
+							require.NotNil(t, got.ThinkingLevel)
+							assert.Equal(t, tc.wantLevel, *got.ThinkingLevel)
+						}
+						assert.Equal(t, tc.wantBudget, got.ThinkingBudget)
+					}
+					if tc.config != nil && tc.config.ThinkingBudget == nil {
+						assert.Equal(t, strings.ToLower(*tc.config.ThinkingLevel), *normalized.Params.Reasoning.Effort)
+						assert.Nil(t, normalized.Params.Reasoning.MaxTokens)
+					}
+				})
+			}
+		}
+	}
 }

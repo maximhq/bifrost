@@ -555,15 +555,31 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 
 ## Testing
 
+### Every fix and every change ships with regression tests
+
+Any issue fix or code change lands together with regression tests that pin the new behavior. This applies to every issue type (bug, feature, refactor) and every layer, not only bug fixes in `core/`:
+
+- **Unit tests wherever possible**, added to the existing test file per the convention below.
+- **A provider-harness case for every wire-visible change** (next sections).
+- **E2E coverage for `ui/` changes** (`tests/e2e/`) - the harness cannot see the UI.
+
+The only exemptions: no wire-visible effect AND no testable behavior change (comments, internal renames, log lines). An exempt change must say so explicitly in the PR.
+
 ### Bug fixes: red before green
 
 Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
 
-### Every `core/` change ships with a provider-harness case
+### Add tests to existing test files, never new ones
 
-Any change under `core/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes — the rule in the previous section is the narrower instance of this one.
+Do not create a new `_test.go` file for a package that already has one. Put the test in the existing file that covers the same code: `<name>_test.go` next to `<name>.go`, or the topical file that already exists (`chat_test.go`, `counttokens_test.go`). One test file per bug or feature scatters a package's tests across many small files and makes it hard to find what already covers a source file. Create a new test file only for a source file that has no test file yet, and name it after that source file.
 
-`core/` is the only layer every transport, integration and provider funnels through, so its behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
+### Every wire-visible change ships with a provider-harness case
+
+Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one.
+
+These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
+
+**Never skip any error status code in a harness test script.** Do not open a test with an early-return guard like `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }` — every unexpected status, including auth failures, rate limits, and 5xx, must fail the assertion loudly rather than silently passing the case. Assert the exact status (or bound) the case expects and include `pm.response.text()` in the failure message.
 
 Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
 
@@ -575,6 +591,45 @@ node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.
 Insert into the collection surgically (a script that splices the new object in, never a whole-file reserialize) — the file is ~50k lines and a reformat buries the actual change.
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
+
+### Every non-exempt wire-visible fix ends with unit tests, then a harness command handed to the user
+
+Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
+
+The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call.
+
+**RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
+
+```bash
+# 1. port 8080 must be free
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+
+# 2. start Bifrost from the code under test, then wait for /health
+make dev APP_DIR=$(pwd)/tests/integrations/python
+
+# 3. run the harness against that server
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+```
+
+Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs.
+
+Never print that block with a placeholder still in it. `<provider>` and `<keyword>` belong to the template; substitute the real values for the change so every line pastes straight into a shell.
+
+The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt. For an exempt change, say so explicitly instead of printing the block.
+
+```bash
+# Scoped to the change (preferred): the provider and a keyword from the affected cases
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+
+# Curated ~100-request smoke set across all providers, when the change is cross-cutting
+make run-provider-harness-test SMOKE=1
+```
+
+The profile is the shared provider config at `tests/integrations/python/config.json` that every live check uses. Pass it to `make dev` as `APP_DIR=$(pwd)/tests/integrations/python` so a stale server or another config never answers for the code under test; the harness target already defaults to it and does not need it repeated.
+
+`HARNESS_MAX_REQUESTS=<n>` is an optional enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Add it when a run is broad enough that the cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to need it. The preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
+
+Port 8080 is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:8080 -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 
@@ -639,7 +694,7 @@ Run: `make run-e2e FLOW=<feature>`
 
 ## Claude Code Skills
 
-Four skills are available via `/skill-name`:
+Skills are available via `/skill-name`:
 
 ### `/docs-writer <feature-name>`
 Write, update, or review Mintlify MDX documentation. Researches UI code, Go handlers, and config schema. Validates `config.json` examples against `transports/config.schema.json`. Outputs docs with Web UI / API / config.json tabs.
@@ -654,8 +709,11 @@ Variants:
 - `/e2e-test sync` — Detect UI changes, update affected tests automatically
 - `/e2e-test audit` — Scan specs for incorrect/weak assertions (P0-P6 severity scale)
 
+### `/harness-test-writer <PR# | issue# | URL>`
+Add regression test cases to the provider harness (`tests/e2e/api/collections/provider-harness.json`) from a merged PR or GitHub issue. Traces the affected wire path, checks existing coverage, designs cases per harness conventions, inserts them surgically without reformatting the file, and validates via the augment and filter scripts. This is the skill the Testing section's harness-case rule points at.
+
 ### `/investigate-issue <issue-id>`
-Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, suggests tests (LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
+Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, plans the required regression tests (unit/harness/LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
 
 ### `/resolve-pr-comments <pr-number>`
 Systematically address unresolved PR review comments. Uses GraphQL to get unresolved threads, presents each with FIX/REPLY/SKIP options, collects fixes locally, and only posts replies **after code is pushed** to remote.
@@ -669,6 +727,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 2. Update converter functions in each provider's `chat.go`
 3. If streaming affected, update `framework/streaming/` (accumulator, delta copy)
 4. Run `make test-core` (all providers)
+5. Add/extend unit tests and a provider-harness regression case (see Testing section)
 
 ### Add a new field to API responses
 1. Add to schema type in `core/schemas/`
@@ -676,6 +735,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Handle in streaming accumulator if applicable
 4. Update HTTP handler if field needs special serialization
 5. Update `transports/config.schema.json` if configurable
+6. Add/extend unit tests and a provider-harness regression case (see Testing section)
 
 ### Add a new plugin
 1. Create `plugins/<name>/` with its own `go.mod`
@@ -683,6 +743,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Add to `go.work`
 4. Register in transport layer or Bifrost config
 5. Add test targets to `Makefile`
+6. Add unit tests; add a provider-harness regression case if the plugin's behavior is wire-visible
 
 ### Modify a UI feature
 1. Find workspace page: `ui/app/workspace/<feature>/`
@@ -871,6 +932,26 @@ Available today: `virtualKeySelector`, `teamSelector`, `customerSelector` (OSS);
 Do not edit `entitySelector.tsx` to accommodate one surface. It only carries behaviour identical across every entity; per-entity differences belong in the wrapper, per-surface differences in props (`trigger`, `triggerClassName`, `excludeIds`, `noPortal`, `className`).
 
 **OSS ↔ enterprise placement.** `entitySelector.tsx` and any selector whose API is OSS live in `ui/components/entitySelectors/`. A selector for an enterprise-only API lives in `bifrost-enterprise/enterprise-ui/app/components/entitySelectors/` and OSS must never import it directly — OSS reaches it through a runtime registry (`ui/lib/registries/userPicker.tsx`, `ui/lib/registries/modelLimitScopes.tsx`), with an empty fallback under `ui/app/_fallbacks/enterprise/` so OSS-only builds simply hide the option. Keep single mode prop-compatible with the registry contract (`{ value, onChange, disabled, fallbackOption }`) so the selector can be registered as-is.
+
+---
+
+### Provider and model pickers — always `ProviderSelector` / `ModelSelector`
+
+Every provider or model picker goes through `ui/components/ui/providerSelector.tsx` or `modelSelector.tsx`. Never hand-roll a `Select` over `VisibleProviderNames`, a `Combobox` over `useGetProvidersQuery`, or a search box over `useGetModelsQuery`: these already carry provider icons and labels, server-side model search with paging, deprecated demotion, a pinned "Selected" row for a value no longer in the list, and multi-mode chips.
+
+```tsx
+<ProviderSelector value={p} onChange={setP} />                              // single
+<ProviderSelector multiple value={ps} onChange={setPs} />                   // multi
+<ProviderSelector mode="add" onSelect={add} trigger={<Button>Add</Button>} /> // fire-and-forget
+<ModelSelector provider={p} value={m} onChange={setM} allowCustomModel />
+```
+
+- `source` on `ProviderSelector`: `"configured"` (default, what the user set up), `"catalog"` (everything Bifrost supports, for add flows), `"values"` (a list from elsewhere, e.g. analytics labels that may name a deleted provider).
+- Scope models with `provider` / `keys` / `vks`; `baseModelsWithoutProvider` collapses duplicates when no provider is picked, `allowCustomModel` accepts a name off-catalog, `unfiltered` bypasses the provider's model pool.
+- Rows outside the source list go in `extraOptions` (above), `footerOptions` (below), or `allOption` for an "All Providers" sentinel. `ALL_MODELS_OPTION` is exported for the `*` row. Never merge them into the fetched array yourself.
+- They own fetch, search, paging and reset. No parent `useState` mirror, debounce, or refetch-on-open.
+- Per-surface differences are props, not forks: `size="sm"`, `contentWidth`, `noPortal` (inside a sheet), `className`, `inputId` / `ariaDescribedBy` / `ariaInvalid`, `data-testid`, `optionTestId`, `contentTestId`. For selectability use `getOptionState` (model) or `disabled` + `disabledReason` on an option (provider). Anything new is a prop defaulting to today's behaviour.
+- Pure helpers live in `providerSelector.utils.ts` with a case in `providerSelector.test.ts`, since the components pull in the store.
 
 ---
 

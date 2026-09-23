@@ -585,8 +585,12 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		if messageType == ResponsesMessageTypeFunctionCallOutput {
 			// Don't set content for function_call_output - it will be set in ResponsesToolMessage.Output
 		} else {
-			responseBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
-			for i, block := range cm.Content.ContentBlocks {
+			responseBlocks := make([]ResponsesMessageContentBlock, 0, len(cm.Content.ContentBlocks))
+			for _, block := range cm.Content.ContentBlocks {
+				// Responses blocks have no cachePoint equivalent; a standalone marker would serialize as an empty-type block.
+				if block.Type == "" && block.CachePoint != nil {
+					continue
+				}
 				blockType := ResponsesMessageContentBlockType(block.Type)
 
 				switch block.Type {
@@ -604,33 +608,34 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					blockType = ResponsesInputMessageContentBlockTypeAudio
 				}
 
-				responseBlocks[i] = ResponsesMessageContentBlock{
+				responseBlocks = append(responseBlocks, ResponsesMessageContentBlock{
 					Type: blockType,
 					Text: block.Text,
-				}
+				})
+				rb := &responseBlocks[len(responseBlocks)-1]
 
 				// Convert specific block types
 				if block.ImageURLStruct != nil {
-					responseBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
+					rb.ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
 						ImageURL: &block.ImageURLStruct.URL,
 						Detail:   block.ImageURLStruct.Detail,
 					}
 				}
 				if block.File != nil {
-					responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
+					rb.ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
 						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
 						FileType: block.File.FileType,
 					}
-					responseBlocks[i].FileID = block.File.FileID
+					rb.FileID = block.File.FileID
 				}
 				if block.InputAudio != nil {
 					format := ""
 					if block.InputAudio.Format != nil {
 						format = *block.InputAudio.Format
 					}
-					responseBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
+					rb.Audio = &ResponsesInputMessageContentBlockAudio{
 						Data:   block.InputAudio.Data,
 						Format: format,
 					}
@@ -1092,6 +1097,87 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 	}
 
 	return usage
+}
+
+// NormalizedUsage folds whichever family's usage a settled response carries into
+// the canonical BifrostLLMUsage shape, so the logging plugin and the tracer read
+// token counts from one place and cannot disagree.
+//
+// Streaming requests do not reach here: they settle through the accumulator and
+// carry usage on the accumulated result instead.
+//
+// The returned value may alias the response's own usage; callers that retain it
+// past the request should DeepCopy.
+func (r *BifrostResponse) NormalizedUsage() *BifrostLLMUsage {
+	if r == nil {
+		return nil
+	}
+	switch {
+	case r.TextCompletionResponse != nil && r.TextCompletionResponse.Usage != nil:
+		return r.TextCompletionResponse.Usage
+	case r.ChatResponse != nil && r.ChatResponse.Usage != nil:
+		return r.ChatResponse.Usage
+	case r.ResponsesResponse != nil && r.ResponsesResponse.Usage != nil:
+		return r.ResponsesResponse.Usage.ToBifrostLLMUsage()
+	case r.CompactionResponse != nil && r.CompactionResponse.Usage != nil:
+		return r.CompactionResponse.Usage.ToBifrostLLMUsage()
+	case r.EmbeddingResponse != nil && r.EmbeddingResponse.Usage != nil:
+		return r.EmbeddingResponse.Usage
+	case r.RerankResponse != nil && r.RerankResponse.Usage != nil:
+		return r.RerankResponse.Usage
+	case r.DecisionResponse != nil && r.DecisionResponse.Usage != nil:
+		return r.DecisionResponse.Usage
+	case r.TranscriptionResponse != nil && r.TranscriptionResponse.Usage != nil:
+		u := r.TranscriptionResponse.Usage
+		out := &BifrostLLMUsage{}
+		if u.InputTokens != nil {
+			out.PromptTokens = *u.InputTokens
+		}
+		if u.OutputTokens != nil {
+			out.CompletionTokens = *u.OutputTokens
+		}
+		if u.TotalTokens != nil {
+			out.TotalTokens = *u.TotalTokens
+		}
+		// Derive on zero as well as nil: some providers report total_tokens: 0
+		// alongside real counts. Matches the speech branch below.
+		if out.TotalTokens == 0 {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		if d := u.InputTokenDetails; d != nil {
+			out.PromptTokensDetails = &ChatPromptTokensDetails{
+				TextTokens:  d.TextTokens,
+				AudioTokens: d.AudioTokens,
+			}
+		}
+		return out
+	case r.SpeechResponse != nil && r.SpeechResponse.Usage != nil:
+		u := r.SpeechResponse.Usage
+		out := &BifrostLLMUsage{
+			PromptTokens:     u.InputTokens,
+			CompletionTokens: u.OutputTokens,
+			TotalTokens:      u.TotalTokens,
+		}
+		if out.TotalTokens == 0 {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		return out
+	case r.ImageGenerationResponse != nil && r.ImageGenerationResponse.Usage != nil:
+		u := r.ImageGenerationResponse.Usage
+		out := &BifrostLLMUsage{
+			PromptTokens:     u.InputTokens,
+			CompletionTokens: u.OutputTokens,
+		}
+		if u.TotalTokens > 0 {
+			out.TotalTokens = u.TotalTokens
+		} else {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		return out
+	case r.PassthroughResponse != nil && r.PassthroughResponse.PassthroughUsage != nil:
+		return r.PassthroughResponse.PassthroughUsage.LLMUsage
+	}
+	return nil
 }
 
 // =============================================================================

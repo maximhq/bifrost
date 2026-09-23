@@ -50,6 +50,11 @@ dependencies = [
     "langchain-cohere>=0.4.0",
     "pytest-xdist>=3.8.0",
     "pyasn1>=0.6.4",
+    "griffe>=2.3.0",
+    # typesafe-sdk is newer than exclude-newer above by design (no version
+    # existed at the cutoff); pinned exact and grafted into uv.lock so no
+    # other package re-resolves. Its deps are already satisfied by the lock.
+    "typesafe-sdk==0.7.0",
 ]
 
 [build-system]
@@ -73,6 +78,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+# LangChain's standard integration suite includes unmarked async tests. Run
+# those tests through pytest-asyncio instead of rejecting them in strict mode.
+asyncio_mode = "auto"
 # Test discovery
 testpaths = ["."]
 python_files = "test_*.py"
@@ -142,5 +150,8 @@ exclude_lines = [
 # above would otherwise make uv treat it as an editable package, which changes the
 # root's entry in uv.lock and breaks `uv sync --frozen`.
 package = false
-# Include HTTPX2's security fixes released after the previous cutoff.
+# typesafe-sdk (the exception above) is grafted into uv.lock; every other
+# package stays at its pre-existing version, so this cutoff keeps the 7-day
+# minimum for them. Integration tests run with --frozen so the lock is used
+# as-is without re-resolving typesafe past this cutoff.
 exclude-newer = "2026-09-09T00:00:00Z"

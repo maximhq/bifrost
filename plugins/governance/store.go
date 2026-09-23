@@ -1451,6 +1451,9 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 			Weight:            config.Weight,
 		})
 	}
+	if vk.AllowAllProviders && gs.inMemoryStore != nil {
+		providerPermits = AppendAllProviderPermits(providerPermits, gs.inMemoryStore.GetConfiguredProviderNames())
+	}
 
 	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
 	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.
@@ -4858,31 +4861,50 @@ func modelConfigScopesFor(permit schemas.Permit) []limitScope {
 // modelConfigScopeFor is the scope a permit holder's own model configs are stored under.
 //
 // A permit type and a model-config scope are different vocabularies: the scope is a persisted
-// column, the type names what resolved the permit, and for virtual keys the two spell it
-// differently. The translation is explicit because casting one to the other silently finds
+// column, the type names what resolved the permit, and the two spell several of them differently.
+// The translation is explicit rather than a cast, because casting one to the other silently finds
 // nothing: the lookup is keyed by scope name, so a near-miss reads as "this holder configured no
 // model limits" rather than as an error.
+//
+// A type with no case falls back to its own name, which is a scope nothing is stored under - the
+// same "no per-model limits" answer, rather than another holder's rows.
 func modelConfigScopeFor(permitType string) string {
-	switch permitType {
-	case string(grant.PermitVirtualKey):
+	switch grant.PermitType(permitType) {
+	case grant.PermitVirtualKey:
 		return configstoreTables.ModelConfigScopeVirtualKey
-	case string(grant.PermitProject):
+	case grant.PermitProject:
 		return configstoreTables.ModelConfigScopeProject
+	case grant.PermitAccessProfile:
+		return configstoreTables.ModelConfigScopeAccessProfile
+	case grant.PermitTeamAccessProfile, grant.PermitBusinessUnitAccessProfile, grant.PermitCustomerAccessProfile:
+		// One scope for all three: an attachment's rows are keyed by the attachment's own id, and the
+		// kind below is what tells a refusal whose profile it was.
+		return configstoreTables.ModelConfigScopeEntityAccessProfile
 	default:
 		return permitType
 	}
 }
 
 // scopedModelConfigKind is the kind a permit holder's own per-model limits are attributed to, so a
-// refusal can say whose model limit ran out.
+// refusal can say whose model limit ran out. A type with no case is attributed to the generic
+// model-config holder rather than to a particular one: naming another holder's kind would put one
+// holder's name on a refusal that came from somewhere else.
 func scopedModelConfigKind(permitType string) grant.LimitHolderKind {
-	switch permitType {
-	case string(grant.PermitVirtualKey):
+	switch grant.PermitType(permitType) {
+	case grant.PermitVirtualKey:
 		return grant.LimitHolderVirtualKeyModelConfig
-	case string(grant.PermitProject):
+	case grant.PermitProject:
 		return grant.LimitHolderProjectModelConfig
-	default:
+	case grant.PermitAccessProfile:
 		return grant.LimitHolderUserAccessProfileModelConfig
+	case grant.PermitTeamAccessProfile:
+		return grant.LimitHolderTeamAccessProfileModelConfig
+	case grant.PermitBusinessUnitAccessProfile:
+		return grant.LimitHolderBusinessUnitAccessProfileModelConfig
+	case grant.PermitCustomerAccessProfile:
+		return grant.LimitHolderCustomerAccessProfileModelConfig
+	default:
+		return grant.LimitHolderModelConfig
 	}
 }
 

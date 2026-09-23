@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -247,6 +249,10 @@ func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall
 	judgeScopes := LookupScopes{Provider: string(call.JudgeProvider)}
 	if scopes != nil {
 		judgeScopes.VirtualKeyID = scopes.VirtualKeyID
+		// The judge call is part of the same request, so it prices against the
+		// same instant. Dropping this would silently fall back to wall-clock
+		// time-of-day pricing for judge calls only.
+		judgeScopes.BilledAt = scopes.BilledAt
 	}
 
 	usage := &schemas.BifrostLLMUsage{
@@ -495,6 +501,9 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		}
 	}
 	requestType := extraFields.RequestType
+	if extraFields.PricingRequestType != "" {
+		requestType = extraFields.PricingRequestType
+	}
 
 	// A retrieve is a status read, not a generation. Providers that report the job's cost on the
 	// polled response (e.g. Runware, which echoes it on every getResponse once the task has
@@ -620,6 +629,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
 		cost = computeRerankCost(pricing, input.usage, input.tier)
+	case schemas.DecisionRequest:
+		cost = computeDecisionCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
 		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
@@ -636,9 +647,20 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		return nil
 	}
 
+	// Time-of-day pricing: providers that discount outside declared peak windows
+	// (e.g. DeepSeek's 50% off-peak rate) scale every usage-based charge by a
+	// flat multiplier. Applied here rather than inside each compute*Cost so one
+	// branch covers every modality. It lands after computeTextCost's
+	// inference_geo multiplier, so the two compose multiplicatively.
+	if m, ok := offPeakMultiplier(pricing, scopes.BilledAt); ok {
+		scaleUsageCost(cost, m)
+	}
+
 	// Flat per-request surcharge, billed once on top of usage-based cost whenever
 	// the resolved pricing row carries one. It maps to no token category, so it
 	// folds into the input side (InputCostDetails.RequestCost) and the total.
+	// Deliberately added after the off-peak scaling: a flat per-request fee is
+	// not a usage charge and is not discounted.
 	if pricing.CostPerRequest != nil {
 		if cost == nil {
 			cost = &schemas.BifrostCost{}
@@ -673,14 +695,29 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
+		input.audioSeconds = input.usage.AudioSeconds
 		input.tier = tierFromResponse(result.ResponsesResponse.ServiceTier, result.ResponsesResponse.Speed, result.ResponsesResponse.InferenceGeo)
+		if details := result.ResponsesResponse.Usage.InputTokensDetails; details != nil {
+			input.audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{
+				AudioTokens: details.AudioTokens,
+				TextTokens:  details.TextTokens,
+			}
+		}
 
 	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.CompactionResponse.Usage)
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
-		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
-		input.tier = tierFromResponse(result.ResponsesStreamResponse.Response.ServiceTier, result.ResponsesStreamResponse.Response.Speed, result.ResponsesStreamResponse.Response.InferenceGeo)
+		response := result.ResponsesStreamResponse.Response
+		input.usage = responsesUsageToBifrostUsage(response.Usage)
+		input.audioSeconds = input.usage.AudioSeconds
+		input.tier = tierFromResponse(response.ServiceTier, response.Speed, response.InferenceGeo)
+		if details := response.Usage.InputTokensDetails; details != nil {
+			input.audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{
+				AudioTokens: details.AudioTokens,
+				TextTokens:  details.TextTokens,
+			}
+		}
 
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
@@ -689,6 +726,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	// carries no usage at all (Vertex reports none) still owes one query's cost.
 	case result.RerankResponse != nil:
 		input.usage = result.RerankResponse.Usage
+
+	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
+		input.usage = result.DecisionResponse.Usage
 
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
 		input.usage = speechUsageToBifrostUsage(result.SpeechResponse.Usage)
@@ -779,6 +819,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		PromptTokens:     u.InputTokens,
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      u.TotalTokens,
+		AudioSeconds:     u.AudioSeconds,
 		Cost:             u.Cost,
 	}
 	// Map token details for cache and search query pricing
@@ -812,7 +853,7 @@ func speechUsageToBifrostUsage(u *schemas.SpeechUsage) *schemas.BifrostLLMUsage 
 	}
 }
 
-func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *int, *schemas.TranscriptionUsageInputTokenDetails) {
+func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *float64, *schemas.TranscriptionUsageInputTokenDetails) {
 	usage := &schemas.BifrostLLMUsage{}
 	if u.InputTokens != nil {
 		usage.PromptTokens = *u.InputTokens
@@ -834,9 +875,10 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 		}
 	}
 
-	var audioSeconds *int
+	var audioSeconds *float64
 	if u.Seconds != nil {
-		audioSeconds = new(int(*u.Seconds))
+		seconds := float64(*u.Seconds)
+		audioSeconds = &seconds
 	}
 
 	return usage, audioSeconds, audioTokenDetails
@@ -1185,6 +1227,20 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 	return newInputOutputCostWithDetails(inputTokensCost, outputTokensCost, inputDetails, outputDetails)
 }
 
+// computeDecisionCost prices a decision request on token usage. Typesafe bills
+// input tokens only, so the output rate is normally zero, but both sides are
+// honored from the datasheet so a provider that later charges output stays
+// correct without a code change.
+func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
+	if usage == nil {
+		return nil
+	}
+	tierTokens := usage.PromptTokens
+	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
+	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
+	return newInputOutputCost(inputCost, outputCost)
+}
+
 // newInputOutputCost builds a BifrostCost from separate input and output costs,
 // or returns nil when both are zero (nothing to record).
 func newInputOutputCost(inputCost, outputCost float64) *schemas.BifrostCost {
@@ -1216,7 +1272,7 @@ func newInputOutputCostWithDetails(inputCost, outputCost float64, inputDetails *
 // input text rather than per token. PromptTokens from usage is treated as the character count
 // since TTS providers report their billable unit in that field.
 // Output falls back to per-second duration when no audio token rate is configured.
-func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
+func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: per-character rate takes precedence for TTS/audio models
@@ -1249,7 +1305,7 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // computeTranscriptionCost handles transcription (STT) requests.
 // Input is audio, output is text (CompletionTokens).
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) *schemas.BifrostCost {
+func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: audio tokens/details first, then per-second fallback
@@ -1281,7 +1337,7 @@ func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usag
 
 // computeAudioInputCost calculates input cost for audio: audio token details first,
 // then generic input tokens, then per-second duration fallback.
-func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int, tier serviceTier) float64 {
+func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int, tier serviceTier) float64 {
 	// Audio token detail pricing (audio + text token breakdown)
 	if audioTokenDetails != nil && (audioTokenDetails.AudioTokens > 0 || audioTokenDetails.TextTokens > 0) {
 		return float64(audioTokenDetails.AudioTokens)*tieredAudioTokenInputRate(pricing, totalTokens, tier) +
@@ -1296,7 +1352,7 @@ func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *
 	// Per-second duration fallback
 	if audioSeconds != nil && *audioSeconds > 0 {
 		if rate := tieredAudioInputPerSecondRate(pricing, totalTokens); rate > 0 {
-			return float64(*audioSeconds) * rate
+			return *audioSeconds * rate
 		}
 	}
 
@@ -1305,7 +1361,7 @@ func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *
 
 // computeAudioOutputCost calculates output cost for audio: audio tokens first,
 // then generic output tokens, then per-second duration fallback.
-func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, totalTokens int, tier serviceTier) float64 {
+func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, totalTokens int, tier serviceTier) float64 {
 	// Audio-specific output tokens
 	if usage != nil && usage.CompletionTokens > 0 {
 		return float64(usage.CompletionTokens) * tieredAudioTokenOutputRate(pricing, totalTokens, tier)
@@ -1314,7 +1370,7 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 	// Per-second duration fallback
 	if audioSeconds != nil && *audioSeconds > 0 {
 		if pricing.OutputCostPerSecond != nil {
-			return float64(*audioSeconds) * *pricing.OutputCostPerSecond
+			return *audioSeconds * *pricing.OutputCostPerSecond
 		}
 	}
 
@@ -2407,7 +2463,8 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		input.audioTextInputChars = su.AudioInputChars
 	}
 	if su.AudioSeconds != nil {
-		input.audioSeconds = su.AudioSeconds
+		seconds := float64(*su.AudioSeconds)
+		input.audioSeconds = &seconds
 	}
 	if su.AudioTokenDetails != nil {
 		input.audioTokenDetails = su.AudioTokenDetails
@@ -2432,4 +2489,195 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		}
 	}
 	return input
+}
+
+// ---------------------------------------------------------------------------
+// Time-of-day (peak / off-peak) pricing
+// ---------------------------------------------------------------------------
+
+// peakHoursLocations caches resolved IANA locations. time.LoadLocation hits the
+// filesystem (or the embedded tzdata) on every call, which is far too expensive
+// to repeat per priced request. A nil value memoizes a failed lookup so a bad
+// timezone string is not retried forever.
+var peakHoursLocations sync.Map // string -> *time.Location
+
+// peakHoursLocation resolves a schedule's timezone. An empty name means UTC.
+// An unknown name returns nil, which callers must treat as "cannot evaluate".
+func peakHoursLocation(name string) *time.Location {
+	if name == "" {
+		return time.UTC
+	}
+	if cached, ok := peakHoursLocations.Load(name); ok {
+		loc, _ := cached.(*time.Location)
+		return loc
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		peakHoursLocations.Store(name, (*time.Location)(nil))
+		return nil
+	}
+	peakHoursLocations.Store(name, loc)
+	return loc
+}
+
+// parseClockMinutes parses an "HH:MM" wall-clock string into minutes since
+// midnight. Returns false for anything malformed or out of range. "24:00" is
+// accepted as an end-of-day marker so a window can span a full day.
+func parseClockMinutes(v string) (int, bool) {
+	hh, mm, ok := strings.Cut(v, ":")
+	if !ok {
+		return 0, false
+	}
+	h, err := strconv.Atoi(hh)
+	if err != nil || h < 0 || h > 24 {
+		return 0, false
+	}
+	m, err := strconv.Atoi(mm)
+	if err != nil || m < 0 || m > 59 {
+		return 0, false
+	}
+	if h == 24 && m != 0 {
+		return 0, false
+	}
+	return h*60 + m, true
+}
+
+// isWithinPeakWindows reports whether at falls inside any window of sched, and
+// whether the schedule could be evaluated at all. A schedule that cannot be
+// evaluated — no windows, unknown timezone, every window malformed — returns
+// ok=false, and callers bill at peak. That direction matters: base rates are
+// the peak (higher) prices, so failing closed over-bills rather than handing
+// out a discount that was never configured.
+func isWithinPeakWindows(sched *PeakHoursSchedule, at time.Time) (peak bool, ok bool) {
+	if sched == nil || len(sched.Windows) == 0 {
+		return false, false
+	}
+	loc := peakHoursLocation(sched.Timezone)
+	if loc == nil {
+		return false, false
+	}
+
+	local := at.In(loc)
+	weekday := int(local.Weekday())
+	minutes := local.Hour()*60 + local.Minute()
+
+	// A window that wraps past midnight is also matched against the previous
+	// day: 22:00-02:00 on Monday still covers Tuesday 01:00.
+	prevWeekday := (weekday + 6) % 7
+	prevMinutes := minutes + 24*60
+
+	valid := false
+	for _, w := range sched.Windows {
+		start, startOK := parseClockMinutes(w.Start)
+		end, endOK := parseClockMinutes(w.End)
+		if !startOK || !endOK || len(w.Days) == 0 {
+			continue
+		}
+		wrapped := end <= start
+		if wrapped {
+			end += 24 * 60
+		}
+
+		for _, d := range w.Days {
+			if d < 0 || d > 6 {
+				continue
+			}
+			// Only a weekday inside 0..6 makes the window usable. Marking the
+			// schedule valid before this point let a window whose every Days
+			// entry is out of range (say []int{7}) report "evaluated, not
+			// peak", which hands out the off-peak discount on garbage input.
+			// Base rates are the peak prices, so an unusable schedule has to
+			// bill at peak.
+			valid = true
+			// Half-open [start, end): a window ending at 04:00 does not cover
+			// 04:00:00 itself, so adjacent windows never double-count.
+			if d == weekday && minutes >= start && minutes < end {
+				return true, true
+			}
+			if wrapped && d == prevWeekday && prevMinutes >= start && prevMinutes < end {
+				return true, true
+			}
+		}
+	}
+	if !valid {
+		return false, false
+	}
+	return false, true
+}
+
+// offPeakMultiplier returns the multiplier to scale usage-based costs by when
+// at falls outside pricing's declared peak windows, and whether a discount
+// applies at all.
+//
+// Both off_peak_cost_multiplier and peak_hours must be present: a multiplier
+// with no schedule has no way to know when to apply, and a schedule with no
+// multiplier has nothing to apply. Either alone bills at peak. A multiplier
+// outside (0, 1] is rejected for the same reason — every base rate on the row
+// is the peak price, so a discount can only ever scale downward, and a bogus
+// value must not silently zero out or inflate a bill.
+//
+// A zero at means the caller never learned the request's start time; fall back
+// to the wall clock rather than mispricing everything as peak.
+func offPeakMultiplier(pricing *configstoreTables.TableModelPricing, at time.Time) (float64, bool) {
+	if pricing == nil || pricing.OffPeakCostMultiplier == nil || pricing.PeakHours == nil {
+		return 0, false
+	}
+	m := *pricing.OffPeakCostMultiplier
+	if !(m > 0 && m <= 1) {
+		return 0, false
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	peak, ok := isWithinPeakWindows(pricing.PeakHours, at)
+	if !ok || peak {
+		return 0, false
+	}
+	return m, true
+}
+
+// scaleUsageCost multiplies every usage-based charge on cost by m, in place.
+//
+// RequestCost and SearchQueriesCost are deliberately excluded: they are flat
+// per-request and per-query fees rather than usage categories, matching how the
+// inference_geo multiplier in computeTextCost already treats the search fee.
+// AdditionalCost is excluded too — guardrail and MCP sidecar costs are priced
+// through their own computeCostFromInput call and are discounted there on
+// their own pricing rows.
+func scaleUsageCost(cost *schemas.BifrostCost, m float64) {
+	if cost == nil {
+		return
+	}
+
+	if cost.InputCostDetails != nil {
+		d := cost.InputCostDetails
+		cost.InputCost -= d.RequestCost
+		d.TextCost *= m
+		d.AudioCost *= m
+		d.ImageCost *= m
+		d.CachedReadCost *= m
+		d.CachedWriteCost *= m
+		cost.InputCost *= m
+		cost.InputCost += d.RequestCost
+	} else {
+		cost.InputCost *= m
+	}
+
+	if cost.OutputCostDetails != nil {
+		d := cost.OutputCostDetails
+		cost.OutputCost -= d.SearchQueriesCost
+		d.TextCost *= m
+		d.AudioCost *= m
+		d.ImageCost *= m
+		d.ReasoningCost *= m
+		d.CitationCost *= m
+		cost.OutputCost *= m
+		cost.OutputCost += d.SearchQueriesCost
+	} else {
+		cost.OutputCost *= m
+	}
+
+	// Recompute rather than scaling: TotalCost also carries AdditionalCost,
+	// which is not discounted here.
+	cost.TotalCost = cost.InputCost + cost.OutputCost + cost.AdditionalCost
 }

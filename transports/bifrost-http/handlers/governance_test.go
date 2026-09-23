@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"path/filepath"
 	"sort"
@@ -193,7 +194,9 @@ func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMe
 func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
 	return nil, nil
 }
-func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error { return nil }
+func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
 func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
 	return nil
 }
@@ -453,6 +456,70 @@ func TestApplyVirtualKeyOwnershipUpdateRejectsDualAssociation(t *testing.T) {
 		t.Fatalf("unmarshal request: %v", err)
 	}
 	if err := applyVirtualKeyOwnershipUpdate(vk, &req); !errors.Is(err, errVirtualKeyDualAssociation) {
+		t.Fatalf("expected dual-association error, got %v", err)
+	}
+}
+
+// A whitespace-only owner id names nothing, on the update path as on create: it clears the owner
+// rather than counting as one, so an update that pairs it with a real owner is the real owner's.
+func TestApplyVirtualKeyOwnershipUpdateTreatsBlankOwnerAsAbsent(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		body         string
+		initialTeam  *string
+		wantTeam     *string
+		wantCustomer *string
+	}{
+		{
+			name:         "whitespace beside a real owner is not a second owner",
+			body:         `{"team_id":"  ","customer_id":"customer-1"}`,
+			initialTeam:  schemas.Ptr("team-1"),
+			wantTeam:     nil,
+			wantCustomer: schemas.Ptr("customer-1"),
+		},
+		{
+			name:        "whitespace alone clears the owner, like an empty string",
+			body:        `{"team_id":" "}`,
+			initialTeam: schemas.Ptr("team-1"),
+			wantTeam:    nil,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			vk := &configstoreTables.TableVirtualKey{ID: "vk-1", TeamID: tt.initialTeam}
+			var req UpdateVirtualKeyRequest
+			if err := json.Unmarshal([]byte(tt.body), &req); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+				t.Fatalf("apply ownership: %v", err)
+			}
+			assertStringPtrEqual(t, "team", vk.TeamID, tt.wantTeam)
+			assertStringPtrEqual(t, "customer", vk.CustomerID, tt.wantCustomer)
+		})
+	}
+}
+
+// A business unit is the third owner a key can have. Naming it clears a team or customer the key
+// held before, and naming it alongside either is refused like any other pair.
+func TestApplyVirtualKeyOwnershipUpdateBusinessUnit(t *testing.T) {
+	team := "team-1"
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-1", TeamID: &team}
+	var req UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"business_unit_id":"bu-1"}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+		t.Fatalf("apply ownership update: %v", err)
+	}
+	bu := "bu-1"
+	assertStringPtrEqual(t, "business unit", vk.BusinessUnitID, &bu)
+	assertStringPtrEqual(t, "team", vk.TeamID, nil)
+
+	var dual UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"business_unit_id":"bu-1","customer_id":"customer-1"}`), &dual); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := applyVirtualKeyOwnershipUpdate(vk, &dual); !errors.Is(err, errVirtualKeyDualAssociation) {
 		t.Fatalf("expected dual-association error, got %v", err)
 	}
 }
@@ -2992,6 +3059,14 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 			req:  &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1h")},
 			want: false,
 		},
+		{
+			// Only the window settings: still an edit of the budget that is there. Read as a removal it
+			// would delete that budget, and - on a governed entity - do it without the governance check,
+			// which only runs for a request that leaves a limit behind.
+			name: "reset config only is not removal",
+			req:  &UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3001,6 +3076,46 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A deprecated single-budget update merges into the budget already stored, so every field it does not
+// name has to survive - the window settings included. Before, coerceLegacyBudget dropped them, which
+// moved a quarterly budget's fiscal start back to the default on any unrelated edit.
+func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
+	existing := &configstoreTables.TableBudget{
+		ID:            "budget-1",
+		MaxLimit:      100,
+		ResetDuration: "1Q",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: 2},
+	}
+
+	t.Run("an edit that does not name it keeps the stored value", func(t *testing.T) {
+		got := coerceLegacyBudget(&UpdateBudgetRequest{MaxLimit: schemas.Ptr(250.0)}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.MaxLimit != 250 || budget.ResetDuration != "1Q" {
+			t.Fatalf("expected the new maximum on the stored window, got %+v", budget)
+		}
+		if budget.ResetConfig == nil || budget.ResetConfig.QuarterStartMonth != 2 {
+			t.Fatalf("expected the stored quarter start to survive, got %+v", budget.ResetConfig)
+		}
+	})
+
+	t.Run("an edit that names it applies the requested value", func(t *testing.T) {
+		got := coerceLegacyBudget(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.ResetConfig == nil || budget.ResetConfig.QuarterStartMonth != 4 {
+			t.Fatalf("expected the requested quarter start, got %+v", budget.ResetConfig)
+		}
+		if budget.MaxLimit != 100 {
+			t.Fatalf("expected the stored maximum to survive, got %v", budget.MaxLimit)
+		}
+	})
 }
 
 func TestRateLimitRemovalRequestDetection(t *testing.T) {
@@ -3332,23 +3447,33 @@ func TestUpdateProviderGovernance_BudgetMutualExclusion(t *testing.T) {
 
 func TestValidateRoutingFallbacks(t *testing.T) {
 
+	// Inputs are raw JSON so each case also covers RoutingFallback decoding, which is where the
+	// legacy "provider/model" string is split and an unknown prefix collapses to an empty provider.
 	tests := []struct {
 		name    string
-		fbs     []string
+		fbsJSON string
 		wantErr bool
 	}{
-		{name: "nil", fbs: nil, wantErr: false},
-		{name: "empty", fbs: []string{}, wantErr: false},
-		{name: "provider model", fbs: []string{"openai/gpt-4o"}, wantErr: false},
-		{name: "provider slash incoming model", fbs: []string{"azure/"}, wantErr: false},
-		{name: "bare known provider name rejected", fbs: []string{"openrouter"}, wantErr: true},
-		{name: "bare model rejected", fbs: []string{"gpt-4o"}, wantErr: true},
-		{name: "empty element", fbs: []string{"openai/gpt-4o", ""}, wantErr: true},
-		{name: "huggingface namespace not a provider prefix", fbs: []string{"meta-llama/Llama-3.1-8B"}, wantErr: true},
+		{name: "nil", fbsJSON: `null`, wantErr: false},
+		{name: "empty", fbsJSON: `[]`, wantErr: false},
+		{name: "provider model", fbsJSON: `["openai/gpt-4o"]`, wantErr: false},
+		{name: "provider slash incoming model", fbsJSON: `["azure/"]`, wantErr: false},
+		{name: "bare known provider name rejected", fbsJSON: `["openrouter"]`, wantErr: true},
+		{name: "bare model rejected", fbsJSON: `["gpt-4o"]`, wantErr: true},
+		{name: "empty element", fbsJSON: `["openai/gpt-4o",""]`, wantErr: true},
+		{name: "huggingface namespace not a provider prefix", fbsJSON: `["meta-llama/Llama-3.1-8B"]`, wantErr: true},
+		{name: "object with pinned key", fbsJSON: `[{"provider":"azure","model":"gpt-4o","key_id":"k1"}]`, wantErr: false},
+		{name: "object pinning a key for the incoming model", fbsJSON: `[{"provider":"azure","key_id":"k1"}]`, wantErr: false},
+		{name: "key_id without provider rejected", fbsJSON: `[{"key_id":"k1"}]`, wantErr: true},
+		{name: "provider_key_name rejected over the API", fbsJSON: `[{"provider":"azure","provider_key_name":"prod"}]`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateRoutingFallbacks(tt.fbs)
+			var fbs []configstoreTables.RoutingFallback
+			if err := json.Unmarshal([]byte(tt.fbsJSON), &fbs); err != nil {
+				t.Fatalf("failed to decode fallbacks: %v", err)
+			}
+			err := validateRoutingFallbacks(fbs)
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
 			}
@@ -3376,7 +3501,7 @@ func newMockCustomerStore() *mockCustomerStore {
 func (m *mockCustomerStore) ExecuteTransaction(_ context.Context, fn func(*gorm.DB) error) error {
 	return fn(nil)
 }
-func (m *mockCustomerStore) GetCustomer(_ context.Context, id string) (*configstoreTables.TableCustomer, error) {
+func (m *mockCustomerStore) GetCustomer(_ context.Context, id string, _ ...*gorm.DB) (*configstoreTables.TableCustomer, error) {
 	c, ok := m.customers[id]
 	if !ok {
 		return nil, configstore.ErrNotFound
@@ -4243,4 +4368,209 @@ func TestBudgetLastResetUsesBudgetQuarterStart(t *testing.T) {
 	// A nil budget must not panic; callers reach this on the non-aligned path.
 	assert.False(t, budgetLastReset(false, nil).IsZero())
 	assert.False(t, budgetLastReset(true, nil).IsZero())
+}
+
+// TestApplyAssignees covers the hook that puts each virtual key's assigned user on
+// the read responses. Before it existed the assignee was only reachable through a
+// per-key endpoint, so the CSV export - which cannot issue one request per row -
+// left the "Assigned To" column blank for every user-assigned key.
+func TestApplyAssignees(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	newVKs := func() []*configstoreTables.TableVirtualKey {
+		return []*configstoreTables.TableVirtualKey{
+			{ID: "vk-1", Name: "One"},
+			{ID: "vk-2", Name: "Two"},
+		}
+	}
+
+	t.Run("fills in assignees in one batched call", func(t *testing.T) {
+		var gotIDs [][]string
+		h := &GovernanceHandler{
+			virtualKeyAssigneeResolver: func(_ context.Context, vkIDs []string) (map[string]*configstoreTables.AssignedUser, error) {
+				gotIDs = append(gotIDs, vkIDs)
+				return map[string]*configstoreTables.AssignedUser{
+					"vk-1": {ID: "user-1", Name: "Ada", Email: "ada@example.com"},
+				}, nil
+			},
+		}
+		vks := newVKs()
+		h.applyAssignees(context.Background(), vks)
+
+		// One call for the whole page, not one per key.
+		if len(gotIDs) != 1 {
+			t.Fatalf("expected a single resolver call, got %d", len(gotIDs))
+		}
+		if len(gotIDs[0]) != 2 || gotIDs[0][0] != "vk-1" || gotIDs[0][1] != "vk-2" {
+			t.Fatalf("expected both VK ids in one call, got %#v", gotIDs[0])
+		}
+		if vks[0].AssignedUser == nil || vks[0].AssignedUser.Email != "ada@example.com" {
+			t.Fatalf("expected vk-1 to carry its assignee, got %#v", vks[0].AssignedUser)
+		}
+		// A key the resolver did not mention is unassigned, not stale.
+		if vks[1].AssignedUser != nil {
+			t.Fatalf("expected vk-2 to have no assignee, got %#v", vks[1].AssignedUser)
+		}
+		// Both keys carry a settled answer, so both serialize assigned_user.
+		for _, vk := range vks {
+			if !vk.AssigneeResolved {
+				t.Fatalf("expected %s to be marked resolved after a successful lookup", vk.ID)
+			}
+		}
+	})
+
+	t.Run("no-ops without a resolver", func(t *testing.T) {
+		h := &GovernanceHandler{}
+		vks := newVKs()
+		h.applyAssignees(context.Background(), vks)
+		for _, vk := range vks {
+			if vk.AssignedUser != nil {
+				t.Fatalf("expected no assignee in OSS, got %#v", vk.AssignedUser)
+			}
+			// OSS has no VK-user link at all, so "nobody is assigned" is a settled
+			// answer, not an unknown one: the UI must not refetch what cannot exist.
+			if !vk.AssigneeResolved {
+				t.Fatalf("expected %s to be marked resolved in OSS", vk.ID)
+			}
+		}
+	})
+
+	t.Run("degrades to no assignee when the resolver fails", func(t *testing.T) {
+		h := &GovernanceHandler{
+			virtualKeyAssigneeResolver: func(_ context.Context, _ []string) (map[string]*configstoreTables.AssignedUser, error) {
+				return nil, errors.New("boom")
+			},
+		}
+		vks := newVKs()
+		h.applyAssignees(context.Background(), vks)
+		// One degraded column beats a failed page.
+		for _, vk := range vks {
+			if vk.AssignedUser != nil {
+				t.Fatalf("expected no assignee after a resolver error, got %#v", vk.AssignedUser)
+			}
+			// But the column degrades to "unknown", not to "unassigned": leaving these
+			// marked resolved would serialize null and make the UI show "-" for a key
+			// that does have an assignee, instead of falling back to a per-key lookup.
+			if vk.AssigneeResolved {
+				t.Fatalf("expected %s to stay unresolved after a resolver error", vk.ID)
+			}
+		}
+	})
+
+	t.Run("skips the resolver for an empty page", func(t *testing.T) {
+		called := false
+		h := &GovernanceHandler{
+			virtualKeyAssigneeResolver: func(_ context.Context, _ []string) (map[string]*configstoreTables.AssignedUser, error) {
+				called = true
+				return nil, nil
+			},
+		}
+		h.applyAssignees(context.Background(), nil)
+		if called {
+			t.Fatal("expected no resolver call for an empty page")
+		}
+	})
+}
+
+// TestUpdateVirtualKey_PutWithoutKeyIDsPreservesKeyAssociations is the regression
+// for the GET -> edit -> PUT round-trip dropping key associations: the GET
+// response carries allow_all_keys/keys but not key_ids, so a client that echoes
+// the config back with only another field changed silently flips AllowAllKeys to
+// false and detaches every key (issue #7347). An omitted key_ids must leave the
+// existing associations untouched; only an explicit list (including []) changes
+// them.
+func TestUpdateVirtualKey_PutWithoutKeyIDsPreservesKeyAssociations(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	const providerName = "openai"
+	require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider(providerName), configstore.ProviderConfig{}))
+
+	// Seed one provider key so the explicit-list case has something to attach.
+	require.NoError(t, store.CreateProviderKey(ctx, schemas.ModelProvider(providerName), schemas.Key{
+		ID:    "key-a",
+		Name:  "key-a",
+		Value: *schemas.NewSecretVar("sk-test-a"),
+	}))
+
+	newVK := func(t *testing.T, id string, allowAll bool, keys []configstoreTables.TableKey) *configstoreTables.TableVirtualKey {
+		t.Helper()
+		active := true
+		vk := &configstoreTables.TableVirtualKey{
+			ID:       id,
+			Name:     id,
+			Value:    *schemas.NewSecretVar("sk-bf-" + id),
+			IsActive: &active,
+		}
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+		pc := &configstoreTables.TableVirtualKeyProviderConfig{
+			VirtualKeyID:  vk.ID,
+			Provider:      providerName,
+			AllowedModels: schemas.WhiteList{"*"},
+			AllowAllKeys:  allowAll,
+			Keys:          keys,
+		}
+		require.NoError(t, store.CreateVirtualKeyProviderConfig(ctx, pc))
+		return vk
+	}
+
+	putVK := func(t *testing.T, vkID, body string) *fasthttp.RequestCtx {
+		t.Helper()
+		putCtx := newTestRequestCtx(body)
+		putCtx.SetUserValue("vk_id", vkID)
+		handler.updateVirtualKey(putCtx)
+		require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+		return putCtx
+	}
+
+	providerConfigOf := func(t *testing.T, vkID string) *configstoreTables.TableVirtualKeyProviderConfig {
+		t.Helper()
+		vk, err := store.GetVirtualKey(ctx, vkID)
+		require.NoError(t, err)
+		require.Len(t, vk.ProviderConfigs, 1)
+		return &vk.ProviderConfigs[0]
+	}
+
+	// Case 1: allow_all_keys=true survives a PUT that omits key_ids entirely.
+	vk1 := newVK(t, "vk-roundtrip-allowall", true, nil)
+	pc1 := providerConfigOf(t, vk1.ID)
+	putVK(t, vk1.ID, fmt.Sprintf(
+		`{"description":"edited via GET->PUT","is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"]}]}`,
+		pc1.ID, providerName))
+	got := providerConfigOf(t, vk1.ID)
+	require.True(t, got.AllowAllKeys, "omitted key_ids wiped allow_all_keys")
+
+	// Case 2: explicit key list survives a PUT that omits key_ids.
+	keys, err := store.GetKeysByIDs(ctx, []string{"key-a"})
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	vk2 := newVK(t, "vk-roundtrip-keys", false, keys)
+	pc2 := providerConfigOf(t, vk2.ID)
+	putVK(t, vk2.ID, fmt.Sprintf(
+		`{"description":"edited via GET->PUT","is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"]}]}`,
+		pc2.ID, providerName))
+	got2 := providerConfigOf(t, vk2.ID)
+	require.False(t, got2.AllowAllKeys)
+	require.Len(t, got2.Keys, 1, "omitted key_ids detached the existing key")
+	require.Equal(t, "key-a", got2.Keys[0].KeyID)
+
+	// Case 3: an explicit key_ids list still replaces the associations, and an
+	// explicit empty list still clears them - omitted is not the same as empty.
+	putVK(t, vk1.ID, fmt.Sprintf(
+		`{"is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"],"key_ids":[]}]}`,
+		pc1.ID, providerName))
+	got3 := providerConfigOf(t, vk1.ID)
+	require.False(t, got3.AllowAllKeys, "explicit empty key_ids must still deny-all")
+	require.Empty(t, got3.Keys)
+
+	putVK(t, vk1.ID, fmt.Sprintf(
+		`{"is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"],"key_ids":["key-a"]}]}`,
+		pc1.ID, providerName))
+	got4 := providerConfigOf(t, vk1.ID)
+	require.False(t, got4.AllowAllKeys)
+	require.Len(t, got4.Keys, 1)
+	require.Equal(t, "key-a", got4.Keys[0].KeyID)
 }

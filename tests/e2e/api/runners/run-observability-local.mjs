@@ -10,6 +10,13 @@ const requestedModel = `${providerName}/${modelName}`;
 const requestID = `otel-e2e-request-${process.pid}-${Date.now()}`;
 const errorRequestID = `otel-e2e-error-${process.pid}-${Date.now()}`;
 const streamErrorRequestID = `otel-e2e-stream-error-${process.pid}-${Date.now()}`;
+const responsesRefusalRequestID = `otel-e2e-responses-refusal-${process.pid}-${Date.now()}`;
+
+// Responses API stop_reason returned by the mock. Refusals are the case the
+// OTEL check pins: before the fix the Responses path never copied stop_reason
+// onto the span, so gen_ai.response.finish_reason(s) stayed null for every
+// /v1/responses call and a refusal was invisible to OTEL consumers.
+const RESPONSES_STOP_REASON = "refusal";
 
 // Message marker that makes the mock provider return a 404 error body.
 const ERROR_TRIGGER = "trigger-error";
@@ -71,6 +78,10 @@ function createOtelReceiver() {
 	});
 }
 
+// createOpenAIMock serves an OpenAI-compatible upstream on a local port. It
+// answers /v1/chat/completions with a fixed "hello world" completion (or a
+// provider-style 404 when the ERROR_TRIGGER marker is present) and
+// /v1/responses with a completed response whose stop_reason is a refusal.
 function createOpenAIMock() {
 	return http.createServer(async (req, res) => {
 		const body = await readBody(req);
@@ -126,6 +137,43 @@ function createOpenAIMock() {
 						completion_tokens: 10,
 						total_tokens: 40,
 						prompt_tokens_details: { cached_tokens: 5, cache_write_tokens: 7 },
+					},
+				}),
+			);
+			return;
+		}
+		if (req.method === "POST" && req.url === "/v1/responses") {
+			state.mockRequests.push({
+				headers: req.headers,
+				body: body.toString("utf8"),
+			});
+			const now = Math.floor(Date.now() / 1000);
+			res.writeHead(200, { "content-type": "application/json" });
+			// The literal stop reason must appear nowhere else in this body: with
+			// disable_content_logging on, the only way it can reach the OTEL export
+			// is through the span's finish_reason attribute, so the assertion below
+			// cannot pass on echoed message content.
+			res.end(
+				JSON.stringify({
+					id: `resp_${now}`,
+					object: "response",
+					created_at: now,
+					status: "completed",
+					model: modelName,
+					stop_reason: RESPONSES_STOP_REASON,
+					output: [
+						{
+							type: "message",
+							id: `msg_${now}`,
+							status: "completed",
+							role: "assistant",
+							content: [{ type: "output_text", text: "I can't help with that.", annotations: [] }],
+						},
+					],
+					usage: {
+						input_tokens: 12,
+						output_tokens: 6,
+						total_tokens: 18,
 					},
 				}),
 			);
@@ -195,6 +243,9 @@ async function enableBuiltinPlugin(name, config) {
 	});
 }
 
+// addLocalProvider registers an ephemeral keyless custom provider (OpenAI base
+// type) that points at the mock upstream, allowing chat, chat streaming and
+// Responses API requests.
 async function addLocalProvider(mockPort) {
 	await mustRequest("POST", "/api/providers", {
 		provider: providerName,
@@ -204,6 +255,7 @@ async function addLocalProvider(mockPort) {
 			allowed_requests: {
 				chat_completion: true,
 				chat_completion_stream: true,
+				responses: true,
 			},
 		},
 		network_config: {
@@ -222,6 +274,8 @@ async function addLocalProvider(mockPort) {
 	});
 }
 
+// chatHelloWorld fires the happy-path chat completion whose span, metrics and
+// log entry the rest of the check reconciles against each other.
 async function chatHelloWorld() {
 	const res = await mustRequest(
 		"POST",
@@ -237,6 +291,30 @@ async function chatHelloWorld() {
 	const content = res.json?.choices?.[0]?.message?.content;
 	if (content !== "hello world") {
 		throw new Error(`unexpected chat response content: ${JSON.stringify(content)}`);
+	}
+}
+
+// responsesRefusal fires a /v1/responses call the mock answers with
+// stop_reason: "refusal" so the OTEL export can be checked for the finish
+// reason attributes on the Responses path.
+async function responsesRefusal() {
+	const res = await mustRequest(
+		"POST",
+		"/v1/responses",
+		{
+			model: requestedModel,
+			input: "hello world",
+		},
+		{
+			"x-request-id": responsesRefusalRequestID,
+		},
+	);
+	const text = res.json?.output?.[0]?.content?.[0]?.text;
+	if (text !== "I can't help with that.") {
+		throw new Error(`unexpected responses output text: ${JSON.stringify(text)}`);
+	}
+	if (res.json?.stop_reason !== RESPONSES_STOP_REASON) {
+		throw new Error(`responses stop_reason = ${JSON.stringify(res.json?.stop_reason)}, want ${JSON.stringify(RESPONSES_STOP_REASON)}`);
 	}
 }
 
@@ -346,6 +424,23 @@ async function assertOtelErrorTrace(id, label) {
 		"model_not_found",
 		"http.response.status_code",
 	]);
+}
+
+// assertOtelResponsesFinishReason checks the Responses API span exports the
+// finish reason. The chat path already emits gen_ai.response.finish_reasons;
+// the Responses path reads the top-level stop_reason instead of per-choice
+// finish reasons and used to drop it, leaving refusals invisible in OTEL.
+async function assertOtelResponsesFinishReason() {
+	const entry = await poll("OTEL responses trace receiver", 20000, () =>
+		state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(responsesRefusalRequestID))),
+	);
+	assertBufferContainsAll("OTEL responses trace export", entry.body, [
+		responsesRefusalRequestID,
+		"gen_ai.response.finish_reason",
+		"gen_ai.response.finish_reasons",
+		RESPONSES_STOP_REASON,
+	]);
+	assertBufferContainsNone("OTEL responses trace export", entry.body, ["I can't help with that."]);
 }
 
 // assertPrometheusErrorScrape checks bifrost_error_requests_total carries the
@@ -561,6 +656,9 @@ function assertMockProviderRequest(wantCount = 1) {
 	}
 }
 
+// main enables the telemetry and otel plugins against local receivers, runs
+// the chat, error and Responses refusal scenarios, asserts every export, then
+// restores the original plugin config and removes the ephemeral provider.
 async function main() {
 	console.log("Running local observability API check...");
 	console.log(`  Bifrost: ${baseURL}`);
@@ -619,7 +717,12 @@ async function main() {
 		await chatError(streamErrorRequestID, true);
 		await assertOtelErrorTrace(streamErrorRequestID, "stream-error");
 		await assertPrometheusErrorScrape();
-		assertMockProviderRequest(3);
+
+		// Responses API refusal: the span must carry finish_reason(s) just like a
+		// chat completion does.
+		await responsesRefusal();
+		await assertOtelResponsesFinishReason();
+		assertMockProviderRequest(4);
 
 		console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
 		console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
@@ -627,6 +730,7 @@ async function main() {
 		console.log(`  Metrics/logs token usage reconciled (scrape == logs)`);
 		console.log(`  Logging trace API returned id="${requestID}"`);
 		console.log(`  Error spans carry gen_ai.error.* and error counter has status_code (non-stream and stream).`);
+		console.log(`  Responses API span carries gen_ai.response.finish_reason="${RESPONSES_STOP_REASON}".`);
 		console.log("Local observability API check passed.");
 	} finally {
 		try {

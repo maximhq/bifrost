@@ -96,7 +96,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, propagateTraceAttributes bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, applyTraceDimensionsToChildSpans bool, exportRawPayloads bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
 	reparent := p.pluginSpanFilter.BuildReparentMapWithOverhead(trace.Spans, p.exportOverheadSpans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 
@@ -104,7 +104,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 	// attribute by default. Surface it on the root span as the OTEL-conventional session.id
 	// whenever present, so traces can always be filtered/correlated by session — independent
 	// of grouping.
-	sessionID := getStringAttr(trace.Attributes, schemas.TraceAttrSessionID)
+	sessionID := schemas.GetStringAttr(trace.Attributes, schemas.TraceAttrSessionID)
 
 	// Session grouping: when enabled and this request carries an x-bf-session-id but no
 	// inbound W3C traceparent (root span has no parent), pin every span to a trace ID
@@ -126,7 +126,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
 		// input/output onto it for trace-level display); child spans keep their full content.
 		spanDisableContent := disableContentLogging || (disableRootSpanContent && span == trace.RootSpan)
-		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent)
+		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent, exportRawPayloads)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -137,14 +137,14 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 			}
 		}
 		// Merge x-bf-dim-* dimensions onto every exported span when
-		// propagateTraceAttributes is enabled. Dims live on
+		// applyTraceDimensionsToChildSpans is enabled. Dims live on
 		// trace.Attributes[TraceAttrDimensions] (set at ingress); other
 		// trace-level keys (session id, nested maps) stay off spans.
 		// Span-level attributes win on conflict. Reserved suffixes path
 		// and method are skipped so they cannot collide with http.*.
 		// Runs BEFORE the root-span block so AttrRequestID/instanceAttrs
 		// remain authoritative on the root span.
-		if propagateTraceAttributes {
+		if applyTraceDimensionsToChildSpans {
 			if dims, ok := trace.Attributes[schemas.TraceAttrDimensions].(map[string]string); ok && len(dims) > 0 {
 				present := make(map[string]struct{}, len(otelSpan.Attributes))
 				for _, kv := range otelSpan.Attributes {
@@ -202,7 +202,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 }
 
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool) *Span {
+func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool, exportRawPayloads bool) *Span {
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -213,6 +213,16 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		Attributes:        convertAttributesToKeyValues(span.Attributes, disableContentLogging),
 		Status:            convertSpanStatus(span.Status, span.StatusMsg),
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
+	}
+
+	// Raw lives on span.LLM, never in Attributes, so non-opted connectors cannot see it.
+	if exportRawPayloads && !disableContentLogging && span.LLM != nil {
+		if span.LLM.RawRequest != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, span.LLM.RawRequest))
+		}
+		if span.LLM.RawResponse != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, span.LLM.RawResponse))
+		}
 	}
 
 	// Set parent span ID if present

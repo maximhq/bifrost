@@ -213,7 +213,9 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //
 // 6. Cancellable Context:
 //   - Creates a cancellable context that can be used to cancel upstream requests when clients disconnect
-//   - This is critical for streaming requests where write errors indicate client disconnects
+//   - A watcher peeks at the client socket and cancels the context when the client closes it
+//     before anything was written back (silent upstream, retry backoff), see clientdisconnect.go
+//   - Streaming handlers additionally cancel when an SSE write fails
 //   - Also useful for non-streaming requests to allow provider-level cancellation
 //
 // 7. Extra Headers (x-bf-eh-*):
@@ -282,7 +284,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			cancel = existingCancel
 		} else {
 			// Create one cancellable child context and promote it as the shared context.
+			// A context seeded by a transport hook (large-payload detection) takes this
+			// path, so the client socket is watched here too; the branch above, where a
+			// cancel func already exists, means a watcher is already running.
 			bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(existing)
+			startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 			ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 			ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 		}
@@ -300,6 +306,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			_ = ctx.Done()
 		}()
 		bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(parent)
+		// Cancel the request when the client closes its socket while the handler
+		// is still waiting on core; fasthttp offers no per-request Done (#7035).
+		startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 		ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 	}
@@ -312,6 +321,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			requestID = uuid.New().String()
 		}
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	}
+	// The request-id above may be caller-supplied (x-request-id), so it cannot be
+	// trusted as a billing-idempotency identity: two unrelated requests sharing a
+	// chosen ID would collide on the billing key and the second would settle for
+	// free. The nonce is minted here, never read from any header, and mixed into
+	// the governance billing key so that key is unforgeable. Preserved when
+	// already present so both terminal paths of one physical call (success vs
+	// cancellation) read the same value and still dedupe against each other.
+	if existingNonce, ok := bifrostCtx.Value(schemas.BifrostContextKeyBillingNonce).(string); !ok || existingNonce == "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyBillingNonce, uuid.New().String())
 	}
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
@@ -560,6 +579,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			if err == nil && ttlDuration > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
+			}
+			return true
+		}
+		// Session affinity: whether this request lets its session decide where it goes.
+		if keyStr == "x-bf-session-affinity" {
+			switch strings.ToLower(strings.TrimSpace(string(value))) {
+			case "on", "true", "1":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, true)
+			case "off", "false", "0":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
+			default:
+				if logger != nil {
+					logger.Warn("x-bf-session-affinity is not on or off, ignoring")
+				}
 			}
 			return true
 		}

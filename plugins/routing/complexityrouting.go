@@ -25,15 +25,14 @@ type complexityProposal struct {
 func (p *RoutingPlugin) computeComplexity(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostRequest,
-	virtualKeyID string,
 ) *complexity.ComplexityResult {
 	input, disposition := complexity.BuildInputWithDisposition(ctx, req)
 	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
 	sessionActive := p.sessionEnabled.Load() && sessionID != "" && p.sessionStore != nil
 
-	if disposition != complexity.InputClassifiable {
-		if sessionActive && disposition == complexity.InputContinuation {
-			key := buildComplexitySessionKey(ctx, virtualKeyID, sessionID)
+	if disposition == complexity.InputContinuation {
+		if sessionActive {
+			key := complexitySessionKey(ctx)
 			tier, found, err := p.sessionStore.load(key, true)
 			if err != nil {
 				p.logComplexitySessionStoreError("refresh continuation", err)
@@ -48,6 +47,16 @@ func (p *RoutingPlugin) computeComplexity(
 				return result
 			}
 		}
+		if input.LastUserText == "" {
+			publishComplexityDecision(ctx, nil, complexity.MechanismSkipped, nil)
+			ctx.AppendRoutingEngineLog(
+				schemas.RoutingEngineRoutingRule,
+				schemas.LogLevelInfo,
+				noClassifiableComplexityInputLog,
+			)
+			return nil
+		}
+	} else if disposition != complexity.InputClassifiable {
 
 		publishComplexityDecision(ctx, nil, complexity.MechanismSkipped, nil)
 		ctx.AppendRoutingEngineLog(
@@ -64,7 +73,7 @@ func (p *RoutingPlugin) computeComplexity(
 		return proposal.Result
 	}
 
-	key := buildComplexitySessionKey(ctx, virtualKeyID, sessionID)
+	key := complexitySessionKey(ctx)
 	priorTier, priorFound, loadErr := p.sessionStore.load(key, false)
 	if loadErr != nil {
 		p.logComplexitySessionStoreError("inspect", loadErr)

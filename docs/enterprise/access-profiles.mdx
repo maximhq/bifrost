@@ -263,7 +263,7 @@ A profile carries the following pieces of policy. Use the UI walkthrough above f
 - **Global rate limits** - Token and request caps with the same reset durations.
 - **Calendar alignment** - When on, budgets and rate limits reset at the start of each calendar period (midnight UTC, week start, month start) instead of rolling from creation time. Applies to durations of one day or longer.
 - **Govern created keys** - When on, every virtual key a member creates is adopted into the profile (same policy, attached to the user, profile-managed). Off by default. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members).
-- **MCP tool access** - Reference [Virtual MCPs](/enterprise/virtual-mcps), grant entire MCP servers, or override individual tools with include/exclude actions.
+- **MCP tool access** - Reference [Virtual MCPs](/enterprise/virtual-mcps), and give each MCP client a tool allowlist: every tool, none, or a named set.
 - **Automatic key rotation** - An interval (`1h` to `365d`, typically `30d`) and optional first-run time. When due, a background job rotates every managed key, honouring `client.vk_rotation_cooldown`, and posts start/finish notifications. Off by default. See [Automatic virtual key rotation](#automatic-virtual-key-rotation).
 - **Tags** - Up to 50 free-form tags for filtering and grouping in the UI.
 - **Active flag** - Activate or deactivate without deleting; deactivated profiles are hidden from selection but user copies stay intact.

@@ -3,6 +3,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -11,10 +18,16 @@ import { getErrorMessage } from "@/lib/store";
 import { useCancelRecalculateCostJobMutation, useGetRecalculateCostStatusQuery } from "@/lib/store/apis/logsApi";
 import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import type { LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
-import { formatLogSearchInput, isLogIdSearch, parseLogSearchInput } from "@/lib/utils/logSearch";
+import {
+	formatLogSearchInput,
+	isLogIdSearch,
+	LOG_SEARCH_MODE_LABELS,
+	type LogSearchMode,
+	parseLogSearchInput,
+} from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
-import { Calculator, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
+import { Calculator, ChevronDown, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { RecalculateCostDialog, type RecalculateCostMode } from "./recalculateCostDialog";
@@ -22,6 +35,12 @@ import { RecalculateCostDialog, type RecalculateCostMode } from "./recalculateCo
 // One id for the whole recalculation lifecycle, so the start / progress / cancelling
 // / result updates all land on the same toast instead of stacking.
 const RECALC_TOAST_ID = "logs-recalculate-costs";
+
+const SEARCH_PLACEHOLDERS: Record<LogSearchMode, string> = {
+	auto: "Search logs or paste a request ID",
+	request_id: "Search by request ID",
+	content: "Search log content",
+};
 
 // Statuses a recalculation job never leaves. Polling stops at any of them.
 function isTerminalRecalcStatus(status: RecalcJobStatus["status"]): boolean {
@@ -92,6 +111,14 @@ export function LogsHeaderView({
 	// the worker finishes the batch it is in the middle of.
 	const [recalcCancelRequested, setRecalcCancelRequested] = useState(false);
 	const isRecalcRunning = !!activeRecalcJobId;
+	// Which search the box runs. "auto" keeps the sniffing behaviour (a pasted UUID
+	// becomes an exact id lookup); the other two pin it, for ids that aren't
+	// UUID-shaped and for content that happens to look like one.
+	const [searchMode, setSearchMode] = useState<LogSearchMode>("auto");
+	const searchModeRef = useRef<LogSearchMode>(searchMode);
+	useEffect(() => {
+		searchModeRef.current = searchMode;
+	}, [searchMode]);
 	const [localSearch, setLocalSearch] = useState(() => formatLogSearchInput(filters));
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
@@ -112,7 +139,10 @@ export function LogsHeaderView({
 
 	const { content_search: contentSearchFilter, request_id: requestIDFilter } = filters;
 	useEffect(() => {
-		setLocalSearch(formatLogSearchInput({ content_search: contentSearchFilter, request_id: requestIDFilter }));
+		// Deliberately not keyed on the mode: switching it re-runs the search with
+		// what is already typed, and re-syncing here would blank the box against
+		// the pre-switch filters before that round trip lands.
+		setLocalSearch(formatLogSearchInput({ content_search: contentSearchFilter, request_id: requestIDFilter }, searchModeRef.current));
 	}, [contentSearchFilter, requestIDFilter]);
 
 	useEffect(() => {
@@ -254,12 +284,12 @@ export function LogsHeaderView({
 	}, [activeRecalcJobId, recalcJobStatus, recalcCancelRequested, handleCancelRecalculate, fetchLogs, fetchStats]);
 
 	const handleSearchChange = useCallback(
-		(value: string) => {
+		(value: string, mode: LogSearchMode) => {
 			setLocalSearch(value);
 			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 			// A pasted request ID resolves to an exact primary-key lookup; there is
 			// nothing to debounce for it, so only free text waits for the typist.
-			const { request_id = "", content_search = "" } = parseLogSearchInput(value);
+			const { request_id = "", content_search = "" } = parseLogSearchInput(value, mode);
 			searchTimeoutRef.current = setTimeout(
 				() => {
 					onFiltersChange({ ...filtersRef.current, request_id, content_search });
@@ -270,15 +300,26 @@ export function LogsHeaderView({
 		[onFiltersChange],
 	);
 
+	// Switching the mode re-runs whatever is already typed, so the results follow
+	// the new mode without the user having to retype or re-submit.
+	const handleSearchModeChange = useCallback(
+		(mode: LogSearchMode) => {
+			setSearchMode(mode);
+			handleSearchChange(localSearch, mode);
+		},
+		[handleSearchChange, localSearch],
+	);
+
 	// Derived from the live input rather than the filters, so the badge appears as
-	// soon as an ID is pasted instead of after the round trip.
-	const isIdSearch = isLogIdSearch(localSearch);
+	// soon as an ID is pasted instead of after the round trip. Only "auto" needs it:
+	// a pinned mode already says what it is on the dropdown trigger.
+	const isIdSearch = searchMode === "auto" && isLogIdSearch(localSearch);
 
 	return (
 		// justify-between only once the row can hold everything: while the controls
 		// wrap, spreading them pushes the last row's two icon buttons to opposite
 		// edges of the card and burns a whole row on two buttons.
-		<div className="flex grow flex-wrap lg:flex-nowrap items-center justify-start gap-2 lg:justify-between">
+		<div className="flex grow flex-wrap items-center justify-start gap-2 lg:flex-nowrap lg:justify-between">
 			<Button
 				data-testid="logs-refresh-btn"
 				variant="outline"
@@ -318,7 +359,8 @@ export function LogsHeaderView({
 					</Button>
 				</TooltipTrigger>
 				<TooltipContent sideOffset={6} className="max-w-64">
-					Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.
+					Groups fallback attempts and linked requests under the original root request, and every request sharing a session under the
+					session&apos;s first request. Expand any row to view what it stands for.
 					<br />
 					<br />
 					This grouped view may load more slowly than the flat view for very large log tables.
@@ -326,15 +368,15 @@ export function LogsHeaderView({
 			</Tooltip>
 			{/* Full width while the row wraps, so the search field owns its own line
 			    instead of squeezing to its 12rem minimum beside the date picker. */}
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center gap-2 rounded-sm border lg:basis-auto">
-				<Search className="mr-0.5 ml-2 size-4" />
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center overflow-hidden rounded-sm border lg:basis-auto">
+				<Search className="mr-2 ml-2 size-4" />
 				<Input
 					type="text"
 					data-testid="logs-search-input"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
-					placeholder="Search logs or paste a request ID"
+					placeholder={SEARCH_PLACEHOLDERS[searchMode]}
 					value={localSearch}
-					onChange={(e) => handleSearchChange(e.target.value)}
+					onChange={(e) => handleSearchChange(e.target.value, searchMode)}
 				/>
 				{isIdSearch && (
 					<Tooltip>
@@ -348,6 +390,33 @@ export function LogsHeaderView({
 						</TooltipContent>
 					</Tooltip>
 				)}
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button
+							variant="ghost"
+							size="sm"
+							className="text-muted-foreground h-7 shrink-0 rounded-none text-xs"
+							title="Choose whether the box searches log content or looks up a request ID"
+							data-testid="logs-search-mode-trigger"
+						>
+							{LOG_SEARCH_MODE_LABELS[searchMode]}
+							<ChevronDown className="size-3" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="end" className="w-44">
+						<DropdownMenuRadioGroup value={searchMode} onValueChange={(value) => handleSearchModeChange(value as LogSearchMode)}>
+							<DropdownMenuRadioItem value="auto" className="text-xs" data-testid="logs-search-mode-auto">
+								Auto detect
+							</DropdownMenuRadioItem>
+							<DropdownMenuRadioItem value="content" className="text-xs" data-testid="logs-search-mode-content">
+								Content search
+							</DropdownMenuRadioItem>
+							<DropdownMenuRadioItem value="request_id" className="text-xs" data-testid="logs-search-mode-request-id">
+								Request ID search
+							</DropdownMenuRadioItem>
+						</DropdownMenuRadioGroup>
+					</DropdownMenuContent>
+				</DropdownMenu>
 			</div>
 
 			<DateTimePickerWithRange

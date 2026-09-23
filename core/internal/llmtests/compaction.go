@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // RunCompactionTest tests that context_management with compaction is correctly
@@ -26,9 +28,13 @@ func RunCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		return
 	}
 
-	// Compaction is currently Anthropic-only
-	if testConfig.Provider != schemas.Anthropic {
-		t.Logf("Compaction test skipped: only supported for Anthropic provider")
+	// Compaction runs on the Claude API and, since #6825, on Bedrock, where a
+	// compact_20260112 edit routes the request to InvokeModel because Converse
+	// cannot run it. Other providers still skip here.
+	switch testConfig.Provider {
+	case schemas.Anthropic, schemas.Bedrock:
+	default:
+		t.Logf("Compaction test skipped: not enabled for provider %s", testConfig.Provider)
 		return
 	}
 
@@ -67,7 +73,11 @@ func RunCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 
 		// --- Non-streaming test ---
 		t.Run("NonStreaming", func(t *testing.T) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			// Capture the outbound provider body so the Bedrock case can prove the
+			// request left on InvokeModel rather than Converse (#6825).
+			rawCtx := context.WithValue(ctx, schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+			rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawRequest, true)
+			bfCtx := schemas.NewBifrostContext(rawCtx, schemas.NoDeadline)
 
 			request := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
@@ -100,13 +110,19 @@ func RunCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 				t.Log("Compaction triggered unexpectedly on short input")
 			}
 
+			assertCompactionEgress(t, testConfig.Provider, response.ExtraFields.RawRequest)
+
 			t.Logf("Compaction non-streaming passed: stop_reason=%v, content=%s",
 				response.StopReason, content)
 		})
 
 		// --- Streaming test ---
 		t.Run("Streaming", func(t *testing.T) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			// Capture the outbound provider body so the Bedrock case can prove the
+			// request left on InvokeModel rather than Converse (#6825).
+			rawCtx := context.WithValue(ctx, schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+			rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawRequest, true)
+			bfCtx := schemas.NewBifrostContext(rawCtx, schemas.NoDeadline)
 
 			request := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
@@ -129,6 +145,7 @@ func RunCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 			var fullContent strings.Builder
 			var chunkCount int
 			var hasCreated, hasCompleted bool
+			var streamRawRequest interface{}
 
 			streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			defer cancel()
@@ -141,6 +158,9 @@ func RunCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 					}
 					chunkCount++
 					if chunk.BifrostResponsesStreamResponse != nil {
+						if rr := chunk.BifrostResponsesStreamResponse.ExtraFields.RawRequest; rr != nil {
+							streamRawRequest = rr
+						}
 						if chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCreated {
 							hasCreated = true
 						}
@@ -167,10 +187,55 @@ func RunCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 				t.Error("Missing response.completed event")
 			}
 
+			assertCompactionEgress(t, testConfig.Provider, streamRawRequest)
+
 			content := fullContent.String()
 			t.Logf("Compaction streaming passed: %d chunks, content=%s", chunkCount, content)
 		})
 	})
+}
+
+// assertCompactionEgress checks the captured outbound body against the wire
+// format the provider must use for compaction. On Bedrock that is InvokeModel
+// (anthropic_version "bedrock-2023-05-31", no model field, beta in the
+// anthropic_beta array), because the Converse API silently ignores compaction
+// (#6825). On the Claude API the body is the plain Messages request.
+func assertCompactionEgress(t *testing.T, provider schemas.ModelProvider, rawRequest interface{}) {
+	t.Helper()
+	if rawRequest == nil {
+		t.Fatal("raw request not captured; BifrostContextKeySendBackRawRequest should have been honoured")
+	}
+	rawJSON, err := sonic.Marshal(rawRequest)
+	if err != nil {
+		t.Fatalf("raw request is not JSON-marshalable: %v", err)
+	}
+	body := gjson.ParseBytes(rawJSON)
+	if !body.Get("context_management").Exists() {
+		t.Errorf("context_management missing from outbound body: %s", string(rawJSON))
+	}
+	switch provider {
+	case schemas.Bedrock:
+		if got := body.Get("anthropic_version").String(); got != "bedrock-2023-05-31" {
+			t.Errorf("Bedrock compaction must egress via InvokeModel: anthropic_version=%q, want %q; body=%s", got, "bedrock-2023-05-31", string(rawJSON))
+		}
+		if body.Get("model").Exists() {
+			t.Errorf("InvokeModel body must not carry model (it is in the URL): %s", string(rawJSON))
+		}
+		betas := body.Get("anthropic_beta").Array()
+		found := false
+		for _, b := range betas {
+			if b.String() == anthropic.AnthropicCompactionBetaHeader {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("anthropic_beta must carry %q on InvokeModel, got %v", anthropic.AnthropicCompactionBetaHeader, betas)
+		}
+	case schemas.Anthropic:
+		if body.Get("anthropic_version").Exists() {
+			t.Errorf("Claude API body must not carry anthropic_version: %s", string(rawJSON))
+		}
+	}
 }
 
 // RunExternalCompactionTest tests OpenAI's /v1/responses/compact endpoint via

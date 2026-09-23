@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -484,12 +485,13 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						continue
 					}
 
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
 						blockCopy.CacheControl = nil
 						blockCopy.Citations = nil
+						blockCopy.MediaResolution = nil
 
 						// Filter out unsupported citation types from annotations
 						if blockCopy.ResponsesOutputMessageContentText != nil && len(blockCopy.ResponsesOutputMessageContentText.Annotations) > 0 {
@@ -543,10 +545,12 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 							webSearchActionCopy := *msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
 							strippedSources := make([]schemas.ResponsesWebSearchToolCallActionSearchSource, len(sources))
 							for j, source := range sources {
-								// Only keep Type and URL for OpenAI
+								// Only keep Type, URL and Name for OpenAI; Name identifies
+								// specialized API sources (type "api") that carry no URL.
 								strippedSources[j] = schemas.ResponsesWebSearchToolCallActionSearchSource{
 									Type: source.Type,
 									URL:  source.URL,
+									Name: source.Name,
 									// Title, EncryptedContent, and PageAge are omitted
 								}
 							}
@@ -577,7 +581,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := false
 					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
 							hasToolModification = true
 							break
 						}
@@ -587,11 +591,12 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						outputCopy := *msg.ResponsesToolMessage.Output
 						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
 						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-							needsBlockCopy := block.CacheControl != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
 							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
 								blockCopy.Citations = nil
+								blockCopy.MediaResolution = nil
 								// Strip FileType from file block
 								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
 									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
@@ -628,14 +633,47 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 // encrypted_content rides the embedded *ResponsesReasoning, whose (no-omitempty) Summary
 // re-injects "summary": null. Reasoning items legitimately carry summary and are left intact.
 func stripCompactionItemSummary(data []byte, items []schemas.ResponsesMessage) []byte {
-	for i, msg := range items {
-		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCompaction {
-			if updated, err := sjson.DeleteBytes(data, fmt.Sprintf("%d.summary", i)); err == nil {
-				data = updated
+	// Each item's summary is dropped from that item's own JSON and the array is written
+	// back once. Deleting "<i>.summary" through the whole array would reserialise it per
+	// compaction item, making this O(items x payload).
+	// Pinned by TestStripCompactionItemSummary_AllocationScaling.
+	parsed := gjson.ParseBytes(data)
+	if !parsed.IsArray() {
+		return data
+	}
+
+	var rebuilt [][]byte
+	changed := false
+	index := 0
+	parsed.ForEach(func(_, element gjson.Result) bool {
+		raw := []byte(element.Raw)
+		if index < len(items) {
+			if msg := items[index]; msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCompaction {
+				if updated, err := sjson.DeleteBytes(raw, "summary"); err == nil {
+					raw = updated
+					changed = true
+				}
 			}
 		}
+		rebuilt = append(rebuilt, raw)
+		index++
+		return true
+	})
+	if !changed {
+		return data
 	}
-	return data
+
+	var joined bytes.Buffer
+	joined.Grow(len(data))
+	joined.WriteByte('[')
+	for i, element := range rebuilt {
+		if i > 0 {
+			joined.WriteByte(',')
+		}
+		joined.Write(element)
+	}
+	joined.WriteByte(']')
+	return joined.Bytes()
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
@@ -724,6 +762,10 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.Citations != nil {
 				return true
 			}
+			// Gemini's per-part media resolution; OpenAI 400s on the unknown parameter.
+			if block.MediaResolution != nil {
+				return true
+			}
 			if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
 				return true
 			}
@@ -755,6 +797,15 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 				if block.CacheControl != nil {
+					return true
+				}
+				// Citations and MediaResolution are stripped from these blocks further down,
+				// but this probe gates whether that stripping runs at all, so it has to look
+				// for everything the strip removes.
+				if block.Citations != nil {
+					return true
+				}
+				if block.MediaResolution != nil {
 					return true
 				}
 				if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {

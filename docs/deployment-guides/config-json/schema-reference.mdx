@@ -177,16 +177,38 @@ Enterprise-only. Defines access profile templates that can later be attached to 
           "allowed_models": ["gpt-4o", "gpt-4o-mini"]
         }
       ],
-      "mcp_servers": [
-        { "mcp_server_id": "github" }
+      "virtual_mcps": [
+        { "virtual_mcp_name": "Platform Tools" }
       ],
-      "mcp_tool_overrides": [
-        { "mcp_client_id": "github", "tool_name": "create_pull_request", "action": "include" }
+      "mcp_configs": [
+        { "mcp_client_id": "github", "tools_to_execute": ["create_pull_request", "list_issues"] }
       ]
     }
   ]
 }
 ```
+
+A profile grants MCP access through two keys:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `virtual_mcps` | array | [Virtual MCPs](#mcp-virtual_mcps) the profile grants, as `{ "virtual_mcp_name": "<name>" }`. The name is resolved on startup and one that matches no Virtual MCP is refused. An explicit empty array detaches every Virtual MCP from the profile. |
+| `mcp_configs` | array | Per-client tool allowlists, as `{ "mcp_client_id": <id or name>, "tools_to_execute": [...] }`. `["*"]` means all of that client's tools including ones added later, `[]` means none, and a named list means only those tools. Client names are resolved to client ids at startup. |
+
+<Note>
+  `virtual_mcp_id` is accepted as an alternative to `virtual_mcp_name` and wins when both are set.
+  Ids are assigned by the database, so prefer the name in a file that has to be portable across
+  environments.
+</Note>
+
+<Note>
+  `mcp_tool_groups`, `mcp_servers`, and `mcp_tool_overrides` are the deprecated former spellings.
+  They are still read and folded into `virtual_mcps` / `mcp_configs` at load time, with a warning in
+  the startup logs. `mcp_tool_groups` is ignored when `virtual_mcps` is present; `mcp_servers`
+  becomes a `["*"]` allowlist for each listed client, except where `mcp_configs` already names that
+  client. The new model has no exclude concept, so an `mcp_tool_overrides` entry with
+  `"action": "exclude"` only narrows the tools Bifrost can enumerate for that client.
+</Note>
 
 ---
 

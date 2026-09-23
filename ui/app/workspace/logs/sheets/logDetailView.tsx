@@ -69,7 +69,7 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import { extractProviderErrorMessage, parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -446,22 +446,22 @@ const isContainerOperation = (object: string) => {
 };
 
 const statusPillStyles: Record<string, string> = {
-	success: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900",
-	error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900",
+	success: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
+	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	processing: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
 	cancelled: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/40 dark:text-gray-400 dark:border-gray-800",
 };
 const statusDotStyles: Record<string, string> = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 };
 
 const batchStatusBadgeStyles: Record<string, string> = {
-	completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	ended: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	completed: "bg-chart-success/15 text-chart-success-ink",
+	ended: "bg-chart-success/15 text-chart-success-ink",
+	failed: "bg-chart-error/15 text-chart-error-ink",
 	expired: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
@@ -484,13 +484,12 @@ function StatusPill({ status }: { status: Status }) {
 
 // Colors an HTTP status code badge by response class.
 function statusCodeBadgeClass(code: number): string {
-	if (code >= 200 && code < 300)
-		return "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900";
+	if (code >= 200 && code < 300) return "border-chart-success/30 bg-chart-success/10 text-chart-success-ink";
 	if (code >= 300 && code < 400)
 		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
 	if (code >= 400 && code < 500)
 		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
-	return "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900";
+	return "border-chart-error/30 bg-chart-error/10 text-chart-error-ink";
 }
 
 function HeroStat({
@@ -861,6 +860,15 @@ const messageRoleLabel: Record<MessageRole, string> = {
 	tool: "Tool Result",
 };
 
+// Decision logs store the state as the user message and the answers as the
+// assistant message; label them by what they actually are.
+const decisionRoleLabel = (requestType: string | undefined, role: MessageRole): string | undefined => {
+	if (requestType !== "decisions") return undefined;
+	if (role === "user") return "State";
+	if (role === "assistant") return "Decision";
+	return undefined;
+};
+
 // deriveComplexityRouting returns the complexity tier / classification mechanism /
 // raw score behind a routing decision. Rows written since the structured columns
 // exist carry them directly; older rows fall back to parsing the prose routing
@@ -977,7 +985,9 @@ function EncryptedReveal({ text, label }: { text: string; label: string }) {
 
 function CollapsibleCode({ text, preview = 3, lang, mono = true }: { text: string; preview?: number; lang?: string; mono?: boolean }) {
 	const [open, setOpen] = useState(false);
-	const lines = text.split("\n");
+	// Trailing blank lines would otherwise count as hidden content and render a
+	// "Show more" that expands to nothing visible.
+	const lines = text.replace(/\s+$/, "").split("\n");
 	const shown = open ? lines : lines.slice(0, preview);
 	const hasMore = lines.length > preview;
 	const moreCount = lines.length - preview;
@@ -1007,7 +1017,39 @@ function CollapsibleCode({ text, preview = 3, lang, mono = true }: { text: strin
 	);
 }
 
-function MessageRow({ role, meta, children, last = false }: { role: MessageRole; meta?: string; children: ReactNode; last?: boolean }) {
+// Generated tool identifiers (e.g. Codex-style names with embedded signatures)
+// can run to hundreds of characters; truncate the middle and keep the full name
+// one hover away.
+const TOOL_NAME_MAX = 48;
+
+function ToolNameLabel({ name }: { name: string }) {
+	if (name.length <= TOOL_NAME_MAX) return <>{name}</>;
+	const truncated = `${name.slice(0, 32)}…${name.slice(-12)}`;
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<span className="cursor-default" data-testid="log-tool-name-truncated">
+					{truncated}
+				</span>
+			</TooltipTrigger>
+			<TooltipContent className="max-w-[480px] font-mono text-[11px] break-all">{name}</TooltipContent>
+		</Tooltip>
+	);
+}
+
+function MessageRow({
+	role,
+	meta,
+	children,
+	last = false,
+	label,
+}: {
+	role: MessageRole;
+	meta?: ReactNode;
+	children: ReactNode;
+	last?: boolean;
+	label?: string;
+}) {
 	return (
 		<div className="flex gap-3">
 			<div className="flex flex-col items-center pt-1.5">
@@ -1016,12 +1058,33 @@ function MessageRow({ role, meta, children, last = false }: { role: MessageRole;
 			</div>
 			<div className="min-w-0 flex-1 pb-4">
 				<div className="mb-1 flex items-center gap-2">
-					<span className="text-foreground text-[11.5px] font-semibold">{messageRoleLabel[role]}</span>
+					<span className="text-foreground text-[11.5px] font-semibold">{label ?? messageRoleLabel[role]}</span>
 					{meta ? <span className="text-muted-foreground text-[11px]">{meta}</span> : null}
 				</div>
 				<div className={cn("rounded-sm border p-3 text-[13px] leading-relaxed", messageToneClass[role])}>{children}</div>
 			</div>
 		</div>
+	);
+}
+
+// Collapses all but the last two messages of a long input history. The earlier
+// turns stay in the DOM order they occurred in; expanding reveals them in place.
+function MessageHistoryCollapse({ count, children }: { count: number; children: ReactNode }) {
+	const [open, setOpen] = useState(false);
+	return (
+		<>
+			<button
+				type="button"
+				data-testid="log-messages-history-toggle"
+				onClick={() => setOpen((v) => !v)}
+				className="text-muted-foreground hover:text-foreground mb-3 flex w-full items-center gap-2 text-[11.5px] font-medium"
+			>
+				<ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
+				{open ? "Hide earlier history" : `Show ${count} earlier message${count === 1 ? "" : "s"}`}
+				<span className="bg-border h-px flex-1" />
+			</button>
+			{open ? children : null}
+		</>
 	);
 }
 
@@ -1159,6 +1222,9 @@ export function LogDetailView({
 	const complexityRouting = deriveComplexityRouting(log);
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const isRealtimeTranscription =
+		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
+	const audioSeconds = log.token_usage?.audio_seconds;
 	const isBatch = isBatchOperation(log.object);
 	const batchDebug = log.batch_debug;
 	// Set on both the submission row and the aggregate cost row a settlement writes;
@@ -1193,14 +1259,14 @@ export function LogDetailView({
 					const contents = item?.request?.contents;
 					const messages = Array.isArray(contents)
 						? contents.map((c: any) => ({
-							role: c?.role === "model" ? "assistant" : c?.role || "user",
-							content: Array.isArray(c?.parts)
-								? c.parts
-									.filter((p: any) => p && typeof p.text === "string")
-									.map((p: any) => p.text)
-									.join("")
-								: "",
-						}))
+								role: c?.role === "model" ? "assistant" : c?.role || "user",
+								content: Array.isArray(c?.parts)
+									? c.parts
+											.filter((p: any) => p && typeof p.text === "string")
+											.map((p: any) => p.text)
+											.join("")
+									: "",
+							}))
 						: [];
 					return {
 						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
@@ -1259,9 +1325,9 @@ export function LogDetailView({
 					const parts = candidate?.content?.parts;
 					const text = Array.isArray(parts)
 						? parts
-							.filter((p: any) => p && typeof p.text === "string")
-							.map((p: any) => p.text)
-							.join("")
+								.filter((p: any) => p && typeof p.text === "string")
+								.map((p: any) => p.text)
+								.join("")
 						: "";
 					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
 					message = { role, content: text };
@@ -1284,11 +1350,11 @@ export function LogDetailView({
 	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
-			method?: string;
-			path?: string;
-			raw_query?: string;
-			status_code?: number;
-		})
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+			})
 		: null;
 	// Only errors and passthrough requests carry a real HTTP status code; others have none.
 	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
@@ -1308,12 +1374,22 @@ export function LogDetailView({
 	if (declaredTools.length) {
 		try {
 			toolsParameter = JSON.stringify(declaredTools, null, 2);
-		} catch { }
+		} catch {}
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
 	const rawRequest = applyRedactionMapping(log.raw_request, activeInputRevealMapping);
 	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
+	// An error whose message the provider parser could not extract still carries the provider's
+	// body on the error's raw response (and on the raw_response column when raw-response
+	// persistence is on), so fall back to that instead of showing nothing.
+	const errorMessageFallback = (() => {
+		if (log.error_details?.error.message) return null;
+		const fromErrorDetails = extractProviderErrorMessage(log.error_details?.extra_fields?.raw_response);
+		const text = fromErrorDetails ?? (log.status === "error" ? extractProviderErrorMessage(log.raw_response) : null);
+		return text ? applyRedactionMapping(text, activeOutputRevealMapping) : null;
+	})();
+	const displayErrorMessage = log.error_details?.error.message || errorMessageFallback;
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
@@ -1325,7 +1401,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch { }
+		} catch {}
 		return 0;
 	})();
 
@@ -1592,37 +1668,54 @@ export function LogDetailView({
 						hasRightBorder
 					/>
 					<HeroStat
-						label="Tokens in / out"
+						label={audioSeconds != null ? "Audio duration" : "Tokens in / out"}
 						mono
 						value={
-							log.token_usage
-								? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
-								: "—"
+							audioSeconds != null
+								? `${audioSeconds}s`
+								: log.token_usage
+									? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
+									: "—"
 						}
 						sub={
-							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-									: ""
-								}`
-								: "—"
+							audioSeconds != null
+								? "duration billed"
+								: log.token_usage
+									? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
+											log.token_usage.completion_tokens_details?.reasoning_tokens
+												? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+												: ""
+										}`
+									: "—"
 						}
 						hasRightBorder
 					/>
 					<HeroStat
 						label="Cost"
-						value={log.cost != null ? formatCost(log.cost) : "—"}
+						// Decisions bill fractions of a cent per call (jev: $42 per 1B input
+						// tokens), so the shared 4-dp rounding floors every value to $0.0000.
+						value={
+							log.cost != null
+								? log.object === "decisions" || (log.status === "cancelled" && log.stream && log.provider === "anthropic")
+									? formatCostPrecise(log.cost)
+									: formatCost(log.cost)
+								: "—"
+						}
 						sub={
-							log.cost != null && log.token_usage?.total_tokens
-								? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
-								: ""
+							log.cost != null && audioSeconds
+								? `≈ ${(log.cost / audioSeconds).toFixed(6)}＄ per second`
+								: log.cost != null && log.token_usage?.total_tokens
+									? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
+									: ""
 						}
 						hasRightBorder
 					/>
 					{isRealtimeTurn ? (
 						<HeroStat
-							label="Voice"
-							value={log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"}
+							label={isRealtimeTranscription ? "Type" : "Voice"}
+							value={
+								isRealtimeTranscription ? "Transcription" : log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"
+							}
 							sub={log.metadata?.realtime_transport ? formatRealtimeTransport(log.metadata.realtime_transport) : ""}
 						/>
 					) : (
@@ -1710,9 +1803,7 @@ export function LogDetailView({
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
 							)}
-							{!isContainer && log.served_model && (
-								<LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />
-							)}
+							{!isContainer && log.served_model && <LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />}
 							{detectedApp && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1815,7 +1906,7 @@ export function LogDetailView({
 												<TooltipTrigger asChild>
 													<button
 														type="button"
-														className="block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:text-blue-400"
+														className="focus-visible:ring-ring block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none dark:text-blue-400"
 														onClick={() => onFilterBySessionId(log.session_id as string)}
 													>
 														{log.session_id}
@@ -2199,11 +2290,7 @@ export function LogDetailView({
 									    has no cost of its own. Without this the detail view of a video
 									    generation reads as free while the list beside it shows the spend. */}
 									{log.cost == null && (log.children_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Settled Cost"
-											value={formatCostPrecise(log.children_cost)}
-										/>
+										<LogEntryDetailsView className="w-full" label="Settled Cost" value={formatCostPrecise(log.children_cost)} />
 									)}
 									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
@@ -2912,7 +2999,7 @@ export function LogDetailView({
 							Content logging has been disabled for this request.
 						</div>
 					)}
-                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
+					{/* Passthrough just renders the raw json, so there's nothing to filter */}
 					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
@@ -3080,112 +3167,130 @@ export function LogDetailView({
 							log.stop_reason === "content_filter" ||
 							log.stop_reason === "safety") && (
 							<div className="bg-card rounded-sm border p-5">
-								{(visibleRoles.size < allRoles.length
-									? log.input_history?.filter((m) => {
-										if (!m) return false;
-										const mainRole = ((m.role as string) || "user") as MessageRole;
-										const hasReasoning = !!extractChatReasoning(m);
-										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-									})
-									: log.input_history?.filter(Boolean)
-								)?.flatMap((message, index) => {
-									const role = ((message.role as string) || "user") as MessageRole;
-									const text = extractMessageText(message, activeInputRevealMapping);
-									const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
-									const showAll = visibleRoles.size === allRoles.length;
-									const showMain = showAll || visibleRoles.has(role);
-									const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
-									const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-									const isOverallLast =
-										index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
-									const lineCount = text ? text.split("\n").length : 0;
-									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
-									const meta = text
-										? role === "system" || role === "tool"
-											? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-											: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-										: hasToolCalls
-											? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
-											: undefined;
-									const usePlainText = role === "user" || role === "assistant";
-									const rows: ReactNode[] = [];
-									if (showReasoning) {
-										rows.push(
-											<MessageRow
-												key={`${index}-reasoning`}
-												role="reasoning"
-												meta={`~${reasoningTokens} tokens`}
-												last={isOverallLast && !showMain}
-											>
-												<CollapsibleCode text={reasoningText} preview={3} mono={false} />
-											</MessageRow>,
-										);
-									}
-									if (showMain) {
-										rows.push(
-											<MessageRow key={index} role={role} meta={meta} last={isOverallLast}>
-												{text ? (
-													usePlainText && isJson(text) ? (
-														<CodeEditor
-															wrap
-															code={(() => {
-																try {
-																	return JSON.stringify(JSON.parse(text), null, 2);
-																} catch {
-																	return text;
-																}
-															})()}
-															lang="json"
-															readonly
-															autoResize
-															options={{
-																collapsibleBlocks: true,
-																showIndentLines: false,
-																disableHover: true,
-															}}
-														/>
-													) : usePlainText ? (
-														<CollapsibleCode text={text} preview={3} mono={false} />
-													) : (
-														<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
-													)
-												) : (
-													<LogChatMessageView message={message} audioFormat={audioFormat} />
-												)}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "image_url")
-														.map((b, i) => {
-															const src = b.image_url?.url;
-															if (!src) return null;
-															return <img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />;
-														})}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "file" && b.file)
-														.map((b, i) => (
-															<LogChatFileBlockView
-																key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
-																block={b}
-																className="mt-2"
+								{(() => {
+									const historyMessages =
+										(visibleRoles.size < allRoles.length
+											? log.input_history?.filter((m) => {
+													if (!m) return false;
+													const mainRole = ((m.role as string) || "user") as MessageRole;
+													const hasReasoning = !!extractChatReasoning(m);
+													return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+												})
+											: log.input_history?.filter(Boolean)) ?? [];
+									const messageRows = historyMessages.map((message, index) => {
+										const role = ((message.role as string) || "user") as MessageRole;
+										const text = extractMessageText(message, activeInputRevealMapping);
+										const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
+										const showAll = visibleRoles.size === allRoles.length;
+										const showMain = showAll || visibleRoles.has(role);
+										const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
+										const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+										const isOverallLast =
+											index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
+										const lineCount = text ? text.split("\n").length : 0;
+										const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
+										const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
+										const meta = text
+											? role === "system" || role === "tool"
+												? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
+											: hasToolCalls
+												? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
+												: undefined;
+										const usePlainText = role === "user" || role === "assistant";
+										const rows: ReactNode[] = [];
+										if (showReasoning) {
+											rows.push(
+												<MessageRow
+													key={`${index}-reasoning`}
+													role="reasoning"
+													meta={`~${reasoningTokens} tokens`}
+													last={isOverallLast && !showMain}
+												>
+													<CollapsibleCode text={reasoningText} preview={3} mono={false} />
+												</MessageRow>,
+											);
+										}
+										if (showMain) {
+											rows.push(
+												<MessageRow key={index} role={role} meta={meta} last={isOverallLast} label={decisionRoleLabel(log.object, role)}>
+													{text ? (
+														usePlainText && isJson(text) ? (
+															<CodeEditor
+																wrap
+																code={(() => {
+																	try {
+																		return JSON.stringify(JSON.parse(text), null, 2);
+																	} catch {
+																		return text;
+																	}
+																})()}
+																lang="json"
+																readonly
+																autoResize
+																options={{
+																	collapsibleBlocks: true,
+																	showIndentLines: false,
+																	disableHover: true,
+																}}
 															/>
-														))}
-												{hasToolCalls && text ? (
-													<div className="text-muted-foreground mt-2 text-[11px]">
-														{message
-															.tool_calls!.map((tc) => tc.function?.name)
-															.filter(Boolean)
-															.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
-													</div>
-												) : null}
-											</MessageRow>,
-										);
-									}
-									return rows;
-								})}
+														) : usePlainText ? (
+															<CollapsibleCode text={text} preview={3} mono={false} />
+														) : (
+															<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
+														)
+													) : (
+														<LogChatMessageView message={message} audioFormat={audioFormat} />
+													)}
+													{text &&
+														Array.isArray(message.content) &&
+														(message.content as ContentBlock[])
+															.filter((b) => b.type === "image_url")
+															.map((b, i) => {
+																const src = b.image_url?.url;
+																if (!src) return null;
+																return (
+																	<img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />
+																);
+															})}
+													{text &&
+														Array.isArray(message.content) &&
+														(message.content as ContentBlock[])
+															.filter((b) => b.type === "file" && b.file)
+															.map((b, i) => (
+																<LogChatFileBlockView
+																	key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
+																	block={b}
+																	className="mt-2"
+																/>
+															))}
+													{hasToolCalls && text ? (
+														<div className="text-muted-foreground mt-2 text-[11px]">
+															{message
+																.tool_calls!.map((tc) => tc.function?.name)
+																.filter(Boolean)
+																.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+														</div>
+													) : null}
+												</MessageRow>,
+											);
+										}
+										return rows;
+									});
+									// Show only the last two turns; everything earlier collapses
+									// behind an expandable history toggle.
+									const visibleTail = 2;
+									const splitAt = Math.max(0, messageRows.length - visibleTail);
+									const earlier = messageRows.slice(0, splitAt);
+									const tail = messageRows.slice(splitAt);
+									const earlierCount = earlier.filter((r) => r.length > 0).length;
+									return (
+										<>
+											{earlierCount > 0 && <MessageHistoryCollapse count={earlierCount}>{earlier}</MessageHistoryCollapse>}
+											{tail}
+										</>
+									);
+								})()}
 								{log.output_message &&
 									!log.error_details?.error.message &&
 									(() => {
@@ -3218,7 +3323,7 @@ export function LogDetailView({
 													</MessageRow>
 												) : null}
 												{showAssistant ? (
-													<MessageRow role="assistant" meta={meta} last>
+													<MessageRow role="assistant" meta={meta} last label={decisionRoleLabel(log.object, "assistant")}>
 														{showRefusal ? (
 															<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
 																<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
@@ -3307,7 +3412,7 @@ export function LogDetailView({
 									const itemPayload = extractResponsesItemPayload(msg);
 									const lineCount = text ? text.split("\n").length : 0;
 									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									let meta: string | undefined;
+									let meta: ReactNode | undefined;
 									if (role === "reasoning" && reasoningParts) {
 										const totalLen =
 											reasoningParts.summaries.reduce((acc, s) => acc + s.length, 0) +
@@ -3324,24 +3429,33 @@ export function LogDetailView({
 												? "encrypted"
 												: undefined;
 									} else {
-										meta = text
-											? role === "system" || role === "tool"
-												? msg.name
-													? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-													: `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-											: msg.name
-												? msg.name
-												: msg.type === "function_call_output" && msg.call_id
-													? msg.call_id
-													: Array.isArray(msg.tools)
-														? (() => {
-															const callable = flattenDeclaredTools(msg.tools).length;
-															return callable !== msg.tools.length
-																? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-																: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-														})()
-														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
+										meta = text ? (
+											role === "system" || role === "tool" ? (
+												msg.name ? (
+													<>
+														<ToolNameLabel name={msg.name} />
+														{` · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`}
+													</>
+												) : (
+													`${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+												)
+											) : (
+												`${lineCount} line${lineCount === 1 ? "" : "s"}`
+											)
+										) : msg.name ? (
+											<ToolNameLabel name={msg.name} />
+										) : msg.type === "function_call_output" && msg.call_id ? (
+											<ToolNameLabel name={msg.call_id} />
+										) : Array.isArray(msg.tools) ? (
+											(() => {
+												const callable = flattenDeclaredTools(msg.tools).length;
+												return callable !== msg.tools.length
+													? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
+													: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
+											})()
+										) : (
+											[msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined
+										);
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
@@ -3363,10 +3477,9 @@ export function LogDetailView({
 															</div>
 														))}
 														{reasoningParts.encrypted ? (
-															<div className="space-y-1">
-																<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">Encrypted</div>
-																<CollapsibleCode text={reasoningParts.encrypted} preview={2} />
-															</div>
+															// Ciphertext is noise even at two preview lines; fold it
+															// entirely until the reader asks for it.
+															<EncryptedReveal text={reasoningParts.encrypted} label="Encrypted" />
 														) : null}
 														{reasoningParts.signatures.length > 0 ? (
 															<EncryptedReveal
@@ -3493,18 +3606,19 @@ export function LogDetailView({
 						</CollapsibleBox>
 					)}
 
-					{(log.error_details?.error.message || log.error_details?.error.error != null) && (
+					{(displayErrorMessage || log.error_details?.error.error != null || log.status === "error") && (
 						<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
 							<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
 								<AlertCircle className="h-4 w-4 shrink-0" />
 								<span className="text-[12.5px] font-semibold">Error</span>
-								{log.error_details?.error.message ? <CopyInlineButton text={log.error_details.error.message} /> : null}
+								{displayErrorMessage ? <CopyInlineButton text={displayErrorMessage} /> : null}
 							</div>
-							{log.error_details?.error.message ? (
-								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-									{log.error_details.error.message}
-								</div>
-							) : null}
+							<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+								{displayErrorMessage ??
+									(statusCode
+										? `The provider returned an error (HTTP ${statusCode}) without a message.`
+										: "The provider returned an error without a message.")}
+							</div>
 							{log.error_details?.error.error != null ? (
 								<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
 									<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
@@ -3623,7 +3737,7 @@ export function LogDetailView({
 													{record.fail_reason ? (
 														<span className="text-destructive">{record.fail_reason}</span>
 													) : (
-														<span className="text-green-600 dark:text-green-400">success</span>
+														<span className="text-chart-success-ink">success</span>
 													)}
 												</td>
 											</tr>

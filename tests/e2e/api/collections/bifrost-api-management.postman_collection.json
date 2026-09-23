@@ -3784,6 +3784,1192 @@
       ]
     },
     {
+      "name": "Governance - VK Allow All Providers",
+      "description": "A virtual key with allow_all_providers grants every provider, including ones it holds no provider_config for; the configs it does hold are overrides rather than the whole grant. The listing routes used to answer from the provider_config rows alone, so such a key saw only the providers it happened to override and every other provider vanished from /api/models*, /v1/models and the VK model pickers, while inference on them kept working.",
+      "item": [
+        {
+          "name": "Baseline - catalog sizes with no VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Baseline listing returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var counts = {};",
+                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
+                  "pm.collectionVariables.set('vkall_base_anthropic', String(counts.anthropic || 0));",
+                  "pm.collectionVariables.set('vkall_base_openai', String(counts.openai || 0));",
+                  "// The scenario needs a provider to leave unnamed and one to override; without both",
+                  "// configured there is nothing to tell apart and the assertions below would pass vacuously.",
+                  "pm.test('anthropic is configured on this server', function () { pm.expect(counts.anthropic || 0).to.be.above(0); });",
+                  "pm.test('openai is configured on this server', function () { pm.expect(counts.openai || 0).to.be.above(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK (allow_all_providers, openai overridden)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "var body = {",
+                  "  name: 'VK AllowAllProviders ' + ts,",
+                  "  is_active: true,",
+                  "  allow_all_providers: true,",
+                  "  // The only provider_config: openai is narrowed to one model. Every other provider is",
+                  "  // granted by the flag alone and names no config at all.",
+                  "  provider_configs: [",
+                  "    { provider: 'openai', weight: 1, allowed_models: ['gpt-4o-mini'], key_ids: ['*'] }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = null;",
+                  "  try { json = pm.response.json(); } catch (e) { json = null; }",
+                  "  var vk = (json && (json.virtual_key || json)) || {};",
+                  "  if (vk && vk.id) pm.collectionVariables.set('vkall_id', vk.id);",
+                  "  if (vk && vk.value) pm.collectionVariables.set('vkall_value', vk.value);",
+                  "  pm.test('allow_all_providers round-trips', function () { pm.expect(vk.allow_all_providers).to.eql(true); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/api/models/details - unnamed provider is granted in full, overridden one stays narrowed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /api/models/details with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var counts = {};",
+                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
+                  "var baseAnthropic = Number(pm.collectionVariables.get('vkall_base_anthropic'));",
+                  "var baseOpenai = Number(pm.collectionVariables.get('vkall_base_openai'));",
+                  "// The regression: anthropic has no provider_config, so it is granted by the flag alone.",
+                  "// Answering from the configs alone dropped it entirely.",
+                  "pm.test('anthropic is listed though the VK names no config for it', function () {",
+                  "  pm.expect(counts.anthropic || 0).to.be.above(0);",
+                  "});",
+                  "pm.test('anthropic is granted in full, not narrowed', function () {",
+                  "  pm.expect(counts.anthropic).to.eql(baseAnthropic);",
+                  "});",
+                  "// And the other half: a config the VK does hold still narrows its provider, so the fix",
+                  "// widens nothing it should not.",
+                  "pm.test('openai stays narrowed by its own config', function () {",
+                  "  pm.expect(counts.openai || 0).to.be.below(baseOpenai);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkall_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/models - fan-out reaches the unnamed provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /v1/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var data = (body && body.data) || [];",
+                  "var seen = {};",
+                  "data.forEach(function (m) {",
+                  "  var id = (m && m.id) || '';",
+                  "  var idx = id.indexOf('/');",
+                  "  if (idx > 0) seen[id.substring(0, idx)] = true;",
+                  "});",
+                  "// The fan-out narrows to the same answer, so an allow-all key must not be pinned to the",
+                  "// providers it happens to override.",
+                  "pm.test('/v1/models includes the unnamed provider', function () {",
+                  "  pm.expect(Object.keys(seen)).to.include('anthropic');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkall_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkall_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkall_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - VK Regex Entries",
+      "description": "regex: entries in the existing model lists (allowed_models / blacklisted_models on a VK provider config, models / blacklisted_models on a provider key): the text after the prefix is an RE2 pattern matched case-insensitively as a full match against the model name, next to exact names in the same list. Sections: write-time validation (400 on an unparsable pattern or regex:* on VK and provider-key endpoints), a base VK exercised on /v1/models plus real completions (family allowed, preview blocked, other family denied), a PUT that mixes an exact name with a regex entry, and a provider-key round-trip.",
+      "item": [
+        {
+          "name": "Create VK with an unparsable regex entry is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = {",
+                  "  name: \"VK Regex Invalid \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:(\"], \"blacklisted_models\": []}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Create VK with an unparsable regex entry is rejected is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the regex entry', function () {",
+                  "  pm.expect(pm.response.text()).to.include('regex');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create VK with regex:* is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = {",
+                  "  name: \"VK Regex Wildcard \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:*\"], \"blacklisted_models\": []}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Create VK with regex:* is rejected is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the regex entry', function () {",
+                  "  pm.expect(pm.response.text()).to.include('regex');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create VK with an unparsable regex entry in blacklisted_models is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = {",
+                  "  name: \"VK Regex Invalid Block \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [\"regex:(\"]}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Create VK with an unparsable regex entry in blacklisted_models is rejected is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the regex entry', function () {",
+                  "  pm.expect(pm.response.text()).to.include('regex');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: create VK (regex allow for the gpt-4 family, regex block for previews)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "['vkregex_id', 'vkregex_value'].forEach(function (k) { pm.collectionVariables.unset(k); });",
+                  "var body = {",
+                  "  name: \"VK Regex Model Lists \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\"], \"blacklisted_models\": [\"regex:.*-preview$\"]}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  if (vk && vk.id) pm.collectionVariables.set('vkregex_id', vk.id);",
+                  "  if (vk && vk.value) pm.collectionVariables.set('vkregex_value', vk.value);",
+                  "  var pc = ((vk && vk.provider_configs) || [])[0] || {};",
+                  "  pm.test('The VK echoes the regex entries verbatim', function () {",
+                  "    pm.expect(pc.allowed_models || []).to.include('regex:^gpt-4.*');",
+                  "    pm.expect(pc.blacklisted_models || []).to.include('regex:.*-preview$');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: /v1/models honours the regex entries",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /v1/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "var entries = ((body && body.data) || []).map(function (m) {",
+                  "  var id = String((m && m.id) || '');",
+                  "  var slash = id.indexOf('/');",
+                  "  return slash >= 0 ? { provider: id.slice(0, slash), name: id.slice(slash + 1) } : { provider: '', name: id };",
+                  "});",
+                  "pm.test('Regex-scoped VK lists at least one model', function () { pm.expect(entries.length).to.be.above(0); });",
+                  "pm.test('Only the openai provider is listed', function () {",
+                  "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
+                  "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
+                  "});",
+                  "pm.test('Every listed model matches the allow regex ^gpt-4.*', function () {",
+                  "  var off = entries.filter(function (e) { return !/^gpt-4/i.test(e.name); }).map(function (e) { return e.name; });",
+                  "  pm.expect(off, 'outside the allow regex: ' + JSON.stringify(off)).to.eql([]);",
+                  "});",
+                  "pm.test('No listed model matches the block regex .*-preview$', function () {",
+                  "  var blocked = entries.filter(function (e) { return /-preview$/i.test(e.name); }).map(function (e) { return e.name; });",
+                  "  pm.expect(blocked, 'block regex leaked: ' + JSON.stringify(blocked)).to.eql([]);",
+                  "});",
+                  "pm.test('Regex entries are never listed as models', function () {",
+                  "  var pseudo = entries.filter(function (e) { return e.name.indexOf('regex:') === 0; }).map(function (e) { return e.name; });",
+                  "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: chat gpt-4o-mini is not blocked (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// gpt-4o-mini matches ^gpt-4.* and not .*-preview$, so governance admits it.",
+                  "pm.test(\"gpt-4o-mini is not blocked\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(403);",
+                  "});",
+                  "pm.test('The response carries no model block', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: chat gpt-3.5-turbo is denied (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"gpt-3.5-turbo is refused with 403\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection is a model block', function () {",
+                  "  pm.expect(pm.response.text()).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-3.5-turbo\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: chat gpt-4o-preview is denied (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"gpt-4o-preview is refused with 403\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection is a model block', function () {",
+                  "  pm.expect(pm.response.text()).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-preview\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update: PUT VK mixes an exact name with a regex entry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('PUT VK returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"weight\": 1,\n      \"key_ids\": [\n        \"*\"\n      ],\n      \"allowed_models\": [\n        \"gpt-4o\",\n        \"regex:^claude-3-.*\"\n      ],\n      \"blacklisted_models\": []\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update: GET VK round-trips the mixed list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var json = pm.response.json();",
+                  "var vk = json.virtual_key || json;",
+                  "var pc = ((vk && vk.provider_configs) || [])[0] || {};",
+                  "pm.test('Both entries come back verbatim', function () {",
+                  "  pm.expect(pc.allowed_models || []).to.include('gpt-4o');",
+                  "  pm.expect(pc.allowed_models || []).to.include('regex:^claude-3-.*');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update: PUT VK with an unparsable regex entry is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('PUT VK with an unparsable regex entry is refused with 400', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"weight\": 1,\n      \"key_ids\": [\n        \"*\"\n      ],\n      \"allowed_models\": [\n        \"regex:(\"\n      ],\n      \"blacklisted_models\": []\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: delete VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Provider key: create key with an unparsable regex entry in models is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The key never persists: validation refuses it before the store is touched.",
+                  "var body = {\"models\": [\"regex:(\"]};",
+                  "body.name = 'regex-probe-' + Date.now();",
+                  "body.value = 'sk-regex-probe-never-stored';",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Key with an unparsable regex entry in models is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the field', function () {",
+                  "  pm.expect(pm.response.text()).to.include(\"Invalid models\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Provider key: create key with regex entries",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('pkregex_id');",
+                  "var body = {\"models\": [\"regex:^gpt-4.*\"], \"blacklisted_models\": [\"regex:.*-preview$\"], \"weight\": 1};",
+                  "body.name = 'regex-key-' + Date.now();",
+                  "body.value = 'sk-regex-key-' + Date.now();",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create key returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 300) {",
+                  "  var json = pm.response.json();",
+                  "  var key = json.key || json;",
+                  "  if (key && key.id) pm.collectionVariables.set('pkregex_id', key.id);",
+                  "  pm.test('The key echoes the regex entries verbatim', function () {",
+                  "    pm.expect(key.models || []).to.include('regex:^gpt-4.*');",
+                  "    pm.expect(key.blacklisted_models || []).to.include('regex:.*-preview$');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Provider key: delete key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('pkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete key returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys/{{pkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys",
+                "{{pkregex_id}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "Governance - Routing Rules",
       "item": [
         {

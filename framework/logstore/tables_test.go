@@ -245,3 +245,66 @@ func TestDeserializeFieldsCostBreakdownNilWhenNoCost(t *testing.T) {
 	require.NoError(t, log.DeserializeFields())
 	assert.Nil(t, log.CostBreakdown)
 }
+
+// TestMCPToolLogGovernanceSetsRoundTrip covers the multi-valued attribution
+// surviving storage. The ids and names are written as separate JSON columns but
+// read back index-aligned, which is what lets DAC filter the two together.
+func TestMCPToolLogGovernanceSetsRoundTrip(t *testing.T) {
+	entry := &MCPToolLog{
+		TeamIDsParsed: []string{"team1", "team2"}, TeamNamesParsed: []string{"Team One", "Team Two"},
+		CustomerIDsParsed: []string{"cust1"}, CustomerNamesParsed: []string{"Customer One"},
+		BusinessUnitIDsParsed: []string{"bu1"}, BusinessUnitNamesParsed: []string{"BU One"},
+		BudgetIDsParsed: []string{"budget1"}, RateLimitIDsParsed: []string{"rl1"},
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if entry.TeamIDs == nil || entry.TeamNames == nil || entry.BudgetIDs == nil {
+		t.Fatalf("sets not written to their columns: %+v", entry)
+	}
+
+	stored := &MCPToolLog{
+		TeamIDs: entry.TeamIDs, TeamNames: entry.TeamNames,
+		CustomerIDs: entry.CustomerIDs, CustomerNames: entry.CustomerNames,
+		BusinessUnitIDs: entry.BusinessUnitIDs, BusinessUnitNames: entry.BusinessUnitNames,
+		BudgetIDs: entry.BudgetIDs, RateLimitIDs: entry.RateLimitIDs,
+	}
+	if err := stored.DeserializeFields(); err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	for _, field := range []struct {
+		name      string
+		got, want []string
+	}{
+		{"team_ids", stored.TeamIDsParsed, entry.TeamIDsParsed},
+		{"team_names", stored.TeamNamesParsed, entry.TeamNamesParsed},
+		{"customer_ids", stored.CustomerIDsParsed, entry.CustomerIDsParsed},
+		{"customer_names", stored.CustomerNamesParsed, entry.CustomerNamesParsed},
+		{"business_unit_ids", stored.BusinessUnitIDsParsed, entry.BusinessUnitIDsParsed},
+		{"business_unit_names", stored.BusinessUnitNamesParsed, entry.BusinessUnitNamesParsed},
+		{"budget_ids", stored.BudgetIDsParsed, entry.BudgetIDsParsed},
+		{"rate_limit_ids", stored.RateLimitIDsParsed, entry.RateLimitIDsParsed},
+	} {
+		if len(field.got) != len(field.want) {
+			t.Fatalf("%s = %v, want %v", field.name, field.got, field.want)
+		}
+		for i := range field.want {
+			if field.got[i] != field.want[i] {
+				t.Fatalf("%s = %v, want %v", field.name, field.got, field.want)
+			}
+		}
+	}
+}
+
+// TestMCPToolLogGovernanceSetsTolerateCorruptJSON keeps one unreadable column
+// from failing the whole read: the row is still worth serving without it.
+func TestMCPToolLogGovernanceSetsTolerateCorruptJSON(t *testing.T) {
+	corrupt := "{not json"
+	entry := &MCPToolLog{TeamIDs: &corrupt}
+	if err := entry.DeserializeFields(); err != nil {
+		t.Fatalf("deserialize must not fail on a corrupt column: %v", err)
+	}
+	if entry.TeamIDsParsed != nil {
+		t.Fatalf("team_ids = %v, want nil", entry.TeamIDsParsed)
+	}
+}

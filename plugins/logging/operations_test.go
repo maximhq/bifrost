@@ -649,6 +649,23 @@ func TestEmitAggregateLogSkipsSettlementSpanWithoutCost(t *testing.T) {
 	plugin.EmitAggregateLog(context.Background(), entry)
 }
 
+func TestLogSubscribersComposeAndUnsubscribe(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), logger: testLogger{}}
+	primary, first, second := 0, 0, 0
+	plugin.SetLogCallback(func(context.Context, *logstore.Log) { primary++ })
+	unsubscribeFirst := plugin.SubscribeLogCallback(func(context.Context, *logstore.Log) { first++ })
+	plugin.SubscribeLogCallback(func(context.Context, *logstore.Log) { second++ })
+
+	plugin.notifyLogCallbacks(context.Background(), &logstore.Log{ID: "one"})
+	unsubscribeFirst()
+	unsubscribeFirst()
+	plugin.notifyLogCallbacks(context.Background(), &logstore.Log{ID: "two"})
+
+	if primary != 2 || first != 1 || second != 2 {
+		t.Fatalf("callback counts = primary:%d first:%d second:%d", primary, first, second)
+	}
+}
+
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}
@@ -3588,5 +3605,146 @@ func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
 	}
 	if entry.VideoDebugParsed.Accounting != nil {
 		t.Fatal("only the settlement's aggregate cost row carries an accounting block")
+	}
+}
+
+// newEndedTraceContext builds a context whose tracer already completed the trace,
+// the state a late terminal hook observes after the transport flushed the request.
+// The root span is started first because a live trace gets its root span from the
+// transport before dispatch; ending the trace removes it from the tracer's store.
+func newTracedContext(t *testing.T) (*schemas.BifrostContext, *tracing.Tracer, string) {
+	t.Helper()
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, root := tracer.StartSpan(ctx, "http.request", schemas.SpanKindInternal)
+	if root == nil {
+		t.Fatal("root span was not started")
+	}
+	tracer.EndSpan(root, schemas.SpanStatusOk, "")
+	return ctx, tracer, traceID
+}
+
+// TestStoreOrEnqueueAfterInjectStillWrites pins the second drop behind maximhq/bifrost#6972.
+// When a client disconnects on a non-streaming request, the transport completes and
+// flushes the trace (EndTrace, then Inject) as soon as it has written the 499, while
+// the worker is still tearing down the upstream call. The worker's abandoned-billing
+// terminal hook then reaches storeOrEnqueueEntry AFTER the trace ended. Parking the
+// entry under the trace id would leave it for nothing but the TTL sweeper, so the
+// request is billed by governance but never gets a log row. The check is against the
+// tracer, not a timer, so it holds however late the hook lands.
+func TestStoreOrEnqueueAfterInjectStillWrites(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	ctx, tracer, traceID := newTracedContext(t)
+
+	// The transport flushed the trace with nothing parked yet.
+	completed := tracer.EndTrace(traceID)
+	if completed == nil {
+		t.Fatal("EndTrace returned nil")
+	}
+	if err := plugin.Inject(context.Background(), completed); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	// The worker's late terminal hook lands afterwards.
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-abandoned", Model: "gpt-4o-mini"}, nil)
+
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("expected the late entry to be enqueued for writing, writeQueue has %d entries", got)
+	}
+	if _, parked := plugin.pendingLogsToInject.Load(traceID); parked {
+		t.Fatal("late entry was parked under an already-ended trace; nothing will ever drain it")
+	}
+}
+
+// TestStoreOrEnqueueBeforeInjectStillParks guards the fix above against over-correcting:
+// an entry stored while the trace is live must still be parked so Inject can attach
+// plugin logs and the trace's authoritative latency before it is written.
+func TestStoreOrEnqueueBeforeInjectStillParks(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	ctx, tracer, traceID := newTracedContext(t)
+
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-normal", Model: "gpt-4o-mini"}, nil)
+	if got := len(plugin.writeQueue); got != 0 {
+		t.Fatalf("entry stored while the trace is live must be parked, but writeQueue has %d entries", got)
+	}
+	completed := tracer.EndTrace(traceID)
+	if completed == nil {
+		t.Fatal("EndTrace returned nil")
+	}
+	if err := plugin.Inject(context.Background(), completed); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("Inject must drain the parked entry, writeQueue has %d entries", got)
+	}
+}
+
+// The settlement span carries the parsed breakdown when the row has one, not just
+// the flat total. Only the entry.Cost fallback was covered, so this branch could
+// lose the per-category split while the shared CostAttributes tests stayed green.
+func TestEmitAggregateLogEmitsSettlementCostBreakdown(t *testing.T) {
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	capture := &captureObsPlugin{spans: make(chan map[string]any, 1)}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{capture}, nil)
+
+	plugin := &LoggerPlugin{ctx: context.Background()}
+	plugin.SetSettlementTracer(tracer)
+
+	// Deliberately different from TotalCost so a fallback to entry.Cost is visible.
+	flat := 9.99
+	entry := &logstore.Log{
+		ID:        "batch-cost:openai:settlement-breakdown",
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o-mini",
+		Status:    "success",
+		Cost:      &flat,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150,
+			Cost: &schemas.BifrostCost{
+				InputCost: 0.30, OutputCost: 0.50, AdditionalCost: 0.20, TotalCost: 1.00,
+			},
+		},
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	}
+	plugin.EmitAggregateLog(context.Background(), entry)
+
+	select {
+	case attrs := <-capture.spans:
+		for key, want := range map[string]float64{
+			schemas.AttrUsageCost:             1.00,
+			schemas.AttrBifrostCostInput:      0.30,
+			schemas.AttrBifrostCostOutput:     0.50,
+			schemas.AttrBifrostCostAdditional: 0.20,
+		} {
+			got, ok := attrs[key].(float64)
+			if !ok {
+				t.Errorf("%s missing from the settlement span", key)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %v, want %v", key, got, want)
+			}
+		}
+		// The breakdown must win; falling back to entry.Cost would show 9.99.
+		if got, _ := attrs[schemas.AttrUsageCost].(float64); got == flat {
+			t.Errorf("%s = %v: fell back to entry.Cost instead of the parsed breakdown", schemas.AttrUsageCost, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no settlement span injected to the observability connector")
 	}
 }

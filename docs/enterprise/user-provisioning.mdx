@@ -132,10 +132,13 @@ All providers share the same outer config shape in `config.json`:
     "provider": "okta | entra | zitadel | keycloak | google | sailpoint",
     "config": {
       "...": "provider-specific fields - see each IdP guide"
-    }
+    },
+    "trusted_networks": [{ "cidr": "10.20.0.0/16", "description": "On-prem Keycloak" }]
   }
 }
 ```
+
+`trusted_networks` is the private IP/CIDR allowlist the SSRF guard consults before outbound discovery calls, so a self-hosted IdP on an internal network is reachable - see [Generic OIDC](/enterprise/setting-up-generic-oidc/oidc) for when you need it. Entries are `{ cidr, description }`; a bare IP is a single host and hostnames are rejected. Declaring the key makes `config.json` own the whole list (an explicit `[]` clears ranges added from the dashboard); omit it to leave them untouched.
 
 Shared fields across providers:
 
@@ -320,7 +323,6 @@ Mappings have an optional `attributeType` field:
 ### `claimScimAttributes` field
 
 `attribute` in a role/team/business-unit mapping rule is always an **OIDC JWT claim name**, and supports dotted paths into nested objects (e.g. `realm_access.roles`). By default Bifrost also uses that same name to look up the attribute in a SCIM-provisioned user's stored profile (a flat key-value map) — so for standard SCIM attributes (`department`, `title`, `userType`, `costCenter`, etc.) mapping rules work unchanged across both the OIDC and SCIM paths.
->>>>>>> main
 
 `claimScimAttributes` is a separate, top-level config field (a sibling of `attributeTeamMappings` / `attributeBusinessUnitMappings`, not a field on each rule) for the two cases where that default isn't enough:
 

@@ -93,7 +93,7 @@ func TestConverseResponseRendersUpstreamReasoning(t *testing.T) {
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{{Type: "summary_text", Text: "simulate night by night"}},
 			},
-		}, converseReasoningShape("xai/grok-4-0709"), converseRequiresSignedReasoning("xai/grok-4-0709"))
+		}, converseReasoningShape("xai/grok-4-0709"), converseRequiresSignedReasoning("xai/grok-4-0709"), false)
 		require.Empty(t, blocks, "a replay to Bedrock must not send a block Bedrock cannot verify")
 	})
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // thoughtSignatureFromEncryptedContent converts a Responses-API
@@ -150,7 +152,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 		if err != nil {
 			return nil, err
 		}
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		geminiReq.ExtraParams = responsesExtraParamsWithoutGenerationConfigKeys(bifrostReq.Params.ExtraParams)
 		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
@@ -949,6 +951,8 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	// Skip lifecycle events that don't have corresponding Gemini equivalents
 	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypePing,
+		schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+		schemas.ResponsesStreamResponseTypeProviderRawEvent,
 		schemas.ResponsesStreamResponseTypeCreated,
 		schemas.ResponsesStreamResponseTypeInProgress,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded,
@@ -2580,16 +2584,41 @@ func stripFunctionResponseMediaRefs(response json.RawMessage) string {
 		return string(response)
 	}
 
-	cleaned := []byte(response)
+	// Rebuild the object in one pass rather than deleting key by key: every
+	// providerUtils.DeleteJSONField reserialises the whole document, so N media refs
+	// cost N copies of it. Pinned by TestStripFunctionResponseMediaRefs_AllocationScaling.
+	//
+	// ForEach, not Map(): Map() returns a Go map whose iteration order is randomised,
+	// which would make the surviving keys come out in a different order on every call
+	// and break byte stability for anything downstream that hashes or caches this.
+	// ForEach walks the document in source order, so survivors keep their positions
+	// exactly as the per-key delete left them.
+	var rebuilt bytes.Buffer
+	rebuilt.Grow(len(response))
+	rebuilt.WriteByte('{')
 	remaining := 0
-	for key, value := range root.Map() {
+	dropped := 0
+	root.ForEach(func(key, value gjson.Result) bool {
 		if value.IsObject() && value.Get("$ref").Exists() {
-			if updated, err := providerUtils.DeleteJSONField(cleaned, key); err == nil {
-				cleaned = updated
-			}
-			continue
+			dropped++
+			return true
 		}
+		if remaining > 0 {
+			rebuilt.WriteByte(',')
+		}
+		rebuilt.WriteString(key.Raw)
+		rebuilt.WriteByte(':')
+		rebuilt.WriteString(value.Raw)
 		remaining++
+		return true
+	})
+	rebuilt.WriteByte('}')
+
+	// Nothing dropped means the per-key delete would have been a no-op, so hand back
+	// the caller's bytes untouched rather than a re-serialised equivalent.
+	cleaned := []byte(response)
+	if dropped > 0 {
+		cleaned = rebuilt.Bytes()
 	}
 
 	if remaining == 0 {
@@ -2710,6 +2739,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 						case p.FileData != nil:
 							block = convertGeminiFileDataToContentBlock(p.FileData)
 						}
+						applyGeminiPartMediaResolution(block, p.MediaResolution)
 						if block != nil {
 							blocks = append(blocks, *block)
 						}
@@ -2780,6 +2810,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.InlineData != nil:
 				// Handle inline data (images, audio, files)
 				block := convertGeminiInlineDataToContentBlock(part.InlineData)
+				applyGeminiPartMediaResolution(block, part.MediaResolution)
 				if block != nil {
 					msg := schemas.ResponsesMessage{
 						Role: role,
@@ -2794,6 +2825,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.FileData != nil:
 				// Handle file data (URI-based)
 				block := convertGeminiFileDataToContentBlock(part.FileData)
+				applyGeminiPartMediaResolution(block, part.MediaResolution)
 				if block != nil {
 					msg := schemas.ResponsesMessage{
 						Role: role,
@@ -2809,6 +2841,21 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 	}
 
 	return messages
+}
+
+// applyGeminiPartMediaResolution copies a part's per-part media resolution onto the content
+// block that part became. Only inlineData/fileData parts carry one: it describes how the input
+// media is tokenized, so a text, thought or functionCall part has nothing to resolve. Callers
+// therefore stamp only the media branches, mirroring the outbound guard in
+// convertContentBlockToGeminiPart.
+func applyGeminiPartMediaResolution(block *schemas.ResponsesMessageContentBlock, mr *PartMediaResolution) {
+	if block == nil || mr == nil {
+		return
+	}
+	block.MediaResolution = &schemas.MediaResolution{Level: mr.Level}
+	if mr.NumTokens != nil {
+		block.MediaResolution.NumTokens = new(*mr.NumTokens)
+	}
 }
 
 // convertGeminiInlineDataToContentBlock converts Gemini inline data (blob) to content block
@@ -3941,41 +3988,66 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 
+	// Read-only: the request's ExtraParams are shared across retry and fallback
+	// attempts, and this conversion runs once per attempt. Deleting consumed keys
+	// here made the second attempt lose mediaResolution, topK, penalties and stop
+	// sequences. The consumed keys are filtered out when the outbound ExtraParams
+	// are built (see responsesExtraParamsWithoutGenerationConfigKeys).
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
-			delete(params.ExtraParams, "top_k")
 			if val, success := schemas.SafeExtractInt(topK); success {
 				config.TopK = schemas.Ptr(val)
 			}
 		}
 		if frequencyPenalty, ok := params.ExtraParams["frequency_penalty"]; ok {
-			delete(params.ExtraParams, "frequency_penalty")
 			if val, success := schemas.SafeExtractFloat64(frequencyPenalty); success {
 				config.FrequencyPenalty = schemas.Ptr(val)
 			}
 		}
 		if presencePenalty, ok := params.ExtraParams["presence_penalty"]; ok {
-			delete(params.ExtraParams, "presence_penalty")
 			if val, success := schemas.SafeExtractFloat64(presencePenalty); success {
 				config.PresencePenalty = schemas.Ptr(val)
 			}
 		}
 		if stopSequences, ok := params.ExtraParams["stop_sequences"]; ok {
-			delete(params.ExtraParams, "stop_sequences")
 			if val, success := schemas.SafeExtractStringSlice(stopSequences); success {
 				config.StopSequences = val
 			}
 		}
 		if mediaResolution, ok := params.ExtraParams["media_resolution"]; ok {
-			delete(params.ExtraParams, "media_resolution")
 			if val, success := schemas.SafeExtractString(mediaResolution); success {
 				config.MediaResolution = val
 			}
 		}
-
 	}
 
 	return config, nil
+}
+
+// responsesGenerationConfigExtraParamKeys lists the ExtraParams keys that
+// convertParamsToGenerationConfigResponses maps into generationConfig. They must
+// not also be merged verbatim into the wire body: Gemini rejects unknown
+// snake_case top-level fields.
+var responsesGenerationConfigExtraParamKeys = []string{
+	"top_k",
+	"frequency_penalty",
+	"presence_penalty",
+	"stop_sequences",
+	"media_resolution",
+}
+
+// responsesExtraParamsWithoutGenerationConfigKeys returns the ExtraParams to
+// forward on the wire, without the keys already mapped into generationConfig.
+// It always returns a copy (nil stays nil): the caller later removes
+// safety_settings and cached_content from the outbound map, and aliasing the
+// source map would drop those keys from the Bifrost request for the next
+// retry/fallback attempt.
+func responsesExtraParamsWithoutGenerationConfigKeys(extraParams map[string]interface{}) map[string]interface{} {
+	filtered := maps.Clone(extraParams)
+	maps.DeleteFunc(filtered, func(key string, _ interface{}) bool {
+		return slices.Contains(responsesGenerationConfigExtraParamKeys, key)
+	})
+	return filtered
 }
 
 // modelSupportsToolCombination reports whether a model can accept built-in tools (Google
@@ -4735,8 +4807,31 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	return contents, systemInstruction, nil
 }
 
-// convertContentBlockToGeminiPart converts a content block to Gemini part
+// convertContentBlockToGeminiPart converts a content block to Gemini part, re-attaching any
+// per-part media resolution the block carries.
 func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
+	part, err := buildGeminiPartFromContentBlock(block, allowedImageURLSchemes...)
+	if err != nil || part == nil {
+		return part, err
+	}
+
+	// Only a media part can carry a resolution. The text, reasoning, refusal and compaction
+	// branches below all produce text-only parts, and Gemini rejects mediaResolution there, so
+	// the guard is on what the part became rather than on the block type it came from.
+	// The value is rebuilt rather than aliased: the same Bifrost request is converted once per
+	// retry and per fallback attempt, so no attempt may hand a later one a shared pointer.
+	if block.MediaResolution != nil && (part.InlineData != nil || part.FileData != nil) {
+		part.MediaResolution = &PartMediaResolution{Level: block.MediaResolution.Level}
+		if n := block.MediaResolution.NumTokens; n != nil {
+			part.MediaResolution.NumTokens = new(*n)
+		}
+	}
+
+	return part, nil
+}
+
+// buildGeminiPartFromContentBlock maps a content block onto the matching Gemini part shape.
+func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
 	}

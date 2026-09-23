@@ -38,10 +38,6 @@ Budget:
             July and October all reset on calendar quarters and differ only in which quarter is
             labelled Q1.
       additionalProperties: false
-    calendar_aligned:
-      type: boolean
-      description: When true, resets align to calendar period boundaries in UTC (not rolling from last reset)
-      default: false
     last_reset:
       type: string
       format: date-time
@@ -306,10 +302,12 @@ VirtualKeyProviderConfig:
       type: array
       items:
         type: string
+      description: Allowlist. `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     blacklisted_models:
       type: array
       items:
         type: string
+      description: Denylist, which wins over the allowlist. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     allow_all_keys:
       type: boolean
     rate_limit_id:
@@ -423,6 +421,27 @@ VirtualKey:
         $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
+    assigned_user:
+      type: ['object', 'null']
+      readOnly: true
+      description: >
+        The user this virtual key is assigned to, or null when it is assigned to a team, a
+        customer, or nothing. Read-only and resolved per request. Enterprise only; always
+        null in the open-source build, which has no user directory. Omitted entirely when
+        the assignee lookup could not be completed, so null always means "nobody is
+        assigned" and an absent field means "not known" - clients should refetch the
+        assignee for the key rather than reading its absence as unassigned.
+      required:
+        - id
+        - name
+        - email
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
     config_hash:
       type: string
     created_by_user_id:
@@ -460,19 +479,22 @@ CreateVirtualKeyRequest:
             type: array
             items:
               type: string
+            description: Allowlist. `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           blacklisted_models:
             type: array
             items:
               type: string
+            description: Denylist, which wins over the allowlist. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           budgets:
             type: array
-            description: Provider-specific budget quotas
+            description: Provider-specific budget quotas. Use this array instead of the removed singular `budget` or `budget_id` fields.
             items:
               $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/CreateRateLimitRequest'
           key_ids:
             type: array
+            description: Provider API key IDs allowed for this config. `["*"]` allows every key for the provider; an empty or omitted array denies all keys.
             items:
               type: string
     mcp_configs:
@@ -493,7 +515,7 @@ CreateVirtualKeyRequest:
       type: string
     budgets:
       type: array
-      description: Budget quotas assigned directly to this virtual key
+      description: Budget quotas assigned directly to this virtual key. Use this array instead of the removed singular `budget` or `budget_id` fields.
       items:
         $ref: '#/CreateBudgetRequest'
     rate_limit:
@@ -513,6 +535,20 @@ CreateVirtualKeyRequest:
       type: string
       format: date-time
       description: Optional expiry timestamp. Must be in the future. Omit for a key that never expires.
+  example:
+    name: engineering-vk
+    provider_configs:
+      - provider: openai
+        weight: 1
+        allowed_models: [gpt-4o-mini]
+        key_ids: ['*']
+        budgets:
+          - max_limit: 50
+            reset_duration: 1M
+    budgets:
+      - max_limit: 100
+        reset_duration: 1M
+    is_active: true
 
 UpdateVirtualKeyRequest:
   type: object
@@ -538,19 +574,22 @@ UpdateVirtualKeyRequest:
             type: array
             items:
               type: string
+            description: Allowlist. `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           blacklisted_models:
             type: array
             items:
               type: string
+            description: Denylist, which wins over the allowlist. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           budgets:
             type: array
-            description: Provider-specific budget quotas. Replaces all budgets for that provider config when provided.
+            description: Provider-specific budget quotas. Replaces all budgets for that provider config when provided; the removed singular `budget` and `budget_id` fields are not request fields.
             items:
               $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/UpdateRateLimitRequest'
           key_ids:
             type: array
+            description: Provider API key IDs allowed for this config. `["*"]` allows every key for the provider; an empty or omitted array denies all keys.
             items:
               type: string
     mcp_configs:
@@ -572,7 +611,7 @@ UpdateVirtualKeyRequest:
       type: string
     budgets:
       type: array
-      description: Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided.
+      description: Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided; the removed singular `budget` and `budget_id` fields are not request fields.
       items:
         $ref: '#/CreateBudgetRequest'
     rate_limit:
@@ -595,6 +634,19 @@ UpdateVirtualKeyRequest:
     expires_at:
       type: string
       description: RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged.
+  example:
+    description: Updated engineering access
+    provider_configs:
+      - provider: openai
+        weight: 1
+        allowed_models: [gpt-4o, gpt-4o-mini]
+        key_ids: ['*']
+        budgets:
+          - max_limit: 75
+            reset_duration: 1M
+    budgets:
+      - max_limit: 150
+        reset_duration: 1M
 
 ListVirtualKeysResponse:
   type: object
@@ -1292,6 +1344,27 @@ TableKey:
 
 # Routing Rules schemas
 
+RoutingFallback:
+  description: A fallback in a routing rule's chain. Either the "provider/model" string ("provider/" keeps the incoming model), or an object that additionally pins a provider key.
+  oneOf:
+    - type: string
+      minLength: 1
+    - type: object
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          minLength: 1
+          description: Fallback provider
+        model:
+          type: [string, 'null']
+          description: Fallback model (omit or empty to use the incoming request model)
+        key_id:
+          type: [string, 'null']
+          description: UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped.
+      additionalProperties: false
+
 RoutingTarget:
   type: object
   description: A single weighted routing target within a routing rule
@@ -1344,8 +1417,8 @@ RoutingRule:
     fallbacks:
       type: array
       items:
-        type: string
-      description: Fallback providers in format "provider/model"
+        $ref: '#/RoutingFallback'
+      description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
       enum: [global, team, customer, virtual_key]
@@ -1417,8 +1490,8 @@ CreateRoutingRuleRequest:
     fallbacks:
       type: array
       items:
-        type: string
-      description: Fallback providers in format "provider/model"
+        $ref: '#/RoutingFallback'
+      description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
       enum: [global, team, customer, virtual_key]
@@ -1474,7 +1547,8 @@ UpdateRoutingRuleRequest:
     fallbacks:
       type: array
       items:
-        type: string
+        $ref: '#/RoutingFallback'
+      description: Ordered fallback chain, tried after the selected target fails
     priority:
       type: integer
     query:
@@ -2126,6 +2200,77 @@ PricingPatch:
     annotation_cost_per_page:
       type: number
       minimum: 0
+    # Costs - Time of day
+    off_peak_cost_multiplier:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 1
+      description: >
+        Multiplier applied to every usage-based charge when the request falls
+        outside the windows declared in peak_hours. Every other rate on this
+        object is the peak (higher) price, so this can only scale downward —
+        e.g. 0.5 for a 50% off-peak discount. Flat per-request and per-query
+        fees are not discounted. A discount applies only when the RESOLVED
+        pricing row carries both this field and peak_hours. A patch may supply
+        one and inherit the other from the model's datasheet entry, so setting
+        this alone still discounts when the datasheet already declares a
+        schedule; it bills at peak only when neither source provides one.
+    peak_hours:
+      type: object
+      description: >
+        Recurring weekly windows during which the model is billed at its peak
+        (base) rates. Any instant outside every window is off-peak and is
+        discounted by off_peak_cost_multiplier. Peak vs off-peak is decided by
+        the request's start time, so a stream crossing a boundary bills
+        entirely at its start-time rate.
+      properties:
+        timezone:
+          type: string
+          description: IANA location name (e.g. "UTC", "Asia/Shanghai"). Empty means UTC.
+          example: UTC
+        windows:
+          type: array
+          description: >
+            At least one window is required. A schedule with no usable window
+            cannot be evaluated, and an unevaluable schedule bills at peak, so
+            an empty list would silently discard the discount rather than make
+            every instant off-peak.
+          minItems: 1
+          items:
+            type: object
+            properties:
+              days:
+                type: array
+                description: >
+                  Weekdays the window applies to, 0 = Sunday through
+                  6 = Saturday. For a window that wraps past midnight, this is
+                  the weekday the window starts on. At least one is required,
+                  for the same reason windows itself is.
+                minItems: 1
+                items:
+                  type: integer
+                  minimum: 0
+                  maximum: 6
+                example: [1, 2, 3, 4, 5]
+              start:
+                type: string
+                description: Window start as "HH:MM" in the schedule's timezone (inclusive).
+                pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+                example: "01:00"
+              end:
+                type: string
+                description: >
+                  Window end as "HH:MM" in the schedule's timezone (exclusive).
+                  A value less than or equal to start wraps past midnight.
+                  "24:00" is accepted as an end-of-day marker.
+                pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9]|24:00)$'
+                example: "04:00"
+            required:
+              - days
+              - start
+              - end
+      required:
+        - windows
 
 PricingOverride:
   type: object

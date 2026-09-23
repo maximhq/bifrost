@@ -52,6 +52,8 @@ import {
 	Webhook,
 } from "lucide-react";
 
+import { WarpIcon } from "@/components/ui/icons";
+import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
 	Sidebar,
@@ -69,8 +71,10 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
+import { useFeatureFlag } from "@/hooks/useFeatureFlag";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
@@ -253,20 +257,23 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
-		? "bg-sidebar-accent text-accent-foreground border-primary/20"
-		: isActive || isAnySubItemActive
-			? "bg-sidebar-accent text-primary border-primary/20"
-			: item.hasAccess
-				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-		} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+		isHighlighted
+			? "bg-sidebar-accent text-accent-foreground border-primary/20"
+			: isActive || isAnySubItemActive
+				? "bg-sidebar-accent text-primary border-primary/20"
+				: item.hasAccess
+					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+	} `;
 
 	const innerContent = (
-		<div className="flex w-full items-center justify-between">
-			<div className="flex w-full items-center gap-2">
+		<div className="flex w-full min-w-0 items-center justify-between">
+			<div className="flex w-full min-w-0 items-center gap-2">
 				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-				<span className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
+				<span
+					className={`min-w-0 truncate text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
+				>
 					{item.title}
 				</span>
 				{item.tag && (
@@ -363,9 +370,13 @@ const SidebarItemView = ({
 							const SubItemIcon = subItem.icon;
 							const subSlug = subItem.testId ?? slug(subItem.title);
 							const inner = (
-								<div className="flex items-center gap-2">
-									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
-									<span className={`text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}>
+								<div className="flex min-w-0 items-center gap-2">
+									{SubItemIcon && (
+										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+									)}
+									<span
+										className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}
+									>
 										{subItem.title}
 									</span>
 									{subItem.tag && (
@@ -411,18 +422,21 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
-							? "bg-sidebar-accent text-accent-foreground"
-							: isSubItemActive
-								? "bg-sidebar-accent text-primary font-medium"
-								: subItem.hasAccess === false
-									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-							}`;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+							isSubItemHighlighted
+								? "bg-sidebar-accent text-accent-foreground"
+								: isSubItemActive
+									? "bg-sidebar-accent text-primary font-medium"
+									: subItem.hasAccess === false
+										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+						}`;
 						const subInner = (
-							<div className="flex w-full items-center gap-2">
-								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
-								<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+							<div className="flex w-full min-w-0 items-center gap-2">
+								{SubItemIcon && (
+									<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+								)}
+								<span className={`min-w-0 truncate text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
 								{subItem.tag && (
 									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 										{subItem.tag}
@@ -500,6 +514,25 @@ const compareVersions = (v1: string, v2: string): number => {
 	return 0;
 };
 
+/**
+ * Warp's mark, sized above the settings nav's default.
+ *
+ * The nav sizes every sub-item icon at h-3.5. Warp's is a filled glyph among
+ * lucide's stroked ones, and a filled shape reads smaller at the same box
+ * because its weight sits in the middle rather than on the outline, so it needs
+ * to render larger to match them.
+ *
+ * It is scaled rather than resized, and that is the whole point. A bigger box
+ * moves two things at once: the icon's left edge shifts out of the column its
+ * neighbours share, and every pixel of extra width pushes the label right, so
+ * "Warp" no longer starts where "Security" and "API Keys" do. A transform
+ * changes none of that - layout still sees h-3.5, so the row stays on the grid
+ * while the mark alone grows.
+ */
+function WarpNavIcon({ className, ...props }: React.SVGProps<SVGSVGElement>) {
+	return <WarpIcon className={cn(className, "scale-125")} {...props} />;
+}
+
 export default function AppSidebar() {
 	const pathname = useLocation({ select: (l) => l.pathname });
 	const search = useLocation({ select: (l) => l.searchStr ?? "" });
@@ -552,6 +585,7 @@ export default function AppSidebar() {
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
+	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
@@ -970,21 +1004,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-					{
-						title: "Prompt Repository",
-						url: "/workspace/prompt-repo",
-						icon: FolderGit,
-						description: "Prompt repository",
-						hasAccess: hasPromptRepositoryAccess,
-					},
-					{
-						title: "Skills Repository",
-						url: "/workspace/skills-repo",
-						icon: BookOpenText,
-						description: "Skills repository",
-						hasAccess: hasSkillsRepositoryAccess,
-					},
-				]
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: hasPromptRepositoryAccess,
+						},
+						{
+							title: "Skills Repository",
+							url: "/workspace/skills-repo",
+							icon: BookOpenText,
+							description: "Skills repository",
+							hasAccess: hasSkillsRepositoryAccess,
+						},
+					]
 				: []),
 			{
 				title: "Settings",
@@ -1021,16 +1055,23 @@ export default function AppSidebar() {
 						description: "Security settings",
 						hasAccess: hasSettingsAccess,
 					},
+					{
+						title: "Warp",
+						url: "/workspace/config/warp",
+						icon: WarpNavIcon,
+						description: "Warp agent configuration",
+						hasAccess: hasSettingsAccess && isWarpEnabled,
+					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Proxy",
-								url: "/workspace/config/proxy",
-								icon: Globe,
-								description: "Proxy configuration",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Proxy",
+									url: "/workspace/config/proxy",
+									icon: Globe,
+									description: "Proxy configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 					{
 						title: "API Keys",
@@ -1055,21 +1096,21 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Branding",
-								url: "/workspace/config/branding",
-								icon: Palette,
-								description: "Custom logo and icon",
-								hasAccess: hasSettingsAccess,
-							},
-							{
-								title: "License Info",
-								url: "/workspace/config/license",
-								icon: BadgeInfo,
-								description: "Enterprise license information",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Branding",
+									url: "/workspace/config/branding",
+									icon: Palette,
+									description: "Custom logo and icon",
+									hasAccess: hasSettingsAccess,
+								},
+								{
+									title: "License Info",
+									url: "/workspace/config/license",
+									icon: BadgeInfo,
+									description: "Enterprise license information",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 				],
 			},
@@ -1107,6 +1148,7 @@ export default function AppSidebar() {
 			hasAccessProfilesAccess,
 			hasProjectsAccess,
 			hasFeatureFlagsAccess,
+			isWarpEnabled,
 			hasDevicesAccess,
 			hasInventoryAccess,
 			hasEdgeConfigAccess,
@@ -1511,7 +1553,7 @@ export default function AppSidebar() {
 				</div>
 			</div>
 			<SidebarContent className="overflow-hidden">
-				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-3 pt-0.5">
+				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pt-0.5 pr-3">
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-0.5">
 							{filteredItems.map((item) => {

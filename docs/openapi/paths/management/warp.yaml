@@ -1,0 +1,256 @@
+# Warp Agent API
+
+warp-config:
+  get:
+    operationId: getWarpConfig
+    summary: Read Warp configuration
+    description: |
+      Returns Warp's settings for the settings page. The stored provider
+      credential is never included. The response carries `api_key_id`, a
+      reference to one of the provider's configured keys, not the key itself.
+
+      A deployment that has never configured Warp gets `200` with
+      `configured: false` and the default values, not a `404`. The settings page
+      needs to render its empty form, and a `404` would make "never set up"
+      indistinguishable from "this build has no Warp route".
+    tags:
+      - Warp
+    responses:
+      '200':
+        description: Warp configuration
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+  put:
+    operationId: updateWarpConfig
+    summary: Update Warp configuration
+    description: |
+      Writes Warp's settings. **Administrators only.**
+
+      RBAC in this transport is enterprise-only and path-based, so the floor is
+      enforced in the handler: a single write points the server at a provider
+      key and a model it will then call on its own behalf, which is not
+      something an ordinary dashboard user should be able to do. Non-admin
+      callers get `403`. The response carries the key reference back, not a
+      redacted credential - there is no secret stored here to redact.
+
+      `api_key_id` is a reference, not a credential, so it round-trips in the
+      clear and needs no omitted-versus-empty rule: omitting it writes an empty
+      value and clears the stored reference.
+    tags:
+      - Warp
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/warp.yaml#/WarpConfigInput'
+    responses:
+      '200':
+        description: The updated configuration
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpConfig'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller is not an administrator
+      '409':
+        description: Embedding configuration cannot change during an active backfill
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+
+warp-backfill:
+  post:
+    operationId: startWarpLogEmbeddingBackfill
+    summary: Start a Warp log embedding backfill
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/warp.yaml#/WarpBackfillRequest'
+    responses:
+      '202':
+        description: Backfill accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller is not an administrator
+      '409':
+        description: |
+          A Warp embedding backfill is already active. The body is that job, so
+          a client can show its progress instead of reporting a bare conflict.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The background job runner or the backfill job store is unavailable, or
+          Warp itself cannot prepare the job - no usable configuration, or no
+          vector store to index into.
+
+warp-backfill-status:
+  get:
+    operationId: getWarpLogEmbeddingBackfillStatus
+    summary: Read Warp log embedding backfill progress
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - in: query
+        name: id
+        schema: { type: string }
+    responses:
+      '200':
+        description: Current job, or an idle status when no job is active
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '403':
+        description: Caller is not an administrator
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The backfill job store is unavailable. This route does not need the job
+          runner: it only reads job state.
+
+warp-backfill-cancel:
+  post:
+    operationId: cancelWarpLogEmbeddingBackfill
+    summary: Cancel a Warp log embedding backfill
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              id: { type: string }
+    responses:
+      '200':
+        description: Cancelled or already-terminal job
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller is not an administrator
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The background job runner or the backfill job store is unavailable.
+          Cancelling needs both: the runner to stop the work, the store to record
+          it.
+
+warp-chat:
+  post:
+    operationId: warpChat
+    summary: Ask Warp a question
+    description: |
+      Runs Warp's agent loop over the deployment's telemetry and returns an
+      answer.
+
+      **The route is always registered, and answers `503` while Warp cannot
+      work.** The body carries a machine-readable `reason`, so "present but
+      unusable" stays distinguishable from "absent" without the state being
+      permanent: a deployment that enables logging after startup begins serving
+      this route without a restart.
+
+      Conversation history is client-sent and no session is stored: the dashboard
+      already holds the thread, so a server-side session would need TTLs, cleanup
+      and cross-node coordination for no user-visible gain.
+
+      **Data visibility equals the caller's own.** Every tool query runs against
+      the caller's row-level scope, so Warp can never surface data the caller
+      could not already retrieve from the logs API directly.
+
+      With `stream: true` (the default) the response is `text/event-stream`. Both
+      modes run the identical loop; only the sink differs.
+    tags:
+      - Warp
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/warp.yaml#/WarpChatRequest'
+    responses:
+      '200':
+        description: |
+          The answer. `text/event-stream` when streaming, otherwise a single JSON
+          body.
+
+          SSE frames are `event: <type>` with a JSON payload. Types are `start`,
+          `delta` (an answer fragment), `tool_call_start`, `tool_call_end`,
+          `error` and `done`.
+
+          **`error` is terminal and is never followed by `done`.** A client that
+          treats `done` as the only completion signal will read a failed request
+          as a successful one, so both must end the stream.
+        content:
+          text/event-stream:
+            schema:
+              type: string
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpChatResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '413':
+        description: Conversation exceeds the server's history limit
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        # Two reachable paths, both SendError: reading the Warp configuration
+        # fails, and snapshotWarpContext cannot establish the request's data
+        # scope. Undocumented, a client sees a shape it was never told about.
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          Warp cannot answer yet. `reason` says why: `no_log_store` when the
+          deployment persists no logs, `not_configured` when it has no usable
+          settings or no model client. The dashboard treats them differently -
+          the first hides the launcher, the second links to settings.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpUnavailable'
+    security:
+      - ManagementBearerAuth: []

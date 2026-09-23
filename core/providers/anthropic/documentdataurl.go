@@ -7,7 +7,6 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"mime"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -31,36 +30,88 @@ func inlineTextDataURL(data string) *AnthropicSource {
 
 // normalizeBase64TextSources preserves base64 transport while adapting text documents to Anthropic's text source wire type.
 func normalizeBase64TextSources(body []byte) ([]byte, error) {
-	var paths []string
-	gjson.GetBytes(body, "messages").ForEach(func(i, message gjson.Result) bool {
-		message.Get("content").ForEach(func(j, block gjson.Result) bool {
-			if block.Get("type").String() == "document" && block.Get("source.type").String() == "base64" && isTextDocumentMediaType(block.Get("source.media_type").String()) {
-				paths = append(paths, "messages."+strconv.Itoa(int(i.Int()))+".content."+strconv.Itoa(int(j.Int()))+".source")
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body, nil
+	}
+
+	// Each matching source is rewritten inside its own block and the messages array is
+	// written back once. Addressing through the whole body (messages.i.content.j.source)
+	// would reserialise the entire request three times per document, making this
+	// O(documents x body). Pinned by TestNormalizeBase64TextSources_AllocationScaling.
+	var rebuiltMessages [][]byte
+	anyChanged := false
+	var convErr error
+
+	messages.ForEach(func(_, message gjson.Result) bool {
+		messageRaw := []byte(message.Raw)
+		content := message.Get("content")
+		if !content.IsArray() {
+			rebuiltMessages = append(rebuiltMessages, messageRaw)
+			return true
+		}
+
+		var rebuiltBlocks [][]byte
+		messageChanged := false
+		content.ForEach(func(_, block gjson.Result) bool {
+			blockRaw := []byte(block.Raw)
+			if block.Get("type").String() != "document" ||
+				block.Get("source.type").String() != "base64" ||
+				!isTextDocumentMediaType(block.Get("source.media_type").String()) {
+				rebuiltBlocks = append(rebuiltBlocks, blockRaw)
+				return true
 			}
+			decoded, err := base64.StdEncoding.DecodeString(block.Get("source.data").String())
+			if err != nil || !utf8.Valid(decoded) {
+				convErr = fmt.Errorf("invalid base64 UTF-8 text document")
+				return false
+			}
+			for _, set := range []struct {
+				path  string
+				value string
+			}{
+				{"source.type", "text"},
+				{"source.media_type", "text/plain"},
+				{"source.data", string(decoded)},
+			} {
+				blockRaw, err = sjson.SetBytes(blockRaw, set.path, set.value)
+				if err != nil {
+					convErr = err
+					return false
+				}
+			}
+			rebuiltBlocks = append(rebuiltBlocks, blockRaw)
+			messageChanged = true
 			return true
 		})
+		if convErr != nil {
+			return false
+		}
+
+		if messageChanged {
+			updated, err := sjson.SetRawBytes(messageRaw, "content", rawJSONArrayOf(rebuiltBlocks))
+			if err != nil {
+				convErr = err
+				return false
+			}
+			messageRaw = updated
+			anyChanged = true
+		}
+		rebuiltMessages = append(rebuiltMessages, messageRaw)
 		return true
 	})
-	for _, path := range paths {
-		source := gjson.GetBytes(body, path)
-		decoded, err := base64.StdEncoding.DecodeString(source.Get("data").String())
-		if err != nil || !utf8.Valid(decoded) {
-			return nil, fmt.Errorf("invalid base64 UTF-8 text document")
-		}
-		body, err = sjson.SetBytes(body, path+".type", "text")
-		if err != nil {
-			return nil, err
-		}
-		body, err = sjson.SetBytes(body, path+".media_type", "text/plain")
-		if err != nil {
-			return nil, err
-		}
-		body, err = sjson.SetBytes(body, path+".data", string(decoded))
-		if err != nil {
-			return nil, err
-		}
+	if convErr != nil {
+		return nil, convErr
 	}
-	return body, nil
+	if !anyChanged {
+		return body, nil
+	}
+
+	updated, err := sjson.SetRawBytes(body, "messages", rawJSONArrayOf(rebuiltMessages))
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // isTextDocumentMediaType recognizes textual document formats that Anthropic accepts as text sources.

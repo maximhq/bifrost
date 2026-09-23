@@ -42,7 +42,7 @@ func TestConvertTraceToResourceSpan_PluginSpanFilter(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 
 	// The filtered logging span is dropped; root + governance remain.
@@ -103,13 +103,13 @@ func TestConvertTraceToResourceSpan_DisableRootSpanContent(t *testing.T) {
 	}
 
 	// Flag off: root keeps its content (current default behavior).
-	off := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false, false)
+	off := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false, false, false)
 	if root := findRoot(off.ScopeSpans[0].Spans); attrString(root, schemas.AttrInputMessages) == "" {
 		t.Error("with flag off, root span should retain input content")
 	}
 
 	// Flag on: root content dropped, request model retained, child content untouched.
-	on := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false, true)
+	on := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false, false, true)
 	root := findRoot(on.ScopeSpans[0].Spans)
 	if got := attrString(root, schemas.AttrInputMessages); got != "" {
 		t.Errorf("root input content = %q, want empty when disableRootSpanContent is set", got)
@@ -199,7 +199,7 @@ func TestSessionGroupingOverridesTraceID(t *testing.T) {
 	wantParent := hexToBytes(sessionParentSpanID(sess), 8)
 
 	for _, original := range []string{"00000000000000000000000000000001", "00000000000000000000000000000002"} {
-		rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, sess, ""), nil, false, false, true, false)
+		rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, sess, ""), nil, false, false, false, true, false)
 		spans := rs.ScopeSpans[0].Spans
 		if len(spans) != 2 {
 			t.Fatalf("expected 2 spans, got %d", len(spans))
@@ -229,7 +229,7 @@ func TestSessionGroupingTraceparentWins(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "0123456789abcdef0123456789abcdef"
 	const inboundParent = "fedcba9876543210"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", inboundParent), nil, false, false, true, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", inboundParent), nil, false, false, false, true, false)
 	spans := rs.ScopeSpans[0].Spans
 
 	wantTrace := hexToBytes(original, 16)
@@ -256,7 +256,7 @@ func TestSessionGroupingTraceparentWins(t *testing.T) {
 func TestSessionGroupingDisabled(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "00000000000000000000000000000009"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", ""), nil, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", ""), nil, false, false, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 
 	wantTrace := hexToBytes(original, 16)
@@ -282,7 +282,7 @@ func TestSessionGroupingDisabled(t *testing.T) {
 func TestNoSessionIDNoTag(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "0000000000000000000000000000000a"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "", ""), nil, false, false, true, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "", ""), nil, false, false, false, true, false)
 	root := findRoot(rs.ScopeSpans[0].Spans)
 	if root == nil {
 		t.Fatal("root span not found")
@@ -309,7 +309,7 @@ func findAttr(span *Span, key string) *KeyValue {
 
 // TestConvertTraceToResourceSpan_PropagatesTraceAttributesToChildSpans verifies
 // that x-bf-dim-* dimensions stored on TraceAttrDimensions are merged onto every
-// exported span when propagateTraceAttributes is enabled, including the root and
+// exported span when applyTraceDimensionsToChildSpans is enabled, including the root and
 // all child kinds (llm.call, plugin, retry).
 func TestConvertTraceToResourceSpan_PropagatesTraceAttributesToChildSpans(t *testing.T) {
 	p := &OtelPlugin{}
@@ -331,7 +331,7 @@ func TestConvertTraceToResourceSpan_PropagatesTraceAttributesToChildSpans(t *tes
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false, false)
 	if rs == nil || len(rs.ScopeSpans) == 0 {
 		t.Fatal("convertTraceToResourceSpan returned nil/empty result")
 	}
@@ -379,7 +379,7 @@ func TestConvertTraceToResourceSpan_SpanAttributePrecedence(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 exported span, got %d", len(spans))
@@ -420,7 +420,7 @@ func TestConvertTraceToResourceSpan_NoTraceAttributes_NoRegression(t *testing.T)
 			RootSpan: root,
 			Spans:    []*schemas.Span{root},
 		}
-		rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false)
+		rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false, false)
 		spans := rs.ScopeSpans[0].Spans
 		// One attribute: http.method (no AttrRequestID because RequestID is unset).
 		if len(spans[0].Attributes) != 1 {
@@ -435,7 +435,7 @@ func TestConvertTraceToResourceSpan_NoTraceAttributes_NoRegression(t *testing.T)
 			Spans:      []*schemas.Span{root},
 			Attributes: map[string]any{},
 		}
-		rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false)
+		rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false, false)
 		spans := rs.ScopeSpans[0].Spans
 		if len(spans[0].Attributes) != 1 {
 			t.Errorf("expected 1 attribute, got %d (%v)", len(spans[0].Attributes), spans[0].Attributes)
@@ -463,7 +463,7 @@ func TestConvertTraceToResourceSpan_EmptyStringDimValue_NoCrash(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 exported span, got %d", len(spans))
@@ -514,7 +514,7 @@ func TestConvertTraceToResourceSpan_FilteredSpansDoNotReceiveAttrs(t *testing.T)
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 	if len(spans) != 2 {
 		t.Fatalf("expected 2 exported spans (root + gov-pre), got %d", len(spans))
@@ -552,7 +552,7 @@ func TestConvertTraceToResourceSpan_SkipsReservedAndInternalTraceAttrs(t *testin
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false, true, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 	if len(spans) != 2 {
 		t.Fatalf("expected 2 exported spans, got %d", len(spans))
@@ -592,11 +592,11 @@ func TestConvertTraceToResourceSpan_PropagationDisabled_NoChildDims(t *testing.T
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("", trace, nil, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false, false, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 	for _, sp := range spans {
 		if findAttr(sp, "customer_id") != nil {
-			t.Errorf("span %q got customer_id with propagateTraceAttributes=false", sp.Name)
+			t.Errorf("span %q got customer_id with applyTraceDimensionsToChildSpans=false", sp.Name)
 		}
 	}
 }

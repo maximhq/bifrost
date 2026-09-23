@@ -220,7 +220,7 @@ export default function MCPLibraryPage() {
 							)}
 							<div className="flex items-center gap-2 sm:ml-auto">
 								{hasCreateMCPClientAccess && (
-									<Button variant="outline" size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
+									<Button size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
 										<Plus className="h-4 w-4" />
 										Add to Library
 									</Button>

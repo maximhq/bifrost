@@ -2,14 +2,11 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -27,7 +24,7 @@ func TestRefuseUnauthenticatedRealtime_AnonymousRefusedWhenEnforced(t *testing.T
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()
 
-	err := refuseUnauthenticatedRealtime(true, nil, ctx, "")
+	err := refuseUnauthenticatedRealtime(true, ctx, "")
 
 	if err == nil {
 		t.Fatal("expected an anonymous realtime connection to be refused when auth is enforced")
@@ -45,7 +42,7 @@ func TestRefuseUnauthenticatedRealtime_AnonymousAllowedWhenNotEnforced(t *testin
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()
 
-	if err := refuseUnauthenticatedRealtime(false, nil, ctx, ""); err != nil {
+	if err := refuseUnauthenticatedRealtime(false, ctx, ""); err != nil {
 		t.Fatalf("expected an anonymous connection to be allowed when auth is not enforced, got %v", err)
 	}
 }
@@ -58,55 +55,32 @@ func TestRefuseUnauthenticatedRealtime_VirtualKeyAllowed(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
 	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-test"))
 
-	if err := refuseUnauthenticatedRealtime(true, nil, ctx, ""); err != nil {
+	if err := refuseUnauthenticatedRealtime(true, ctx, ""); err != nil {
 		t.Fatalf("expected a virtual-key caller to be admitted, got %v", err)
 	}
 }
 
-// TestRefuseUnauthenticatedRealtime_ValidEphemeralTokenAllowed proves the documented browser
-// flow still works: POST /v1/realtime/client_secrets mints an ek_ token, and a browser that
-// cannot hold a virtual key connects with that instead. Refusing it would break the very flow
-// the realtime design delegates auth to.
-func TestRefuseUnauthenticatedRealtime_ValidEphemeralTokenAllowed(t *testing.T) {
+// TestRefuseUnauthenticatedRealtime_MappedEphemeralTokenAllowed proves the documented browser
+// flow still works. Admission depends on the credential shape, while mapping resolution happens
+// later in the transport.
+func TestRefuseUnauthenticatedRealtime_MappedEphemeralTokenAllowed(t *testing.T) {
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()
 
-	kv, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("failed to create kv store: %v", err)
-	}
-	token := "ek_test_token"
-	payload, err := json.Marshal(realtimeEphemeralKeyMapping{KeyID: "key-1"})
-	if err != nil {
-		t.Fatalf("failed to marshal mapping: %v", err)
-	}
-	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), payload, time.Minute); err != nil {
-		t.Fatalf("failed to seed kv store: %v", err)
-	}
-
-	if gateErr := refuseUnauthenticatedRealtime(true, kv, ctx, "Bearer "+token); gateErr != nil {
-		t.Fatalf("expected a valid ephemeral client secret to be admitted, got %v", gateErr)
+	if gateErr := refuseUnauthenticatedRealtime(true, ctx, "Bearer ek_test_token"); gateErr != nil {
+		t.Fatalf("expected an ephemeral client secret to be admitted, got %v", gateErr)
 	}
 }
 
-// TestRefuseUnauthenticatedRealtime_UnknownEphemeralTokenRefused proves an ek_ token that maps
-// to nothing - expired, revoked, or forged - does not get in on the strength of its prefix.
-func TestRefuseUnauthenticatedRealtime_UnknownEphemeralTokenRefused(t *testing.T) {
+// TestRefuseUnauthenticatedRealtime_UnmappedBifrostPrefixedTokenAllowed keeps provider-issued
+// credentials opaque. A provider may issue an ek_bf_ token too, so absence from Bifrost's mapping
+// cannot establish that the credential is invalid. The provider makes that decision upstream.
+func TestRefuseUnauthenticatedRealtime_UnmappedBifrostPrefixedTokenAllowed(t *testing.T) {
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()
 
-	kv, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("failed to create kv store: %v", err)
-	}
-
-	gateErr := refuseUnauthenticatedRealtime(true, kv, ctx, "Bearer ek_not_a_real_token")
-
-	if gateErr == nil {
-		t.Fatal("expected an unmapped ephemeral token to be refused")
-	}
-	if gateErr.StatusCode == nil || *gateErr.StatusCode != 401 {
-		t.Errorf("expected status 401, got %v", gateErr.StatusCode)
+	if gateErr := refuseUnauthenticatedRealtime(true, ctx, "Bearer ek_bf_external_token"); gateErr != nil {
+		t.Fatalf("expected an unmapped ephemeral token to be passed upstream, got %v", gateErr)
 	}
 }
 
@@ -117,7 +91,7 @@ func TestRefuseUnauthenticatedRealtime_NonEphemeralBearerRefused(t *testing.T) {
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()
 
-	if gateErr := refuseUnauthenticatedRealtime(true, nil, ctx, "Bearer sk-some-openai-key"); gateErr == nil {
+	if gateErr := refuseUnauthenticatedRealtime(true, ctx, "Bearer sk-some-openai-key"); gateErr == nil {
 		t.Fatal("expected a non-virtual-key, non-ephemeral bearer token to be refused")
 	}
 }
@@ -130,7 +104,7 @@ func TestRefuseUnauthenticatedRealtime_DirectKeyAllowed(t *testing.T) {
 	defer cancel()
 	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{Value: *schemas.NewSecretVar("sk-direct")})
 
-	if gateErr := refuseUnauthenticatedRealtime(true, nil, ctx, ""); gateErr != nil {
+	if gateErr := refuseUnauthenticatedRealtime(true, ctx, ""); gateErr != nil {
 		t.Fatalf("expected a direct-key caller to be admitted, got %v", gateErr)
 	}
 }
@@ -184,5 +158,137 @@ func TestWSRealtimeHandleUpgrade_TargetErrorStaysInBandWhenNotEnforced(t *testin
 
 	if got := ctx.Response.StatusCode(); got != fasthttp.StatusSwitchingProtocols {
 		t.Fatalf("expected an open deployment to upgrade and report the target error in-band (101), got %d", got)
+	}
+}
+
+// usableTestPermit is the smallest active, unexpired permit, so a test can put resolved access on
+// a grant the way governance's ResolveAccess does.
+type usableTestPermit struct{}
+
+func (usableTestPermit) Type() string                              { return "virtual_key" }
+func (usableTestPermit) ID() string                                { return "vk-1" }
+func (usableTestPermit) Name() string                              { return "test" }
+func (usableTestPermit) IsActive() bool                            { return true }
+func (usableTestPermit) IsExpired() bool                           { return false }
+func (usableTestPermit) ProviderPermits() []schemas.ProviderPermit { return nil }
+func (usableTestPermit) MCPPermits() []schemas.MCPPermit           { return nil }
+func (usableTestPermit) AllowsAllProviders() bool                  { return true }
+
+// newResolvedVirtualKeyContext is a context whose presented virtual key resolved to usable
+// access, mirroring what the per-request pipeline leaves behind for a real key.
+func newResolvedVirtualKeyContext(t *testing.T) (*schemas.BifrostContext, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := newRealtimeGateContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-valid")
+	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-valid"))
+	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{usableTestPermit{}}, nil, "", nil))
+	return ctx, cancel
+}
+
+// TestRefuseUnresolvedRealtimeCredential_ForgedVirtualKeyRefused is the reported issue: a
+// nonexistent sk-bf-* key passes the presence gate, and without this check the connection opens
+// an upstream session on the operator's key before the first turn refuses it.
+func TestRefuseUnresolvedRealtimeCredential_ForgedVirtualKeyRefused(t *testing.T) {
+	ctx, cancel := newRealtimeGateContext(t)
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-forged")
+	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-forged"))
+	// No access recorded: this is what the pipeline leaves behind for a key the store cannot
+	// resolve.
+
+	err := refuseUnresolvedRealtimeCredential(true, ctx, "sk-bf-forged", false)
+
+	if err == nil {
+		t.Fatal("expected a virtual key that resolved to nothing to be refused")
+	}
+	if err.StatusCode == nil || *err.StatusCode != 401 {
+		t.Errorf("expected status 401, got %v", err.StatusCode)
+	}
+}
+
+// TestRefuseUnresolvedRealtimeCredential_ResolvedVirtualKeyAdmitted proves a key that resolved to
+// usable access passes: the check refuses forged keys, never valid ones.
+func TestRefuseUnresolvedRealtimeCredential_ResolvedVirtualKeyAdmitted(t *testing.T) {
+	ctx, cancel := newResolvedVirtualKeyContext(t)
+	defer cancel()
+
+	if err := refuseUnresolvedRealtimeCredential(true, ctx, "sk-bf-valid", false); err != nil {
+		t.Fatalf("expected a resolved virtual key to be admitted, got %v", err)
+	}
+}
+
+// TestRefuseUnresolvedRealtimeCredential_EphemeralTokenExempt keeps ephemeral client secrets
+// provider-validated. Bifrost may not have minted the token, so no local resolution can exist and
+// its absence proves nothing.
+func TestRefuseUnresolvedRealtimeCredential_EphemeralTokenExempt(t *testing.T) {
+	ctx, cancel := newRealtimeGateContext(t)
+	defer cancel()
+
+	if err := refuseUnresolvedRealtimeCredential(true, ctx, "ek_bf_external_token", false); err != nil {
+		t.Fatalf("expected an ephemeral token to skip local resolution, got %v", err)
+	}
+}
+
+// TestRefuseUnresolvedRealtimeCredential_MappedEphemeralTokenNotExempt closes the revocation
+// window: a Bifrost-minted token's mapping restores its virtual key before the pipeline runs, so
+// that key is locally resolvable and must still resolve. A mapped token whose key was revoked
+// after minting is refused at admission rather than at the first turn.
+func TestRefuseUnresolvedRealtimeCredential_MappedEphemeralTokenNotExempt(t *testing.T) {
+	ctx, cancel := newRealtimeGateContext(t)
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-revoked")
+	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-revoked"))
+	// No access recorded: the pipeline could not resolve the mapping's virtual key.
+
+	err := refuseUnresolvedRealtimeCredential(true, ctx, "ek_bf_mapped_token", true)
+
+	if err == nil {
+		t.Fatal("expected a mapped token with an unresolved virtual key to be refused")
+	}
+	if err.StatusCode == nil || *err.StatusCode != 401 {
+		t.Errorf("expected status 401, got %v", err.StatusCode)
+	}
+}
+
+// TestRefuseUnresolvedRealtimeCredential_ProviderTokenOnlyMappingExempt keeps a mapping that
+// carries no virtual key (minted on an open deployment or with a direct provider key) on the
+// unmapped contract: nothing locally resolvable was restored, so the provider stays authoritative
+// and enforcement must not refuse a token Bifrost itself minted. Callers express this by passing
+// mappedVirtualKey=false for such mappings.
+func TestRefuseUnresolvedRealtimeCredential_ProviderTokenOnlyMappingExempt(t *testing.T) {
+	ctx, cancel := newRealtimeGateContext(t)
+	defer cancel()
+	// The ek_bf_ value itself settled as a credential-shaped header value; no access can exist.
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "ek_bf_provider_only_token")
+	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "ek_bf_provider_only_token"))
+
+	if err := refuseUnresolvedRealtimeCredential(true, ctx, "ek_bf_provider_only_token", false); err != nil {
+		t.Fatalf("expected a provider-token-only mapped token to be admitted, got %v", err)
+	}
+}
+
+// TestRefuseUnresolvedRealtimeCredential_DirectKeyAdmitted proves a direct provider key passes.
+// It resolves to nothing by design, and refusing it for that would close direct-key realtime.
+func TestRefuseUnresolvedRealtimeCredential_DirectKeyAdmitted(t *testing.T) {
+	ctx, cancel := newRealtimeGateContext(t)
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{Value: *schemas.NewSecretVar("sk-direct")})
+
+	if err := refuseUnresolvedRealtimeCredential(true, ctx, "sk-direct", false); err != nil {
+		t.Fatalf("expected a direct-key caller to be admitted, got %v", err)
+	}
+}
+
+// TestRefuseUnresolvedRealtimeCredential_NotEnforcedAllowsEverything follows the operator's
+// switch, like the presence gate: an open deployment stays exactly as open as the rest of
+// inference.
+func TestRefuseUnresolvedRealtimeCredential_NotEnforcedAllowsEverything(t *testing.T) {
+	ctx, cancel := newRealtimeGateContext(t)
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-forged")
+	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-forged"))
+
+	if err := refuseUnresolvedRealtimeCredential(false, ctx, "sk-bf-forged", false); err != nil {
+		t.Fatalf("expected an open deployment to admit an unresolved credential, got %v", err)
 	}
 }

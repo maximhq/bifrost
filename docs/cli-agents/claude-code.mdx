@@ -21,7 +21,7 @@ icon: "star-of-life"
     Since version 2.1.212, Anthropic has enforced the anthropic-version header along with some others.
 
     Go to **Settings > Client Settings** and add them as a comma-separated list:
-  
+
     ```
     anthropic-dangerous-direct-browser-access, anthropic-version, content-type, user-agent, x-api-key, x-stainless-arch, x-stainless-helper-method, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout
     ```
@@ -41,9 +41,52 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 For platform-specific instructions, visit https://code.claude.com/docs/en/overview.
 
+## Recommended: launch with Bifrost CLI
+
+```bash
+bifrost context add production \
+  --base-url https://gateway.example.com \
+  --use
+
+# Enterprise user-scoped inference
+bifrost auth login
+
+# Or configure a virtual key
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" |
+  bifrost auth set-virtual-key --stdin
+
+# Confirm the virtual key allows this model before launching
+bifrost models list
+
+bifrost run claude --model anthropic/claude-sonnet-4-6
+```
+
+<Note>
+A new virtual key with no `provider_configs` denies all providers by default.
+Make sure `anthropic/claude-sonnet-4-6` (or the model you choose) appears in
+`bifrost models list` before launching, or the request is rejected.
+</Note>
+
+With Enterprise SSO, Bifrost creates temporary Claude settings containing an
+`apiKeyHelper` that calls `bifrost auth print-token`. Claude receives a current
+opaque Bifrost agent access token without the token being written to its
+settings or inherited environment. The helper can refresh a rejected session
+and the temporary settings are removed when Claude exits.
+
+With a virtual key, Bifrost configures Claude's bearer credential directly for
+the launched child process. Persistent `bifrost configure claude` is
+virtual-key-only; it never writes a short-lived Enterprise agent token to
+Claude's long-lived settings.
+
+<Note>
+Enterprise SSO authorizes user-scoped inference and assigned-key usage. It does
+not authorize Bifrost management APIs; administrative CLI commands still need a
+scoped management API key.
+</Note>
+
 ## Authentication Methods
 
-There are two ways to authenticate Claude Code with Bifrost:
+For manual configuration with a Bifrost virtual key, there are two methods:
 
 ### `ANTHROPIC_AUTH_TOKEN` (Recommended)
 
@@ -60,6 +103,10 @@ Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the v
 **Caveat:** Because the virtual key is sent as a custom header rather than as the bearer token, Claude Code falls back to standard Anthropic account authentication for the `Authorization` header. This means you still need to log in with an Anthropic account. No credits are needed on the Anthropic account since billing goes through your Bifrost virtual key, but the account login is still required.
 
 ## Configuring Claude Code to work with Bifrost
+
+<Tip>
+Claude Code sends `x-claude-code-session-id` on every request, so a session sticks to the provider and key that served it and keeps hitting the same prompt cache, with nothing to configure. See [Session Affinity](/providers/session-affinity).
+</Tip>
 
 <Note>
 	**To avoid caching issues in Claude Code**, follow these steps:

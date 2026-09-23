@@ -1,3 +1,5 @@
+import { CappedBarStack } from "@/app/workspace/dashboard/components/charts/barShape";
+import { CHART_COLORS } from "@/app/workspace/dashboard/utils/chartUtils";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -139,28 +141,28 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 			<div className="space-y-1 text-sm">
 				<div className="mt-2 flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-blue-500" />
+						<span className="bg-chart-seq-1 h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">Total</span>
 					</span>
 					<span className="font-medium">{data.count.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-emerald-500" />
+						<span className="bg-chart-success h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
 					</span>
-					<span className="font-medium text-emerald-600 dark:text-emerald-400">{data.success.toLocaleString()}</span>
+					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-red-500" />
+						<span className="bg-chart-error h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
 					</span>
-					<span className="font-medium text-red-600 dark:text-red-400">{data.error.toLocaleString()}</span>
+					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-zinc-400" />
+						<span className="bg-chart-neutral h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">Cancelled</span>
 					</span>
 					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString()}</span>
@@ -379,15 +381,15 @@ export function LogsVolumeChart({
 						{isOpen && (
 							<div className="flex items-center gap-3 text-xs">
 								<span className="flex items-center gap-1.5">
-									<span className="h-2 w-2 rounded-full bg-emerald-500" />
+									<span className="bg-chart-success h-2 w-2 rounded-full" />
 									<span className="text-muted-foreground">Success</span>
 								</span>
 								<span className="flex items-center gap-1.5">
-									<span className="h-2 w-2 rounded-full bg-red-500" />
+									<span className="bg-chart-error h-2 w-2 rounded-full" />
 									<span className="text-muted-foreground">Error</span>
 								</span>
 								<span className="flex items-center gap-1.5">
-									<span className="h-2 w-2 rounded-full bg-zinc-400" />
+									<span className="bg-chart-neutral h-2 w-2 rounded-full" />
 									<span className="text-muted-foreground">Cancelled</span>
 								</span>
 							</div>
@@ -441,36 +443,32 @@ export function LogsVolumeChart({
 											allowDataOverflow={false}
 										/>
 										<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-										<Bar
-											dataKey="success"
-											stackId="requests"
-											barSize={30}
-											fill="#10b981"
-											fillOpacity={0.7}
-											radius={[0, 0, 0, 0]}
-											cursor="pointer"
-											onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
-										/>
-										<Bar
-											dataKey="error"
-											stackId="requests"
-											fill="#ef4444"
-											barSize={30}
-											fillOpacity={0.7}
-											radius={[0, 0, 0, 0]}
-											cursor="pointer"
-											onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
-										/>
-										<Bar
-											dataKey="cancelled"
-											stackId="requests"
-											fill="#a1a1aa"
-											barSize={30}
-											fillOpacity={0.75}
-											radius={[2, 2, 0, 0]}
-											cursor="pointer"
-											onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
-										/>
+										<CappedBarStack buckets={chartData.length}>
+											<Bar
+												dataKey="success"
+												barSize={30}
+												fill={CHART_COLORS.success}
+												fillOpacity={0.7}
+												cursor="pointer"
+												onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
+											/>
+											<Bar
+												dataKey="error"
+												fill={CHART_COLORS.error}
+												barSize={30}
+												fillOpacity={0.7}
+												cursor="pointer"
+												onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
+											/>
+											<Bar
+												dataKey="cancelled"
+												fill={CHART_COLORS.cancelled}
+												barSize={30}
+												fillOpacity={0.75}
+												cursor="pointer"
+												onClick={(data) => handleBarClick(data?.payload as LogVolumeDataPoint | undefined)}
+											/>
+										</CappedBarStack>
 										{refAreaLeft !== null && refAreaRight !== null && chartData[refAreaLeft] && chartData[refAreaRight] && (
 											<ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#6366f1" fillOpacity={0.2} />
 										)}

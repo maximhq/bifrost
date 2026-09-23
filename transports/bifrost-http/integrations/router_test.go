@@ -10,13 +10,17 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,6 +81,50 @@ func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 		r.Handler(&ctx)
 
 		require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode(), "POST %s should match a registered route", uri)
+	}
+}
+
+func TestAnthropicExtraParamsReachBedrock(t *testing.T) {
+	for _, prefix := range []string{"/anthropic", "/pydanticai"} {
+		for _, enabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/passthrough=%t", prefix, enabled), func(t *testing.T) {
+				route := createAnthropicMessagesRouteConfig(prefix, &testLogger{})[0]
+				rawBody := []byte(`{
+					"model": "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+					"max_tokens": 32,
+					"messages": [{"role": "user", "content": "Hello"}],
+					"extra_params": {"requestMetadata": {"tenant_slug": "test-tenant", "trace_id": "test-trace"}}
+				}`)
+				req := route.GetRequestTypeInstance(context.Background())
+				require.NoError(t, sonic.Unmarshal(rawBody, req))
+				ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, enabled)
+				// Match the integration router's opt-in extra_params extraction.
+				if enabled {
+					setter, ok := req.(RequestWithSettableExtraParams)
+					require.True(t, ok, "Anthropic requests must accept extra_params")
+					var wrapper struct {
+						ExtraParams map[string]interface{} `json:"extra_params"`
+					}
+					require.NoError(t, sonic.Unmarshal(rawBody, &wrapper))
+					setter.SetExtraParams(wrapper.ExtraParams)
+				}
+				converted, err := route.RequestConverter(ctx, req)
+				require.NoError(t, err)
+				outgoing, err := bedrock.ToBedrockResponsesRequest(ctx, converted.ResponsesRequest)
+				require.NoError(t, err)
+				body, err := providerUtils.MarshalSorted(outgoing)
+				require.NoError(t, err)
+				var wire map[string]interface{}
+				require.NoError(t, sonic.Unmarshal(body, &wire))
+				if enabled {
+					assert.Equal(t, map[string]interface{}{"tenant_slug": "test-tenant", "trace_id": "test-trace"}, wire["requestMetadata"])
+				} else {
+					assert.NotContains(t, wire, "requestMetadata")
+				}
+				assert.NotContains(t, wire, "extra_params")
+			})
+		}
 	}
 }
 
@@ -503,6 +551,102 @@ func TestCreateHandler_AnthropicRouteSetsPassthroughFlags(t *testing.T) {
 	require.Equal(t, true, capturedPassthroughOverrides, "PassthroughOverridesPresent should be set for a Claude Code request")
 }
 
+// anthropicThreadTestRoute mirrors the production /v1/messages route config
+// (checkAnthropicPassthrough + anthropicRefuseThreadContinue) with a sentinel
+// converter so the request never reaches a nil bifrost client.
+func anthropicThreadTestRoute(converterCalled *bool) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeAnthropic,
+		Path:   "/v1/messages",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ResponsesRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &anthropic.AnthropicMessageRequest{}
+		},
+		PreCallback:  checkAnthropicPassthrough,
+		ShortCircuit: anthropicRefuseThreadContinue,
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			*converterCalled = true
+			return nil, fmt.Errorf("stop before bifrost execution")
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return anthropic.ToAnthropicChatCompletionError(err)
+		},
+	}
+}
+
+// TestCreateHandler_AnthropicThreadContinueRefused verifies the stateless thread
+// handling: a `thread: {"type": "continue"}` request carries only the conversation
+// delta, which Bifrost cannot serve because thread state is bound to the upstream
+// account that created it. The request is refused before the Bifrost flow with the
+// thread_unsupported_request error code, which makes the client resend the turn in
+// full and drop the thread field for the rest of the session.
+func TestCreateHandler_AnthropicThreadContinueRefused(t *testing.T) {
+	converterCalled := false
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
+	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"thread":{"type":"continue","previous_message_id":"msg_123"}}`)
+
+	router.createHandler(anthropicThreadTestRoute(&converterCalled))(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.False(t, converterCalled, "a refused continuation must never reach the Bifrost flow")
+	require.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+
+	var envelope anthropic.AnthropicMessageError
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &envelope))
+	require.Equal(t, "error", envelope.Type)
+	require.Equal(t, "invalid_request_error", envelope.Error.Type)
+	require.NotNil(t, envelope.Error.Details)
+	require.Equal(t, "thread_unsupported_request", envelope.Error.Details.ErrorCode)
+	require.NotEmpty(t, envelope.Error.Message)
+}
+
+// TestCreateHandler_AnthropicThreadContinueRefusedStreaming pins that the refusal
+// is a plain JSON response even when the client requested a stream: the
+// short-circuit runs before any SSE stream starts, matching how the upstream
+// returns pre-stream errors.
+func TestCreateHandler_AnthropicThreadContinueRefusedStreaming(t *testing.T) {
+	converterCalled := false
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
+	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}],"thread":{"type":"continue","previous_message_id":"msg_123"}}`)
+
+	router.createHandler(anthropicThreadTestRoute(&converterCalled))(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.False(t, converterCalled)
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, "thread_unsupported_request")
+	require.NotContains(t, body, "event:", "the refusal must be plain JSON, not SSE framing")
+}
+
+// TestCreateHandler_AnthropicThreadCreateProceeds verifies a thread create request
+// is not refused: it carries the full conversation, so it proceeds into the Bifrost
+// flow (where the provider's raw-body path strips the field before the wire).
+func TestCreateHandler_AnthropicThreadCreateProceeds(t *testing.T) {
+	converterCalled := false
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
+	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"thread":{"type":"create"}}`)
+
+	router.createHandler(anthropicThreadTestRoute(&converterCalled))(ctx)
+
+	require.True(t, converterCalled, "a thread create request must proceed into the Bifrost flow")
+	require.NotContains(t, string(ctx.Response.Body()), "thread_unsupported_request")
+}
+
 func TestCreateHandler_CustomParserFailureClosesConnection(t *testing.T) {
 	handlerStore := &mockHandlerStore{}
 	converterCalled := false
@@ -778,5 +922,146 @@ func TestExtractPassthroughModel(t *testing.T) {
 				t.Fatalf("extractPassthroughModel(%q, %q) = %q, want %q", tt.path, tt.bodyModel, got, tt.want)
 			}
 		})
+	}
+}
+
+// Caller-auth forwarding for passthrough routes: OAuth/JWT bearer tokens are the
+// upstream credential (Claude Code, ChatGPT/Codex) and must survive to the provider,
+// while plain API keys keep the strip-and-inject behavior.
+func TestApplyPassthroughCallerAuth_AnthropicOAuthForwarded(t *testing.T) {
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	safeHeaders := map[string]string{}
+	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.Anthropic, "Bearer sk-ant-oat01-caller-token", "")
+	if got := safeHeaders["authorization"]; got != "Bearer sk-ant-oat01-caller-token" {
+		t.Fatalf("expected OAuth token forwarded in safe headers, got %q", got)
+	}
+	if skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		t.Fatal("expected SkipKeySelection to be set for OAuth passthrough")
+	}
+}
+
+func TestApplyPassthroughCallerAuth_OpenAIJWTForwarded(t *testing.T) {
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	safeHeaders := map[string]string{}
+	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln"
+	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.OpenAI, jwt, "https://chatgpt.com")
+	if got := safeHeaders["authorization"]; got != jwt {
+		t.Fatalf("expected JWT forwarded in safe headers, got %q", got)
+	}
+	if skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		t.Fatal("expected SkipKeySelection to be set for JWT passthrough")
+	}
+}
+
+func TestApplyPassthroughCallerAuth_APIKeysStayStripped(t *testing.T) {
+	for name, tc := range map[string]struct {
+		provider    schemas.ModelProvider
+		auth        string
+		upstreamURL string
+	}{
+		"openai plain api key":      {schemas.OpenAI, "Bearer sk-plain-api-key", ""},
+		"anthropic api key bearer":  {schemas.Anthropic, "Bearer sk-ant-api03-key", ""},
+		"provider override bedrock": {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
+		"openai two-segment token":  {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
+		"http upstream override":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "http://mock.local"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			safeHeaders := map[string]string{}
+			applyPassthroughCallerAuth(bifrostCtx, safeHeaders, tc.provider, tc.auth, tc.upstreamURL)
+			if _, ok := safeHeaders["authorization"]; ok {
+				t.Fatal("authorization must stay stripped")
+			}
+			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok {
+				t.Fatal("SkipKeySelection must not be set")
+			}
+		})
+	}
+}
+
+// Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine is the regression test for the
+// client-disconnect watcher leak found in a production heap dump.
+//
+// ConvertToBifrostContext starts one lib.startClientDisconnectWatcher goroutine per
+// request. That goroutine's only exits are an explicit cancel or the client socket dying;
+// its parent is fasthttp's RequestCtx, whose Done fires only on server shutdown. So a
+// handler that returns without cancelling leaves the watcher polling the socket every
+// 500ms forever, pinning the whole request-scoped BifrostContext with it.
+//
+// handleStreaming used to cancel ONLY on write errors ("client disconnected"), which meant
+// every SUCCESSFUL stream leaked a watcher plus its context until the client's keep-alive
+// connection closed. Two production pods showed 596 and 546 watcher goroutines behind just
+// 34 and 38 fasthttp connection goroutines -- roughly 15 leaked contexts per open
+// connection, holding about 2.0 GB of a 2.66 GB heap that GC could not reclaim because it
+// was all genuinely reachable.
+//
+// A stream that ends normally must cancel, exactly as the client-disconnect and
+// passthrough paths already do.
+func Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, nil, RouteConfig{}, stream, rec.cancel)
+
+	// Drain the response body so the producer's SendEvent calls succeed and it reaches
+	// its normal end-of-stream path rather than the write-error path (which has always
+	// cancelled, and would make this test pass for the wrong reason).
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- err
+	}()
+
+	stream <- &schemas.BifrostStreamChunk{}
+	close(stream) // normal completion: no write ever failed
+
+	select {
+	case err := <-readDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("response body stream never closed")
+	}
+
+	rec.requireCancelled(t, "handleStreaming returned without cancelling the request context on "+
+		"normal stream completion: the client-disconnect watcher goroutine and the whole "+
+		"BifrostContext it captures leak until the client closes its connection")
+
+	// Deliberately no process-wide goroutine count here. runtime.NumGoroutine() sweeps up
+	// fasthttp workers and TCP teardown, which flap in a shared test binary, and a flaky
+	// release gate trains people to rerun until green. The outcome this mechanism protects
+	// is asserted precisely, by name, in
+	// lib.TestClientDisconnectWatcher_RetentionNoGoroutineLeak against a real socket.
+}
+
+// cancelRecorder captures the cancel func handed to handleStreaming.
+//
+// handleStreaming cancels from its producer goroutine's deferred cleanup, which runs after
+// the response body stream has closed. A test that samples a plain bool right after
+// io.ReadAll therefore both races that goroutine (caught by -race) and can read it before
+// the cancel lands. Recording into a channel fixes both.
+type cancelRecorder struct {
+	once sync.Once
+	done chan struct{}
+}
+
+func newCancelRecorder() *cancelRecorder {
+	return &cancelRecorder{done: make(chan struct{})}
+}
+
+// cancel is the context.CancelFunc stand-in passed into handleStreaming.
+func (c *cancelRecorder) cancel() { c.once.Do(func() { close(c.done) }) }
+
+// requireCancelled fails the test unless cancel lands within the timeout.
+func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
+	t.Helper()
+	select {
+	case <-c.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
 	}
 }

@@ -122,6 +122,12 @@ The alias-level setting takes precedence when both are present. Count Tokens alw
 Authentication remains `Authorization: Bearer <key>` in both modes. Bifrost omits the header when the key value is empty.
 </Note>
 
+### Server tool support
+
+Anthropic's server and client tools (`web_search`, `web_fetch`, `code_execution`, `computer`, `bash`, `memory`, `text_editor`, `tool_search`, `mcp_toolset`) run on Anthropic-operated infrastructure, so a self-hosted vLLM server does not implement them. Bifrost drops them from the request rather than forwarding a tool the server will reject. Your own function tools are never affected.
+
+This matters most for clients that enable a built-in web search by default, which would otherwise fail every request.
+
 ---
 
 ## Getting started

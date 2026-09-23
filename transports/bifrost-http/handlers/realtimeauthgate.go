@@ -28,16 +28,13 @@ const realtimeAuthRefusalMessage = "authentication is required for realtime conn
 // admission cannot drift from the funnel's first step. It settles no limits, so it cannot
 // double-count usage against the turns that follow.
 //
-// A valid ephemeral client secret counts as a credential. That is the whole point of
-// POST /v1/realtime/client_secrets: a browser cannot hold a virtual key, so it is handed a
-// short-lived ek_ token instead, and the mapping back to the real key is restored after the
-// connection is established. Requiring a virtual key here would break that documented flow.
-// An ek_ token that resolves to no mapping is expired, revoked, or forged, and is refused.
+// Any ephemeral client secret counts as a credential. Bifrost-minted tokens resolve through the
+// shared mapping after admission. Unmapped tokens remain opaque provider credentials and are sent
+// upstream so the provider remains authoritative about whether they are valid.
 //
 // Returns nil when the connection may proceed.
 func refuseUnauthenticatedRealtime(
 	enforceAuthOnInference bool,
-	kv schemas.KVStore,
 	bifrostCtx *schemas.BifrostContext,
 	authorizationHeader string,
 ) *schemas.BifrostError {
@@ -51,9 +48,51 @@ func refuseUnauthenticatedRealtime(
 		return nil
 	}
 	if token := extractRealtimeBearerTokenFromHeader(authorizationHeader); isRealtimeEphemeralToken(token) {
-		if _, ok := lookupRealtimeEphemeralKeyMapping(kv, token); ok {
-			return nil
-		}
+		return nil
 	}
 	return newRealtimeWireBifrostError(401, "invalid_request_error", realtimeAuthRefusalMessage)
+}
+
+// realtimeUnresolvedCredentialMessage is what a caller presenting a credential governance could
+// not resolve is told, mirroring the per-turn refusal so admission and turns name the same fault.
+const realtimeUnresolvedCredentialMessage = "the provided credential does not exist, has expired, or has been revoked"
+
+// refuseUnresolvedRealtimeCredential is the second admission question, asked after the
+// per-request pipeline (RunPreRequestHooks) has resolved the request's access: the credential
+// that was presented, did it turn out to exist? Without this, a forged sk-bf-* key passes the
+// presence gate above, and the connection selects the operator's provider key and opens a real
+// upstream session that only the first turn refuses - by which point it has already consumed a
+// session slot and an upstream connection.
+//
+// It reads the answer governance recorded on the grant through governance's own exported
+// predicate; nothing is resolved or re-implemented here, so admission cannot drift from what the
+// per-turn pipeline enforces.
+//
+// token is the credential the transport extracted from whichever auth header carried it.
+// Unmapped ephemeral client secrets (ek_*) are exempt: Bifrost may not have minted them, so
+// absence of a local resolution proves nothing and the provider stays authoritative upstream.
+// A mapped token whose mapping restored a virtual key is different: that key was placed on the
+// context before the pipeline ran, so it is locally resolvable and must still resolve -
+// otherwise a token minted before its virtual key was revoked would keep admitting connections
+// for the remainder of its TTL. Callers therefore pass mappedVirtualKey only when the mapping
+// carries a virtual key; a provider-token-only mapping (minted on an open deployment or with a
+// direct provider key) restores nothing locally resolvable and keeps the exemption.
+//
+// Returns nil when the connection may proceed.
+func refuseUnresolvedRealtimeCredential(
+	enforceAuthOnInference bool,
+	bifrostCtx *schemas.BifrostContext,
+	token string,
+	mappedVirtualKey bool,
+) *schemas.BifrostError {
+	if !enforceAuthOnInference {
+		return nil
+	}
+	if isRealtimeEphemeralToken(token) && !mappedVirtualKey {
+		return nil
+	}
+	if governance.PresentedCredentialResolved(bifrostCtx) {
+		return nil
+	}
+	return newRealtimeWireBifrostError(401, "invalid_request_error", realtimeUnresolvedCredentialMessage)
 }
