@@ -167265,6 +167265,134 @@
           }
         }
       ]
+    },
+    {
+      "name": "113. Anthropic Bedrock Request Metadata Passthrough (discussion #1731)",
+      "description": "Anthropic and PydanticAI messages ingress must preserve opted-in extra_params through Responses conversion into the outgoing Bedrock payload. Both cases fail before the fix because requestMetadata is absent from raw_request.",
+      "item": [
+        {
+          "name": "bedrock/{{bedrockModel}} anthropic request metadata passthrough",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request metadata passthrough succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('request metadata reaches Bedrock', function () {",
+                  "  pm.expect(rr, 'outgoing raw_request missing').to.be.an('object');",
+                  "  pm.expect(rr.requestMetadata).to.deep.equal({tenant_slug: 'test-tenant', trace_id: 'test-trace'});",
+                  "  pm.expect(rr).to.not.have.property('extra_params');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ],\n  \"extra_params\": {\n    \"requestMetadata\": {\n      \"tenant_slug\": \"test-tenant\",\n      \"trace_id\": \"test-trace\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/{{bedrockModel}} pydanticai request metadata passthrough",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request metadata passthrough succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('request metadata reaches Bedrock', function () {",
+                  "  pm.expect(rr, 'outgoing raw_request missing').to.be.an('object');",
+                  "  pm.expect(rr.requestMetadata).to.deep.equal({tenant_slug: 'test-tenant', trace_id: 'test-trace'});",
+                  "  pm.expect(rr).to.not.have.property('extra_params');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ],\n  \"extra_params\": {\n    \"requestMetadata\": {\n      \"tenant_slug\": \"test-tenant\",\n      \"trace_id\": \"test-trace\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -712,6 +712,11 @@ func (req *AnthropicMessageRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
 
+// SetExtraParams implements the integration router's extra-parameter setter.
+func (req *AnthropicMessageRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
+}
+
 type AnthropicMetaData struct {
 	UserID *string `json:"user_id"`
 }
