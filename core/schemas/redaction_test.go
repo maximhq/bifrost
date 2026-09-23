@@ -90,10 +90,16 @@ func TestIsContentAttribute(t *testing.T) {
 	assert.True(t, IsContentAttribute(AttrPrompt))
 	assert.True(t, IsContentAttribute(AttrInstructions))
 	assert.True(t, IsContentAttribute(AttrRespReasoningText))
+	// A text-completion suffix is prompt text the caller supplied.
+	assert.True(t, IsContentAttribute(AttrSuffix))
 
 	assert.False(t, IsContentAttribute(AttrRequestModel))
 	assert.False(t, IsContentAttribute(AttrProviderName))
 	assert.False(t, IsContentAttribute(TraceAttrSessionID))
+	// Stop sequences are a request parameter under the GenAI semantic conventions, like
+	// temperature, and stay exported when content is disabled.
+	assert.False(t, IsContentAttribute(AttrStopSequences))
+	assert.False(t, IsContentAttribute(AttrBifrostStopSequencesJoined))
 }
 
 // TestTraceApplyRedactionReplacementsRedactsContentAttributes verifies trace redaction honors attribute phase.
