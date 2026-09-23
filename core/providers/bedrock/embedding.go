@@ -1,8 +1,11 @@
 package bedrock
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -31,6 +34,72 @@ func inputTokensFromHeaders(headers map[string]string) (int, bool) {
 	return 0, false
 }
 
+// encodeEmbeddingsAsBase64 replaces float vectors with base64 of little-endian float32 - the
+// exact bytes Bedrock Cohere returns for embedding_types base64, and the representation
+// OpenAI's encoding_format base64 produces. Entries already carrying a string are left alone.
+func encodeEmbeddingsAsBase64(response *schemas.BifrostEmbeddingResponse) {
+	if response == nil {
+		return
+	}
+	for i := range response.Data {
+		if response.Data[i].Embedding.EmbeddingStr != nil {
+			continue
+		}
+		values := response.Data[i].Embedding.EmbeddingArray
+		if values == nil {
+			continue
+		}
+		buf := make([]byte, 4*len(values))
+		for j, v := range values {
+			binary.LittleEndian.PutUint32(buf[j*4:], math.Float32bits(float32(v)))
+		}
+		encoded := base64.StdEncoding.EncodeToString(buf)
+		response.Data[i].Embedding = schemas.EmbeddingStruct{EmbeddingStr: &encoded}
+		response.Data[i].EncodingFormat = schemas.EmbeddingEncodingBase64
+	}
+}
+
+// shouldEncodeEmbeddingsAsBase64 reports whether the caller asked for base64 through the
+// standard encoding_format field. A request carrying Bedrock's own embedding_types /
+// embeddingTypes came in through the Bedrock integration, where the caller's wire field owns
+// the response envelope, so the conversion stays out of it.
+func shouldEncodeEmbeddingsAsBase64(request *schemas.BifrostEmbeddingRequest) bool {
+	if request == nil || request.Params == nil || request.Params.EncodingFormat == nil {
+		return false
+	}
+	if *request.Params.EncodingFormat != schemas.EmbeddingEncodingBase64 {
+		return false
+	}
+	if _, ok := request.Params.ExtraParams["embedding_types"]; ok {
+		return false
+	}
+	if _, ok := request.Params.ExtraParams["embeddingTypes"]; ok {
+		return false
+	}
+	return true
+}
+
+// titanImagePayload returns the bare base64 Titan expects, stripping a data URI prefix.
+// Titan cannot fetch remote images, so a url-only part is rejected instead of dropped.
+func titanImagePayload(media *schemas.EmbeddingMediaPart) (string, error) {
+	if media == nil || (media.Data == nil && media.URL == nil) {
+		return "", providerUtils.InvalidRequestErrorf("image part carries neither data nor url")
+	}
+	if media.Data == nil {
+		return "", providerUtils.InvalidRequestErrorf("amazon Titan multimodal embedding models require inline base64 image data, not a url")
+	}
+	data := *media.Data
+	if strings.HasPrefix(data, "data:") {
+		if info := schemas.ExtractURLTypeInfo(data); info.DataURLWithoutPrefix != nil {
+			data = *info.DataURLWithoutPrefix
+		}
+	}
+	if data == "" {
+		return "", providerUtils.InvalidRequestErrorf("image part has empty data")
+	}
+	return data, nil
+}
+
 // ToBedrockTitanEmbeddingRequest converts a Bifrost embedding request to Bedrock Titan format
 func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*BedrockTitanEmbeddingRequest, error) {
 	if bifrostReq == nil {
@@ -49,23 +118,52 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
+	multimodal := schemas.IsTitanMultimodalEmbeddingModel(bifrostReq.Model)
+
 	var sb strings.Builder
+	var inputImage *string
 	for _, part := range bifrostReq.Input[0].Content {
-		if part.Type != schemas.EmbeddingContentPartTypeText || part.Text == nil {
-			return nil, providerUtils.InvalidRequestErrorf("amazon Titan embedding models only support text input")
+		switch part.Type {
+		case schemas.EmbeddingContentPartTypeText:
+			if part.Text == nil {
+				return nil, providerUtils.InvalidRequestErrorf("text part carries no text")
+			}
+			if sb.Len() > 0 {
+				sb.WriteString(" \n")
+			}
+			sb.WriteString(*part.Text)
+		case schemas.EmbeddingContentPartTypeImage:
+			if inputImage != nil {
+				return nil, providerUtils.InvalidRequestErrorf("amazon Titan embedding models accept at most one image per request")
+			}
+			encoded, err := titanImagePayload(part.Image)
+			if err != nil {
+				return nil, err
+			}
+			inputImage = &encoded
+		default:
+			return nil, providerUtils.InvalidRequestErrorf("amazon Titan embedding models do not support %q parts", part.Type)
 		}
-		if sb.Len() > 0 {
-			sb.WriteString(" \n")
-		}
-		sb.WriteString(*part.Text)
+	}
+
+	if sb.Len() == 0 && inputImage == nil {
+		return nil, providerUtils.InvalidRequestErrorf("no input provided for Titan embedding")
 	}
 
 	titanReq := &BedrockTitanEmbeddingRequest{
-		InputText: sb.String(),
+		InputText:  sb.String(),
+		InputImage: inputImage,
 	}
 
 	if bifrostReq.Params != nil {
-		titanReq.Dimensions = bifrostReq.Params.Dimensions
+		if multimodal {
+			// titan-embed-image-v1 has no top-level dimensions field.
+			if bifrostReq.Params.Dimensions != nil {
+				titanReq.EmbeddingConfig = &BedrockTitanEmbeddingConfig{OutputEmbeddingLength: bifrostReq.Params.Dimensions}
+			}
+		} else {
+			titanReq.Dimensions = bifrostReq.Params.Dimensions
+		}
 		if normalize, ok := bifrostReq.Params.ExtraParams["normalize"]; ok {
 			if b, ok := normalize.(bool); ok {
 				titanReq.Normalize = &b
@@ -77,6 +175,14 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 				titanReq.EmbeddingTypes = embeddingTypes
 				embeddingTypesExtracted = true
 			}
+		}
+		// encoding_format is the standard field. embeddingTypes is Titan's own name for
+		// the same thing and reaches here only through the Bedrock integration, so it wins.
+		// Only binary is worth sending, float is what Titan returns anyway, and G1 and the
+		// multimodal model reject the key itself.
+		if len(titanReq.EmbeddingTypes) == 0 && !multimodal && bifrostReq.Params.EncodingFormat != nil &&
+			*bifrostReq.Params.EncodingFormat == schemas.EmbeddingEncodingBinary {
+			titanReq.EmbeddingTypes = []string{schemas.EmbeddingEncodingBinary}
 		}
 		// Forward remaining extra params. Keep an invalid embeddingTypes value in
 		// ExtraParams so passthrough mode preserves the caller's request and lets
@@ -242,6 +348,12 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 		}
 		if bifrostReq.Params.Dimensions != nil {
 			req.OutputDimension = bifrostReq.Params.Dimensions
+		}
+		// encoding_format is the standard field. embedding_types is Bedrock's own name for
+		// the same thing and reaches here only through the Bedrock integration, so it wins.
+		if len(req.EmbeddingTypes) == 0 && bifrostReq.Params.EncodingFormat != nil &&
+			*bifrostReq.Params.EncodingFormat != "" && *bifrostReq.Params.EncodingFormat != schemas.EmbeddingEncodingBase64 {
+			req.EmbeddingTypes = []string{*bifrostReq.Params.EncodingFormat}
 		}
 		if len(extra) > 0 {
 			req.ExtraParams = extra
