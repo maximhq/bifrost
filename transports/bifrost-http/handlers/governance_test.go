@@ -460,6 +460,70 @@ func TestApplyVirtualKeyOwnershipUpdateRejectsDualAssociation(t *testing.T) {
 	}
 }
 
+// A whitespace-only owner id names nothing, on the update path as on create: it clears the owner
+// rather than counting as one, so an update that pairs it with a real owner is the real owner's.
+func TestApplyVirtualKeyOwnershipUpdateTreatsBlankOwnerAsAbsent(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		body         string
+		initialTeam  *string
+		wantTeam     *string
+		wantCustomer *string
+	}{
+		{
+			name:         "whitespace beside a real owner is not a second owner",
+			body:         `{"team_id":"  ","customer_id":"customer-1"}`,
+			initialTeam:  schemas.Ptr("team-1"),
+			wantTeam:     nil,
+			wantCustomer: schemas.Ptr("customer-1"),
+		},
+		{
+			name:        "whitespace alone clears the owner, like an empty string",
+			body:        `{"team_id":" "}`,
+			initialTeam: schemas.Ptr("team-1"),
+			wantTeam:    nil,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			vk := &configstoreTables.TableVirtualKey{ID: "vk-1", TeamID: tt.initialTeam}
+			var req UpdateVirtualKeyRequest
+			if err := json.Unmarshal([]byte(tt.body), &req); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+				t.Fatalf("apply ownership: %v", err)
+			}
+			assertStringPtrEqual(t, "team", vk.TeamID, tt.wantTeam)
+			assertStringPtrEqual(t, "customer", vk.CustomerID, tt.wantCustomer)
+		})
+	}
+}
+
+// A business unit is the third owner a key can have. Naming it clears a team or customer the key
+// held before, and naming it alongside either is refused like any other pair.
+func TestApplyVirtualKeyOwnershipUpdateBusinessUnit(t *testing.T) {
+	team := "team-1"
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-1", TeamID: &team}
+	var req UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"business_unit_id":"bu-1"}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+		t.Fatalf("apply ownership update: %v", err)
+	}
+	bu := "bu-1"
+	assertStringPtrEqual(t, "business unit", vk.BusinessUnitID, &bu)
+	assertStringPtrEqual(t, "team", vk.TeamID, nil)
+
+	var dual UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"business_unit_id":"bu-1","customer_id":"customer-1"}`), &dual); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := applyVirtualKeyOwnershipUpdate(vk, &dual); !errors.Is(err, errVirtualKeyDualAssociation) {
+		t.Fatalf("expected dual-association error, got %v", err)
+	}
+}
+
 func assertStringPtrEqual(t *testing.T, label string, got *string, want *string) {
 	t.Helper()
 	if got == nil || want == nil {
@@ -2995,6 +3059,14 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 			req:  &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1h")},
 			want: false,
 		},
+		{
+			// Only the window settings: still an edit of the budget that is there. Read as a removal it
+			// would delete that budget, and - on a governed entity - do it without the governance check,
+			// which only runs for a request that leaves a limit behind.
+			name: "reset config only is not removal",
+			req:  &UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3004,6 +3076,46 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A deprecated single-budget update merges into the budget already stored, so every field it does not
+// name has to survive - the window settings included. Before, coerceLegacyBudget dropped them, which
+// moved a quarterly budget's fiscal start back to the default on any unrelated edit.
+func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
+	existing := &configstoreTables.TableBudget{
+		ID:            "budget-1",
+		MaxLimit:      100,
+		ResetDuration: "1Q",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: 2},
+	}
+
+	t.Run("an edit that does not name it keeps the stored value", func(t *testing.T) {
+		got := coerceLegacyBudget(&UpdateBudgetRequest{MaxLimit: schemas.Ptr(250.0)}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.MaxLimit != 250 || budget.ResetDuration != "1Q" {
+			t.Fatalf("expected the new maximum on the stored window, got %+v", budget)
+		}
+		if budget.ResetConfig == nil || budget.ResetConfig.QuarterStartMonth != 2 {
+			t.Fatalf("expected the stored quarter start to survive, got %+v", budget.ResetConfig)
+		}
+	})
+
+	t.Run("an edit that names it applies the requested value", func(t *testing.T) {
+		got := coerceLegacyBudget(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.ResetConfig == nil || budget.ResetConfig.QuarterStartMonth != 4 {
+			t.Fatalf("expected the requested quarter start, got %+v", budget.ResetConfig)
+		}
+		if budget.MaxLimit != 100 {
+			t.Fatalf("expected the stored maximum to survive, got %v", budget.MaxLimit)
+		}
+	})
 }
 
 func TestRateLimitRemovalRequestDetection(t *testing.T) {
@@ -3379,7 +3491,7 @@ func newMockCustomerStore() *mockCustomerStore {
 func (m *mockCustomerStore) ExecuteTransaction(_ context.Context, fn func(*gorm.DB) error) error {
 	return fn(nil)
 }
-func (m *mockCustomerStore) GetCustomer(_ context.Context, id string) (*configstoreTables.TableCustomer, error) {
+func (m *mockCustomerStore) GetCustomer(_ context.Context, id string, _ ...*gorm.DB) (*configstoreTables.TableCustomer, error) {
 	c, ok := m.customers[id]
 	if !ok {
 		return nil, configstore.ErrNotFound
