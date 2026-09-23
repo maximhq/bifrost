@@ -140,32 +140,32 @@ type RoutingTarget struct {
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
 type CreateRoutingRuleRequest struct {
-	Name          string          `json:"name" validate:"required"`
-	Description   string          `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`    // nil = use DB default (true)
-	ChainRule     *bool           `json:"chain_rule,omitempty"` // nil = use DB default (false)
-	CelExpression string          `json:"cel_expression"`
-	Targets       []RoutingTarget `json:"targets"` // Required; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Scope         string          `json:"scope,omitempty"` // Defaults to "global" if not provided
-	ScopeID       *string         `json:"scope_id,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      int             `json:"priority,omitempty"` // Defaults to 0 if not provided
+	Name          string                              `json:"name" validate:"required"`
+	Description   string                              `json:"description,omitempty"`
+	Enabled       *bool                               `json:"enabled,omitempty"`    // nil = use DB default (true)
+	ChainRule     *bool                               `json:"chain_rule,omitempty"` // nil = use DB default (false)
+	CelExpression string                              `json:"cel_expression"`
+	Targets       []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
+	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Scope         string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID       *string                             `json:"scope_id,omitempty"`
+	Query         map[string]any                      `json:"query,omitempty"`
+	Priority      int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
 }
 
 // UpdateRoutingRuleRequest represents the request body for updating a routing rule
 type UpdateRoutingRuleRequest struct {
-	Name          *string         `json:"name,omitempty"`
-	Description   *string         `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`
-	ChainRule     *bool           `json:"chain_rule,omitempty"`
-	CelExpression *string         `json:"cel_expression,omitempty"`
-	Targets       []RoutingTarget `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      *int            `json:"priority,omitempty"`
-	Scope         *string         `json:"scope,omitempty"`
-	ScopeID       *string         `json:"scope_id,omitempty"`
+	Name          *string                             `json:"name,omitempty"`
+	Description   *string                             `json:"description,omitempty"`
+	Enabled       *bool                               `json:"enabled,omitempty"`
+	ChainRule     *bool                               `json:"chain_rule,omitempty"`
+	CelExpression *string                             `json:"cel_expression,omitempty"`
+	Targets       []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
+	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Query         map[string]any                      `json:"query,omitempty"`
+	Priority      *int                                `json:"priority,omitempty"`
+	Scope         *string                             `json:"scope,omitempty"`
+	ScopeID       *string                             `json:"scope_id,omitempty"`
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules
@@ -282,16 +282,15 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 	return nil
 }
 
-// validateRoutingFallbacks ensures each fallback parses to a non-empty known provider via
-// schemas.ParseModelString (e.g. "openai/gpt-4o", or "azure/" to use the incoming model).
-func validateRoutingFallbacks(fallbacks []string) error {
+// validateRoutingFallbacks ensures each fallback names a known provider, which rejects both an empty string and an unknown provider prefix.
+func validateRoutingFallbacks(fallbacks []configstoreTables.RoutingFallback) error {
 	for i, fb := range fallbacks {
-		if strings.TrimSpace(fb) == "" {
-			return fmt.Errorf("fallbacks[%d] must not be empty", i)
-		}
-		provider, _ := schemas.ParseModelString(fb, "")
+		provider := strings.TrimSpace(string(fb.Provider))
 		if provider == "" {
-			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb)
+			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb.String())
+		}
+		if fb.ProviderKeyName != nil && strings.TrimSpace(*fb.ProviderKeyName) != "" {
+			return fmt.Errorf("fallbacks[%d] provider_key_name is a config.json-only field; send key_id over the API", i)
 		}
 	}
 	return nil

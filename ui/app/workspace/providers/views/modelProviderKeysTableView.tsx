@@ -224,17 +224,17 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									<Button
 										disabled={!hasUpdateProviderAccess}
 										data-testid="add-key-btn"
-										aria-label={`Add new ${entityLabel}`}
+										aria-label={`Add ${EntityLabel}`}
 										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
 										onClick={() => {
 											handleAddKey();
 										}}
 									>
 										<PlusIcon className="h-4 w-4" />
-										<span className="hidden xl:inline">Add new {entityLabel}</span>
+										<span className="hidden xl:inline">Add {EntityLabel}</span>
 									</Button>
 								</TooltipTrigger>
-								<TooltipContent className="xl:hidden">Add new {entityLabel}</TooltipContent>
+								<TooltipContent className="xl:hidden">Add {EntityLabel}</TooltipContent>
 							</Tooltip>
 						) : null}
 					</div>

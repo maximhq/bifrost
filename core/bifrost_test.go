@@ -3966,5 +3966,187 @@ func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) 
 			}
 		})
 	}
+}
 
+// TestSetFallbackPinnedAPIKeyID_SurvivesBlockedWrites covers the streaming race, where a prior attempt's async post-hooks hold blockRestrictedWrites.
+func TestSetFallbackPinnedAPIKeyID_SurvivesBlockedWrites(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.BlockRestrictedWrites()
+	defer ctx.UnblockRestrictedWrites()
+
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "dropped")
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); pin != "" {
+		t.Fatalf("SetValue on a reserved key should have been dropped, got %q", pin)
+	}
+
+	ctx.SetFallbackPinnedAPIKeyID("fallback-key")
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); pin != "fallback-key" {
+		t.Fatalf("fallback pin did not land: got %q", pin)
+	}
+}
+
+// TestClearCtxForFallback_ClearsPreviousFallbackPin keeps one fallback's pinned key from leaking into the next attempt.
+func TestClearCtxForFallback_ClearsPreviousFallbackPin(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetFallbackPinnedAPIKeyID("fallback-1-key")
+
+	clearCtxForFallback(ctx)
+
+	if pin, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); ok && pin != "" {
+		t.Fatalf("fallback pin survived clearCtxForFallback: %q", pin)
+	}
+}
+
+// TestStreamFallbackUsesPinnedKey proves the pin, not the weighted selector, picks which credential goes upstream (the unpinned key carries all the weight).
+func TestStreamFallbackUsesPinnedKey(t *testing.T) {
+	primary := httptest.NewServer(sseHandler(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	defer primary.Close()
+
+	var gotAPIKey atomic.Value
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey.Store(r.Header.Get("x-api-key"))
+		anthropicMessagesHandler()(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "unpinned-key", Value: *schemas.NewSecretVar("sk-unpinned"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		{ID: "pinned-key", Value: *schemas.NewSecretVar("sk-pinned"), Models: schemas.WhiteList{"*"}, Weight: 0},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-5-haiku-20241022",
+			KeyID:    "pinned-key",
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("pinned fallback stream failed: %s", bifrostErr.Error.Message)
+	}
+	if _, errs := drainChatStream(stream); len(errs) > 0 {
+		t.Fatalf("pinned fallback stream emitted error chunks: %v", errs)
+	}
+
+	if got, _ := gotAPIKey.Load().(string); got != "sk-pinned" {
+		t.Fatalf("fallback used api key %q, want %q", got, "sk-pinned")
+	}
+}
+
+// TestFallbackWithUnknownPinnedKeyIsSkipped covers a pin that names no key in the provider's pool: the attempt is skipped, not load-balanced.
+func TestFallbackWithUnknownPinnedKeyIsSkipped(t *testing.T) {
+	primary := httptest.NewServer(sseHandler(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	defer primary.Close()
+
+	var hits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		anthropicMessagesHandler()(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "anthropic-key", Value: *schemas.NewSecretVar("sk-anthropic"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022", KeyID: "not-in-this-pool"},
+			{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("chain did not recover after the mis-pinned fallback: %s", bifrostErr.Error.Message)
+	}
+	if _, errs := drainChatStream(stream); len(errs) > 0 {
+		t.Fatalf("stream emitted error chunks: %v", errs)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("fallback server hits = %d, want 1 (the mis-pinned attempt must not reach upstream)", got)
+	}
+}
+
+// TestFallbackUsesPinnedKey is the non-streaming twin of TestStreamFallbackUsesPinnedKey; the two orchestrator loops are independent copies.
+func TestFallbackUsesPinnedKey(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+	}))
+	defer primary.Close()
+
+	var gotAPIKey atomic.Value
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey.Store(r.Header.Get("x-api-key"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-haiku-20241022",`+
+			`"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn",`+
+			`"usage":{"input_tokens":10,"output_tokens":2}}`)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "unpinned-key", Value: *schemas.NewSecretVar("sk-unpinned"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		{ID: "pinned-key", Value: *schemas.NewSecretVar("sk-pinned"), Models: schemas.WhiteList{"*"}, Weight: 0},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-5-haiku-20241022",
+			KeyID:    "pinned-key",
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("pinned fallback failed: %s", bifrostErr.Error.Message)
+	}
+
+	if got, _ := gotAPIKey.Load().(string); got != "sk-pinned" {
+		t.Fatalf("fallback used api key %q, want %q", got, "sk-pinned")
+	}
 }
