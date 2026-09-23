@@ -1,2 +1,0 @@
-- chore: shared label-value splice helper for metric labels (#7378)
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
