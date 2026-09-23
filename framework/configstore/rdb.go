@@ -3694,6 +3694,10 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		assignmentClauses = append(assignmentClauses, "team_id = ?")
 		assignmentArgs = append(assignmentArgs, params.TeamID)
 	}
+	if params.BusinessUnitID != "" {
+		assignmentClauses = append(assignmentClauses, "business_unit_id = ?")
+		assignmentArgs = append(assignmentArgs, params.BusinessUnitID)
+	}
 	if params.UserID != "" {
 		assignmentClauses = append(assignmentClauses, "1 = 0")
 	}
