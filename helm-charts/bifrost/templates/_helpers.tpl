@@ -398,6 +398,9 @@ false
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
 {{- end }}
+{{- if .Values.bifrost.client.mcpServerInstructionsMode }}
+{{- $_ := set $client "mcp_server_instructions_mode" .Values.bifrost.client.mcpServerInstructionsMode }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "mcpEnableTempTokenAuth" }}
 {{- $_ := set $client "mcp_enable_temp_token_auth" .Values.bifrost.client.mcpEnableTempTokenAuth }}
 {{- end }}
@@ -1405,6 +1408,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp.toolManagerConfig "disableAutoToolInject" }}
 {{- $_ := set $tmConfig "disable_auto_tool_inject" .Values.bifrost.mcp.toolManagerConfig.disableAutoToolInject }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.serverInstructionsMode }}
+{{- $_ := set $tmConfig "server_instructions_mode" .Values.bifrost.mcp.toolManagerConfig.serverInstructionsMode }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}

@@ -335,6 +335,8 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	// ServerInstructionsMode controls forwarding of upstream MCP `instructions`. Empty is "off".
+	ServerInstructionsMode MCPServerInstructionsMode `json:"server_instructions_mode,omitempty"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
@@ -383,6 +385,24 @@ const (
 	CodeModeBindingLevelServer CodeModeBindingLevel = "server"
 	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
+
+// MCPServerInstructionsMode decides how far an upstream MCP server's initialize `instructions`
+// travel. A ladder, not independent switches: "gateway" only changes what /mcp answers
+// initialize with, while "all" additionally injects them into LLM requests, which is what
+// changes prompt prefixes and billed tokens.
+type MCPServerInstructionsMode string
+
+const (
+	MCPServerInstructionsModeOff     MCPServerInstructionsMode = "off"     // Upstream instructions are dropped (today's behavior)
+	MCPServerInstructionsModeGateway MCPServerInstructionsMode = "gateway" // Forwarded on the /mcp initialize response
+	MCPServerInstructionsModeAll     MCPServerInstructionsMode = "all"     // Gateway, plus injected into chat/responses requests
+)
+
+// MCPServerInstructions is one upstream's instructions, labeled with the client it came from.
+type MCPServerInstructions struct {
+	ClientName   string `json:"client_name"`
+	Instructions string `json:"instructions"`
+}
 
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
@@ -573,6 +593,9 @@ type MCPClientConfig struct {
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
+	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
+	DiscoveredInstructions string `json:"-"`
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -980,6 +1003,9 @@ type MCPClientState struct {
 	ToolMap         map[string]ChatTool      // Available tools mapped by name
 	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
+	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
+	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
+	ServerInstructions string `json:"server_instructions,omitempty"`
 	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
 	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
 	LastFailure     *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)

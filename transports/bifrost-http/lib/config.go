@@ -694,6 +694,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPAgentDepth:                   10,
 	MCPToolExecutionTimeout:         30,
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
+	MCPServerInstructionsMode:       string(schemas.MCPServerInstructionsModeOff),
 	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
 	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
@@ -1431,6 +1432,11 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 		cc.MCPCodeModeBindingLevel = DefaultClientConfig.MCPCodeModeBindingLevel
 	}
 	cc.MCPDisableAutoToolInject = tm.DisableAutoToolInject
+	if tm.ServerInstructionsMode != "" {
+		cc.MCPServerInstructionsMode = string(tm.ServerInstructionsMode)
+	} else {
+		cc.MCPServerInstructionsMode = DefaultClientConfig.MCPServerInstructionsMode
+	}
 }
 
 // loadProviders loads and merges providers from file with store using hash reconciliation
@@ -2351,6 +2357,9 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 		config.ClientConfig.MCPCodeModeBindingLevel,
 	)
 	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
+	mcpCfg.ToolManagerConfig.ServerInstructionsMode = schemas.MCPServerInstructionsMode(
+		config.ClientConfig.MCPServerInstructionsMode,
+	)
 
 	// ToolSyncInterval is declared under the file's mcp section rather than
 	// client_config, so it sits outside the hash-driven client config load and
@@ -2465,6 +2474,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Disabled:                  clientConfig.Disabled,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		DiscoveredInstructions:    clientConfig.DiscoveredInstructions,
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		TokenExchange:             clientConfig.TokenExchange,
 		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,

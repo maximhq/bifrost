@@ -289,6 +289,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
 		MCPDisableAutoToolInject:              config.MCPDisableAutoToolInject,
+		MCPServerInstructionsMode:             config.MCPServerInstructionsMode,
 		MCPEnableTempTokenAuth:                config.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                     config.AsyncJobResultTTL,
 		RequiredHeaders:                       config.RequiredHeaders,
@@ -585,6 +586,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
 		MCPDisableAutoToolInject:              dbConfig.MCPDisableAutoToolInject,
+		MCPServerInstructionsMode:             dbConfig.MCPServerInstructionsMode,
 		MCPEnableTempTokenAuth:                dbConfig.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                     dbConfig.AsyncJobResultTTL,
 		RequiredHeaders:                       dbConfig.RequiredHeaders,
@@ -1650,6 +1652,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+					DiscoveredInstructions:    dbClient.DiscoveredInstructions,
 					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 					TokenExchange:             dbClient.TokenExchange,
 					PendingOAuthConfig:        dbClient.PendingOAuthConfig,
@@ -1673,8 +1676,9 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	toolManagerConfig := schemas.MCPToolManagerConfig{
 		ToolExecutionTimeout:  schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
 		MaxAgentDepth:         clientConfig.MCPAgentDepth,
-		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
-		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,
+		CodeModeBindingLevel:   schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
+		DisableAutoToolInject:  clientConfig.MCPDisableAutoToolInject,
+		ServerInstructionsMode: schemas.MCPServerInstructionsMode(clientConfig.MCPServerInstructionsMode),
 	}
 	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 	for i, dbClient := range dbMCPClients {
@@ -1702,6 +1706,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+			DiscoveredInstructions:    dbClient.DiscoveredInstructions,
 			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 			TokenExchange:             dbClient.TokenExchange,
 			PendingOAuthConfig:        dbClient.PendingOAuthConfig,
@@ -2140,6 +2145,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+		DiscoveredInstructions:    dbClient.DiscoveredInstructions,
 		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 		TokenExchange:             dbClient.TokenExchange,
 		PendingOAuthConfig:        dbClient.PendingOAuthConfig,
@@ -2194,13 +2200,14 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 	return nil
 }
 
-// UpdateMCPClientTools persists an MCP client's discovered tools and tool
-// name mapping as a targeted column update — unlike UpdateMCPClientConfig's
-// full-row overwrite, this never touches any other column, so it's safe to
-// call from a periodic background refresh without racing a concurrent config
-// edit. An empty (non-nil) map is a legitimate "server has zero tools"
-// result and is written as-is, same as a populated one.
-func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+// UpdateMCPClientTools persists an MCP client's discovered tools, tool name
+// mapping and server instructions as a targeted column update — unlike
+// UpdateMCPClientConfig's full-row overwrite, this never touches any other
+// column, so it's safe to call from a periodic background refresh without
+// racing a concurrent config edit. An empty (non-nil) map is a legitimate
+// "server has zero tools" result and is written as-is, same as a populated
+// one; an empty instructions string likewise means the server advertises none.
+func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error {
 	toolsJSON, err := json.Marshal(tools)
 	if err != nil {
 		return fmt.Errorf("failed to marshal discovered_tools: %w", err)
@@ -2213,9 +2220,10 @@ func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID stri
 		Model(&tables.TableMCPClient{}).
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
-			"discovered_tools_json":  string(toolsJSON),
-			"tool_name_mapping_json": string(mappingJSON),
-			"updated_at":             time.Now(),
+			"discovered_tools_json":   string(toolsJSON),
+			"tool_name_mapping_json":  string(mappingJSON),
+			"discovered_instructions": instructions,
+			"updated_at":              time.Now(),
 		})
 	if res.Error != nil {
 		return res.Error
@@ -2305,6 +2313,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+			DiscoveredInstructions:    clientConfig.DiscoveredInstructions,
 			// PerUserHeaderKeys is the admin-declared schema for
 			// MCPAuthTypePerUserHeaders. Without this copy the BeforeSave
 			// hook persists an empty column, and on restart AddClient's

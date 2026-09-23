@@ -76,7 +76,7 @@ type MCPManagerInterface interface {
 	// discovery, and the periodic checker's own refresh. core/mcp has no DB
 	// access; this is the seam the transport layer persists through. Pass
 	// nil to clear a previously registered callback.
-	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string))
+	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string))
 
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
@@ -119,15 +119,15 @@ type MCPManagerInterface interface {
 	// VerifyHeadersConnection creates a temporary MCP connection using a set of
 	// caller-supplied header values to verify connectivity and discover tools.
 	// The connection is closed after verification.
-	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error)
 
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection
 	// is closed after verification.
-	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error)
 
-	// SetClientTools updates the tool map and name mapping for an existing client.
-	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	// SetClientTools updates the tool map, name mapping and server instructions for an existing client.
+	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
 
 	// Tool Registration
 	// RegisterTool registers a local tool with the MCP server

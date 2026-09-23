@@ -564,6 +564,12 @@
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
               "default": false
             },
+            "mcpServerInstructionsMode": {
+              "type": "string",
+              "enum": ["off", "gateway", "all"],
+              "description": "DEPRECATED: How far upstream MCP server instructions travel. Use bifrost.mcp.toolManagerConfig.serverInstructionsMode.",
+              "default": "off"
+            },
             "mcpEnableTempTokenAuth": {
               "type": "boolean",
               "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth auth pages.",
@@ -747,6 +753,12 @@
                   "type": "boolean",
                   "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
                   "default": false
+                },
+                "serverInstructionsMode": {
+                  "type": "string",
+                  "enum": ["off", "gateway", "all"],
+                  "description": "How far an upstream MCP server's initialize instructions travel. \"off\" (default) drops them; \"gateway\" forwards them on the /mcp handshake, scoped to what the caller may see; \"all\" also injects them into chat and responses requests.",
+                  "default": "off"
                 }
               }
             },

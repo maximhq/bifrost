@@ -102,6 +102,7 @@ type ClientConfig struct {
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
 	MCPDisableAutoToolInject              bool                                  `json:"mcp_disable_auto_tool_inject"`                // When true, MCP tools are not injected into requests by default
+	MCPServerInstructionsMode             string                                `json:"mcp_server_instructions_mode"`                // How far upstream MCP instructions travel: "off" (default), "gateway", or "all"
 	MCPEnableTempTokenAuth                bool                                  `json:"mcp_enable_temp_token_auth"`                  // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`              // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL                     int                                   `json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
@@ -239,6 +240,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPDisableAutoToolInject {
 		hash.Write([]byte("mcpDisableAutoToolInject:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPServerInstructionsMode != "" && c.MCPServerInstructionsMode != string(schemas.MCPServerInstructionsModeOff) {
+		hash.Write([]byte("mcpServerInstructionsMode:" + c.MCPServerInstructionsMode))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
@@ -475,6 +481,11 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 		h.Write([]byte("toolMgrDisableAutoInject:true"))
 	} else {
 		h.Write([]byte("toolMgrDisableAutoInject:false"))
+	}
+	// Only hash a non-default value, so a config written before this field existed keeps
+	// producing the same hash on upgrade.
+	if tm.ServerInstructionsMode != "" && tm.ServerInstructionsMode != schemas.MCPServerInstructionsModeOff {
+		h.Write([]byte("toolMgrServerInstructionsMode:" + string(tm.ServerInstructionsMode)))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
