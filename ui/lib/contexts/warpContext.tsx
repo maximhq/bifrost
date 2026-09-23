@@ -56,6 +56,12 @@ export interface WarpTurnToolCall {
 	failed?: boolean;
 	/** Why it failed, kept so a red tick can account for itself. */
 	error?: string;
+	/**
+	 * How much of the answer had been written when this call started, in
+	 * Unicode code points - the unit the server counts in too. It is what places
+	 * the call in the transcript; absent, the call sorts ahead of all the text.
+	 */
+	textOffset?: number;
 }
 
 interface WarpContextValue {

@@ -97,7 +97,8 @@ func askUserToolDef() Tool {
 		name: AskUserTool,
 		description: "Ask the person a short multiple-choice question and wait for their answer. " +
 			"Use this when a metric question does not say which time range it means, or whose traffic it means - both change the answer, and guessing produces a confident number about the wrong thing. " +
-			"Offer concrete options they can pick rather than asking them to type. Ask about one thing at a time, and do not ask again once they have told you.",
+			"Offer concrete options they can pick rather than asking them to type. Ask about one thing at a time, and do not ask again once they have told you. " +
+			"This tool call is what renders as something the person can click - writing the same question and options into your answer as prose or a markdown list instead is not a substitute: it leaves them typing a reply you then have to re-parse, or worse, ends the turn with no way for them to answer at all.",
 		schemaJSON: AskUserSchema,
 		execute: func(_ context.Context, _ *ToolDeps, args map[string]any) (any, error) {
 			question, err := parseQuestion(args)
@@ -125,12 +126,27 @@ func parseQuestion(args map[string]any) (*Question, error) {
 		// One option is not a question, it is an assumption with extra steps.
 		return nil, fmt.Errorf("give at least two options, or answer without asking")
 	}
-	if len(rawOptions) > MaxQuestionOptions {
+	// A model call (e.g. describe_filter_space's teams/customers/business_units)
+	// can return more real values than fit in a picker. Truncated silently, the
+	// dropped ones would be simply unreachable if the model also turned off
+	// allow_other - so that decision is overridden here rather than trusted,
+	// keeping a free-text escape to whatever got cut.
+	truncated := len(rawOptions) > MaxQuestionOptions
+	if truncated {
 		rawOptions = rawOptions[:MaxQuestionOptions]
 	}
 
 	options := make([]QuestionOpt, 0, len(rawOptions))
 	for _, raw := range rawOptions {
+		// The schema is advertised to the model and never enforced on the reply,
+		// and a bare string is the natural shape for a choice. Refusing it cost a
+		// round trip the model often spent asking in prose instead.
+		if label, ok := raw.(string); ok {
+			if strings.TrimSpace(label) != "" {
+				options = append(options, QuestionOpt{Label: strings.TrimSpace(label)})
+			}
+			continue
+		}
 		entry, ok := raw.(map[string]any)
 		if !ok {
 			continue
@@ -148,10 +164,12 @@ func parseQuestion(args map[string]any) (*Question, error) {
 
 	kind, _ := args["kind"].(string)
 	allowOther, ok := args["allow_other"].(bool)
-	if !ok {
+	if !ok || truncated {
 		// Defaulting to true rather than false: a list that cannot express what
 		// someone meant forces a wrong answer, and the model omitting the field
-		// is not a decision that it should.
+		// is not a decision that it should. Once the list was truncated, this is
+		// no longer just a default - an explicit false would leave no way back to
+		// whichever real options got cut.
 		allowOther = true
 	}
 	return &Question{Question: text, Options: options, AllowOther: allowOther, Kind: kind}, nil
@@ -187,4 +205,5 @@ Asking before you answer:
 - Ask about one thing at a time. If both the window and the scope are missing, ask the window first, then the scope once they answer.
 - Do not ask when you already know. An identified caller's own traffic is the default scope, and a question that names a period ("yesterday", "this month") has already told you the window.
 - Never ask more than twice in a row. If it is still unclear, pick the most reasonable option, run the query, and say plainly which one you chose.
-- After asking, stop. Do not answer your own question in the same turn.`
+- After asking, stop. Do not answer your own question in the same turn.
+- Every question to the person goes through ` + AskUserTool + `. A reply that asks something in prose, with nothing to click, is a failed turn.`

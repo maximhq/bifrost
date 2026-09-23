@@ -423,7 +423,7 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	if entry == nil || entry.ID == "" || entry.ContentHidden || !terminalWarpLogStatus(entry.Status) || !conversationalWarpObject(entry.Object) {
 		return logIndexItem{}, false
 	}
-	if entry.App != nil && strings.EqualFold(strings.TrimSpace(*entry.App), "Warp") {
+	if entry.App != nil && strings.EqualFold(strings.TrimSpace(*entry.App), warpAppName) {
 		return logIndexItem{}, false
 	}
 	if entry.UserAgent != nil && strings.Contains(strings.ToLower(*entry.UserAgent), "bifrost-warp") {

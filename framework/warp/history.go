@@ -360,8 +360,15 @@ func (s *Service) recordTurn(ctx context.Context, turn *Turn, response ChatRespo
 		}
 	}
 	for _, call := range response.ToolCalls {
+		// Offsets are measured against the answer; a question turn files the
+		// question as its content, so an answer offset would split it at an
+		// unrelated point.
+		offset := call.TextOffset
+		if response.Question != nil {
+			offset = 0
+		}
 		stored.ToolCalls = append(stored.ToolCalls, schemas.WarpStoredToolCall{
-			Name: call.Name, DurationMs: call.DurationMs, Failed: call.Failed,
+			Name: call.Name, DurationMs: call.DurationMs, Failed: call.Failed, TextOffset: offset,
 		})
 	}
 

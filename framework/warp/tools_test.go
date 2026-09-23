@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,10 @@ type fakeLogReader struct {
 
 	rankingFilters   *logstore.SearchFilters
 	rankingDimension logstore.RankingDimension
+	// Canned ranking responses. Nil means the minimal shape each method has
+	// always returned.
+	modelRankingResult     *logstore.ModelRankingResult
+	dimensionRankingResult *logstore.DimensionRankingResult
 
 	histogramBucket int64
 	// Canned histogram responses. Nil means "empty result, zero buckets" -
@@ -82,7 +87,11 @@ type fakeLogReader struct {
 	// the zero-value default - the shape compare_to_previous needs to script
 	// a current period distinct from a previous one.
 	statsResponses []*logstore.SearchStats
-	sawContext     context.Context
+	// statsByProvider, when set, answers a GetStats call narrowed to exactly
+	// one provider - order-independent, so concurrent per-provider calls get
+	// the right stats regardless of which one reaches the fake first.
+	statsByProvider map[string]*logstore.SearchStats
+	sawContext      context.Context
 	// *Delay, when set, makes the matching method take real wall-clock time
 	// before returning - the lever a test has to prove several calls actually
 	// overlap (or complete out of order) rather than just not visibly failing
@@ -155,6 +164,9 @@ func (f *fakeLogReader) GetDimensionRankings(ctx context.Context, filters *logst
 	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.rankingFilters, f.rankingDimension = filters, dimension
+	if f.dimensionRankingResult != nil {
+		return f.dimensionRankingResult, nil
+	}
 	return &logstore.DimensionRankingResult{
 		Dimension: dimension,
 		Rankings:  []logstore.DimensionRankingWithTrend{{}},
@@ -166,6 +178,9 @@ func (f *fakeLogReader) GetModelRankings(ctx context.Context, filters *logstore.
 	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.rankingFilters = filters
+	if f.modelRankingResult != nil {
+		return f.modelRankingResult, nil
+	}
 	return &logstore.ModelRankingResult{}, nil
 }
 
@@ -190,7 +205,9 @@ func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFi
 	f.statsCalled = true
 	f.statsFiltersSeen = append(f.statsFiltersSeen, filters)
 	var resp *logstore.SearchStats
-	if len(f.statsResponses) > f.statsCalls {
+	if len(filters.Providers) == 1 && f.statsByProvider[filters.Providers[0]] != nil {
+		resp = f.statsByProvider[filters.Providers[0]]
+	} else if len(f.statsResponses) > f.statsCalls {
 		resp = f.statsResponses[f.statsCalls]
 	} else {
 		resp = &logstore.SearchStats{}
@@ -347,6 +364,28 @@ func (f *fakeLogReader) GetAvailableVirtualKeys(_ context.Context, _ int, query 
 	f.virtualKeysQuerySeen = query
 	return f.availableVirtualKeys, nil
 }
+
+// The routing lookups return fixed values: what matters to the tools is that
+// they are asked, and that what comes back reaches the model.
+func (f *fakeLogReader) GetAvailableRoutingRules(context.Context, int, string) ([]KeyPair, error) {
+	return []KeyPair{{ID: "rule-premium", Name: "Premium tier"}}, nil
+}
+func (f *fakeLogReader) GetAvailableSelectedKeys(context.Context, int, string) ([]KeyPair, error) {
+	return []KeyPair{{ID: "key-1", Name: "anthropic-primary"}}, nil
+}
+func (f *fakeLogReader) GetAvailableAliases(context.Context, int, string) ([]string, error) {
+	return []string{"smart"}, nil
+}
+func (f *fakeLogReader) GetAvailableRoutingEngines(context.Context, int, string) ([]string, error) {
+	return []string{"routing-rule", "loadbalancing"}, nil
+}
+func (f *fakeLogReader) GetAvailableToolCallNames(context.Context, int, string) ([]string, error) {
+	return []string{"get_weather"}, nil
+}
+func (f *fakeLogReader) GetAvailableMetadataKeys(context.Context, int, string) (map[string][]string, error) {
+	return map[string][]string{"env": {"prod", "staging"}}, nil
+}
+
 func (f *fakeLogReader) GetAvailableModels(_ context.Context, _ int, _ string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1061,6 +1100,31 @@ func TestWarpMetricsSummarizesCostHistogramKeepsModelList(t *testing.T) {
 	require.NotContains(t, cost, "by_model", "a per-bucket, per-model series is the exact nested detail a summary must not reintroduce")
 }
 
+// The cost summary lists model names but no per-model amounts. Asked for
+// "model-wise spend", a model that reached query_metrics first saw names with
+// no numbers beside them and told the user per-model spend was unsupported.
+// The result says where the per-model figures are instead.
+func TestWarpMetricsCostPointsToPerModelSpend(t *testing.T) {
+	fake := &fakeLogReader{costHistogramResult: &logstore.CostHistogramResult{Models: []string{"gpt-4o"}}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"cost"},
+	})
+	require.NoError(t, err)
+	cost := result.(map[string]any)["cost"].(map[string]any)
+	require.Contains(t, cost["per_model_cost"], "query_model_performance")
+}
+
+// query_model_performance is the tool that answers per-model spend - every row
+// carries total, input and output cost - but its description only said
+// "usage", so a spend question was routed elsewhere.
+func TestWarpModelPerformanceAdvertisesSpend(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "query_model_performance")
+	require.True(t, ok)
+	for _, phrase := range []string{"spend", "input cost", "output cost", "model-wise"} {
+		require.Contains(t, tool.description, phrase)
+	}
+}
+
 func TestWarpMetricsSummarizesThroughputHistogram(t *testing.T) {
 	fake := &fakeLogReader{throughputHistogramResult: &logstore.ThroughputHistogramResult{
 		Buckets: []logstore.ThroughputHistogramBucket{
@@ -1110,6 +1174,92 @@ func TestWarpMetricsProviderGroupedStaysRawWithCoarseBuckets(t *testing.T) {
 	coarse, err := coarseBucketSize(&logstore.SearchFilters{StartTime: new(Now().Add(-24 * time.Hour)), EndTime: new(Now())})
 	require.NoError(t, err)
 	require.Equal(t, coarse, fake.histogramBucket, "group_by=provider must use the coarse bucket size, not the fine one the summarized path can afford")
+}
+
+// A per-provider total must come from the store, not from the model adding up
+// buckets. The coarse buckets are aligned to the bucket size, so the first one
+// starts before the window and, on Postgres, is read from whole matview hours.
+// A model summing them dropped that first bucket as out of range and reported
+// Anthropic $0.20 short of the dashboard's total over the same window.
+func TestWarpMetricsProviderGroupedReportsExactTotals(t *testing.T) {
+	previous := Now
+	Now = func() time.Time { return time.Date(2026, 9, 21, 11, 6, 0, 0, time.UTC) }
+	defer func() { Now = previous }()
+
+	fake := &fakeLogReader{
+		providerCostHistogramResult: &logstore.ProviderCostHistogramResult{
+			Buckets: []logstore.ProviderCostHistogramBucket{
+				{TotalCost: 0.2332, ByProvider: map[string]float64{"anthropic": 0.2332}},
+				{TotalCost: 8.1, ByProvider: map[string]float64{"anthropic": 7.8, "openai": 0.3}},
+			},
+			Providers: []string{"anthropic", "openai"},
+		},
+		statsByProvider: map[string]*logstore.SearchStats{
+			"anthropic": {TotalRequests: 717, TotalCost: 8.2614},
+			"openai":    {TotalRequests: 497, TotalCost: 0.3573},
+		},
+	}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters":  map[string]any{"start_time": "-7d", "status": []any{"success"}},
+		"metrics":  []any{"cost"},
+		"group_by": "provider",
+	})
+	require.NoError(t, err)
+
+	totals, ok := result.(map[string]any)["provider_totals"].(map[string]providerTotal)
+	require.True(t, ok, "a provider-grouped result must carry exact per-provider totals")
+	require.Len(t, totals, 2)
+	require.InDelta(t, 8.2614, totals["anthropic"].TotalCost, 1e-9)
+	require.EqualValues(t, 717, totals["anthropic"].TotalRequests)
+	require.InDelta(t, 0.3573, totals["openai"].TotalCost, 1e-9)
+
+	// Each provider row opens its own traffic. With only the result's logs_link
+	// to hand, a per-provider table linked Anthropic and OpenAI to the same
+	// unfiltered page.
+	require.Contains(t, totals["anthropic"].Link, "providers=anthropic")
+	require.Contains(t, totals["anthropic"].Link, "status=success", "the tool's own filters carry over")
+	require.Contains(t, totals["openai"].Link, "providers=openai")
+
+	require.Len(t, fake.statsFiltersSeen, 2)
+	for _, seen := range fake.statsFiltersSeen {
+		require.Len(t, seen.Providers, 1, "each total is narrowed to one provider")
+		require.Equal(t, []string{"success"}, seen.Status, "the tool's own filters carry over")
+		require.Equal(t, Now().Add(-7*24*time.Hour), *seen.StartTime, "the exact window, not the bucket-aligned one")
+	}
+}
+
+// "Which provider had the highest failure rate" is a summary question, and the
+// model asked for exactly that: metrics ["summary"], group_by "provider". The
+// provider list only came out of a per-provider histogram, so with no
+// histogram metric asked for the grouping was dropped without a word - one
+// deployment-wide summary came back, and the model told the person it had no
+// per-provider split. provider_totals, which carries each provider's success
+// rate, must come back for a summary-only grouped call too.
+func TestWarpMetricsSummaryOnlyProviderGroupingReturnsTotals(t *testing.T) {
+	previous := Now
+	Now = func() time.Time { return time.Date(2026, 9, 21, 11, 6, 0, 0, time.UTC) }
+	defer func() { Now = previous }()
+
+	fake := &fakeLogReader{
+		providerCostHistogramResult: &logstore.ProviderCostHistogramResult{Providers: []string{"anthropic", "openai"}},
+		statsByProvider: map[string]*logstore.SearchStats{
+			"anthropic": {TotalRequests: 400, SuccessRate: 77.6},
+			"openai":    {TotalRequests: 300, SuccessRate: 99.1},
+		},
+	}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters":  map[string]any{"start_time": "-7d"},
+		"metrics":  []any{"summary"},
+		"group_by": "provider",
+	})
+	require.NoError(t, err)
+
+	out := result.(map[string]any)
+	totals, ok := out["provider_totals"].(map[string]providerTotal)
+	require.True(t, ok, "group_by provider must not be dropped when only summary is asked for")
+	require.InDelta(t, 77.6, totals["anthropic"].SuccessRate, 1e-9)
+	require.InDelta(t, 99.1, totals["openai"].SuccessRate, 1e-9)
+	require.NotContains(t, out, "cost", "discovering providers must not add a metric nobody asked for")
 }
 
 // "requests" has no GetProvider*Histogram counterpart, unlike every other
@@ -1261,6 +1411,13 @@ func TestWarpDescribeFilterSpaceDescriptionMatchesResult(t *testing.T) {
 		"business_units":       "business units",
 		"caller_is_identified": "who is asking",
 		"default_scope":        "who is asking",
+		// What routed a request, from the lookups behind the Logs page's filters.
+		"routing_rules":   "routing rules",
+		"provider_keys":   "provider keys",
+		"aliases":         "aliases",
+		"routing_engines": "routing engines",
+		"tool_call_names": "tool call names",
+		"metadata":        "metadata keys",
 	}
 	for key := range returned {
 		phrase, known := names[key]
@@ -1290,6 +1447,26 @@ type fakeFilterSpaceReader struct {
 
 func (f *fakeFilterSpaceReader) GetAvailableModels(context.Context, int, string) ([]string, error) {
 	return []string{"gpt-4o"}, nil
+}
+
+// Nothing routed in this deployment: the lookups exist and come back empty.
+func (f *fakeFilterSpaceReader) GetAvailableRoutingRules(context.Context, int, string) ([]KeyPair, error) {
+	return nil, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableSelectedKeys(context.Context, int, string) ([]KeyPair, error) {
+	return nil, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableAliases(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableRoutingEngines(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableToolCallNames(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableMetadataKeys(context.Context, int, string) (map[string][]string, error) {
+	return nil, nil
 }
 func (f *fakeFilterSpaceReader) GetAvailableApps(context.Context, int, string) ([]string, error) {
 	return []string{"dashboard"}, nil
@@ -1499,6 +1676,25 @@ func TestWarpFilterRejectsWrongShapedTimes(t *testing.T) {
 		"filters": map[string]any{},
 	})
 	require.NoError(t, err)
+}
+
+// end_time is documented as defaulting to now, so a model spelling that out as
+// "now" is asking for the default, not sending a malformed value. Rejecting it
+// failed the whole tool call, and the model told the user it needed a valid end
+// time before it could answer a question with no time in it at all.
+func TestWarpParseTimeAcceptsNow(t *testing.T) {
+	now := time.Date(2026, 9, 21, 11, 6, 0, 0, time.UTC)
+	for _, text := range []string{"now", "NOW", " now "} {
+		parsed, err := parseTime(text, now)
+		require.NoError(t, err, text)
+		require.Equal(t, now, *parsed, text)
+	}
+	_, err := runTool(t, "query_model_performance", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d", "end_time": "now"},
+	})
+	require.NoError(t, err)
+	_, err = parseTime("nowish", now)
+	require.Error(t, err, "only the exact word is the current time")
 }
 
 // Every case here used to produce a successful answer to a question nobody
@@ -1822,6 +2018,97 @@ func TestWarpListingsCarryDashboardLinks(t *testing.T) {
 	require.Contains(t, counted.(map[string]any)["logs_link"], "providers=gemini")
 }
 
+// "Tell me about the failure rate" was answered from query_metrics filtered to
+// status success,error - both are needed for a rate - so the only link on the
+// result opened every request, and "Open the filtered logs" showed 1,226 rows
+// instead of the 72 failures. A result that reports a success rate must also
+// carry a link narrowed to the failures, and none when nothing failed.
+func TestWarpSuccessRateResultsCarryFailuresLink(t *testing.T) {
+	args := map[string]any{"filters": map[string]any{"start_time": "-7d", "status": []any{"success", "error"}}}
+
+	fake := &fakeLogReader{statsResponses: []*logstore.SearchStats{{TotalRequests: 1226, SuccessRate: 94.13}, {TotalRequests: 1226, SuccessRate: 94.13}}}
+	metrics, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{"filters": args["filters"], "metrics": []any{"summary"}})
+	require.NoError(t, err)
+	counted, err := runTool(t, "count_logs", &ToolDeps{logManager: fake}, args)
+	require.NoError(t, err)
+	for name, result := range map[string]any{"query_metrics": metrics, "count_logs": counted} {
+		link, _ := result.(map[string]any)["failures_link"].(string)
+		require.Regexp(t, `status=error(&|$)`, link, name)
+		require.NotContains(t, link, "success", name)
+	}
+
+	clean := &fakeLogReader{statsResponses: []*logstore.SearchStats{{TotalRequests: 10, SuccessRate: 100}}}
+	counted, err = runTool(t, "count_logs", &ToolDeps{logManager: clean}, args)
+	require.NoError(t, err)
+	require.NotContains(t, counted.(map[string]any), "failures_link", "nothing failed, so there is nothing to link to")
+
+	// An empty window reports a 0% success rate, which is not 72 failures: the
+	// link would open an empty page.
+	empty := &fakeLogReader{statsResponses: []*logstore.SearchStats{{TotalRequests: 0, SuccessRate: 0}, {TotalRequests: 0, SuccessRate: 0}}}
+	metrics, err = runTool(t, "query_metrics", &ToolDeps{logManager: empty}, map[string]any{"filters": args["filters"], "metrics": []any{"summary"}})
+	require.NoError(t, err)
+	counted, err = runTool(t, "count_logs", &ToolDeps{logManager: empty}, args)
+	require.NoError(t, err)
+	for name, result := range map[string]any{"query_metrics": metrics, "count_logs": counted} {
+		require.NotContains(t, result.(map[string]any), "failures_link", "no requests, so there is nothing to link to (%s)", name)
+	}
+}
+
+// Asked "what did I spend on each provider", gpt-5.4-mini sent apps: ["Warp"]
+// twice - once under a prompt telling it to "filter it out with apps", once
+// under one saying never to - and reported Warp's own spend as the person's.
+// Refusing "Warp" in apps with a scope "warp" escape hatch did not hold either:
+// the next run sent scope "warp" for the same question and reported $5.84
+// against a $9.08 dashboard as "all traffic". There is no filter that narrows
+// to Warp's own queries at all now; query_usage_by by app still shows Warp's
+// cost as one row among the others.
+func TestWarpFiltersNeverNarrowToWarp(t *testing.T) {
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	for _, apps := range [][]any{{"Warp"}, {"warp"}, {"Claude Code", "Warp"}} {
+		_, err := filterArg(map[string]any{"filters": map[string]any{"apps": apps}}, now, Scope{})
+		require.Error(t, err, "apps %v", apps)
+		require.Contains(t, err.Error(), "query_usage_by")
+		require.NotContains(t, err.Error(), `scope "warp"`, "the error must not point at another way to narrow to Warp")
+	}
+
+	_, err := filterArg(map[string]any{"filters": map[string]any{"scope": "warp"}}, now, Scope{})
+	require.Error(t, err, `scope "warp" is how the same misreading got through`)
+
+	filters, err := filterArg(map[string]any{"filters": map[string]any{"apps": []any{"Claude Code"}}}, now, Scope{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"Claude Code"}, filters.Apps)
+}
+
+// "Show me the failed requests in the past week" matched 145 rows, and the
+// over-the-cap guidance only offered narrowing or slicing - so the model told
+// the person it could not list them and asked how to narrow, while the
+// logs_link it was holding already opened exactly that set in the Logs view.
+// Past the row cap, the guidance must hand over the link as the answer to a
+// "show me" question rather than make narrowing the only path.
+func TestWarpCountLogsOverCapPointsAtLogsLink(t *testing.T) {
+	for _, total := range []int64{MaxLogRows + 120, LargeResultThreshold + 1} {
+		fake := &fakeLogReader{statsResponses: []*logstore.SearchStats{{TotalRequests: total}}}
+		counted, err := runTool(t, "count_logs", &ToolDeps{logManager: fake}, map[string]any{
+			"filters": map[string]any{"status": []any{"error"}, "start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		guidance, _ := counted.(map[string]any)["guidance"].(string)
+		require.Contains(t, guidance, "logs_link", "total %d: guidance must offer the filtered Logs view", total)
+
+		// A query the Logs page cannot reproduce gets no logs_link, so the
+		// guidance must not hand over a link the result does not carry.
+		fake = &fakeLogReader{statsResponses: []*logstore.SearchStats{{TotalRequests: total}}}
+		counted, err = runTool(t, "count_logs", &ToolDeps{logManager: fake}, map[string]any{
+			"filters": map[string]any{"status_codes": []any{float64(429)}, "start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		require.NotContains(t, counted.(map[string]any), "logs_link")
+		guidance, _ = counted.(map[string]any)["guidance"].(string)
+		require.NotContains(t, guidance, "logs_link", "total %d: no link to offer", total)
+		require.Contains(t, guidance, "narrow", "total %d: narrowing or slicing is the path left", total)
+	}
+}
+
 // The warp-scope provenance block the prompt requires needs an absolute
 // window on every answer with numbers, but only query_metrics used to report
 // one - every other flow resolved a window internally (to filter rows) and
@@ -1913,7 +2200,12 @@ func TestWarpDescribeFilterSpaceDefaultScopeWhenUnidentified(t *testing.T) {
 	require.NoError(t, err)
 	out := result.(map[string]any)
 	require.Equal(t, false, out["caller_is_identified"])
-	require.Contains(t, out["default_scope"], "ask which team, customer or business unit is meant")
+	// This string is read at the moment the model decides how to ask. It used to
+	// say only "ask which team, customer or business unit is meant", and the
+	// replies echoed it as prose - "I need you to pick a scope first: team,
+	// customer, or business unit." - with nothing to click. It names the tool.
+	require.Contains(t, out["default_scope"], AskUserTool)
+	require.Contains(t, out["default_scope"], "never in prose")
 	require.NotContains(t, out, "caller_user_id")
 }
 
@@ -1929,4 +2221,198 @@ func TestWarpDescribeFilterSpaceSearchReachesEveryLookup(t *testing.T) {
 	require.Equal(t, "pay", fake.customersQuerySeen)
 	require.Equal(t, "pay", fake.businessUnitsQuerySeen)
 	require.Equal(t, "pay", fake.virtualKeysQuerySeen)
+}
+
+// Asked what was causing 17 invalid_request_error failures, Warp could count them
+// and had no way to fetch them: rows filter on status, not on error type. It
+// pulled the newest failures of every kind, traced three overloaded_errors, ran
+// out of steps - and on "try again" compared the count against fail_reason, a
+// tally of retry attempts, and reported that the requests were fine. The rows
+// behind an error ranking are one filter away.
+func TestWarpFiltersAcceptErrorTypeCodeAndStatus(t *testing.T) {
+	filters, err := parseFilters(map[string]any{
+		"status":       []any{"error"},
+		"error_types":  []any{"invalid_request_error"},
+		"error_codes":  []any{"context_length_exceeded"},
+		"status_codes": []any{float64(400), float64(413)},
+	}, Now())
+	require.NoError(t, err)
+	require.Equal(t, []string{"invalid_request_error"}, filters.ErrorTypes)
+	require.Equal(t, []string{"context_length_exceeded"}, filters.ErrorCodes)
+	require.Equal(t, []int{400, 413}, filters.StatusCodes)
+
+	// A malformed value is refused, not dropped: a dropped filter answers a
+	// wider question than the one asked, and says nothing about it.
+	for _, bad := range []any{[]any{"400"}, []any{400.5}, []any{float64(99)}, []any{float64(600)}, float64(400), []any{}} {
+		_, err := parseFilters(map[string]any{"status_codes": bad}, Now())
+		require.ErrorContains(t, err, "status_codes", "value %v", bad)
+	}
+
+	// They reach the store.
+	fake := &fakeLogReader{}
+	_, err = runTool(t, "query_logs", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d", "error_types": []any{"invalid_request_error"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"invalid_request_error"}, fake.searchFilters.ErrorTypes)
+}
+
+// The Logs page has no error-type, error-code or status-code filter, so a link
+// built from such a query would open every failure while sitting beside a count
+// of seventeen. No link is better than one that is silently wider; each row
+// still carries its own.
+func TestWarpResultsFilteredByErrorFieldsCarryNoLogsLink(t *testing.T) {
+	for _, field := range []string{"error_types", "error_codes", "status_codes"} {
+		value := []any{"invalid_request_error"}
+		if field == "status_codes" {
+			value = []any{float64(400)}
+		}
+		result, err := runTool(t, "count_logs", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+			"filters": map[string]any{"start_time": "-7d", field: value},
+		})
+		require.NoError(t, err)
+		require.NotContains(t, result.(map[string]any), "logs_link", "filtered by %s", field)
+		require.NotContains(t, result.(map[string]any), "failures_link", "filtered by %s", field)
+	}
+	result, err := runTool(t, "count_logs", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d", "status": []any{"error"}},
+	})
+	require.NoError(t, err)
+	require.Contains(t, result.(map[string]any), "logs_link")
+}
+
+func TestWarpGuidesFromAnErrorRankingToItsRows(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "query_logs with error_types")
+	require.Contains(t, content, "status_code")
+	require.Contains(t, content, "fail_reason counts retry attempts")
+
+	tool, ok := toolByName(buildTools(), "query_usage_by")
+	require.True(t, ok)
+	require.Contains(t, tool.description, "status_code (")
+	require.Contains(t, tool.description, "never compare its counts with error_type")
+	require.Contains(t, FilterSchema, `"error_types"`)
+	require.Contains(t, FilterSchema, `"status_codes"`)
+}
+
+// Anything the Logs page can filter on, Warp has to be able to ask about.
+// Routing rules, provider keys, aliases, routing engines, complexity tiers, tool
+// calls and metadata were all filters there and arguments nowhere here, so "how
+// much went through the premium rule" had no query behind it. Every field of
+// SearchFilters is checked against the schema the model is shown, so a filter
+// added to the store and the page fails here until the tools take it too.
+func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
+	notAnArgument := map[string]string{
+		"roots_only":     "a display mode of the Logs page (grouped), not a question about traffic",
+		"group_sessions": "a display mode of the Logs page (sessions collapsed), not a question about traffic",
+		"ranking_limit":  "set from each tool's own limit argument",
+	}
+	var schema struct {
+		Properties map[string]any `json:"properties"`
+	}
+	require.NoError(t, sonic.UnmarshalString(FilterSchema, &schema))
+	fields := reflect.TypeOf(logstore.SearchFilters{})
+	for i := range fields.NumField() {
+		name := strings.Split(fields.Field(i).Tag.Get("json"), ",")[0]
+		if _, skip := notAnArgument[name]; skip {
+			continue
+		}
+		require.Contains(t, schema.Properties, name, "SearchFilters.%s is a Logs filter the tools do not offer", fields.Field(i).Name)
+	}
+
+	filters, err := parseFilters(map[string]any{
+		"routing_rule_ids": []any{"rule-premium"}, "selected_key_ids": []any{"key-1"}, "aliases": []any{"smart"},
+		"routing_engine_used": []any{"loadbalancing"}, "complexity_tiers": []any{"COMPLEX"}, "complexity_mechanisms": []any{"semantic"},
+		"tool_call_names": []any{"get_weather"}, "user_agents": []any{"curl/8"},
+		"metadata_filters": map[string]any{"env": "prod"}, "session_id": "sess-1", "parent_request_id": "req-0", "request_id": "req-1",
+		"missing_cost_only": true,
+	}, Now())
+	require.NoError(t, err)
+	require.Equal(t, []string{"rule-premium"}, filters.RoutingRuleIDs)
+	require.Equal(t, []string{"key-1"}, filters.SelectedKeyIDs)
+	require.Equal(t, []string{"smart"}, filters.Aliases)
+	require.Equal(t, []string{"loadbalancing"}, filters.RoutingEngineUsed)
+	require.Equal(t, []string{"COMPLEX"}, filters.ComplexityTiers)
+	require.Equal(t, []string{"semantic"}, filters.ComplexityMechanisms)
+	require.Equal(t, []string{"get_weather"}, filters.ToolCallNames)
+	require.Equal(t, []string{"curl/8"}, filters.UserAgents)
+	require.Equal(t, map[string]string{"env": "prod"}, filters.MetadataFilters)
+	require.Equal(t, "sess-1", filters.SessionID)
+	require.Equal(t, "req-0", filters.ParentRequestID)
+	require.Equal(t, "req-1", filters.RequestID)
+	require.True(t, filters.MissingCostOnly)
+
+	// Refused, not dropped.
+	for _, bad := range []map[string]any{
+		{"metadata_filters": map[string]any{"env": 1}}, {"metadata_filters": "env=prod"}, {"metadata_filters": map[string]any{}},
+		{"session_id": "  "}, {"request_id": 7}, {"missing_cost_only": "yes"},
+	} {
+		_, err := parseFilters(bad, Now())
+		require.Error(t, err, "%v", bad)
+	}
+}
+
+// A guessed rule id returns an empty result that reads like a finding, which is
+// how "chat_completion" produced "no records" on a busy day. The values that
+// exist are listed where the model already looks for names.
+func TestWarpDescribeFilterSpaceListsRoutingValues(t *testing.T) {
+	result, err := runTool(t, "describe_filter_space", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	require.Equal(t, []KeyPair{{ID: "rule-premium", Name: "Premium tier"}}, out["routing_rules"])
+	require.Equal(t, []KeyPair{{ID: "key-1", Name: "anthropic-primary"}}, out["provider_keys"])
+	require.Equal(t, []string{"smart"}, out["aliases"])
+	require.Equal(t, []string{"routing-rule", "loadbalancing"}, out["routing_engines"])
+	require.Equal(t, []string{"get_weather"}, out["tool_call_names"])
+	require.Equal(t, map[string][]string{"env": {"prod", "staging"}}, out["metadata"])
+}
+
+// "Which rule takes the most traffic" is a ranking, and each row opens as the
+// requests it counted - these are filters the Logs page has.
+func TestWarpRanksAndLinksRoutingDimensions(t *testing.T) {
+	cases := map[string]string{
+		"routing_rule": "routing_rule_ids", "selected_key": "selected_key_ids", "alias": "aliases",
+		"complexity_tier": "complexity_tiers", "complexity_mechanism": "complexity_mechanisms",
+		"routing_engine": "routing_engine_used", "tool_call_name": "tool_call_names",
+	}
+	for dimension, param := range cases {
+		fake := &fakeLogReader{dimensionRankingResult: &logstore.DimensionRankingResult{
+			Dimension: logstore.RankingDimension(dimension),
+			Rankings:  []logstore.DimensionRankingWithTrend{{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: "id-1", Name: "One", TotalRequests: 7}}},
+		}}
+		_, rows := rankingRowsJSON(t, "query_usage_by", &ToolDeps{logManager: fake},
+			map[string]any{"dimension": dimension, "filters": map[string]any{"start_time": "-7d"}}, "rankings")
+		require.Len(t, rows, 1, dimension)
+		require.Equal(t, "id-1", linkQuery(t, rows[0]["link"]).Get(param), dimension)
+	}
+
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by")
+	require.Contains(t, content, "how a routing rule is configured")
+}
+
+// A row says which rule, key and alias handled it, so a list of requests can be
+// read without tracing each one.
+func TestWarpLogRowsCarryRoutingFields(t *testing.T) {
+	rule, ruleName, alias, tier := "rule-premium", "Premium tier", "smart", "COMPLEX"
+	fake := &fakeLogReader{searchResult: &logstore.SearchResult{Logs: []logstore.Log{{
+		ID: "req-1", Timestamp: Now(), Provider: "anthropic", Model: "claude-sonnet-5", Status: "success",
+		RoutingRuleID: &rule, RoutingRuleName: &ruleName, SelectedKeyName: "anthropic-primary", Alias: &alias, ComplexityTier: &tier,
+		ToolCallNames: []string{"get_weather"},
+	}}}}
+	out, err := runTool(t, "query_logs", &ToolDeps{logManager: fake}, map[string]any{"filters": map[string]any{"start_time": "-1d"}})
+	require.NoError(t, err)
+	encoded, err := sonic.Marshal(out)
+	require.NoError(t, err)
+	var shape struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+	rows := shape.Rows
+	require.Len(t, rows, 1)
+	require.Equal(t, "Premium tier", rows[0]["routing_rule"])
+	require.Equal(t, "anthropic-primary", rows[0]["provider_key"])
+	require.Equal(t, "smart", rows[0]["alias"])
+	require.Equal(t, "COMPLEX", rows[0]["complexity_tier"])
+	require.Equal(t, []any{"get_weather"}, rows[0]["tool_calls"])
 }

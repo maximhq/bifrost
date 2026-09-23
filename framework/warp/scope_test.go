@@ -137,6 +137,13 @@ func TestWarpSystemPromptExplainsScoping(t *testing.T) {
 	require.Contains(t, content, "describe_filter_space")
 	require.Contains(t, content, "their own traffic is the default")
 	require.Contains(t, content, "you must ask before querying")
+	// ask_user takes at most 8 options, and a mixed list of every team,
+	// customer and business unit overflows it - the prompt has to narrow to
+	// one dimension first, not hand them all over as options.
+	require.Contains(t, content, "ask_user accepts at most 8 options, counting a \"whole deployment\" option")
+	require.Contains(t, content, "list only one dimension's values - teams, customers or business units, never a mix")
+	require.Contains(t, content, "ask that first and only list that one dimension's values once they answer")
+	require.NotContains(t, content, "Call ask_user with the teams, customers and business units")
 }
 
 // userFilteringLogReader applies the one filter scoping touches - UserIDs - to

@@ -9,6 +9,7 @@ import {
 	type WarpQuestion,
 	type WarpUsage,
 	isPartialAnswer,
+	warpTextLength,
 } from "@/components/warp/warpStream.utils";
 import { useWarp, type WarpTurn, type WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { getApiBaseUrl } from "@/lib/utils/port";
@@ -179,7 +180,9 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						setStreamingText(text);
 						break;
 					case "tool_call_start":
-						toolCalls = [...toolCalls, { id: event.tool_id ?? "", name: event.tool_name ?? "" }];
+						// Where in the answer this call fell, so the transcript can show
+						// narration and lookups in the order they happened.
+						toolCalls = [...toolCalls, { id: event.tool_id ?? "", name: event.tool_name ?? "", textOffset: warpTextLength(text) }];
 						setStreamingToolCalls(toolCalls);
 						break;
 					case "tool_call_end":

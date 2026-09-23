@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-
 // seedJSONFieldDimensionFixtures writes the same five rows to any LogStore:
 //   - a clean success with no error, no retries beyond the one successful
 //     attempt, no guardrail hit at all - this must be excluded from every
@@ -195,6 +194,66 @@ func assertJSONFieldDimensionRankings(t *testing.T, ctx context.Context, store L
 			total += r.TotalRequests
 		}
 		assert.Equal(t, int64(2), total, "exactly the two structured-error rows, malformed and clean rows excluded")
+	})
+
+	// The ranking said "17 invalid_request_error" and there was no way to see
+	// those 17: rows could only be filtered to status error, so an assistant
+	// asked to explain them pulled the newest failures of every kind, traced the
+	// wrong ones, and finally concluded from an unrelated dimension that the
+	// count was wrong. A ranking row has to be openable as the rows it counted.
+	t.Run("error_types and error_codes filter rows to what the rankings counted", func(t *testing.T) {
+		ids := func(f SearchFilters) []string {
+			res, err := store.SearchLogs(ctx, f, PaginationOptions{Limit: 50, SortBy: "timestamp", Order: "asc"})
+			require.NoError(t, err)
+			out := make([]string, 0, len(res.Logs))
+			for _, entry := range res.Logs {
+				out = append(out, entry.ID)
+			}
+			return out
+		}
+		byType := filters
+		byType.ErrorTypes = []string{"rate_limit_error"}
+		assert.Equal(t, []string{"log-rate-limited"}, ids(byType), "not the retried row, whose fail_reason says the same thing about one attempt")
+
+		both := filters
+		both.ErrorTypes = []string{"rate_limit_error", "authentication_error"}
+		assert.Equal(t, []string{"log-rate-limited", "log-auth-failed"}, ids(both))
+
+		byCode := filters
+		byCode.ErrorCodes = []string{"invalid_api_key"}
+		assert.Equal(t, []string{"log-auth-failed"}, ids(byCode))
+
+		// Both set narrows to rows matching both, like every other pair of filters.
+		neither := filters
+		neither.ErrorTypes, neither.ErrorCodes = []string{"rate_limit_error"}, []string{"invalid_api_key"}
+		assert.Empty(t, ids(neither))
+
+		// An aggregate over the same filter agrees with the rows, and the
+		// malformed error_details row breaks neither.
+		res, err := store.GetDimensionRankings(ctx, byType, RankingDimensionErrorType)
+		require.NoError(t, err)
+		require.Len(t, res.Rankings, 1)
+		assert.Equal(t, "rate_limit_error", res.Rankings[0].ID)
+		assert.Equal(t, int64(1), res.Rankings[0].TotalRequests)
+	})
+
+	// error.code is empty for most providers, so an error_code breakdown comes
+	// back blank and the first question about a failure ("what kind of 400s?")
+	// had nowhere to go. The HTTP status is on every failed row.
+	t.Run("status_code ranks and filters on the top-level HTTP status", func(t *testing.T) {
+		res, err := store.GetDimensionRankings(ctx, filters, RankingDimensionStatusCode)
+		require.NoError(t, err)
+		byID := rankingByID(res)
+		assert.Len(t, byID, 2, "rows with no status - clean, retried, guardrailed, malformed - contribute nothing")
+		assert.Equal(t, int64(1), byID["429"].TotalRequests)
+		assert.Equal(t, int64(1), byID["401"].TotalRequests)
+
+		byStatus := filters
+		byStatus.StatusCodes = []int{429}
+		rows, err := store.SearchLogs(ctx, byStatus, PaginationOptions{Limit: 50, SortBy: "timestamp", Order: "asc"})
+		require.NoError(t, err)
+		require.Len(t, rows.Logs, 1)
+		assert.Equal(t, "log-rate-limited", rows.Logs[0].ID)
 	})
 
 	t.Run("error_code groups by nested error.code", func(t *testing.T) {

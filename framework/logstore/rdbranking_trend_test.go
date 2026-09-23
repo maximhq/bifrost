@@ -121,3 +121,123 @@ func TestRankingTrendsZeroBaseline(t *testing.T) {
 		}
 	})
 }
+
+// Routing rule, provider key, alias and complexity tier are all filters on the
+// Logs page, so "how much went through this rule" could be checked one rule at a
+// time and "which rule takes the most traffic" could not be asked at all. Each
+// ranks like any other single-owner dimension: rows that never had one are left
+// out rather than bucketed, and the tool's own filters still apply.
+func TestRoutingDimensionsRank(t *testing.T) {
+	store, _ := newFanoutTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	row := func(id, provider, rule, ruleName, key, keyName, alias, tier, mechanism string, cost float64) {
+		opt := func(v string) *string {
+			if v == "" {
+				return nil
+			}
+			return &v
+		}
+		require.NoError(t, store.Create(ctx, &Log{
+			ID: id, Timestamp: base, CreatedAt: base, Object: "chat_completion", Provider: provider, Model: "m",
+			Status: "success", Cost: &cost, TotalTokens: 10,
+			RoutingRuleID: opt(rule), RoutingRuleName: opt(ruleName), SelectedKeyID: key, SelectedKeyName: keyName,
+			Alias: opt(alias), ComplexityTier: opt(tier), ComplexityMechanism: opt(mechanism),
+		}))
+	}
+	row("a", "anthropic", "rule-premium", "Premium tier", "key-1", "anthropic-primary", "smart", "COMPLEX", "semantic", 3)
+	row("b", "anthropic", "rule-premium", "Premium tier", "key-1", "anthropic-primary", "smart", "COMPLEX", "semantic", 2)
+	row("c", "openai", "rule-budget", "Budget tier", "key-2", "openai-primary", "fast", "SIMPLE", "llm", 1)
+	row("d", "openai", "", "", "key-2", "openai-primary", "", "", "", 1)
+
+	start, end := base.Add(-time.Hour), base.Add(time.Hour)
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+	ranked := func(dimension RankingDimension, f SearchFilters) map[string]DimensionRankingWithTrend {
+		res, err := store.GetDimensionRankings(ctx, f, dimension)
+		require.NoError(t, err, "dimension %s", dimension)
+		return rankingByID(res)
+	}
+
+	rules := ranked(RankingDimensionRoutingRule, filters)
+	require.Len(t, rules, 2, "the request no rule handled names no rule")
+	assert.Equal(t, int64(2), rules["rule-premium"].TotalRequests)
+	assert.Equal(t, "Premium tier", rules["rule-premium"].Name, "a rule is reported by its name, not only its id")
+	assert.InDelta(t, 5.0, rules["rule-premium"].TotalCost, 1e-9)
+
+	keys := ranked(RankingDimensionSelectedKey, filters)
+	assert.Equal(t, int64(2), keys["key-2"].TotalRequests)
+	assert.Equal(t, "openai-primary", keys["key-2"].Name)
+
+	assert.Equal(t, int64(2), ranked(RankingDimensionAlias, filters)["smart"].TotalRequests)
+	assert.Equal(t, int64(1), ranked(RankingDimensionComplexityTier, filters)["SIMPLE"].TotalRequests)
+	assert.Equal(t, int64(2), ranked(RankingDimensionComplexityMechanism, filters)["semantic"].TotalRequests)
+
+	// Composes with filters: which rules send traffic to Anthropic.
+	toAnthropic := filters
+	toAnthropic.Providers = []string{"anthropic"}
+	assert.Len(t, ranked(RankingDimensionRoutingRule, toAnthropic), 1)
+
+	// The complexity columns are not in the hourly matview. Read from it, they
+	// would raise a shape error and trip the matview self-heal for a query that
+	// was never the matview's to serve.
+	for _, dimension := range []RankingDimension{RankingDimensionComplexityTier, RankingDimensionComplexityMechanism} {
+		assert.True(t, dimensionColumns[dimension].RawOnly, "%s must not use the matview path", dimension)
+	}
+	// Ranked for in-process callers without widening the HTTP rankings endpoint.
+	assert.False(t, ValidRankingDimensions[RankingDimensionRoutingRule])
+}
+
+// Routing engines and tool-call names are comma-separated on the row, because a
+// request can pass through several engines and call several tools. A request
+// that called two tools counts under both, so the attributed total can exceed
+// the requests there actually were - the same relationship fail_reason has.
+func TestCommaListDimensionsRank(t *testing.T) {
+	store, _ := newFanoutTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	// Set through the slice fields: the write hook joins them into the columns,
+	// which is the only way they are ever populated.
+	row := func(id string, ts time.Time, tools, engines []string, cost float64) {
+		require.NoError(t, store.Create(ctx, &Log{
+			ID: id, Timestamp: ts, CreatedAt: ts, Object: "chat_completion", Provider: "openai", Model: "m",
+			Status: "success", Cost: &cost, TotalTokens: 10,
+			ToolCallNames: tools, RoutingEnginesUsed: engines,
+		}))
+	}
+	row("a", base, []string{"get_weather", "search_docs"}, []string{"routing-rule", "loadbalancing"}, 2)
+	row("b", base, []string{"get_weather"}, []string{"governance"}, 1)
+	row("c", base, []string{" search_docs ", ""}, []string{"routing-rule"}, 1)
+	row("d", base, nil, nil, 5)
+	// The period before, for the trend: one get_weather call.
+	row("p", base.Add(-2*time.Hour), []string{"get_weather"}, []string{"governance"}, 1)
+
+	start, end := base.Add(-time.Hour), base.Add(time.Hour)
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+
+	res, err := store.GetDimensionRankings(ctx, filters, RankingDimensionToolCallName)
+	require.NoError(t, err)
+	tools := rankingByID(res)
+	require.Len(t, tools, 2, "the row with no tool call, and the stray empty element, name nothing")
+	assert.Equal(t, int64(2), tools["get_weather"].TotalRequests)
+	assert.Equal(t, int64(2), tools["search_docs"].TotalRequests)
+	assert.InDelta(t, 3.0, tools["get_weather"].TotalCost, 1e-9, "a request's cost counts under each tool it called")
+	assert.Equal(t, int64(4), res.TotalActualRequests)
+	assert.Equal(t, int64(4), res.TotalAttributedRequests, "a and b and c, with a counted twice")
+	assert.True(t, tools["get_weather"].Trend.HasPreviousPeriod)
+	assert.InDelta(t, 100.0, tools["get_weather"].Trend.RequestsTrend, 1e-9)
+	assert.False(t, tools["search_docs"].Trend.HasPreviousPeriod)
+
+	engines, err := store.GetDimensionRankings(ctx, filters, RankingDimensionRoutingEngine)
+	require.NoError(t, err)
+	require.NotEmpty(t, engines.Rankings)
+	assert.Equal(t, "routing-rule", engines.Rankings[0].ID, "most requests first")
+	assert.Equal(t, int64(2), engines.Rankings[0].TotalRequests)
+
+	// The cap applies to the names, after splitting - not to the raw combinations.
+	one := 1
+	capped := filters
+	capped.RankingLimit = &one
+	res, err = store.GetDimensionRankings(ctx, capped, RankingDimensionRoutingEngine)
+	require.NoError(t, err)
+	assert.Len(t, res.Rankings, 1)
+}

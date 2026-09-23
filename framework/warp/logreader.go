@@ -56,6 +56,20 @@ type LogReader interface {
 	// out through JSON-array columns, which took tens of seconds on a large
 	// table, all to learn which names exist.
 	ScopeDiscoveryReader
+	RoutingDiscoveryReader
+}
+
+// RoutingDiscoveryReader lists the routing values that occur in the logs: the
+// same lookups behind the Logs page's filter dropdowns. They exist so a filter
+// is named from a list rather than guessed - a guessed id returns an empty
+// result that reads exactly like a real finding of zero.
+type RoutingDiscoveryReader interface {
+	GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error)
+	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
+	GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
+	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
 }
 
 // ScopeDiscoveryReader is the enterprise hierarchy half of the read surface.

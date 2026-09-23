@@ -46,43 +46,55 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers            []string          `json:"providers,omitempty"`
-	Models               []string          `json:"models,omitempty"`
-	Aliases              []string          `json:"aliases,omitempty"`
-	Status               []string          `json:"status,omitempty"`
-	StopReasons          []string          `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	ToolCallNames        []string          `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
-	Objects              []string          `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
-	ParentRequestID      string            `json:"parent_request_id,omitempty"`
-	RequestID            string            `json:"request_id,omitempty"`     // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
-	RootsOnly            bool              `json:"roots_only,omitempty"`     // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
-	GroupSessions        bool              `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.
-	SelectedKeyIDs       []string          `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
-	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
-	SessionID            string            `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
-	TeamIDs              []string          `json:"team_ids,omitempty"`
-	CustomerIDs          []string          `json:"customer_ids,omitempty"`
-	UserIDs              []string          `json:"user_ids,omitempty"`
-	BusinessUnitIDs      []string          `json:"business_unit_ids,omitempty"`
-	ProjectIDs           []string          `json:"project_ids,omitempty"`
-	RoutingEngineUsed    []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	Apps                 []string          `json:"apps,omitempty"`                // Backend-detected client apps
-	UserAgents           []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
-	StartTime            *time.Time        `json:"start_time,omitempty"`
-	EndTime              *time.Time        `json:"end_time,omitempty"`
-	MinLatency           *float64          `json:"min_latency,omitempty"`
-	MaxLatency           *float64          `json:"max_latency,omitempty"`
-	MinTokens            *int              `json:"min_tokens,omitempty"`
-	MaxTokens            *int              `json:"max_tokens,omitempty"`
-	MinCost              *float64          `json:"min_cost,omitempty"`
-	MaxCost              *float64          `json:"max_cost,omitempty"`
-	MissingCostOnly      bool              `json:"missing_cost_only,omitempty"`
-	CacheHitTypes        []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
-	ContentSearch        string            `json:"content_search,omitempty"`
-	MetadataFilters      map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	Providers            []string   `json:"providers,omitempty"`
+	Models               []string   `json:"models,omitempty"`
+	Aliases              []string   `json:"aliases,omitempty"`
+	Status               []string   `json:"status,omitempty"`
+	StopReasons          []string   `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	ToolCallNames        []string   `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
+	Objects              []string   `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID      string     `json:"parent_request_id,omitempty"`
+	RequestID            string     `json:"request_id,omitempty"`     // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
+	RootsOnly            bool       `json:"roots_only,omitempty"`     // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
+	GroupSessions        bool       `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.
+	SelectedKeyIDs       []string   `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
+	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	SessionID            string     `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
+	TeamIDs              []string   `json:"team_ids,omitempty"`
+	CustomerIDs          []string   `json:"customer_ids,omitempty"`
+	UserIDs              []string   `json:"user_ids,omitempty"`
+	BusinessUnitIDs      []string   `json:"business_unit_ids,omitempty"`
+	ProjectIDs           []string   `json:"project_ids,omitempty"`
+	RoutingEngineUsed    []string   `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	Apps                 []string   `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents           []string   `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
+	StartTime            *time.Time `json:"start_time,omitempty"`
+	EndTime              *time.Time `json:"end_time,omitempty"`
+	MinLatency           *float64   `json:"min_latency,omitempty"`
+	MaxLatency           *float64   `json:"max_latency,omitempty"`
+	MinTokens            *int       `json:"min_tokens,omitempty"`
+	MaxTokens            *int       `json:"max_tokens,omitempty"`
+	MinCost              *float64   `json:"min_cost,omitempty"`
+	MaxCost              *float64   `json:"max_cost,omitempty"`
+	MissingCostOnly      bool       `json:"missing_cost_only,omitempty"`
+	CacheHitTypes        []string   `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
+	// ErrorTypes and ErrorCodes filter on the provider's error classification
+	// inside error_details (error.type, error.code) - the same values the
+	// error_type and error_code ranking dimensions group by, so a ranking row can
+	// be opened as the rows it counted. Like those dimensions they only ever
+	// match failed requests.
+	ErrorTypes []string `json:"error_types,omitempty"`
+	ErrorCodes []string `json:"error_codes,omitempty"`
+	// StatusCodes filters on the HTTP status the failure came back with
+	// (error_details.status_code). It is the error field every provider
+	// populates: error.code is empty for most of them, so "what kind of 400s are
+	// these" is usually a question about the status, not the code.
+	StatusCodes     []int             `json:"status_codes,omitempty"`
+	ContentSearch   string            `json:"content_search,omitempty"`
+	MetadataFilters map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -2456,8 +2468,25 @@ const (
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 	RankingDimensionApp          RankingDimension = "app"
 	RankingDimensionUserAgent    RankingDimension = "user_agent"
+	// The routing dimensions: which rule, provider key, alias or complexity tier
+	// handled a request. Each has been filterable on the Logs page for as long as
+	// it has existed and could be ranked by nothing, so "which rule takes the most
+	// traffic" had a filter to check one guess at a time and no way to ask.
+	RankingDimensionRoutingRule         RankingDimension = "routing_rule"
+	RankingDimensionSelectedKey         RankingDimension = "selected_key"
+	RankingDimensionAlias               RankingDimension = "alias"
+	RankingDimensionComplexityTier      RankingDimension = "complexity_tier"
+	RankingDimensionComplexityMechanism RankingDimension = "complexity_mechanism"
+	// Stored as a comma-separated list on the row, so one request can count
+	// under several values (see commalistdimensions.go).
+	RankingDimensionRoutingEngine RankingDimension = "routing_engine"
+	RankingDimensionToolCallName  RankingDimension = "tool_call_name"
 )
 
+// ValidRankingDimensions is what the HTTP rankings endpoint accepts. The routing,
+// JSON-field and comma-list dimensions are deliberately not in it: they are
+// reachable through GetDimensionRankings for in-process callers, and adding one
+// here is a change to the public API.
 var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionTeam:         true,
 	RankingDimensionCustomer:     true,
@@ -2472,6 +2501,8 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 type dimensionColumnDef struct {
 	IDCol   string
 	NameCol string
+	// RawOnly marks a dimension whose column the hourly matview does not carry.
+	RawOnly bool
 }
 
 var dimensionColumns = map[RankingDimension]dimensionColumnDef{
@@ -2483,6 +2514,12 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 	RankingDimensionApp:          {IDCol: "app", NameCol: "app"},
 	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: "user_agent"},
+	RankingDimensionRoutingRule:  {IDCol: "routing_rule_id", NameCol: "routing_rule_name"},
+	RankingDimensionSelectedKey:  {IDCol: "selected_key_id", NameCol: "selected_key_name"},
+	RankingDimensionAlias:        {IDCol: "alias", NameCol: "alias"},
+	// Not carried by mv_logs_hourly, so always read from the raw table.
+	RankingDimensionComplexityTier:      {IDCol: "complexity_tier", NameCol: "complexity_tier", RawOnly: true},
+	RankingDimensionComplexityMechanism: {IDCol: "complexity_mechanism", NameCol: "complexity_mechanism", RawOnly: true},
 }
 
 // DimensionColumnDef returns the column pair for a supported ranking dimension.
