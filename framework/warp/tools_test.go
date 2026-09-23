@@ -15,7 +15,7 @@ import (
 )
 
 // fakeLogReader records what the tools asked for. Only the methods Warp's
-// tools reach are implemented; the rest of LogReader is embedded as a
+// tools reach are implemented; the rest of logging.LogManager is embedded as a
 // nil interface, so an executor that starts calling something new fails loudly
 // with a nil-pointer panic in tests rather than silently widening Warp's reach.
 type fakeLogReader struct {
@@ -30,7 +30,10 @@ type fakeLogReader struct {
 
 	histogramBucket int64
 	statsCalled     bool
-	sawContext      context.Context
+	// statsCalls counts them, so a test can assert how many of a turn's tool
+	// calls actually reached the store rather than only that one did.
+	statsCalls int
+	sawContext context.Context
 }
 
 func (f *fakeLogReader) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -60,6 +63,7 @@ func (f *fakeLogReader) GetModelRankings(ctx context.Context, filters *logstore.
 func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
 	f.sawContext = ctx
 	f.statsCalled = true
+	f.statsCalls++
 	return &logstore.SearchStats{}, nil
 }
 
@@ -90,17 +94,19 @@ func TestWarpToolSchemasAreValid(t *testing.T) {
 	tools := buildTools()
 	require.NotEmpty(t, tools)
 
-	declared, err := chatTools(tools)
+	declared, err := responsesTools(tools)
 	require.NoError(t, err)
 	require.Len(t, declared, len(tools))
 
 	for _, tool := range declared {
-		require.NotNil(t, tool.Function, "tool must declare a function")
-		require.NotEmpty(t, tool.Function.Name)
-		require.NotNil(t, tool.Function.Description)
-		require.NotEmpty(t, *tool.Function.Description, "%s needs a description; it is the only thing telling the model when to use it", tool.Function.Name)
-		require.NotNil(t, tool.Function.Parameters)
-		require.Equal(t, "object", tool.Function.Parameters.Type)
+		require.Equal(t, schemas.ResponsesToolTypeFunction, tool.Type)
+		require.NotNil(t, tool.Name)
+		require.NotEmpty(t, *tool.Name)
+		require.NotNil(t, tool.Description)
+		require.NotEmpty(t, *tool.Description, "%s needs a description; it is the only thing telling the model when to use it", *tool.Name)
+		require.NotNil(t, tool.ResponsesToolFunction, "tool must declare a function")
+		require.NotNil(t, tool.ResponsesToolFunction.Parameters)
+		require.Equal(t, "object", tool.ResponsesToolFunction.Parameters.Type)
 	}
 }
 
@@ -1051,4 +1057,40 @@ func TestWarpCallerScopeIntersectsNamedDimensions(t *testing.T) {
 	}, now, caller)
 	require.NoError(t, err)
 	require.Empty(t, filters.UserIDs)
+}
+
+// The prompt tells the model to say when it is looking at a sample rather than
+// the whole set, but "returned" and "total_matching" leave it to infer that by
+// comparing two numbers - and an inferred caveat is the one it drops. An
+// explicit flag is the signal the instruction can actually key on.
+func TestWarpQueryLogsMarksSampledResults(t *testing.T) {
+	rows := func(n int) []logstore.Log {
+		out := make([]logstore.Log, n)
+		for i := range out {
+			out[i].ID = fmt.Sprintf("req-%d", i)
+		}
+		return out
+	}
+
+	// Fewer rows than matched: a sample.
+	fake := &fakeLogReader{searchResult: &logstore.SearchResult{
+		Logs:       rows(10),
+		Pagination: logstore.PaginationOptions{Limit: 10},
+	}}
+	fake.searchResult.Pagination.TotalCount = 1200
+	result, err := runTool(t, "query_logs", &ToolDeps{logManager: fake}, map[string]any{"filters": map[string]any{}})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	require.Equal(t, true, out["sampled"], "10 of 1200 rows is a sample and must say so")
+
+	// Everything that matched: not a sample.
+	fake = &fakeLogReader{searchResult: &logstore.SearchResult{
+		Logs:       rows(3),
+		Pagination: logstore.PaginationOptions{Limit: 10},
+	}}
+	fake.searchResult.Pagination.TotalCount = 3
+	result, err = runTool(t, "query_logs", &ToolDeps{logManager: fake}, map[string]any{"filters": map[string]any{}})
+	require.NoError(t, err)
+	out = result.(map[string]any)
+	require.Equal(t, false, out["sampled"], "every matching row was returned")
 }

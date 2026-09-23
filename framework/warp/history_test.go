@@ -142,8 +142,17 @@ func ownerCtx(userID string) context.Context {
 func TestWarpRecordTurnSkipsEmptyTurns(t *testing.T) {
 	store := newMemoryConversations()
 	service := historyService(store)
-	id := service.recordTurn(ownerCtx("u1"), &Turn{question: "anything?"}, ChatResponse{})
-	require.Empty(t, id)
+	// A new thread that was never written back must not hand its generated id to
+	// the client: the next request would send it as an existing conversation,
+	// skip the create, and have nothing to append to.
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-empty", IsNew: true, question: "anything?"}, ChatResponse{})
+	require.Empty(t, id, "an unpersisted new thread has no id to give back")
+	require.Empty(t, store.threads)
+
+	// An existing thread keeps its id - it is still there, this turn simply had
+	// nothing worth filing.
+	id = service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-existing", question: "anything?"}, ChatResponse{})
+	require.Equal(t, "t-existing", id)
 	require.Empty(t, store.threads)
 }
 
@@ -152,7 +161,7 @@ func TestWarpRecordTurnSkipsEmptyTurns(t *testing.T) {
 func TestWarpRecordTurnCreatesThreadOnFirstTurn(t *testing.T) {
 	store := newMemoryConversations()
 	service := historyService(store)
-	id := service.recordTurn(ownerCtx("u1"), &Turn{question: "how much did we spend?"}, ChatResponse{
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-1", IsNew: true, question: "how much did we spend?"}, ChatResponse{
 		Answer:    "$12.",
 		ToolCalls: []ChatToolCall{{Name: "query_metrics", DurationMs: 3}},
 	})
@@ -170,7 +179,7 @@ func TestWarpRecordTurnCreatesThreadOnFirstTurn(t *testing.T) {
 func TestWarpRecordTurnAppendsToExistingThread(t *testing.T) {
 	store := newMemoryConversations()
 	service := historyService(store)
-	first := service.recordTurn(ownerCtx("u1"), &Turn{question: "q1"}, ChatResponse{Answer: "a1"})
+	first := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-1", IsNew: true, question: "q1"}, ChatResponse{Answer: "a1"})
 	second := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: first, question: "q2"}, ChatResponse{Answer: "a2"})
 	require.Equal(t, first, second)
 	require.Len(t, store.threads, 1)
@@ -182,7 +191,7 @@ func TestWarpRecordTurnAppendsToExistingThread(t *testing.T) {
 func TestWarpRecordTurnFilesErrorTurns(t *testing.T) {
 	store := newMemoryConversations()
 	service := historyService(store)
-	id := service.recordTurn(ownerCtx("u1"), &Turn{question: "q"}, ChatResponse{Error: &ChatError{Code: ErrUpstream, Message: "boom"}})
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-err", IsNew: true, question: "q"}, ChatResponse{Error: &ChatError{Code: ErrUpstream, Message: "boom"}})
 	require.NotEmpty(t, id)
 	require.Equal(t, "boom", store.threads[id].Messages[1].Error)
 }
@@ -194,15 +203,15 @@ func TestWarpRecordTurnSurvivesCancelledContext(t *testing.T) {
 	service := historyService(store)
 	ctx, cancel := context.WithCancel(ownerCtx("u1"))
 	cancel()
-	id := service.recordTurn(ctx, &Turn{question: "q"}, ChatResponse{Answer: "a"})
+	id := service.recordTurn(ctx, &Turn{ConversationID: "t-c", IsNew: true, question: "q"}, ChatResponse{Answer: "a"})
 	require.NotEmpty(t, id)
 }
 
 func TestWarpListConversationsUsesCounts(t *testing.T) {
 	store := newMemoryConversations()
 	service := historyService(store)
-	id := service.recordTurn(ownerCtx("u1"), &Turn{question: "q"}, ChatResponse{Answer: "a"})
-	service.recordTurn(ownerCtx("u2"), &Turn{question: "other"}, ChatResponse{Answer: "a"})
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-u1", IsNew: true, question: "q"}, ChatResponse{Answer: "a"})
+	service.recordTurn(ownerCtx("u2"), &Turn{ConversationID: "t-u2", IsNew: true, question: "other"}, ChatResponse{Answer: "a"})
 
 	// These take a resolved owner, the same value warpOwnerFor hands the handler
 	// - not the raw user id, which is what recordTurn namespaces on the way in.
@@ -227,7 +236,7 @@ func TestWarpHistoryWithoutStoreIsUnavailable(t *testing.T) {
 	require.False(t, service.HasHistory())
 	_, err := service.ListConversations(context.Background(), "u1", 10)
 	require.ErrorIs(t, err, ErrUnavailable)
-	require.Equal(t, "", service.recordTurn(context.Background(), &Turn{question: "q"}, ChatResponse{Answer: "a"}))
+	require.Equal(t, "t-x", service.recordTurn(context.Background(), &Turn{ConversationID: "t-x", IsNew: true, question: "q"}, ChatResponse{Answer: "a"}), "without history the id passes through untouched")
 }
 
 // A title is bounded in characters, not bytes. Slicing by byte offset cuts a
@@ -466,7 +475,7 @@ func TestWarpFailedFirstAppendAtCapPreservesExistingThreads(t *testing.T) {
 	store.failAppend = errors.New("append exploded")
 	service := historyService(store)
 
-	saved := service.recordTurn(ownerCtx("u-1"), &Turn{question: "how much did we spend?"}, ChatResponse{Answer: "$412."})
+	saved := service.recordTurn(ownerCtx("u-1"), &Turn{ConversationID: "t-new", IsNew: true, question: "how much did we spend?"}, ChatResponse{Answer: "$412."})
 
 	require.Empty(t, saved)
 	require.Len(t, store.threads, schemas.WarpMaxConversationsPerOwner,
@@ -482,7 +491,7 @@ func TestWarpFailedFirstAppendAtCapPreservesExistingThreads(t *testing.T) {
 func TestWarpConversationDetailReportsTruncation(t *testing.T) {
 	store := newMemoryConversations()
 	service := historyService(store)
-	id := service.recordTurn(ownerCtx("u1"), &Turn{question: "q"}, ChatResponse{Answer: "a"})
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-b", IsNew: true, question: "q"}, ChatResponse{Answer: "a"})
 	require.NotEmpty(t, id)
 	// Stand in for the repository bound: the store reports more messages than
 	// it returned.
@@ -500,4 +509,46 @@ func TestWarpConversationDetailReportsTruncation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, detail.MessageCount)
 	require.False(t, detail.Truncated)
+}
+
+// A turn that ends in a clarifying question must still be filed.
+//
+// The agent emits EventQuestion and then a done frame with FinishReason
+// "question" and no delta, so the folded response has an empty Answer and no
+// Error. recordTurn read that as "this turn produced nothing" and returned
+// without storing anything - which meant the thread was never created and the
+// question was never recorded. Reopening the conversation showed the user's
+// message with no sign that Warp had answered at all, and the reply the person
+// then typed arrived as the opening line of an empty thread.
+func TestWarpRecordTurnFilesClarifyingQuestions(t *testing.T) {
+	store := newMemoryConversations()
+	service := historyService(store)
+
+	id := service.recordTurn(ownerCtx("u1"), &Turn{question: "how much did we spend?"}, ChatResponse{
+		FinishReason: "question",
+		Question: &Question{
+			Question:   "Whose traffic do you mean?",
+			Options:    []QuestionOpt{{Label: "Platform team", Hint: "team:platform"}},
+			AllowOther: true,
+		},
+	})
+
+	require.NotEmpty(t, id, "a question is a real turn and must be filed")
+	require.Len(t, store.threads, 1)
+
+	thread := store.threads[id]
+	require.Len(t, thread.Messages, 2, "the question asked and the question back")
+	require.Equal(t, "user", thread.Messages[0].Role)
+	require.Equal(t, "assistant", thread.Messages[1].Role)
+	require.Contains(t, thread.Messages[1].Content, "Whose traffic do you mean?",
+		"the stored turn must carry what Warp actually asked")
+}
+
+// A turn that produced nothing at all is still not worth a thread: the empty
+// check has to narrow, not disappear.
+func TestWarpRecordTurnStillSkipsTrulyEmptyTurns(t *testing.T) {
+	store := newMemoryConversations()
+	service := historyService(store)
+	require.Empty(t, service.recordTurn(ownerCtx("u1"), &Turn{question: "anything?"}, ChatResponse{}))
+	require.Empty(t, store.threads)
 }
