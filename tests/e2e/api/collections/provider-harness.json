@@ -140130,6 +140130,94 @@
           }
         },
         {
+          "name": "databricks/databricks-gemini-3-8-flash merges multi-part system prompts on chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gemini endpoints receive a single system prompt', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected several system prompts instead of Bifrost merging them').to.not.include('only support one system prompt');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices, 'choices missing: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gemini-3-8-flash\", \"max_tokens\": 32, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a terse assistant.\"}, {\"type\": \"text\", \"text\": \"Answer with just the number.\"}]}, {\"role\": \"developer\", \"content\": \"Never add punctuation.\"}, {\"role\": \"user\", \"content\": \"What is 2+2?\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gemini-3-8-flash /anthropic/v1/messages Claude Code multi-block system",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Claude Code system blocks reach Gemini as one system prompt', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected several system prompts instead of Bifrost merging them').to.not.include('only support one system prompt');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'stream did not finish').to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gemini-3-8-flash\", \"max_tokens\": 64, \"stream\": true, \"system\": [{\"type\": \"text\", \"text\": \"You are Claude Code, a terse assistant.\"}, {\"type\": \"text\", \"text\": \"Answer with just the number.\", \"cache_control\": {\"type\": \"ephemeral\"}}], \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2?\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
           "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions streaming",
           "event": [
             {
