@@ -2238,10 +2238,14 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return err
 		}
 		if req.ProviderConfigs != nil {
-			// Get existing provider configs for comparison
+			// Get existing provider configs for comparison. Keys must be
+			// preloaded: a PUT that omits key_ids leaves existing.Keys as the
+			// source of truth, and the store update replaces the association
+			// with whatever this row carries.
 			var existingConfigs []configstoreTables.TableVirtualKeyProviderConfig
 			if err := tx.Where("virtual_key_id = ?", vk.ID).
 				Preload("Budgets").
+				Preload("Keys").
 				Find(&existingConfigs).Error; err != nil {
 				return err
 			}
@@ -2353,23 +2357,30 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					existing.AllowedModels = pc.AllowedModels
 					existing.BlacklistedModels = pc.BlacklistedModels
 
-					// Get keys for this provider config if specified
-					var keys []configstoreTables.TableKey
-					allowAllKeys := false
-					if pc.KeyIDs.IsUnrestricted() {
-						allowAllKeys = true
-					} else if !pc.KeyIDs.IsEmpty() {
-						var err error
-						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-						if err != nil {
-							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+					// Only touch the key associations when the request actually carries
+					// key_ids. A nil list means the client never sent the field (the GET
+					// response exposes allow_all_keys/keys but not key_ids), so treating
+					// "absent" as deny-all silently drops every key on a GET -> edit ->
+					// PUT round-trip. An explicit [] still clears the associations.
+					if pc.KeyIDs != nil {
+						// Get keys for this provider config if specified
+						var keys []configstoreTables.TableKey
+						allowAllKeys := false
+						if pc.KeyIDs.IsUnrestricted() {
+							allowAllKeys = true
+						} else if !pc.KeyIDs.IsEmpty() {
+							var err error
+							keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+							if err != nil {
+								return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+							}
+							if len(keys) != len(pc.KeyIDs) {
+								return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+							}
 						}
-						if len(keys) != len(pc.KeyIDs) {
-							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
-						}
+						existing.AllowAllKeys = allowAllKeys
+						existing.Keys = keys
 					}
-					existing.AllowAllKeys = allowAllKeys
-					existing.Keys = keys
 
 					// Provider-config governance is stored in the VK-scoped model config for this
 					// provider (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
