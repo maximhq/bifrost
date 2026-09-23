@@ -565,3 +565,30 @@ func TestWarpSaveConfigCompensatesOnlyItsOwnNamespace(t *testing.T) {
 		require.Empty(t, vectors.deleted, "a pre-existing namespace may hold vectors a live config still indexes")
 	})
 }
+
+// A legacy row with no namespace stored still resolves to the default one.
+//
+// The rejection compared raw strings, so a row holding "" looked different from
+// a request naming the default - and an embedding-space change was allowed to
+// reuse the namespace it was already indexed under, mixing vectors from two
+// configurations in one place. Comparing effective namespaces closes that.
+func TestWarpSaveConfigRejectsReusingALegacyDefaultNamespace(t *testing.T) {
+	for name, stored := range map[string]string{
+		"empty":            "",
+		"whitespace only":  "   ",
+		"padded default":   "  " + schemas.WarpDefaultLogVectorStoreNamespace + "  ",
+		"explicit default": schemas.WarpDefaultLogVectorStoreNamespace,
+	} {
+		store := &recordingStore{row: &tables.TableWarpConfig{
+			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+			EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+			EmbeddingDimension: 1536, LogVectorStoreNamespace: stored,
+		}}
+		_, err := newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{
+			"enabled": false, "embedding_model": "text-embedding-3-large",
+			"log_vector_store_namespace": "`+schemas.WarpDefaultLogVectorStoreNamespace+`"
+		}`))
+		require.ErrorIs(t, err, ErrInvalidConfig, "%s: the effective namespace is unchanged, so the space may not move", name)
+		require.ErrorContains(t, err, "log_vector_store_namespace", name)
+	}
+}

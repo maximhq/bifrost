@@ -162,10 +162,19 @@ func (c *WarpConfig) EffectiveSemanticSearchLimit() int {
 }
 
 func (c *WarpConfig) EffectiveLogVectorStoreNamespace() string {
-	if c == nil || strings.TrimSpace(c.LogVectorStoreNamespace) == "" {
+	if c == nil {
 		return WarpDefaultLogVectorStoreNamespace
 	}
-	return c.LogVectorStoreNamespace
+	// Trimmed, not returned raw. This value names a namespace in the vector
+	// store and feeds embeddingConfigSignature, so returning "  Bifrost  "
+	// verbatim made it a genuinely different namespace from "Bifrost" -
+	// indexing into one while a running backfill was frozen against the other,
+	// with nothing in the UI showing a difference.
+	trimmed := strings.TrimSpace(c.LogVectorStoreNamespace)
+	if trimmed == "" {
+		return WarpDefaultLogVectorStoreNamespace
+	}
+	return trimmed
 }
 
 // IsConfigured reports whether Warp has enough settings to answer a question.
