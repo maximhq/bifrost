@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -116,5 +118,36 @@ func TestUserLabelsEnabledMatchesLabelSet(t *testing.T) {
 			t.Errorf("userLabelsEnabled = %v, want %v", got, enabled)
 		}
 		plugin.Cleanup()
+	}
+}
+
+// Every metric-tier dimension must have a value source, not just a registered
+// label name. getPrometheusLabelValues defaults a missing key to "", so a
+// dimension added to the registry but never filled registers a label that is
+// always empty — and the name-level parity test above still passes.
+func TestEveryMetricLabelHasAValueSource(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	body := string(src)
+
+	// Dimensions filled by a mechanism other than the labelValues literal.
+	filledElsewhere := map[string]string{
+		"user_id":   "set under userLabelsEnabled",
+		"user_name": "set under userLabelsEnabled",
+	}
+
+	for _, name := range schemas.MetricSafeEnrichmentDimNames() {
+		if why, ok := filledElsewhere[name]; ok {
+			if !strings.Contains(body, `labelValues["`+name+`"]`) {
+				t.Errorf("%q documented as %q but no assignment found", name, why)
+			}
+			continue
+		}
+		if !strings.Contains(body, `"`+name+`":`) {
+			t.Errorf("metric dimension %q has no value in the labelValues map; "+
+				"it would register as a label that is always empty", name)
+		}
 	}
 }

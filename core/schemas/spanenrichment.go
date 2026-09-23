@@ -40,6 +40,8 @@ func SpanEnrichmentFromContext(ctx context.Context) *SpanEnrichment {
 	e.UserID = str(BifrostContextKeyUserID)
 	e.UserName = str(BifrostContextKeyUserName)
 	e.UserEmail = str(BifrostContextKeyUserEmail)
+	// Derived, not carried: the UA header is on the context, the classification is not.
+	e.App = DetectAppFromUserAgent(str(BifrostContextKeyUserAgent))
 
 	e.TeamIDs = strs(BifrostContextKeyGovernanceTeamIDs)
 	e.TeamNames = strs(BifrostContextKeyGovernanceTeamNames)
@@ -87,6 +89,7 @@ func (e *SpanEnrichment) ApplyToSpan(span *Span) {
 	setSpanStr(span, AttrBifrostUserID, e.UserID)
 	setSpanStr(span, AttrBifrostUserName, e.UserName)
 	setSpanStr(span, AttrBifrostUserEmail, e.UserEmail)
+	setSpanStr(span, AttrBifrostApp, e.App)
 
 	setSpanStrs(span, AttrBifrostTeamIDs, e.TeamIDs)
 	setSpanStrs(span, AttrBifrostTeamNames, e.TeamNames)

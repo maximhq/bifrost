@@ -72,6 +72,7 @@ Base Labels:
 - `model`: Model name (e.g., `gpt-4o-mini`, `claude-3-sonnet`)
 - `alias`: Alias resolved to this model (empty if none)
 - `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
+- `app`: Calling client classified from the User-Agent (`Claude Code`, `Cursor`, `Codex CLI`, ..., `API`, or `Other`); empty when no User-Agent was sent
 - `virtual_key_id`: Virtual key ID
 - `virtual_key_name`: Virtual key name
 - `routing_engine_used`: Comma-separated routing engines used (`routing-rule`, `governance`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — i.e. a fallback transition or a retry transition.
