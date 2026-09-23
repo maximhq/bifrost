@@ -146828,7 +146828,7 @@
     },
     {
       "name": "74. Azure streaming preamble fallback",
-      "description": "Local fixture regression. Configure an isolated gateway's Azure endpoint to the azure-stream-preamble-fixture.mjs server with max_retries=0. Set azureStreamPreambleFixture=1 to enable these cases. The primary model emits startup metadata and then fails; the fallback must return hello without leaking failed-attempt events.",
+      "description": "Local fixture regression. Configure an isolated gateway's Azure endpoint and OpenAI base_url to the azure-stream-preamble-fixture.mjs server with max_retries=0. Set azureStreamPreambleFixture=1 to enable these cases. The primary model emits startup metadata and then fails (Azure: rate limit; OpenAI: server_is_overloaded with no HTTP status); the fallback must return hello without leaking failed-attempt events.",
       "event": [
         {
           "listen": "prerequest",
@@ -146901,6 +146901,34 @@
             "body": {
               "mode": "raw",
               "raw": "{\"model\":\"azure/preamble-error\",\"input\":\"hi\",\"stream\":true,\"fallbacks\":[\"azure/preamble-success\"]}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "OpenAI streaming preamble overload fallback - Chat Completions",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/preamble-error\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"fallbacks\":[\"openai/preamble-success\"]}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI streaming preamble overload fallback - Responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/preamble-error\",\"input\":\"hi\",\"stream\":true,\"fallbacks\":[\"openai/preamble-success\"]}"
             },
             "url": "{{baseUrl}}/v1/responses"
           }
