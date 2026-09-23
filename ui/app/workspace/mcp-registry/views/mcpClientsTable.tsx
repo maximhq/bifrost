@@ -1059,11 +1059,11 @@ export default function MCPClientsTable({
 						onClick={handleCreate}
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
-						aria-label="New MCP Server"
+						aria-label="Add MCP Server"
 						className="h-8 gap-2"
 					>
 						<Plus />
-						<span className="hidden sm:inline">New MCP Server</span>
+						<span className="hidden sm:inline">Add MCP Server</span>
 					</Button>
 				</div>
 			</div>
