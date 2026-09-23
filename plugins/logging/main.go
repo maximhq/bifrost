@@ -585,8 +585,15 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 		}
 	}
 
-	// Cost + usage — the point of the bridge.
-	tracer.SetAttribute(handle, schemas.AttrUsageCost, *entry.Cost)
+	// Cost + usage — the point of the bridge. The breakdown rides along when the
+	// row has one, so a settlement span carries the same split as a live call.
+	if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost != nil {
+		for k, v := range schemas.CostAttributes(entry.TokenUsageParsed.Cost) {
+			tracer.SetAttribute(handle, k, v)
+		}
+	} else {
+		tracer.SetAttribute(handle, schemas.AttrUsageCost, *entry.Cost)
+	}
 	if entry.PromptTokens > 0 {
 		tracer.SetAttribute(handle, schemas.AttrInputTokens, entry.PromptTokens)
 	}

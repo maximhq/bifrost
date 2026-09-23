@@ -243,3 +243,78 @@ func TestSpanTypedPayloadNeverSerializes(t *testing.T) {
 		t.Fatal("attributes did not serialize; the assertion above proves nothing")
 	}
 }
+
+// TestCostAttributesReconcileToTotal pins the breakdown rendering: the emitted
+// side costs must sum to the total, and each detail set to its side. A connector
+// slicing by category has to be able to trust that.
+func TestCostAttributesReconcileToTotal(t *testing.T) {
+	cost := &BifrostCost{
+		InputCost: 0.30, OutputCost: 0.50, AdditionalCost: 0.20, TotalCost: 1.00,
+		InputCostDetails: &InputCostDetails{
+			TextCost: 0.10, AudioCost: 0.05, ImageCost: 0.05,
+			CachedReadCost: 0.04, CachedWriteCost: 0.03, RequestCost: 0.03,
+		},
+		OutputCostDetails: &OutputCostDetails{
+			TextCost: 0.20, AudioCost: 0.10, ImageCost: 0.05,
+			ReasoningCost: 0.10, CitationCost: 0.03, SearchQueriesCost: 0.02,
+		},
+		AdditionalCostDetails: &AdditionalCostDetails{
+			GuardrailCost: 0.08, MCPCost: 0.06, SemanticCacheCost: 0.04, RoutingCost: 0.02,
+		},
+	}
+	attrs := CostAttributes(cost)
+
+	f := func(key string) float64 {
+		v, ok := attrs[key]
+		if !ok {
+			t.Errorf("attribute %q not emitted", key)
+			return 0
+		}
+		return v.(float64)
+	}
+	const eps = 1e-9
+	near := func(label string, got, want float64) {
+		if diff := got - want; diff > eps || diff < -eps {
+			t.Errorf("%s = %v, want %v", label, got, want)
+		}
+	}
+
+	near("total", f(AttrUsageCost), 1.00)
+	near("sides sum to total",
+		f(AttrBifrostCostInput)+f(AttrBifrostCostOutput)+f(AttrBifrostCostAdditional), f(AttrUsageCost))
+	near("input details sum to input side",
+		f(AttrBifrostCostInputText)+f(AttrBifrostCostInputAudio)+f(AttrBifrostCostInputImage)+
+			f(AttrBifrostCostInputCachedRead)+f(AttrBifrostCostInputCachedWrite)+f(AttrBifrostCostInputRequest),
+		f(AttrBifrostCostInput))
+	near("output details sum to output side",
+		f(AttrBifrostCostOutputText)+f(AttrBifrostCostOutputAudio)+f(AttrBifrostCostOutputImage)+
+			f(AttrBifrostCostOutputReasoning)+f(AttrBifrostCostOutputCitation)+f(AttrBifrostCostOutputSearch),
+		f(AttrBifrostCostOutput))
+	near("additional details sum to additional side",
+		f(AttrBifrostCostGuardrail)+f(AttrBifrostCostMCP)+f(AttrBifrostCostSemanticCache)+f(AttrBifrostCostRouting),
+		f(AttrBifrostCostAdditional))
+}
+
+// TestCostAttributesOmitsZeroCategories keeps a text-only request from carrying
+// zero-valued audio and image keys, matching how token details are emitted. The
+// total is always written, including a genuine zero.
+func TestCostAttributesOmitsZeroCategories(t *testing.T) {
+	attrs := CostAttributes(&BifrostCost{
+		InputCost: 0.10, TotalCost: 0.10,
+		InputCostDetails: &InputCostDetails{TextCost: 0.10},
+	})
+	for _, key := range []string{
+		AttrBifrostCostOutput, AttrBifrostCostAdditional,
+		AttrBifrostCostInputAudio, AttrBifrostCostInputImage, AttrBifrostCostGuardrail,
+	} {
+		if _, present := attrs[key]; present {
+			t.Errorf("zero-valued %q was emitted", key)
+		}
+	}
+	if _, present := attrs[AttrUsageCost]; !present {
+		t.Error("total cost must always be emitted")
+	}
+	if got := CostAttributes(nil); len(got) != 0 {
+		t.Errorf("nil cost rendered %d attributes, want none", len(got))
+	}
+}

@@ -421,12 +421,8 @@ func (d *LLMSpanData) appendUsage(attrs map[string]any) {
 	// Usage.Cost is the provider-reported cost; LLMSpanData.Cost is Bifrost's
 	// computed one and supersedes it. Legacy emitted the provider value here and
 	// the computed value later, last write winning — preserved.
-	if u.Cost != nil {
-		attrs[AttrUsageCost] = u.Cost.TotalCost
-	}
-	if d.Cost != nil {
-		attrs[AttrUsageCost] = d.Cost.TotalCost
-	}
+	appendCostAttributes(attrs, u.Cost)
+	appendCostAttributes(attrs, d.Cost)
 }
 
 func (d *LLMSpanData) appendError(attrs map[string]any) {
@@ -486,5 +482,58 @@ func setIfPositivePtr(attrs map[string]any, key string, value *int) {
 func setIfNotNil[T any](attrs map[string]any, key string, value *T) {
 	if value != nil {
 		attrs[key] = *value
+	}
+}
+
+// CostAttributes renders a cost breakdown as span attributes, for callers that
+// price outside the record (the tracer's error path).
+func CostAttributes(cost *BifrostCost) map[string]any {
+	attrs := make(map[string]any, 8)
+	appendCostAttributes(attrs, cost)
+	return attrs
+}
+
+// appendCostAttributes renders a cost breakdown. The pricing engine produces the
+// per-category split on the same call as the total, so emitting it costs nothing
+// and lets connectors slice input vs output vs sidecar spend.
+//
+// Zero-valued categories are omitted: a request with no audio should carry no
+// audio cost key rather than a zero, matching how token details are emitted.
+func appendCostAttributes(attrs map[string]any, cost *BifrostCost) {
+	if cost == nil {
+		return
+	}
+	attrs[AttrUsageCost] = cost.TotalCost
+	setIfNonZero(attrs, AttrBifrostCostInput, cost.InputCost)
+	setIfNonZero(attrs, AttrBifrostCostOutput, cost.OutputCost)
+	setIfNonZero(attrs, AttrBifrostCostAdditional, cost.AdditionalCost)
+
+	if d := cost.InputCostDetails; d != nil {
+		setIfNonZero(attrs, AttrBifrostCostInputText, d.TextCost)
+		setIfNonZero(attrs, AttrBifrostCostInputAudio, d.AudioCost)
+		setIfNonZero(attrs, AttrBifrostCostInputImage, d.ImageCost)
+		setIfNonZero(attrs, AttrBifrostCostInputCachedRead, d.CachedReadCost)
+		setIfNonZero(attrs, AttrBifrostCostInputCachedWrite, d.CachedWriteCost)
+		setIfNonZero(attrs, AttrBifrostCostInputRequest, d.RequestCost)
+	}
+	if d := cost.OutputCostDetails; d != nil {
+		setIfNonZero(attrs, AttrBifrostCostOutputText, d.TextCost)
+		setIfNonZero(attrs, AttrBifrostCostOutputAudio, d.AudioCost)
+		setIfNonZero(attrs, AttrBifrostCostOutputImage, d.ImageCost)
+		setIfNonZero(attrs, AttrBifrostCostOutputReasoning, d.ReasoningCost)
+		setIfNonZero(attrs, AttrBifrostCostOutputCitation, d.CitationCost)
+		setIfNonZero(attrs, AttrBifrostCostOutputSearch, d.SearchQueriesCost)
+	}
+	if d := cost.AdditionalCostDetails; d != nil {
+		setIfNonZero(attrs, AttrBifrostCostGuardrail, d.GuardrailCost)
+		setIfNonZero(attrs, AttrBifrostCostMCP, d.MCPCost)
+		setIfNonZero(attrs, AttrBifrostCostSemanticCache, d.SemanticCacheCost)
+		setIfNonZero(attrs, AttrBifrostCostRouting, d.RoutingCost)
+	}
+}
+
+func setIfNonZero(attrs map[string]any, key string, value float64) {
+	if value != 0 {
+		attrs[key] = value
 	}
 }

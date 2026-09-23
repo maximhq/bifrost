@@ -810,6 +810,40 @@ const (
 	AttrInputTokens  = "gen_ai.usage.input_tokens"
 	AttrOutputTokens = "gen_ai.usage.output_tokens"
 	AttrUsageCost    = "gen_ai.usage.cost"
+
+	// Cost breakdown, under bifrost.* rather than gen_ai.*: OTel has no cost
+	// convention and closed the proposal for one (semantic-conventions#1062),
+	// leaving cost to the observability platform. AttrUsageCost above predates
+	// that and stays for compatibility.
+	//
+	// Input/output/additional sum to AttrUsageCost; each side's categories sum to
+	// that side. The pricing engine produces all of it on the same call that
+	// produces the total, so emitting it is free.
+	AttrBifrostCostInput      = "bifrost.cost.input"
+	AttrBifrostCostOutput     = "bifrost.cost.output"
+	AttrBifrostCostAdditional = "bifrost.cost.additional"
+
+	AttrBifrostCostInputText        = "bifrost.cost.input.text"
+	AttrBifrostCostInputAudio       = "bifrost.cost.input.audio"
+	AttrBifrostCostInputImage       = "bifrost.cost.input.image"
+	AttrBifrostCostInputCachedRead  = "bifrost.cost.input.cached_read"
+	AttrBifrostCostInputCachedWrite = "bifrost.cost.input.cached_write"
+	AttrBifrostCostInputRequest     = "bifrost.cost.input.request"
+
+	AttrBifrostCostOutputText      = "bifrost.cost.output.text"
+	AttrBifrostCostOutputAudio     = "bifrost.cost.output.audio"
+	AttrBifrostCostOutputImage     = "bifrost.cost.output.image"
+	AttrBifrostCostOutputReasoning = "bifrost.cost.output.reasoning"
+	AttrBifrostCostOutputCitation  = "bifrost.cost.output.citation"
+	AttrBifrostCostOutputSearch    = "bifrost.cost.output.search_queries"
+
+	// Sidecar spend that maps to no token category, and is billed to the request
+	// without being produced by the model. Not reconcilable against a provider
+	// invoice, so worth slicing separately.
+	AttrBifrostCostGuardrail     = "bifrost.cost.additional.guardrail"
+	AttrBifrostCostMCP           = "bifrost.cost.additional.mcp"
+	AttrBifrostCostSemanticCache = "bifrost.cost.additional.semantic_cache"
+	AttrBifrostCostRouting       = "bifrost.cost.additional.routing"
 	// OTel GenAI spec keys for cache tokens (flat namespace).
 	AttrUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
 	AttrUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
