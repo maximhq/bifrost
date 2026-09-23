@@ -2,6 +2,7 @@ package otel
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 
@@ -250,7 +251,7 @@ func TestConvertTraceRequestHeaderFiltering(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 
 	rootOut := findRoot(spans)
@@ -392,7 +393,7 @@ func TestConvertTraceContentFidelity(t *testing.T) {
 	}
 
 	// Content logging enabled (disableContentLogging=false, disableRootSpanContent=false).
-	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
 
 	// Find the fixture's llm.call span by its span ID, not by kind/position — other span
 	// kinds (MCP tool/client, embedding, speech, transcription) also map to CLIENT, so a
@@ -473,7 +474,7 @@ func TestExportNoContentLeakWithSharedFixture(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
 	p := &OtelPlugin{}
 
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, true, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, true, false, false, false)
 	payload, err := sonic.Marshal(resourceSpan)
 	if err != nil {
 		t.Fatalf("marshal ResourceSpan: %v", err)
@@ -489,13 +490,16 @@ func TestExportContentPresentWhenEnabled(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
 	p := &OtelPlugin{}
 
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
 	payload, err := sonic.Marshal(resourceSpan)
 	if err != nil {
 		t.Fatalf("marshal ResourceSpan: %v", err)
 	}
 	if !strings.Contains(string(payload), schemas.ExportFixtureSecret) {
 		t.Error("content sentinel absent with content logging enabled; the leak test proves nothing")
+	}
+	for _, problem := range schemas.AssertRedactionApplied(payload) {
+		t.Error(problem)
 	}
 }
 
@@ -535,7 +539,7 @@ func TestExportSpanFilterDropsExcludedPlugins(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &OtelPlugin{pluginSpanFilter: tc.filter}
-			resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+			resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
 			payload, err := sonic.Marshal(resourceSpan)
 			if err != nil {
 				t.Fatalf("marshal ResourceSpan: %v", err)
@@ -553,7 +557,7 @@ func TestExportWithholdsOverheadSpans(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{IncludeOverheadSpans: true})
 	p := &OtelPlugin{}
 
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
 	payload, err := sonic.Marshal(resourceSpan)
 	if err != nil {
 		t.Fatalf("marshal ResourceSpan: %v", err)
@@ -570,7 +574,7 @@ func TestExportWithholdsOverheadSpans(t *testing.T) {
 func TestExportCarriesCostBreakdown(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
 	p := &OtelPlugin{}
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
 
 	// Read the cost attributes off the LLM span specifically. Merging every span
 	// would accept cost split across spans, or attached to the wrong one.
@@ -608,5 +612,110 @@ func TestExportCarriesCostBreakdown(t *testing.T) {
 	}
 	for _, problem := range schemas.AssertCostBreakdown(schemas.CostAttributeLookup(exported)) {
 		t.Error(problem)
+	}
+}
+
+// A profile that did not opt in cannot emit raw, even when another caused it to be built.
+func TestOtelRawPayloadsAreOptIn(t *testing.T) {
+	newSpan := func() *schemas.Span {
+		return &schemas.Span{
+			SpanID: "aaaaaaaaaaaaaaaa", Kind: schemas.SpanKindLLMCall,
+			Attributes: map[string]any{schemas.AttrProviderName: "openai"},
+			LLM: &schemas.LLMSpanData{
+				RawRequest:  `{"prompt":"RAW-REQ-SENTINEL"}`,
+				RawResponse: `{"text":"RAW-RESP-SENTINEL"}`,
+			},
+		}
+	}
+	raw := []string{schemas.AttrBifrostRawRequest, schemas.AttrBifrostRawResponse}
+
+	for _, tc := range []struct {
+		name                      string
+		disableContent, exportRaw bool
+		want                      bool
+	}{
+		{"not opted in", false, false, false},
+		{"opted in", false, true, true},
+		{"content disabled wins", true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := kvMap(convertSpanToOTELSpan("t1", newSpan(), tc.disableContent, tc.exportRaw).Attributes)
+			for _, k := range raw {
+				if _, ok := got[k]; ok != tc.want {
+					t.Errorf("%s present = %v, want %v", k, ok, tc.want)
+				}
+			}
+			if _, ok := got[schemas.AttrProviderName]; !ok {
+				t.Error("non-raw attributes were dropped")
+			}
+		})
+	}
+}
+
+// Raw must never reach span.Attributes — attribute-copying connectors would ship it.
+func TestRawPayloadsNeverEnterSpanAttributes(t *testing.T) {
+	d := &schemas.LLMSpanData{RawRequest: `{"a":1}`, RawResponse: `{"b":2}`}
+	for name, attrs := range map[string]map[string]any{"Attributes": d.Attributes(), "ResponseAttributes": d.ResponseAttributes()} {
+		for _, k := range []string{schemas.AttrBifrostRawRequest, schemas.AttrBifrostRawResponse} {
+			if _, ok := attrs[k]; ok {
+				t.Errorf("%s(): %s leaked into span attributes", name, k)
+			}
+		}
+	}
+}
+
+// The demand declaration must respect disable_content_logging, not just the
+// emit path: otherwise the tracer builds raw bodies this profile then drops.
+// stubOtelClient stands in for a built trace client; only its presence matters.
+type stubOtelClient struct{}
+
+func (stubOtelClient) Emit(context.Context, []*ResourceSpan) error { return nil }
+func (stubOtelClient) Close() error                                { return nil }
+
+func TestOtelRawDemandRespectsContentLogging(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		exportRaw, disableContent bool
+		want                      bool
+	}{
+		{"raw on, content on", true, false, true},
+		{"raw on, content disabled", true, true, false},
+		{"raw off", false, false, false},
+		{"both off", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &OtelPlugin{targets: []*otelTarget{{
+				client:                stubOtelClient{},
+				exportRawPayloads:     tc.exportRaw,
+				disableContentLogging: tc.disableContent,
+			}}}
+			if got := p.ConsumesRawPayloads(); got != tc.want {
+				t.Errorf("ConsumesRawPayloads() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// One profile wanting raw is enough, but only if it also keeps content.
+	mixed := &OtelPlugin{targets: []*otelTarget{
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: true},
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: false},
+	}}
+	if !mixed.ConsumesRawPayloads() {
+		t.Error("a content-keeping profile wanting raw should demand it")
+	}
+	allStripped := &OtelPlugin{targets: []*otelTarget{
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: true},
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: true},
+	}}
+	if allStripped.ConsumesRawPayloads() {
+		t.Error("every profile strips content; raw must not be built")
+	}
+
+	// Metrics-only profiles (traces_enabled false) export no spans.
+	metricsOnly := &OtelPlugin{targets: []*otelTarget{
+		{client: nil, exportRawPayloads: true, disableContentLogging: false},
+	}}
+	if metricsOnly.ConsumesRawPayloads() {
+		t.Error("metrics-only profile demanded raw payloads it cannot export")
 	}
 }

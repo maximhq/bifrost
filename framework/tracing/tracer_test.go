@@ -1003,3 +1003,47 @@ func TestDemandUnknownBeforeRegistrationIsFull(t *testing.T) {
 		t.Errorf("empty plugin set demand = %+v, want zero", d)
 	}
 }
+
+// Raw demand must be recomputed on reload, like plugin-span demand: a connector
+// added after boot gets raw, and removing the last one stops building it.
+func TestRawPayloadDemandRecomputedOnReload(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	// Before registration, demand is unknown — raw must stay off.
+	if tracer.Demand().RawPayloads {
+		t.Error("raw demanded before any connector registered")
+	}
+
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{&rawDemandStub{name: "quiet", wants: false}}, nil)
+	if tracer.Demand().RawPayloads {
+		t.Error("raw demanded when the only connector declined")
+	}
+
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{
+			&rawDemandStub{name: "quiet", wants: false},
+			&rawDemandStub{name: "loud", wants: true},
+		}, nil)
+	if !tracer.Demand().RawPayloads {
+		t.Error("raw not demanded after a consuming connector was added")
+	}
+
+	tracer.SetObservabilityPlugins(nil, nil)
+	if tracer.Demand().RawPayloads {
+		t.Error("raw still demanded after the last connector was removed")
+	}
+}
+
+type rawDemandStub struct {
+	name  string
+	wants bool
+}
+
+func (p *rawDemandStub) GetName() string                                  { return p.name }
+func (p *rawDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
+func (p *rawDemandStub) Cleanup() error                                   { return nil }
+func (p *rawDemandStub) ConsumesRawPayloads() bool                        { return p.wants }

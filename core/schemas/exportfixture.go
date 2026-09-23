@@ -20,6 +20,13 @@ const ExportFixtureSecret = "BIFROST-CONTENT-SENTINEL"
 // "stripped correctly" from "dropped everything".
 const ExportFixtureMetadata = "bifrost-metadata-survives"
 
+// ExportFixtureRawSecret marks raw provider bodies.
+const ExportFixtureRawSecret = "BIFROST-RAW-SENTINEL"
+
+// ExportFixturePII is seeded into content and then redacted by the fixture, the
+// way the guardrails plugin does. It must never appear in a connector's output.
+const ExportFixturePII = "BIFROST-PII-SENTINEL"
+
 // ExportFixtureCost is the cost breakdown the fixture carries. Values are chosen
 // so every category is distinct and non-zero, and so the sides sum to the total
 // and each side's categories sum to that side — a connector's output can be
@@ -107,6 +114,8 @@ func NewExportFixtureTrace(opts ExportFixtureOptions) *Trace {
 			}},
 			OutputMessages: []MessageSummary{{Role: "assistant", Content: ExportFixtureSecret}},
 			ReasoningText:  ExportFixtureSecret,
+			RawRequest:     `{"prompt":"` + ExportFixtureRawSecret + " " + ExportFixturePII + `"}`,
+			RawResponse:    `{"text":"` + ExportFixtureRawSecret + " " + ExportFixturePII + `"}`,
 			Cost:           ExportFixtureCost(),
 		},
 		Events: []SpanEvent{{
@@ -156,7 +165,7 @@ func NewExportFixtureTrace(opts ExportFixtureOptions) *Trace {
 		}
 	}
 
-	return &Trace{
+	trace := &Trace{
 		RequestID:  "req-fixture",
 		TraceID:    "trace-fixture",
 		InternalID: "internal-fixture",
@@ -166,6 +175,14 @@ func NewExportFixtureTrace(opts ExportFixtureOptions) *Trace {
 		EndTime:    base.Add(250 * time.Millisecond),
 		Attributes: map[string]any{TraceAttrSessionID: ExportFixtureMetadata},
 	}
+
+	// Redact as the guardrails plugin does, so every connector is checked against
+	// a trace that has already been through redaction.
+	redaction := map[string]string{ExportFixturePII: "[REDACTED]"}
+	trace.SetRedactionReplacements(RedactionPhaseInput, redaction)
+	trace.SetRedactionReplacements(RedactionPhaseOutput, redaction)
+	trace.ApplyRedactionReplacements()
+	return trace
 }
 
 // exportFixtureAttrs sets every content key to the sentinel, plus metadata that
@@ -173,7 +190,7 @@ func NewExportFixtureTrace(opts ExportFixtureOptions) *Trace {
 func exportFixtureAttrs() map[string]any {
 	attrs := make(map[string]any, len(AllContentAttributeKeys())+4)
 	for _, key := range AllContentAttributeKeys() {
-		attrs[key] = ExportFixtureSecret
+		attrs[key] = ExportFixtureSecret + " " + ExportFixturePII
 	}
 	attrs[AttrRequestModel] = ExportFixtureMetadata
 	attrs[AttrProviderName] = ExportFixtureMetadata
@@ -206,6 +223,29 @@ func AssertNoContentLeak(payload []byte) []string {
 	if !strings.Contains(body, ExportFixtureMetadata) {
 		problems = append(problems,
 			"metadata sentinel is absent: stripping removed more than content")
+	}
+	if strings.Contains(body, ExportFixtureRawSecret) {
+		problems = append(problems, fmt.Sprintf(
+			"raw-payload sentinel %q appears in the exported payload: raw bodies "+
+				"must reach only connectors that opted in", ExportFixtureRawSecret))
+	}
+	return problems
+}
+
+// AssertRedactionApplied checks a content-ENABLED payload: the guardrail
+// replacement must have been applied, not merely stripped with the content.
+// Running this against a content-disabled payload proves nothing.
+func AssertRedactionApplied(payload []byte) []string {
+	var problems []string
+	body := string(payload)
+	if strings.Contains(body, ExportFixturePII) {
+		problems = append(problems, fmt.Sprintf(
+			"redaction sentinel %q survived export: guardrail replacements did not "+
+				"reach this carrier", ExportFixturePII))
+	}
+	if !strings.Contains(body, ExportFixtureSecret) {
+		problems = append(problems,
+			"content sentinel absent: run this against a content-enabled payload")
 	}
 	return problems
 }

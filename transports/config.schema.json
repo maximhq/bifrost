@@ -4442,6 +4442,11 @@
                       "description": "Omit conversation history (input/output) columns",
                       "default": false
                     },
+                    "export_raw_payloads": {
+                      "type": "boolean",
+                      "description": "Store the raw provider request/response bodies in the raw_request and raw_response columns. Off by default: these carry provider-specific fields the normalized view does not. Guardrail redaction still applies. Also requires the provider's store_raw_request_response, and is suppressed by disable_content_logging. Bodies over 256 KB are dropped.",
+                      "default": false
+                    },
                     "request_headers": {
                       "type": "array",
                       "items": {
@@ -4867,6 +4872,11 @@
         "disable_content_logging": {
           "type": "boolean",
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
+          "default": false
+        },
+        "export_raw_payloads": {
+          "type": "boolean",
+          "description": "Attach the raw provider request/response bodies to LLM spans. Off by default: these carry provider-specific fields the normalized view does not. Guardrail redaction still applies. Also requires the provider's store_raw_request_response, and is suppressed by disable_content_logging. Bodies over 256 KB are dropped.",
           "default": false
         },
         "group_traces_by_session": {

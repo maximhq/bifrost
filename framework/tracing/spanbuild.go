@@ -12,6 +12,8 @@ type SpanBuildOptions struct {
 	// WantContent is false when no connector reads message content, in which
 	// case messages are never summarized and never marshalled.
 	WantContent bool
+	// WantRawPayloads is true only when a connector declared RawPayloadConsumer.
+	WantRawPayloads bool
 }
 
 // BuildLLMSpanData assembles the typed payload for an LLM-call span.
@@ -155,6 +157,10 @@ func buildResponseSide(d *schemas.LLMSpanData, resp *schemas.BifrostResponse, op
 
 	ef := resp.GetExtraFields()
 	if ef != nil {
+		if opts.WantRawPayloads {
+			d.RawRequest = schemas.EncodeRawPayload(ef.RawRequest)
+			d.RawResponse = schemas.EncodeRawPayload(ef.RawResponse)
+		}
 		d.ResponseModel = ef.ResolvedModelUsed
 		if ef.ResolvedModelUsed != "" && ef.OriginalModelRequested != "" &&
 			ef.ResolvedModelUsed != ef.OriginalModelRequested {

@@ -160,6 +160,9 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 		} else if c, ok := plugin.(schemas.OverheadSpanConsumer); ok && c.ConsumesOverheadSpans() {
 			demand.PluginSpans = true
 		}
+		if c, ok := plugin.(schemas.RawPayloadConsumer); ok && c.ConsumesRawPayloads() {
+			demand.RawPayloads = true
+		}
 	}
 	t.cachedDemand.Store(&demand)
 }
@@ -167,7 +170,8 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 // spanBuildOptions derives the per-request build options from connector demand,
 // so message content is summarized and marshalled only when something reads it.
 func (t *Tracer) spanBuildOptions() SpanBuildOptions {
-	return SpanBuildOptions{WantContent: t.Demand().Content}
+	d := t.Demand()
+	return SpanBuildOptions{WantContent: d.Content, WantRawPayloads: d.RawPayloads}
 }
 
 // wantsSpanKind reports whether any connector consumes spans of this kind. A
@@ -198,6 +202,8 @@ type TraceDemand struct {
 	// PluginSpans is true when at least one connector exports plugin hook spans
 	// or decomposes them into an overhead breakdown.
 	PluginSpans bool
+	// RawPayloads is true only when a connector explicitly asks; unstated means false.
+	RawPayloads bool
 }
 
 // Demand returns the connector demand union.
@@ -217,6 +223,7 @@ func (t *Tracer) Demand() TraceDemand {
 }
 
 // fullTraceDemand is the fail-safe: produce everything when demand is unknown.
+// RawPayloads stays false: opt-in, so "unknown" cannot mean "build them".
 var fullTraceDemand = TraceDemand{Any: true, Content: true, PluginSpans: true}
 
 // ShouldCaptureRequestHeaders reports whether any observability plugin has opted into

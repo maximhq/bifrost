@@ -2,9 +2,11 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
@@ -380,5 +382,123 @@ func TestAssertCostBreakdownRejectsNonFinite(t *testing.T) {
 	ok := CostAttributeLookup(CostAttributes(ExportFixtureCost()))
 	if problems := AssertCostBreakdown(ok); len(problems) != 0 {
 		t.Errorf("fixture breakdown reported problems: %v", problems)
+	}
+}
+
+// Guardrail redaction must reach the typed payload too: span.LLM is a separate
+// carrier from Attributes, and connectors read raw bodies from it.
+func TestRedactionReachesTypedPayload(t *testing.T) {
+	const pii = "sk-SECRET-TOKEN"
+	d := &LLMSpanData{
+		RawRequest:     `{"prompt":"` + pii + `"}`,
+		RawResponse:    `{"text":"` + pii + `"}`,
+		InputMessages:  []MessageSummary{{Role: "user", Content: pii, ToolCalls: []ToolCallSummary{{Args: pii}}}},
+		OutputMessages: []MessageSummary{{Role: "assistant", Content: pii}},
+		ReasoningText:  pii,
+	}
+	span := &Span{SpanID: "s1", Kind: SpanKindLLMCall, Attributes: d.Attributes(), LLM: d}
+	tr := &Trace{TraceID: "t1", RootSpan: span, Spans: []*Span{span}}
+
+	tr.SetRedactionReplacements(RedactionPhaseInput, map[string]string{pii: "[REDACTED]"})
+	tr.SetRedactionReplacements(RedactionPhaseOutput, map[string]string{pii: "[REDACTED]"})
+	tr.ApplyRedactionReplacements()
+
+	for name, got := range map[string]string{
+		"RawRequest":     d.RawRequest,
+		"RawResponse":    d.RawResponse,
+		"InputMessages":  d.InputMessages[0].Content,
+		"ToolCall.Args":  d.InputMessages[0].ToolCalls[0].Args,
+		"OutputMessages": d.OutputMessages[0].Content,
+		"ReasoningText":  d.ReasoningText,
+	} {
+		if strings.Contains(got, pii) {
+			t.Errorf("span.LLM.%s was not redacted: %q", name, got)
+		}
+	}
+}
+
+// Raw bodies arrive as interface{} holding whatever the provider stored. A byte
+// slice must come through as text: marshalling it would base64 the body.
+func TestEncodeRawPayloadShapes(t *testing.T) {
+	const want = `{"a":1}`
+	for name, v := range map[string]any{
+		"string":          want,
+		"[]byte":          []byte(want),
+		"json.RawMessage": json.RawMessage(want),
+		"map":             map[string]any{"a": 1},
+	} {
+		if got := EncodeRawPayload(v); got != want {
+			t.Errorf("%s: EncodeRawPayload = %q, want %q", name, got, want)
+		}
+	}
+	if got := EncodeRawPayload(nil); got != "" {
+		t.Errorf("nil: got %q, want empty", got)
+	}
+	// Over-cap, in every shape.
+	huge := strings.Repeat("x", RawPayloadCap+1)
+	for name, v := range map[string]any{"string": huge, "[]byte": []byte(huge), "json.RawMessage": json.RawMessage(huge)} {
+		if got := EncodeRawPayload(v); got != "" {
+			t.Errorf("%s over cap: kept %d bytes, want dropped", name, len(got))
+		}
+	}
+}
+
+// Pins the accessors the connectors used to each define privately. The copies
+// disagreed on return type and nil handling; this is the single contract.
+func TestSpanAttributeAccessors(t *testing.T) {
+	attrs := map[string]any{
+		"s": "v", "i": 7, "i64": int64(8), "f": 9.5, "wrong": []string{"x"},
+	}
+	if got := GetStringAttr(attrs, "s"); got != "v" {
+		t.Errorf("GetStringAttr = %q, want v", got)
+	}
+	for _, k := range []string{"missing", "i", "wrong"} {
+		if got := GetStringAttr(attrs, k); got != "" {
+			t.Errorf("GetStringAttr(%q) = %q, want empty", k, got)
+		}
+	}
+	for k, want := range map[string]int64{"i": 7, "i64": 8, "f": 9, "missing": 0, "wrong": 0} {
+		if got := GetInt64Attr(attrs, k); got != want {
+			t.Errorf("GetInt64Attr(%q) = %d, want %d", k, got, want)
+		}
+	}
+	if got := GetIntAttr(attrs, "i64"); got != 8 {
+		t.Errorf("GetIntAttr = %d, want 8", got)
+	}
+	if v, ok := GetFloat64AttrOK(attrs, "i"); !ok || v != 7 {
+		t.Errorf("GetFloat64AttrOK(int) = %v,%v want 7,true", v, ok)
+	}
+	if _, ok := GetFloat64AttrOK(attrs, "missing"); ok {
+		t.Error("GetFloat64AttrOK(missing) reported present")
+	}
+	// Nil maps must not panic.
+	_ = GetStringAttr(nil, "s")
+	_ = GetInt64Attr(nil, "i")
+	if _, ok := GetFloat64AttrOK(nil, "f"); ok {
+		t.Error("nil map reported a value")
+	}
+}
+
+// Datadog's copy of this had no nil guard and would panic; Splunk's did. Both
+// now share this one, so the contract is pinned here.
+func TestFinalAttemptSpan(t *testing.T) {
+	at := func(sec int, kind SpanKind) *Span {
+		return &Span{Kind: kind, EndTime: time.Unix(int64(1700000000+sec), 0)}
+	}
+	early, late := at(1, SpanKindLLMCall), at(9, SpanKindRetry)
+
+	tr := &Trace{Spans: []*Span{early, nil, at(5, SpanKindHTTPRequest), late}}
+	if got := FinalAttemptSpan(tr); got != late {
+		t.Errorf("FinalAttemptSpan picked %v, want the latest LLM/retry span", got)
+	}
+	// Non-LLM spans are never the final attempt.
+	if got := FinalAttemptSpan(&Trace{Spans: []*Span{at(9, SpanKindHTTPRequest)}}); got != nil {
+		t.Errorf("FinalAttemptSpan returned a non-LLM span: %v", got)
+	}
+	if got := FinalAttemptSpan(&Trace{Spans: []*Span{nil}}); got != nil {
+		t.Errorf("nil-only trace returned %v", got)
+	}
+	if got := FinalAttemptSpan(nil); got != nil {
+		t.Errorf("nil trace returned %v", got)
 	}
 }
