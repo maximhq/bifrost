@@ -14,6 +14,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // newEncryptedReasoningRequest builds a Responses request whose input replays a
@@ -70,6 +71,17 @@ func encryptedContentError() *schemas.BifrostError {
 			Type:    schemas.Ptr("invalid_request_error"),
 			Code:    schemas.Ptr("invalid_encrypted_content"),
 			Message: "The encrypted content for item rs_067d4968 could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+		},
+	}
+}
+
+func bedrockReasoningModelMismatchError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Code:    schemas.Ptr("validation_error"),
+			Message: "encrypted reasoning was created for a different account or model",
 		},
 	}
 }
@@ -184,6 +196,12 @@ func TestExecuteRequestWithRetries_HealsOnEveryProviderRejection(t *testing.T) {
 					Message: "Publisher Model error: messages.1.content.0: Invalid `data` in `redacted_thinking` block",
 				},
 			},
+		},
+		{
+			name:     "bedrock runtime model switch",
+			provider: schemas.Bedrock,
+			model:    "us.openai.gpt-5.6-terra",
+			err:      bedrockReasoningModelMismatchError(),
 		},
 		{
 			// Bedrock Mantle serves OpenAI-family models over an OpenAI-compatible
@@ -740,6 +758,187 @@ func TestStripResponsesEncryptedContent(t *testing.T) {
 			t.Error("expected the typed input to be left alone in large payload mode")
 		}
 	})
+}
+
+func TestIsEncryptedReasoningRejection_BedrockModelSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		name, message string
+		status        int
+		want          bool
+	}{
+		{"exact refusal", "encrypted reasoning was created for a different account or model", 400, true},
+		{"wrapped mixed case", "Bedrock: Encrypted Reasoning Was Created For A Different Account Or Model.", 400, true},
+		{"server error", "encrypted reasoning was created for a different account or model", 500, false},
+		{"auth error", "encrypted reasoning was created for a different account or model", 403, false},
+		{"unrelated validation", "invalid max_output_tokens", 400, false},
+		{"different resource", "resource was created for a different account or model", 400, false},
+		{"reasoning field only", "encrypted reasoning is required", 400, false},
+		{"reasoning validation", "invalid encrypted reasoning length", 400, false},
+		{"modified block exclusion", "encrypted reasoning was created for a different account or model; thinking blocks cannot be modified", 400, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := bedrockReasoningModelMismatchError()
+			err.Error.Message = tc.message
+			err.StatusCode = &tc.status
+			if got := isEncryptedReasoningRejection(err); got != tc.want {
+				t.Fatalf("isEncryptedReasoningRejection() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Exercise the real Bedrock runtime route and OpenAI error parser, including an HTTP
+// rejection before SSE starts. Capturing both bodies proves recovery changes the wire
+// payload without changing the model, credential, or ordinary conversation history.
+func TestBedrockResponsesModelSwitchRecovery(t *testing.T) {
+	const model = "us.openai.gpt-5.6-terra"
+	const refusal = `{"error":{"type":"invalid_request_error","code":"validation_error","message":"encrypted reasoning was created for a different account or model"}}`
+	for _, streaming := range []bool{false, true} {
+		mode := "unary"
+		if streaming {
+			mode = "streaming"
+		}
+		for _, tc := range []struct {
+			name          string
+			encrypted     bool
+			keepRejecting bool
+			wantAttempts  int
+		}{
+			{"heals", true, false, 2},
+			{"second rejection stops", true, true, 2},
+			{"nothing to strip", false, true, 1},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				recorder := &recordingServer{}
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					attempt := recorder.record(string(body))
+					if r.URL.Path != "/openai/v1/responses" || r.Method != http.MethodPost {
+						t.Errorf("unexpected route: %s %s", r.Method, r.URL.Path)
+					}
+					if r.Header.Get("Authorization") != "Bearer bedrock-test-key" {
+						t.Error("runtime request did not use the expected credential")
+					}
+					if attempt == 1 || tc.keepRejecting {
+						writeJSON(w, http.StatusBadRequest, refusal)
+						return
+					}
+					if streaming {
+						sseHandler(
+							`{"type":"response.output_text.delta","sequence_number":0,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"tests pass"}`,
+							`{"type":"response.completed","sequence_number":1,"response":`+successBody+`}`,
+						)(w, r)
+					} else {
+						writeJSON(w, http.StatusOK, successBody)
+					}
+				}))
+				defer upstream.Close()
+
+				account := NewMockAccount()
+				account.AddProvider(schemas.Bedrock, 1, 1)
+				account.configs[schemas.Bedrock].NetworkConfig.MaxRetries = 0
+				account.configs[schemas.Bedrock].NetworkConfig.InsecureSkipVerify = true
+				account.SetKeysForProvider(schemas.Bedrock, []schemas.Key{{
+					ID: "bedrock-key", Value: *schemas.NewSecretVar("bedrock-test-key"),
+					Models: schemas.WhiteList{"*"}, Weight: 100, UseOpenAIEndpoints: schemas.Ptr(true),
+					BedrockKeyConfig: &schemas.BedrockKeyConfig{
+						Region:    schemas.NewSecretVar("us-east-1"),
+						Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(strings.TrimPrefix(upstream.URL, "https://"))},
+					},
+				}})
+				client := newStreamTestClient(t, account)
+				req := newEncryptedReasoningRequest("foreign-luna-ciphertext").ResponsesRequest
+				req.Provider, req.Model = schemas.Bedrock, model
+				if !tc.encrypted {
+					req.Input[1].ResponsesReasoning.EncryptedContent = nil
+				}
+				req.Input = append(req.Input,
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_pwd"), Name: schemas.Ptr("pwd"), Arguments: schemas.Ptr("{}"),
+						},
+					},
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_pwd"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("/home/test")},
+						},
+					},
+				)
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				var requestErr *schemas.BifrostError
+				if streaming {
+					var stream chan *schemas.BifrostStreamChunk
+					stream, requestErr = client.ResponsesStreamRequest(ctx, req)
+					var text strings.Builder
+					completed := false
+					if stream != nil {
+						for chunk := range stream {
+							if chunk.BifrostError != nil {
+								t.Errorf("unexpected stream error: %v", chunk.BifrostError)
+							}
+							if response := chunk.BifrostResponsesStreamResponse; response != nil {
+								if response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && response.Delta != nil {
+									text.WriteString(*response.Delta)
+								}
+								completed = completed || response.Type == schemas.ResponsesStreamResponseTypeCompleted
+							}
+						}
+					}
+					if !tc.keepRejecting && (text.String() != "tests pass" || !completed) {
+						t.Errorf("expected successful completed stream, got text=%q completed=%v", text.String(), completed)
+					}
+				} else {
+					var response *schemas.BifrostResponsesResponse
+					response, requestErr = client.ResponsesRequest(ctx, req)
+					if !tc.keepRejecting && (response == nil || response.ID == nil || *response.ID != "resp_healed_1") {
+						t.Errorf("expected healed response, got %v", response)
+					}
+				}
+				if tc.keepRejecting {
+					if requestErr == nil || requestErr.Error == nil || requestErr.Error.Message != bedrockReasoningModelMismatchError().Error.Message {
+						t.Errorf("expected original rejection, got %v", requestErr)
+					}
+				} else if requestErr != nil {
+					t.Errorf("expected recovery, got %v", requestErr)
+				}
+				bodies := recorder.snapshot()
+				if len(bodies) != tc.wantAttempts {
+					t.Fatalf("attempts = %d, want %d", len(bodies), tc.wantAttempts)
+				}
+				for _, body := range bodies {
+					if gjson.Get(body, "model").String() != model || gjson.Get(body, "stream").Bool() != streaming {
+						t.Errorf("model or stream mode changed: %s", body)
+					}
+				}
+				if tc.encrypted {
+					if gjson.Get(bodies[0], "input.1.encrypted_content").String() != "foreign-luna-ciphertext" || gjson.Get(bodies[1], "input.1.encrypted_content").Exists() {
+						t.Fatal("expected ciphertext only on the first attempt")
+					}
+					for _, path := range []string{"input.#", "input.0", "input.1.id", "input.1.summary", "input.2", "input.3"} {
+						before, after := gjson.Get(bodies[0], path), gjson.Get(bodies[1], path)
+						if !before.Exists() || before.Raw != after.Raw {
+							t.Errorf("retry changed %s: %s -> %s", path, before.Raw, after.Raw)
+						}
+					}
+				}
+				stripLogs := 0
+				for _, entry := range ctx.GetRoutingEngineLogs() {
+					if strings.Contains(entry.Message, "Stripped unverifiable encrypted reasoning content") {
+						stripLogs++
+					}
+				}
+				if stripLogs != tc.wantAttempts-1 {
+					t.Errorf("strip log count = %d, want %d", stripLogs, tc.wantAttempts-1)
+				}
+			})
+		}
+	}
 }
 
 func TestIsEncryptedReasoningRejection(t *testing.T) {
