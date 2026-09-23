@@ -8,9 +8,9 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel, RequestTypeLabels } from "@/lib/constants/logs";
 import { getErrorMessage, useCreatePricingOverrideMutation, useGetProvidersQuery, useUpdatePricingOverrideMutation } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
@@ -203,6 +203,11 @@ export function renderFields(
 	);
 }
 
+// An override with no provider applies across all of them; the form spells that absence as
+// a sentinel so the control has something to show. Module level for a stable identity.
+const ALL_PROVIDERS_VALUE = "__none__";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All providers" };
+
 interface PricingOverrideDrawerProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -263,7 +268,6 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const [requestTypePopoverOpen, setRequestTypePopoverOpen] = useState(false);
 
 	const isSaving = isCreating || isPatching;
-	const providers = useMemo<ModelProvider[]>(() => (providersError ? [] : (providersData ?? [])), [providersData, providersError]);
 
 	const scopeRoot = watch("scopeRoot");
 	const providerID = watch("providerID");
@@ -727,51 +731,18 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 												render={({ field }) => (
 													<FormItem>
 														<FormLabel>Provider</FormLabel>
-														<Select
-															value={field.value || "__none__"}
-															onValueChange={(value) => {
-																field.onChange(value === "__none__" ? "" : value);
-																setValue("providerKeyID", "");
-															}}
-														>
-															<FormControl>
-																<SelectTrigger
-																	data-testid="pricing-override-provider-select"
-																	className="w-full"
-																	disabled={isProvidersLoading || !!providersError}
-																>
-																	{isProvidersLoading ? (
-																		<span className="text-muted-foreground">Loading...</span>
-																	) : field.value ? (
-																		<div className="flex items-center gap-1.5">
-																			<RenderProviderIcon
-																				provider={field.value as ProviderIconType}
-																				size="sm"
-																				className="h-4 w-4 shrink-0"
-																			/>
-																			<span>{getProviderLabel(field.value)}</span>
-																		</div>
-																	) : (
-																		<span className="text-muted-foreground">All providers</span>
-																	)}
-																</SelectTrigger>
-															</FormControl>
-															<SelectContent>
-																<SelectItem value="__none__">All providers</SelectItem>
-																{providers.map((provider) => (
-																	<SelectItem key={provider.name} value={provider.name}>
-																		<div className="flex items-center gap-1.5">
-																			<RenderProviderIcon
-																				provider={provider.name as ProviderIconType}
-																				size="sm"
-																				className="h-4 w-4 shrink-0"
-																			/>
-																			<span>{getProviderLabel(provider.name)}</span>
-																		</div>
-																	</SelectItem>
-																))}
-															</SelectContent>
-														</Select>
+														<FormControl>
+															<ProviderSelector
+																data-testid="pricing-override-provider-select"
+																allOption={ALL_PROVIDERS_OPTION}
+																value={field.value || ALL_PROVIDERS_VALUE}
+																onChange={(value: string) => {
+																	field.onChange(value === ALL_PROVIDERS_VALUE ? "" : value);
+																	setValue("providerKeyID", "");
+																}}
+																disabled={isProvidersLoading || !!providersError}
+															/>
+														</FormControl>
 														{providersError ? (
 															<p className="text-destructive mt-1 text-xs">Failed to load providers: {getErrorMessage(providersError)}</p>
 														) : null}

@@ -3,12 +3,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelSelector } from "@/components/ui/modelSelector";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { EmbeddingSupportedProviders, getProviderLabel } from "@/lib/constants/logs";
+import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	useCreatePluginMutation,
@@ -392,31 +391,18 @@ export default function CachingView() {
 											<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 												<div className="space-y-2">
 													<Label htmlFor="provider">Configured Providers</Label>
-													<Select
-														value={cacheConfig.provider}
-														onValueChange={(value: ModelProviderName) =>
+													<ProviderSelector
+														inputId="provider"
+														data-testid="caching-provider-select"
+														filter={supportsEmbedding}
+														value={cacheConfig.provider ?? ""}
+														onChange={(value: string) =>
 															updateLocal({
-																provider: value,
+																provider: value as ModelProviderName,
 																embedding_model: value === cacheConfig.provider ? cacheConfig.embedding_model : "",
 															})
 														}
-													>
-														<SelectTrigger className="w-full" data-testid="caching-provider-select">
-															<SelectValue placeholder="Select provider" />
-														</SelectTrigger>
-														<SelectContent>
-															{embeddingProviders
-																.filter((provider) => provider.name)
-																.map((provider) => (
-																	<SelectItem key={provider.name} value={provider.name}>
-																		<div className="flex items-center gap-2">
-																			<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
-																			<span>{getProviderLabel(provider.name)}</span>
-																		</div>
-																	</SelectItem>
-																))}
-														</SelectContent>
-													</Select>
+													/>
 												</div>
 												<div className="space-y-2">
 													<Label htmlFor="embedding_model">Embedding Model*</Label>

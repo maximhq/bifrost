@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
 import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
@@ -13,20 +14,12 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
 import { budgetSignature } from "@/lib/utils/governance";
-import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
 // Side-effect import: pulls in downstream scope registrations (e.g. enterprise
 // registers "user" + user picker). The OSS-build fallback is an empty module.
 import "@enterprise/lib/registrations/modelLimitScopes";
-import {
-	getErrorMessage,
-	useCreateModelConfigMutation,
-	useGetProvidersQuery,
-	useLazyGetModelsQuery,
-	useUpdateModelConfigMutation,
-} from "@/lib/store";
-import { KnownProvider } from "@/lib/types/config";
+import { getErrorMessage, useCreateModelConfigMutation, useLazyGetModelsQuery, useUpdateModelConfigMutation } from "@/lib/store";
 import { ModelConfig } from "@/lib/types/governance";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -71,6 +64,11 @@ const formSchema = z
 
 type FormData = z.infer<typeof formSchema>;
 
+// A limit with no provider applies across all of them; the form spells that absence as a
+// sentinel so the control has something to show. Module level so its identity is stable.
+const ALL_PROVIDERS_VALUE = "all";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All Providers" };
+
 export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: ModelLimitSheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const isEditing = !!modelConfig;
@@ -91,15 +89,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		}, 150);
 	};
 
-	const { data: providersData } = useGetProvidersQuery();
 	const [createModelConfig, { isLoading: isCreating }] = useCreateModelConfigMutation();
 	// Defers the save until the operator says whether to clear accumulated spend.
 	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
 	const [updateModelConfig, { isLoading: isUpdating }] = useUpdateModelConfigMutation();
 	const [getModels] = useLazyGetModelsQuery();
 	const isLoading = isCreating || isUpdating;
-
-	const availableProviders = providersData || [];
 
 	// Handle provider change - clear model if it doesn't exist for the new provider
 	const handleProviderChange = async (newProvider: string, currentModel: string, onChange: (value: string) => void) => {
@@ -453,36 +448,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								render={({ field }) => (
 									<FormItem>
 										<FormLabel>Provider</FormLabel>
-										<Select
-											value={field.value || "all"}
-											onValueChange={(value) =>
-												handleProviderChange(value === "all" ? "" : value, form.getValues("modelName"), field.onChange)
-											}
-											disabled={isEditing}
-										>
-											<FormControl>
-												<SelectTrigger className="w-full" data-testid="model-limit-provider-select">
-													<SelectValue placeholder="All Providers" />
-												</SelectTrigger>
-											</FormControl>
-											<SelectContent>
-												<SelectItem value="all">All Providers</SelectItem>
-												{availableProviders
-													.filter((p) => p.name)
-													.map((provider) => (
-														<SelectItem key={provider.name} value={provider.name}>
-															<RenderProviderIcon
-																provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
-																size="sm"
-																className="h-4 w-4"
-															/>
-															{provider.custom_provider_config
-																? provider.name
-																: ProviderLabels[provider.name as ProviderName] || provider.name}
-														</SelectItem>
-													))}
-											</SelectContent>
-										</Select>
+										<FormControl>
+											<ProviderSelector
+												data-testid="model-limit-provider-select"
+												allOption={ALL_PROVIDERS_OPTION}
+												value={field.value || ALL_PROVIDERS_VALUE}
+												onChange={(value: string) =>
+													handleProviderChange(value === ALL_PROVIDERS_VALUE ? "" : value, form.getValues("modelName"), field.onChange)
+												}
+												disabled={isEditing}
+											/>
+										</FormControl>
 										<FormMessage />
 									</FormItem>
 								)}

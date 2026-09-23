@@ -2,7 +2,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useDebouncedValue } from "@/hooks/useDebounce";
@@ -17,6 +17,11 @@ import { useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
 import OverriddenPrice from "./overriddenPrice";
+
+// The filter spells "no provider filter" as a sentinel, since the control needs a value to
+// show for it. Module level so its identity is stable across renders.
+const ALL_PROVIDERS_VALUE = "__all__";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All providers" };
 
 const PAGE_SIZE = 25;
 
@@ -96,8 +101,6 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 		setOffset(totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE);
 	}, [totalCount, offset]);
 
-	const providerOptions = useMemo(() => Array.from(new Set((providersData ?? []).map((p) => p.name))).sort(), [providersData]);
-
 	// Clear the provider filter if the selected provider is no longer in the list
 	useEffect(() => {
 		if (!providerFilter || !providersData) return;
@@ -143,19 +146,13 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 							data-testid="model-catalog-search-input"
 						/>
 					</div>
-					<Select value={providerFilter || "__all__"} onValueChange={(v) => setUrlState({ provider: v === "__all__" ? null : v })}>
-						<SelectTrigger className="w-full sm:w-[200px]" data-testid="model-catalog-provider-filter">
-							<SelectValue placeholder="All providers" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="__all__">All providers</SelectItem>
-							{providerOptions.map((p) => (
-								<SelectItem key={p} value={p}>
-									{ProviderLabels[p as ProviderName] || p}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<ProviderSelector
+						data-testid="model-catalog-provider-filter"
+						className="w-full sm:w-[200px]"
+						allOption={ALL_PROVIDERS_OPTION}
+						value={providerFilter || ALL_PROVIDERS_VALUE}
+						onChange={(v: string) => setUrlState({ provider: v === ALL_PROVIDERS_VALUE ? null : v })}
+					/>
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border" data-testid="model-catalog-attributes-table">

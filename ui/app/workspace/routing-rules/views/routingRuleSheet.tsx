@@ -7,16 +7,16 @@ import { CustomerSelector } from "@/components/entitySelectors/customerSelector"
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { Button } from "@/components/ui/button";
-import { ComboboxSelect } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector, type ProviderSelectorOption } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { resolveProviderIconKey } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import { getErrorMessage } from "@/lib/store";
@@ -37,7 +37,7 @@ import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/uti
 import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Plus, Trash2, X } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
@@ -128,22 +128,33 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const UserPicker = getUserPicker();
 	const fallbacks = watch("fallbacks");
 
-	// Get available providers from configured providers, plus any provider already
-	// referenced by the current targets, existing rules' targets, or rules' fallbacks
-	// so edited/removed providers are still visible in the dropdown.
-	const availableProviders = Array.from(
-		new Set([
-			...providersData.map((p) => p.name),
-			...(targets.map((t) => t.provider).filter(Boolean) as string[]),
-			...(rules.flatMap((r) => r.targets?.map((t) => t.provider).filter(Boolean) ?? []) as string[]),
-			...rules.flatMap((r) => (r.fallbacks ?? []).map((f) => normalizeFallback(f).provider?.trim()).filter(Boolean) as string[]),
-		]),
+	// The selector lists the configured providers on its own. These are the extras: a
+	// provider the current targets, another rule's targets, or a fallback still names after
+	// it was deleted, so an existing rule keeps rendering what it actually points at.
+	const configuredNames = useMemo(() => new Set<string>(providersData.map((p) => p.name)), [providersData]);
+	const referencedNames = useMemo(
+		() =>
+			new Set<string>([
+				...(targets.map((t) => t.provider).filter(Boolean) as string[]),
+				...(rules.flatMap((r) => r.targets?.map((t) => t.provider).filter(Boolean) ?? []) as string[]),
+				...rules.flatMap((r) => (r.fallbacks ?? []).map((f) => normalizeFallback(f).provider?.trim()).filter(Boolean) as string[]),
+			]),
+		[targets, rules],
 	);
-	const providerOptions = availableProviders.map((prov) => ({
-		label: getProviderLabel(prov),
-		value: prov,
-		icon: <RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />,
-	}));
+	const referencedProviderOptions = useMemo<ProviderSelectorOption[]>(
+		() =>
+			Array.from(referencedNames)
+				.filter((name) => !configuredNames.has(name))
+				.map((name) => ({ value: name, label: getProviderLabel(name), iconKey: resolveProviderIconKey(name) })),
+		[referencedNames, configuredNames],
+	);
+
+	// The CEL builder still needs the flat union: it offers providers as literal values in an
+	// expression, where one a rule already names has to stay offerable.
+	const availableProviders = useMemo(
+		() => Array.from(new Set<string>([...configuredNames, ...referencedNames])),
+		[configuredNames, referencedNames],
+	);
 
 	// Initialize form data when editing rule changes
 	useEffect(() => {
@@ -543,7 +554,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										key={index}
 										target={target}
 										index={index}
-										providerOptions={providerOptions}
+										referencedProviderOptions={referencedProviderOptions}
 										allKeys={allKeysData}
 										showRemove={targets.length > 1}
 										onUpdate={updateTarget}
@@ -590,7 +601,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											key={index}
 											fallback={fallback}
 											index={index}
-											providerOptions={providerOptions}
+											referencedProviderOptions={referencedProviderOptions}
 											allKeys={allKeysData}
 											onUpdate={updateFallback}
 											onRemove={removeFallback}
@@ -681,30 +692,26 @@ function ProviderKeySelect({ idPrefix, clearLabel, provider, keyId, allKeys, onC
 interface FallbackRowProps {
 	fallback: RoutingFallbackFormData;
 	index: number;
-	providerOptions: Array<{
-		label: string;
-		value: string;
-		icon: React.ReactNode;
-	}>;
+	referencedProviderOptions: ProviderSelectorOption[];
 	allKeys: Array<{ key_id: string; name: string; provider: string }>;
 	onUpdate: (index: number, changes: Partial<RoutingFallbackFormData>) => void;
 	onRemove: (index: number) => void;
 }
 
-function FallbackRow({ fallback, index, providerOptions, allKeys, onUpdate, onRemove }: FallbackRowProps) {
+function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUpdate, onRemove }: FallbackRowProps) {
 	const provider = fallback.provider || "";
 
 	return (
 		<div className="space-y-2 rounded-lg border p-3" data-testid={`routing-fallback-${index}`}>
 			<div className="flex items-center gap-2">
 				<div className="flex-1">
-					<ComboboxSelect
-						options={providerOptions}
-						value={provider || null}
+					<ProviderSelector
+						extraOptions={referencedProviderOptions}
+						value={provider}
 						// A key belongs to one provider, so switching providers invalidates the pin.
-						onValueChange={(value) => onUpdate(index, { provider: value ?? "", model: "", key_id: "" })}
+						onChange={(value: string) => onUpdate(index, { provider: value, model: "", key_id: "" })}
 						placeholder="Select provider..."
-						className="h-9"
+						className="!h-9 !min-h-9"
 						data-testid={`routing-fallback-${index}-provider-select`}
 						noPortal
 					/>
@@ -748,18 +755,14 @@ function FallbackRow({ fallback, index, providerOptions, allKeys, onUpdate, onRe
 interface TargetRowProps {
 	target: RoutingTargetFormData;
 	index: number;
-	providerOptions: Array<{
-		label: string;
-		value: string;
-		icon: React.ReactNode;
-	}>;
+	referencedProviderOptions: ProviderSelectorOption[];
 	allKeys: Array<{ key_id: string; name: string; provider: string }>;
 	showRemove: boolean;
 	onUpdate: (index: number, field: keyof RoutingTargetFormData, value: string | number) => void;
 	onRemove: (index: number) => void;
 }
 
-function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpdate, onRemove }: TargetRowProps) {
+function TargetRow({ target, index, referencedProviderOptions, allKeys, showRemove, onUpdate, onRemove }: TargetRowProps) {
 	return (
 		<div className="space-y-3 rounded-lg border p-3" data-testid={`routing-target-${index}`}>
 			<div className="flex items-center justify-between">
@@ -803,16 +806,16 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 						Provider
 					</Label>
 					<div className="flex gap-1.5">
-						<ComboboxSelect
-							options={providerOptions}
-							value={target.provider || null}
-							onValueChange={(value) => {
-								onUpdate(index, "provider", value ?? "");
+						<ProviderSelector
+							extraOptions={referencedProviderOptions}
+							value={target.provider || ""}
+							onChange={(value: string) => {
+								onUpdate(index, "provider", value);
 								onUpdate(index, "model", "");
 								onUpdate(index, "key_id", "");
 							}}
 							placeholder="Incoming (optional)"
-							className="h-9 flex-1 text-sm"
+							className="!h-9 !min-h-9 flex-1 text-sm"
 							data-testid={`routing-target-${index}-provider-select`}
 							noPortal
 						/>
