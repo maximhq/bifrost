@@ -400,7 +400,8 @@ export type RequestType =
 	| "container_file_content"
 	| "container_file_delete"
 	| "websocket_responses"
-	| "realtime";
+	| "realtime"
+	| "live";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {

@@ -461,6 +461,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "ocr"
 	case schemas.ContainerCreateRequest:
 		return "container_create"
+	case schemas.LiveRequest:
+		return "live"
 	}
 	return "unknown"
 }
