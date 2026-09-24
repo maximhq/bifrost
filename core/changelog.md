@@ -1,1 +1,2 @@
 - [fix]: preserve opted-in Anthropic extra params through Responses conversion [@wangrat](https://github.com/wangrat)
+- [fix]: copy toolset_name in DeepCopyResponsesMessage [@citrocat](https://github.com/citrocat)
