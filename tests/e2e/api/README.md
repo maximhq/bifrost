@@ -392,6 +392,55 @@ Run locally (from this directory):
 # options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
 ```
 
+### Warp Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-v1-warp.postman_collection.json` | Asks Warp (the dashboard log-analysis agent) standard questions — incident RCA, errors, spend, latency, org breakdowns, conversation search, calendar windows, drill-down, follow-up chains — checks it declines what it cannot do (charts, files, and every write action) with the feature-request link instead of chart code or tool loops, and probes its guardrails: out-of-scope refusals, instruction overrides, a prompt injection planted in log content, and the two-questions-in-a-row cap. Also pins request validation (400/413) and SSE framing. **Generated — do not hand-edit.** |
+| `runners/build-warp-collection.mjs` | Generator for the collection above. The case table (question + expectations) is the source of truth. |
+| `runners/lib/warp-case.mjs` | Case driver embedded in the collection: answers Warp's `ask_user` questions the way the dashboard does, carries follow-up chains, retries a missed case once. Unit tests: `runners/lib/warp-case.test.mjs`. |
+| `runners/individual/run-newman-warp-tests.sh` | Recreates a throwaway Postgres database, boots Bifrost with the `warp` flag on, seeds it with `tests/cmd/seed/warpseed`, and runs the collection. |
+
+This runner **boots its own server on its own database** (`bifrost_warp_e2e` by
+default): Warp answers questions about every row in the logs table, so any other
+traffic would change the answers. `warpseed -reset-db` recreates the database
+before boot; a second `warpseed` run after boot inserts a fixed-seed week of logs
+(an 18-minute anthropic `overloaded_error` incident, 20 scattered failures, a
+quieter prior week, lopsided team/user/app/customer splits, and pinned slowest,
+most-expensive and prompt-injection rows) and writes the facts the checks need
+(incident window, pinned row ids) to an env file handed to newman.
+
+It is **live and paid**: Warp's agent loop and its embeddings call OpenAI through
+`env.OPENAI_API_KEY` (default `gpt-5.6-luna` and `text-embedding-3-small`; override with `WARP_MODEL`). Locally you
+can skip the key and set `WARP_UPSTREAM_BIFROST=http://localhost:8080` instead: the test
+server then sends its OpenAI calls to that Bifrost's `/openai` route with a placeholder
+key, and that instance uses its own configured OpenAI key (it only forwards a caller's
+key when `allow_direct_keys` is on and the request sends `x-bf-direct-key`). Answers
+come from a model, so checks are structural (no agent error, the expected tools ran,
+the expected filter was applied) plus keyword checks against seeded facts, and each
+question case is retried once before it fails. Request validation and SSE framing
+make no model call and never retry.
+
+It needs Postgres and Weaviate (both in `tests/docker-compose.yml`) and a built
+`bifrost-http` binary. CI runs it from `.github/workflows/scripts/test-api-integrations.sh`.
+
+```bash
+make run-warp-test                                  # builds tmp/bifrost-http first
+make run-warp-test BINARY=tmp/bifrost-http FOLDER="Guardrails"
+# or directly, from this directory:
+./runners/individual/run-newman-warp-tests.sh --binary /path/to/bifrost-http
+# options: --port <port> (default 8093), --folder <name> (repeatable; Setup always runs), --html, --json, --verbose, --bail
+# env: OPENAI_API_KEY or WARP_UPSTREAM_BIFROST, POSTGRES_HOST/PORT/USER/PASSWORD, WARP_DB, WEAVIATE_HOST (default localhost:9000), WARP_MODEL, WARP_SEED
+```
+
+To change a question or its checks, edit `runners/build-warp-collection.mjs` and
+regenerate:
+
+```bash
+node runners/build-warp-collection.mjs
+node runners/lib/warp-case.test.mjs
+```
+
 ### Test Success Criteria
 
 A request **passes** if either:

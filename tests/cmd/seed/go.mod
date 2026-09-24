@@ -8,6 +8,7 @@ replace (
 )
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.10.2
 	github.com/maximhq/bifrost/framework v1.3.16
 	gorm.io/driver/postgres v1.6.0
@@ -72,7 +73,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
