@@ -118,6 +118,11 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		traceID = sessionTraceID(sessionID)
 	}
 
+	// A virtual key that turned content logging off marks the root span; it tightens this profile's
+	// own flag for this trace only and, like the flag, covers content attributes and raw payloads.
+	// The mark is never written as false, so it cannot loosen a profile that disables content.
+	traceDisableContent := disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
+
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		if !p.pluginSpanFilter.ShouldExportSpanWithOverhead(span, p.exportOverheadSpans) {
@@ -125,7 +130,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		}
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
 		// input/output onto it for trace-level display); child spans keep their full content.
-		spanDisableContent := disableContentLogging || (disableRootSpanContent && span == trace.RootSpan)
+		spanDisableContent := traceDisableContent || (disableRootSpanContent && span == trace.RootSpan)
 		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent, exportRawPayloads)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.

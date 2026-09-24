@@ -162,7 +162,7 @@ func IsContentAttribute(key string) bool {
 func AllContentAttributeKeys() []string {
 	return []string{
 		AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
-		AttrPrompt, AttrInstructions,
+		AttrPrompt, AttrInstructions, AttrSuffix,
 		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
 		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
 		AttrOutputMessages, AttrRespReasoningText,
