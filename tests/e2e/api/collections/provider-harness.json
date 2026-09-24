@@ -45966,6 +45966,258 @@
               }
             }
           ]
+        },
+        {
+          "name": "33.7 openai/gpt-6-sol tool_search keeps defer_loading on the wire (GPT-6 Sol never searched)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Find a tool that reports the weather, then use it for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Tool search only fires when the upstream sees BOTH the tool_search tool and tools",
+                  "// marked defer_loading. Bifrost used to strip defer_loading as Anthropic-only, so every",
+                  "// tool loaded eagerly and GPT-6 Sol never emitted tool_search_call. OpenAI documents",
+                  "// defer_loading on functions for gpt-5.4+: developers.openai.com/api/docs/guides/tools-tool-search",
+                  "pm.test('openai tool_search defer_loading: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('openai tool_search defer_loading: tool_search and defer_loading reach the provider', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'tool_search tool dropped before the provider: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'get_weather'; })[0];",
+                  "  pm.expect(fn, 'get_weather missing from outbound tools: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(fn.defer_loading, 'defer_loading stripped: every tool loads eagerly and the model never searches: ' + JSON.stringify(fn)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.8 azure/gpt-5.6-sol tool_search keeps defer_loading on the wire (GPT-6 Sol never searched)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Find a tool that reports the weather, then use it for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Tool search only fires when the upstream sees BOTH the tool_search tool and tools",
+                  "// marked defer_loading. Bifrost used to strip defer_loading as Anthropic-only, so every",
+                  "// tool loaded eagerly and GPT-6 Sol never emitted tool_search_call. OpenAI documents",
+                  "// defer_loading on functions for gpt-5.4+: developers.openai.com/api/docs/guides/tools-tool-search",
+                  "pm.test('azure tool_search defer_loading: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('azure tool_search defer_loading: tool_search and defer_loading reach the provider', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'tool_search tool dropped before the provider: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'get_weather'; })[0];",
+                  "  pm.expect(fn, 'get_weather missing from outbound tools: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(fn.defer_loading, 'defer_loading stripped: every tool loads eagerly and the model never searches: ' + JSON.stringify(fn)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.9 bedrock/openai.gpt-5.6-sol tool_search keeps defer_loading on the wire (GPT-6 Sol never searched)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Find a tool that reports the weather, then use it for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Tool search only fires when the upstream sees BOTH the tool_search tool and tools",
+                  "// marked defer_loading. Bifrost used to strip defer_loading as Anthropic-only, so every",
+                  "// tool loaded eagerly and GPT-6 Sol never emitted tool_search_call. OpenAI documents",
+                  "// defer_loading on functions for gpt-5.4+: developers.openai.com/api/docs/guides/tools-tool-search",
+                  "pm.test('bedrock tool_search defer_loading: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock tool_search defer_loading: tool_search and defer_loading reach the provider', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'tool_search tool dropped before the provider: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'get_weather'; })[0];",
+                  "  pm.expect(fn, 'get_weather missing from outbound tools: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(fn.defer_loading, 'defer_loading stripped: every tool loads eagerly and the model never searches: ' + JSON.stringify(fn)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.10 bedrock_mantle/openai.gpt-5.6-sol tool_search keeps defer_loading on the wire (GPT-6 Sol never searched)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Find a tool that reports the weather, then use it for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Tool search only fires when the upstream sees BOTH the tool_search tool and tools",
+                  "// marked defer_loading. Bifrost used to strip defer_loading as Anthropic-only, so every",
+                  "// tool loaded eagerly and GPT-6 Sol never emitted tool_search_call. OpenAI documents",
+                  "// defer_loading on functions for gpt-5.4+: developers.openai.com/api/docs/guides/tools-tool-search",
+                  "pm.test('bedrock_mantle tool_search defer_loading: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock_mantle tool_search defer_loading: tool_search and defer_loading reach the provider', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'tool_search tool dropped before the provider: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'get_weather'; })[0];",
+                  "  pm.expect(fn, 'get_weather missing from outbound tools: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(fn.defer_loading, 'defer_loading stripped: every tool loads eagerly and the model never searches: ' + JSON.stringify(fn)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
