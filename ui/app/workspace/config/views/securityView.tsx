@@ -35,6 +35,7 @@ export default function SecurityView() {
 	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
 	const passwordInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 	const passwordUnchangedRef = useRef(true);
+	const inferenceAuthTouchedRef = useRef(false);
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
@@ -63,9 +64,17 @@ export default function SecurityView() {
 	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
 	// field only needs to show up that once.
 	const isFirstTimeSetup = !bifrostConfig?.auth_config;
+	// The config layout gates this query on loading, not on error, so a failed
+	// GET /api/config?from_db=true still renders this form with no config (the
+	// dashboard shell's own config request can succeed). isFirstTimeSetup then
+	// reads true for every instance, and a later successful refetch would overwrite
+	// any toggle made in the meantime, leaving dashboard auth on with inference
+	// auth reset to the stored value.
+	const isConfigLoading = !bifrostConfig;
 
 	useEffect(() => {
 		if (bifrostConfig && config) {
+			inferenceAuthTouchedRef.current = false;
 			setLocalConfig(config);
 			setLocalValues({
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
@@ -167,6 +176,7 @@ export default function SecurityView() {
 	}, []);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
+		if (field === "enforce_auth_on_inference") inferenceAuthTouchedRef.current = true;
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
@@ -176,9 +186,15 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, vk_rotation_cooldown: value.trim() === "" ? 0 : value.trim() }));
 	}, []);
 
-	const handleAuthToggle = useCallback((checked: boolean) => {
-		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
-	}, []);
+	const handleAuthToggle = useCallback(
+		(checked: boolean) => {
+			setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
+			if (!isFirstTimeSetup || inferenceAuthTouchedRef.current) return;
+			// Untouched preselection follows the dashboard toggle both ways, so canceling setup restores the stored value.
+			setLocalConfig((prev) => ({ ...prev, enforce_auth_on_inference: checked || (config?.enforce_auth_on_inference ?? false) }));
+		},
+		[isFirstTimeSetup, config?.enforce_auth_on_inference],
+	);
 
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		if (field === "admin_password") {
@@ -292,7 +308,7 @@ export default function SecurityView() {
 										admin API calls.
 									</p>
 								</div>
-								<Switch id="auth-enabled" checked={authConfig.is_enabled} onCheckedChange={handleAuthToggle} />
+								<Switch id="auth-enabled" checked={authConfig.is_enabled} disabled={isConfigLoading} onCheckedChange={handleAuthToggle} />
 							</div>
 							<div className="space-y-4">
 								<div className="space-y-2">
@@ -371,16 +387,27 @@ export default function SecurityView() {
 							>
 								documentation
 							</a>{" "}
-							for details.
+							to set up a virtual key before enabling this. Calls without a valid credential will return 401.
 						</p>
 					</div>
 					<Switch
 						id="enforce-auth-on-inference"
 						data-testid="enforce-auth-on-inference-switch"
 						checked={localConfig.enforce_auth_on_inference}
+						disabled={isConfigLoading}
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 					/>
 				</div>
+				{(authConfig.is_enabled || authType?.type === "sso") && !localConfig.enforce_auth_on_inference && (
+					<Alert variant="destructive" data-testid="inference-auth-off-warning">
+						<AlertTriangle className="h-4 w-4" />
+						<AlertDescription>
+							The dashboard is authentication protected, but this is a separate control: anyone who can reach this gateway can still call
+							inference endpoints (e.g. chat completions) with no credential at all, spending your provider budget and reading provider-side
+							state your key has access to. Turn this on unless you've deliberately chosen to leave inference open.
+						</AlertDescription>
+					</Alert>
+				)}
 				{/* Dual Credential Conflict Behavior */}
 				{IS_ENTERPRISE && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">

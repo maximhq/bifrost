@@ -77,6 +77,9 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
+	// Input-only presence information; never persisted or included in responses/hashes.
+	inferenceAuthProvided bool
+
 	DropExcessRequests                    bool                                  `json:"drop_excess_requests"`                       // Drop excess requests if the provider queue is full
 	InitialPoolSize                       int                                   `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
 	PrometheusLabels                      []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
@@ -138,12 +141,23 @@ func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 			AzureDeepseek:          true,
 		},
 	}
-	if err := sonic.Unmarshal(data, &alias); err != nil {
+	input := struct {
+		*ClientConfigAlias
+		EnforceAuthOnInference *bool `json:"enforce_auth_on_inference"`
+	}{ClientConfigAlias: &alias}
+	if err := sonic.Unmarshal(data, &input); err != nil {
 		return err
 	}
 	*c = ClientConfig(alias)
+	c.inferenceAuthProvided = input.EnforceAuthOnInference != nil
+	if input.EnforceAuthOnInference != nil {
+		c.EnforceAuthOnInference = *input.EnforceAuthOnInference
+	}
 	return nil
 }
+
+// HasInferenceAuthSetting distinguishes an explicit JSON opt-out from omission.
+func (c *ClientConfig) HasInferenceAuthSetting() bool { return c.inferenceAuthProvided }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
 // This is used to detect changes between config.json and database config.
