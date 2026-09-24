@@ -331,7 +331,7 @@ WarpBackfillStatus:
     completed_at: { type: string, format: date-time }
   required: [status, total, scanned, indexed, skipped, failed]
 
-WarpChatRequest:
+WarpSessionRequest:
   type: object
   properties:
     messages:
@@ -354,6 +354,13 @@ WarpChatRequest:
           content:
             type: string
         required: [role, content]
+    conversation_id:
+      type: string
+      maxLength: 36
+      description: |
+        Continues an existing thread in the caller's history. Omit it to start a
+        new one; the new thread's id comes back on the `done` event or in the
+        JSON body.
     stream:
       type: boolean
       default: true
@@ -363,7 +370,7 @@ WarpChatRequest:
   required:
     - messages
 
-WarpChatResponse:
+WarpSessionResponse:
   type: object
   description: The non-streaming body - the same events, assembled.
   properties:
@@ -394,6 +401,9 @@ WarpChatResponse:
     iterations:
       type: integer
       description: How many model round trips the answer took.
+    conversation_id:
+      type: string
+      description: The thread this turn was filed under. Absent when Warp history is unavailable.
     finish_reason:
       type: string
     usage:
@@ -431,3 +441,126 @@ WarpChatResponse:
     - answer
     - tool_calls
     - iterations
+
+WarpLogIndexStatus:
+  type: object
+  properties:
+    state:
+      type: string
+      description: |
+        `unavailable`: no vector store is connected. `not_configured`: no
+        embedding model is set. `indexing`: a backfill is in flight. `failed`:
+        the last backfill failed. `ready`: semantic search is usable.
+      enum: [unavailable, not_configured, indexing, failed, ready]
+    vector_store_connected:
+      type: boolean
+    embedding_configured:
+      type: boolean
+    backfill:
+      allOf:
+        - $ref: '#/WarpBackfillStatus'
+      description: The in-flight or latest backfill for the current namespace, when one exists.
+  required: [state, vector_store_connected, embedding_configured]
+
+WarpConversation:
+  type: object
+  description: One thread, without its messages.
+  properties:
+    id: { type: string }
+    title:
+      type: string
+      description: The opening question, trimmed.
+    message_count:
+      type: integer
+    total_tokens:
+      type: integer
+      description: Tokens spent on the thread's answers so far.
+    total_cost:
+      type: number
+      description: Cost of the thread's answers so far.
+    created_at: { type: string, format: date-time }
+    updated_at: { type: string, format: date-time }
+  required: [id, title, message_count, total_tokens, total_cost, created_at, updated_at]
+
+WarpConversationList:
+  type: object
+  properties:
+    conversations:
+      type: array
+      items:
+        $ref: '#/WarpConversation'
+  required: [conversations]
+
+WarpConversationDetail:
+  allOf:
+    - $ref: '#/WarpConversation'
+    - type: object
+      properties:
+        messages:
+          type: array
+          description: The newest messages, oldest first.
+          items:
+            $ref: '#/WarpStoredMessage'
+        truncated:
+          type: boolean
+          description: |
+            True when older messages were cut to the transcript bound.
+            `message_count` still reports the thread's real size.
+      required: [messages]
+
+WarpStoredMessage:
+  type: object
+  description: One persisted turn.
+  properties:
+    role:
+      type: string
+      enum: [user, assistant]
+    content: { type: string }
+    tool_calls:
+      type: array
+      items:
+        $ref: '#/WarpStoredToolCall'
+    error: { type: string }
+    finish_reason:
+      type: string
+      description: '`partial` when the answer was given on the last research step without settling.'
+    total_tokens:
+      type: integer
+      description: Tokens spent producing this answer. Absent on user turns.
+    cost:
+      type: number
+      description: Cost of producing this answer. Absent on user turns.
+    created_at: { type: string, format: date-time }
+    question:
+      $ref: '#/WarpStoredQuestion'
+  required: [role, content, created_at]
+
+WarpStoredToolCall:
+  type: object
+  properties:
+    name: { type: string }
+    duration_ms: { type: integer, format: int64 }
+    failed: { type: boolean }
+    text_offset:
+      type: integer
+      description: Unicode code points of the answer that preceded this call.
+  required: [name]
+
+WarpStoredQuestion:
+  type: object
+  description: The clarifying question a turn ended with, when it ended by asking.
+  properties:
+    question: { type: string }
+    options:
+      type: array
+      items:
+        type: object
+        properties:
+          label: { type: string }
+          hint:
+            type: string
+            description: The shorter form sent back to Warp when this option is picked.
+        required: [label]
+    allow_other: { type: boolean }
+    kind: { type: string }
+  required: [question, options, allow_other]

@@ -96938,7 +96938,7 @@
       "get": {
         "operationId": "getWarpConfig",
         "summary": "Read Warp configuration",
-        "description": "Returns Warp's settings for the settings page. The stored provider\ncredential is never included. The response carries `api_key_id`, a\nreference to one of the provider's configured keys, not the key itself.\n\nA deployment that has never configured Warp gets `200` with\n`configured: false` and the default values, not a `404`. The settings page\nneeds to render its empty form, and a `404` would make \"never set up\"\nindistinguishable from \"this build has no Warp route\".\n",
+        "description": "Returns Warp's settings for the settings page. The stored provider\ncredential is never included. The response carries `api_key_id`, a\nreference to one of the provider's configured keys, not the key itself.\n\nA deployment that has never configured Warp gets `200` with\n`configured: false` and the default values, not a `404`. The settings page\nneeds to render its empty form, and a `404` would make \"never set up\"\nindistinguishable from \"this build has no Warp route\".\n\nEnterprise RBAC: requires `Warp` View. The chat panel reads this route\ntoo, so Warp chat users need it as well as `WarpSession` View.\n",
         "tags": [
           "Warp"
         ],
@@ -96952,6 +96952,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Caller lacks `Warp` View (enterprise)"
           },
           "500": {
             "description": "Internal server error",
@@ -96983,7 +96986,7 @@
       "put": {
         "operationId": "updateWarpConfig",
         "summary": "Update Warp configuration",
-        "description": "Writes Warp's settings. **Administrators only.**\n\nRBAC in this transport is enterprise-only and path-based, so the floor is\nenforced in the handler: a single write points the server at a provider\nkey and a model it will then call on its own behalf, which is not\nsomething an ordinary dashboard user should be able to do. Non-admin\ncallers get `403`. The response carries the key reference back, not a\nredacted credential - there is no secret stored here to redact.\n\n`api_key_id` is a reference, not a credential, so it round-trips in the\nclear and needs no omitted-versus-empty rule: omitting it writes an empty\nvalue and clears the stored reference.\n",
+        "description": "Writes Warp's settings. **Administrators only.**\n\nA single write points the server at a provider key and a model it will\nthen call on its own behalf, which is not something an ordinary dashboard\nuser should be able to do. In OSS only the local admin may write; in\nenterprise the caller needs `Warp` Update. Anyone else gets `403`. The\nresponse carries the key reference back, not a redacted credential -\nthere is no secret stored here to redact.\n\n`api_key_id` is a reference, not a credential, so it round-trips in the\nclear and needs no omitted-versus-empty rule: omitting it writes an empty\nvalue and clears the stored reference.\n",
         "tags": [
           "Warp"
         ],
@@ -97019,7 +97022,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an administrator"
+            "description": "Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)"
           },
           "409": {
             "description": "Embedding configuration cannot change during an active backfill"
@@ -97056,6 +97059,7 @@
       "post": {
         "operationId": "startWarpLogEmbeddingBackfill",
         "summary": "Start a Warp log embedding backfill",
+        "description": "Administrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
         "tags": [
           "Warp"
         ],
@@ -97096,7 +97100,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an administrator"
+            "description": "Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)"
           },
           "409": {
             "description": "A Warp embedding backfill is already active. The body is that job, so\na client can show its progress instead of reporting a bare conflict.\n",
@@ -97128,6 +97132,7 @@
       "get": {
         "operationId": "getWarpLogEmbeddingBackfillStatus",
         "summary": "Read Warp log embedding backfill progress",
+        "description": "Administrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
         "tags": [
           "Warp"
         ],
@@ -97157,7 +97162,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an administrator"
+            "description": "Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)"
           },
           "404": {
             "description": "Resource not found",
@@ -97189,6 +97194,7 @@
       "post": {
         "operationId": "cancelWarpLogEmbeddingBackfill",
         "summary": "Cancel a Warp log embedding backfill",
+        "description": "Administrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
         "tags": [
           "Warp"
         ],
@@ -97234,7 +97240,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an administrator"
+            "description": "Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)"
           },
           "404": {
             "description": "Resource not found",
@@ -97264,9 +97270,9 @@
     },
     "/api/warp/chat": {
       "post": {
-        "operationId": "warpChat",
+        "operationId": "warpSession",
         "summary": "Ask Warp a question",
-        "description": "Runs Warp's agent loop over the deployment's telemetry and returns an\nanswer.\n\n**The route is always registered, and answers `503` while Warp cannot\nwork.** The body carries a machine-readable `reason`, so \"present but\nunusable\" stays distinguishable from \"absent\" without the state being\npermanent: a deployment that enables logging after startup begins serving\nthis route without a restart.\n\nConversation history is client-sent and no session is stored: the dashboard\nalready holds the thread, so a server-side session would need TTLs, cleanup\nand cross-node coordination for no user-visible gain.\n\n**Data visibility equals the caller's own.** Every tool query runs against\nthe caller's row-level scope, so Warp can never surface data the caller\ncould not already retrieve from the logs API directly.\n\nWith `stream: true` (the default) the response is `text/event-stream`. Both\nmodes run the identical loop; only the sink differs.\n",
+        "description": "Runs Warp's agent loop over the deployment's telemetry and returns an\nanswer.\n\n**The route is always registered, and answers `503` while Warp cannot\nwork.** The body carries a machine-readable `reason`, so \"present but\nunusable\" stays distinguishable from \"absent\" without the state being\npermanent: a deployment that enables logging after startup begins serving\nthis route without a restart.\n\nThe model's context is client-sent: `messages` carries the thread so far.\nWhere Warp history is available the server also files each turn under\n`conversation_id` so the thread can be listed and reopened through\n`/api/warp/conversations`. Omit `conversation_id` to start a new thread;\nits id comes back on the `done` event or in the JSON body.\n\n**Data visibility equals the caller's own.** Every tool query runs against\nthe caller's row-level scope, so Warp can never surface data the caller\ncould not already retrieve from the logs API directly.\n\nWith `stream: true` (the default) the response is `text/event-stream`. Both\nmodes run the identical loop; only the sink differs.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
         "tags": [
           "Warp"
         ],
@@ -97275,7 +97281,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WarpChatRequest"
+                "$ref": "#/components/schemas/WarpSessionRequest"
               }
             }
           }
@@ -97291,7 +97297,7 @@
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WarpChatResponse"
+                  "$ref": "#/components/schemas/WarpSessionResponse"
                 }
               }
             }
@@ -97305,6 +97311,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Caller lacks `WarpSession` View (enterprise)"
           },
           "413": {
             "description": "Conversation exceeds the server's history limit",
@@ -97342,6 +97351,279 @@
             "ManagementBearerAuth": []
           }
         ]
+      }
+    },
+    "/api/warp/log-index/status": {
+      "get": {
+        "operationId": "getWarpLogIndexStatus",
+        "summary": "Read Warp semantic search index status",
+        "description": "A read-only summary for the chat panel: whether semantic log search is\nusable, and the latest backfill's progress when one exists. `last_error`\non the backfill is returned only to the local admin, since the provider's\nerror text can name endpoints and models.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
+        "tags": [
+          "Warp"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Index status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarpLogIndexStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller lacks `WarpSession` View (enterprise)"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/warp/conversations": {
+      "get": {
+        "operationId": "listWarpConversations",
+        "summary": "List the caller's Warp conversations",
+        "description": "Returns the caller's own threads, most recent first, without their\nmessages. On a deployment without authentication every conversation\nshares one owner, so the history is common to the deployment.\n\nRegistered only when Warp history storage is available.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
+        "tags": [
+          "Warp"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "description": "Maximum threads to return. Values above 100 are clamped to 100.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's conversations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarpConversationList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller lacks `WarpSession` View (enterprise)"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/warp/conversations/{id}": {
+      "get": {
+        "operationId": "getWarpConversation",
+        "summary": "Read one Warp conversation",
+        "description": "Returns one of the caller's threads with its transcript, bounded to the\nnewest messages. Another user's thread returns `404`, the same as a\nmissing one, so the response never confirms that it exists.\n\nRegistered only when Warp history storage is available.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
+        "tags": [
+          "Warp"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conversation and its transcript",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarpConversationDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller lacks `WarpSession` View (enterprise)"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteWarpConversation",
+        "summary": "Delete a Warp conversation",
+        "description": "Permanently deletes one of the caller's threads. Another user's thread\nreturns `404`. Threads older than the configured history retention are\nalso removed automatically.\n\nRegistered only when Warp history storage is available.\n\nEnterprise RBAC: requires `WarpSession` Delete.\n",
+        "tags": [
+          "Warp"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller lacks `WarpSession` Delete (enterprise)"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -119344,7 +119626,7 @@
           "message"
         ]
       },
-      "WarpChatRequest": {
+      "WarpSessionRequest": {
         "type": "object",
         "properties": {
           "messages": {
@@ -119371,6 +119653,11 @@
               ]
             }
           },
+          "conversation_id": {
+            "type": "string",
+            "maxLength": 36,
+            "description": "Continues an existing thread in the caller's history. Omit it to start a\nnew one; the new thread's id comes back on the `done` event or in the\nJSON body.\n"
+          },
           "stream": {
             "type": "boolean",
             "default": true,
@@ -119381,7 +119668,7 @@
           "messages"
         ]
       },
-      "WarpChatResponse": {
+      "WarpSessionResponse": {
         "type": "object",
         "description": "The non-streaming body - the same events, assembled.",
         "properties": {
@@ -119416,6 +119703,10 @@
           "iterations": {
             "type": "integer",
             "description": "How many model round trips the answer took."
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "The thread this turn was filed under. Absent when Warp history is unavailable."
           },
           "finish_reason": {
             "type": "string"
@@ -119455,6 +119746,231 @@
           "answer",
           "tool_calls",
           "iterations"
+        ]
+      },
+      "WarpLogIndexStatus": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "`unavailable`: no vector store is connected. `not_configured`: no\nembedding model is set. `indexing`: a backfill is in flight. `failed`:\nthe last backfill failed. `ready`: semantic search is usable.\n",
+            "enum": [
+              "unavailable",
+              "not_configured",
+              "indexing",
+              "failed",
+              "ready"
+            ]
+          },
+          "vector_store_connected": {
+            "type": "boolean"
+          },
+          "embedding_configured": {
+            "type": "boolean"
+          },
+          "backfill": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WarpBackfillStatus"
+              }
+            ],
+            "description": "The in-flight or latest backfill for the current namespace, when one exists."
+          }
+        },
+        "required": [
+          "state",
+          "vector_store_connected",
+          "embedding_configured"
+        ]
+      },
+      "WarpConversation": {
+        "type": "object",
+        "description": "One thread, without its messages.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "description": "The opening question, trimmed."
+          },
+          "message_count": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "description": "Tokens spent on the thread's answers so far."
+          },
+          "total_cost": {
+            "type": "number",
+            "description": "Cost of the thread's answers so far."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "message_count",
+          "total_tokens",
+          "total_cost",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "WarpConversationList": {
+        "type": "object",
+        "properties": {
+          "conversations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WarpConversation"
+            }
+          }
+        },
+        "required": [
+          "conversations"
+        ]
+      },
+      "WarpConversationDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WarpConversation"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "messages": {
+                "type": "array",
+                "description": "The newest messages, oldest first.",
+                "items": {
+                  "$ref": "#/components/schemas/WarpStoredMessage"
+                }
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "True when older messages were cut to the transcript bound.\n`message_count` still reports the thread's real size.\n"
+              }
+            },
+            "required": [
+              "messages"
+            ]
+          }
+        ]
+      },
+      "WarpStoredMessage": {
+        "type": "object",
+        "description": "One persisted turn.",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WarpStoredToolCall"
+            }
+          },
+          "error": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "type": "string",
+            "description": "`partial` when the answer was given on the last research step without settling."
+          },
+          "total_tokens": {
+            "type": "integer",
+            "description": "Tokens spent producing this answer. Absent on user turns."
+          },
+          "cost": {
+            "type": "number",
+            "description": "Cost of producing this answer. Absent on user turns."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "question": {
+            "$ref": "#/components/schemas/WarpStoredQuestion"
+          }
+        },
+        "required": [
+          "role",
+          "content",
+          "created_at"
+        ]
+      },
+      "WarpStoredToolCall": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "boolean"
+          },
+          "text_offset": {
+            "type": "integer",
+            "description": "Unicode code points of the answer that preceded this call."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "WarpStoredQuestion": {
+        "type": "object",
+        "description": "The clarifying question a turn ended with, when it ended by asking.",
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "hint": {
+                  "type": "string",
+                  "description": "The shorter form sent back to Warp when this option is picked."
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          },
+          "allow_other": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "options",
+          "allow_other"
         ]
       }
     }

@@ -425,7 +425,7 @@ def test_warp_credential_contract_is_current():
 
 
 def test_warp_chat_response_contract_is_current():
-    """WarpChatResponse mirrors warp.ChatResponse: usage is BifrostLLMUsage, not a bare
+    """WarpSessionResponse mirrors warp.ChatResponse: usage is BifrostLLMUsage, not a bare
     object, and error.code is the closed set the agent actually emits. The chat route is
     always registered and reports its unavailability as a 503 carrying a machine-readable
     reason, so that and the 413 for oversized conversations are the part of the contract a
@@ -449,7 +449,7 @@ def test_warp_chat_response_contract_is_current():
     if not emitted:
         problems.append("could not read any emitted error codes from framework/warp/agent.go")
 
-    response = schema_source["WarpChatResponse"]["properties"]
+    response = schema_source["WarpSessionResponse"]["properties"]
     usage = response["usage"]
     # Either a direct $ref, or allOf[$ref] - the latter is how OpenAPI 3.0 keeps a
     # description alongside a referenced schema.
@@ -458,60 +458,60 @@ def test_warp_chat_response_contract_is_current():
     ]
     if not refs:
         problems.append(
-            "schemas/management/warp.yaml WarpChatResponse.usage is a bare object; "
+            "schemas/management/warp.yaml WarpSessionResponse.usage is a bare object; "
             "reference BifrostLLMUsage so clients get typed token fields"
         )
     elif not any("usage.yaml#/BifrostLLMUsage" in ref for ref in refs):
-        problems.append(f"WarpChatResponse.usage references {refs}, not BifrostLLMUsage")
+        problems.append(f"WarpSessionResponse.usage references {refs}, not BifrostLLMUsage")
 
     error = response["error"]
     declared = sorted(((error.get("properties") or {}).get("code") or {}).get("enum") or [])
     if declared != emitted:
         problems.append(
-            f"WarpChatResponse.error.code enum is {declared}, but the agent emits {emitted}"
+            f"WarpSessionResponse.error.code enum is {declared}, but the agent emits {emitted}"
         )
     if sorted(error.get("required") or []) != ["code", "message"]:
-        problems.append("WarpChatResponse.error must require both code and message")
+        problems.append("WarpSessionResponse.error must require both code and message")
 
     # The bundle has to carry the resolved usage properties, not an empty object.
     # Looked up defensively: `check` only catches AssertionError, so a KeyError
     # here would abort the whole invariant script instead of reporting the very
     # drift this test exists to report.
     bundled = (bundle.get("components") or {}).get("schemas") or {}
-    if "WarpChatResponse" not in bundled:
-        problems.append("openapi.json does not define WarpChatResponse")
+    if "WarpSessionResponse" not in bundled:
+        problems.append("openapi.json does not define WarpSessionResponse")
     else:
-        bundled_usage = (bundled["WarpChatResponse"].get("properties") or {}).get("usage")
+        bundled_usage = (bundled["WarpSessionResponse"].get("properties") or {}).get("usage")
         if bundled_usage is None:
-            problems.append("openapi.json WarpChatResponse has no usage property")
+            problems.append("openapi.json WarpSessionResponse has no usage property")
         elif not (bundled_usage.get("properties") or bundled_usage.get("allOf") or bundled_usage.get("$ref")):
-            problems.append("openapi.json WarpChatResponse.usage resolved to an untyped object")
+            problems.append("openapi.json WarpSessionResponse.usage resolved to an untyped object")
 
-    chat_responses = (((path_source.get("warp-chat") or {}).get("post") or {}).get("responses") or {})
+    chat_responses = (((path_source.get("warp-session") or {}).get("post") or {}).get("responses") or {})
     if not chat_responses:
-        problems.append("paths/management/warp.yaml declares no warp-chat responses")
+        problems.append("paths/management/warp.yaml declares no warp-session responses")
     for status in ("503", "413"):
         if status not in chat_responses:
-            problems.append(f"paths/management/warp.yaml warp-chat does not declare {status}")
+            problems.append(f"paths/management/warp.yaml warp-session does not declare {status}")
     # The route is registered unconditionally, so a deployment that cannot answer
     # says so in a 503 body the dashboard branches on. A documented 404 would
     # send a generated client looking for a route that always exists.
     if "404" in chat_responses:
         problems.append(
-            "warp-chat documents a 404, but the route is always registered; "
+            "warp-session documents a 404, but the route is always registered; "
             "an unusable deployment answers 503 with a WarpUnavailable reason"
         )
     unavailable = chat_responses.get("503") or {}
     if "WarpUnavailable" not in json.dumps(unavailable.get("content") or {}):
-        problems.append("warp-chat 503 must return WarpUnavailable so the reason is machine-readable")
+        problems.append("warp-session 503 must return WarpUnavailable so the reason is machine-readable")
     if "413" in chat_responses and "content" not in chat_responses["413"]:
-        problems.append("warp-chat 413 returns a JSON error body but documents no schema")
+        problems.append("warp-session 413 returns a JSON error body but documents no schema")
     # The route is registered unconditionally now, so a deployment that cannot
     # answer says so in a 503 body the dashboard branches on. A documented 404
     # would send a generated client looking for a route that always exists.
     if "404" in chat_responses:
         problems.append(
-            "warp-chat documents a 404, but the route is always registered; "
+            "warp-session documents a 404, but the route is always registered; "
             "an unusable deployment answers 503 with a WarpUnavailable reason"
         )
     # Checked structurally, not by searching the serialized response. A substring
@@ -523,7 +523,7 @@ def test_warp_chat_response_contract_is_current():
     ref = (json_body.get("schema") or {}).get("$ref") or ""
     if not ref.endswith("#/WarpUnavailable"):
         problems.append(
-            "warp-chat 503 application/json must $ref WarpUnavailable directly "
+            "warp-session 503 application/json must $ref WarpUnavailable directly "
             f"so the reason stays machine-readable (found {ref!r})"
         )
 
