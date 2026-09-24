@@ -2117,6 +2117,12 @@ func IsGPT56Model(model string) bool {
 	return false
 }
 
+// ModelSupportsPromptCacheBreakpoint is the name-based fallback for
+// ModelCaps.SupportsPromptCacheBreakpoint: the gpt-5.6 and gpt-6 families.
+func ModelSupportsPromptCacheBreakpoint(model string) bool {
+	return IsGPT56Model(model) || strings.Contains(strings.ToLower(model), "gpt-6")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
@@ -2229,13 +2235,13 @@ func ModelSupportsPromptCaching(provider ModelProvider, model string) bool {
 	case Anthropic, OpenRouter:
 		return IsAnthropicModel(model)
 	case Bedrock, BedrockMantle:
-		return BedrockModelSupportsCachePoints(model) || IsGPT56Model(model)
+		return BedrockModelSupportsCachePoints(model) || ModelSupportsPromptCacheBreakpoint(model)
 	case Vertex:
 		// Vertex serves Claude (cache_control) and Gemini (cachedContent) side by
 		// side; only the former is markable.
 		return IsAnthropicModel(model)
 	case Azure, OpenAI:
-		return IsGPT56Model(model)
+		return ModelSupportsPromptCacheBreakpoint(model)
 	default:
 		return false
 	}

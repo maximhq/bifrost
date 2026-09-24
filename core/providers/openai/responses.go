@@ -186,7 +186,7 @@ const maxResponsesCacheBreakpoints = 4
 //
 // Two unrelated families landed on the same field. OpenRouter does not expose
 // per-block cache_control through /v1/responses and converts a breakpoint back into
-// an Anthropic one (#6290). OpenAI defined the field for gpt-5.6, where it pairs with
+// an Anthropic one (#6290). OpenAI defined the field for gpt-5.6 and later, where it pairs with
 // request-level prompt_cache_options; Azure and Bedrock Mantle serve the same models
 // through the same wire format, so they inherit it (#6180). Bedrock is listed for the
 // same reason: its OpenAI-compatible surfaces on both hosts speak that wire format, and
@@ -194,15 +194,12 @@ const maxResponsesCacheBreakpoints = 4
 //
 // Everything else either accepts cache_control directly or caches implicitly, and for
 // those the serializer's existing strip is the correct behaviour.
-//
-// This is the name-based fallback for ModelCaps.SupportsPromptCacheBreakpoints, used
-// when the datasheet row says nothing.
-func responsesUsesPromptCacheBreakpoints(provider schemas.ModelProvider, model string) bool {
+func responsesUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenRouter:
 		return schemas.IsAnthropicModel(model) || schemas.IsGPT56Model(model)
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
-		return schemas.IsGPT56Model(model)
+		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
 	default:
 		return false
 	}
@@ -229,14 +226,14 @@ func responsesHasPromptCacheBreakpoint(messages []schemas.ResponsesMessage) bool
 // responsesUsesPromptCacheOptions reports whether the target also needs request-level
 // prompt_cache_options to honour an explicit breakpoint.
 //
-// This is the gpt-5.6 half only. Those models default to IMPLICIT caching, which puts
+// This is the OpenAI half only (gpt-5.6 and later). Those models default to IMPLICIT caching, which puts
 // the breakpoint on the latest message - so an agent loop rewrites the whole growing
 // prompt every turn at the cache-write rate. The block marker alone does not switch
 // that off; mode=explicit does. OpenRouter has no equivalent field and needs none.
-func responsesUsesPromptCacheOptions(provider schemas.ModelProvider, model string) bool {
+func responsesUsesPromptCacheOptions(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
-		return schemas.IsGPT56Model(model)
+		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
 	default:
 		return false
 	}
@@ -578,9 +575,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
 	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	needsExplicitPromptCacheMode := false
-	if caps.SupportsPromptCacheBreakpoints(responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel)) {
+	if responsesUsesPromptCacheBreakpoints(caps, cachePromptProvider, capModel) {
 		applyResponsesCacheBreakpoints(messages)
-		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(cachePromptProvider, capModel) &&
+		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(caps, cachePromptProvider, capModel) &&
 			responsesHasPromptCacheBreakpoint(messages)
 	}
 

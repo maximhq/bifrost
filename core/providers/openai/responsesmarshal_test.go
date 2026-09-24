@@ -1686,6 +1686,9 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 		{"openai", schemas.OpenAI, "gpt-5.6-sol"},
 		{"azure", schemas.Azure, "eu/gpt-5.6-sol"},
 		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra"},
+		{"openai gpt-6", schemas.OpenAI, "gpt-6-astra"},
+		{"azure gpt-6", schemas.Azure, "gpt-6-astra"},
+		{"bedrock mantle gpt-6", schemas.BedrockMantle, "openai.gpt-6-astra"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, raw := marshalResponses(t, gpt56CacheReq(tc.provider, tc.model))
@@ -1738,6 +1741,33 @@ func TestToOpenAIResponsesRequest_PreGPT56Unaffected(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestToOpenAIResponsesRequest_CacheBreakpointGateReadsDatasheet pins that the
+// datasheet's supports_prompt_cache_breakpoint beats the model-name fallback in both
+// directions.
+func TestToOpenAIResponsesRequest_CacheBreakpointGateReadsDatasheet(t *testing.T) {
+	t.Run("false_disables_a_named_family", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-5.6-sol", &schemas.ModelCapabilities{SupportsPromptCacheBreakpoint: new(false)})
+		m, raw := marshalResponses(t, gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol"))
+		if _, present := firstBlock(t, m, 0, raw)["prompt_cache_breakpoint"]; present {
+			t.Errorf("datasheet false must suppress the breakpoint; raw=%s", raw)
+		}
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("datasheet false must suppress prompt_cache_options; raw=%s", raw)
+		}
+	})
+
+	t.Run("true_enables_an_unnamed_model", func(t *testing.T) {
+		installCapabilityRecord(t, "future-openai-model", &schemas.ModelCapabilities{SupportsPromptCacheBreakpoint: new(true)})
+		m, raw := marshalResponses(t, gpt56CacheReq(schemas.OpenAI, "future-openai-model"))
+		if _, present := firstBlock(t, m, 0, raw)["prompt_cache_breakpoint"]; !present {
+			t.Errorf("datasheet true must enable the breakpoint; raw=%s", raw)
+		}
+		if _, present := m["prompt_cache_options"]; !present {
+			t.Errorf("datasheet true must enable prompt_cache_options; raw=%s", raw)
+		}
+	})
 }
 
 // TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions verifies Bifrost does
