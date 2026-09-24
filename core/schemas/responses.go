@@ -3995,9 +3995,29 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	// Apply event-specific defaults
 	switch resp.Type {
 	case ResponsesStreamResponseTypeOutputItemAdded:
-		// Default item status to "in_progress"
-		if result.Item != nil && result.Item.Status == nil {
-			result.Item.Status = Ptr("in_progress")
+		if result.Item != nil {
+			// result.Item aliases the source item, so both defaults below are
+			// applied to a copy: the raw Bifrost superset stream keeps the item
+			// exactly as the provider sent it, status included.
+			itemCopy := *result.Item
+			result.Item = &itemCopy
+
+			// Default item status to "in_progress"
+			if result.Item.Status == nil {
+				result.Item.Status = Ptr("in_progress")
+			}
+			// Strict Responses clients expect a message item to carry a content
+			// array from the moment it is added, before the first
+			// content_part.added arrives; an upstream that omits the field on
+			// the initial event otherwise gets the whole stream rejected.
+			if result.Item.Content == nil &&
+				result.Item.Type != nil && *result.Item.Type == ResponsesMessageTypeMessage {
+				// ContentBlocks must be non-nil and empty: a nil block slice
+				// makes ResponsesMessageContent.MarshalJSON emit "" not [].
+				result.Item.Content = &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{},
+				}
+			}
 		}
 
 	case ResponsesStreamResponseTypeOutputTextDelta, ResponsesStreamResponseTypeOutputTextDone:

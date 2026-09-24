@@ -1219,6 +1219,106 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	}
 }
 
+// TestStreamOutputItemAddedMessageCarriesEmptyContentArray verifies that a
+// message item arriving on response.output_item.added without a content field
+// is normalized to an empty array. Strict Responses clients (Grok Build 1.0.5
+// among them) require the array to be present from the moment the item is
+// added, before the first content part arrives.
+func TestStreamOutputItemAddedMessageCarriesEmptyContentArray(t *testing.T) {
+	newMessageItem := func() *ResponsesMessage {
+		return &ResponsesMessage{
+			ID:   Ptr("msg_1"),
+			Type: Ptr(ResponsesMessageTypeMessage),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+		}
+	}
+
+	decodeItem := func(t *testing.T, ev *BifrostResponsesStreamResponse) map[string]json.RawMessage {
+		t.Helper()
+		encoded, err := Marshal(ev.WithDefaults())
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var envelope struct {
+			Item map[string]json.RawMessage `json:"item"`
+		}
+		if err := json.Unmarshal(encoded, &envelope); err != nil {
+			t.Fatalf("unmarshal normalized event: %v\n%s", err, encoded)
+		}
+		return envelope.Item
+	}
+
+	t.Run("missing content becomes an empty array", func(t *testing.T) {
+		src := &BifrostResponsesStreamResponse{
+			Type: ResponsesStreamResponseTypeOutputItemAdded,
+			Item: newMessageItem(),
+		}
+
+		item := decodeItem(t, src)
+
+		raw, ok := item["content"]
+		if !ok {
+			t.Fatalf("item.content is absent; strict clients reject the event: %v", item)
+		}
+		if string(raw) != "[]" {
+			t.Errorf("item.content = %s, want []", raw)
+		}
+		// Every other field on the item survives.
+		for field, want := range map[string]string{
+			"id":   `"msg_1"`,
+			"type": `"message"`,
+			"role": `"assistant"`,
+		} {
+			if got := string(item[field]); got != want {
+				t.Errorf("item.%s = %s, want %s", field, got, want)
+			}
+		}
+		// The source item must not be mutated — neither field. Status is
+		// defaulted on this event too, and before the copy was hoisted above
+		// both defaults it wrote through to the shared source item.
+		if src.Item.Content != nil {
+			t.Errorf("WithDefaults mutated the source item content: %+v", src.Item.Content)
+		}
+		if src.Item.Status != nil {
+			t.Errorf("WithDefaults mutated the source item status: %q", *src.Item.Status)
+		}
+	})
+
+	t.Run("existing content is preserved", func(t *testing.T) {
+		src := &BifrostResponsesStreamResponse{
+			Type: ResponsesStreamResponseTypeOutputItemAdded,
+			Item: newMessageItem(),
+		}
+		src.Item.Content = &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{
+				{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("hi")},
+			},
+		}
+
+		item := decodeItem(t, src)
+
+		if got := string(item["content"]); !strings.Contains(got, `"hi"`) {
+			t.Errorf("item.content = %s, want the existing block preserved", got)
+		}
+	})
+
+	t.Run("non-message items are left alone", func(t *testing.T) {
+		src := &BifrostResponsesStreamResponse{
+			Type: ResponsesStreamResponseTypeOutputItemAdded,
+			Item: &ResponsesMessage{
+				ID:   Ptr("call_1"),
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+			},
+		}
+
+		item := decodeItem(t, src)
+
+		if raw, ok := item["content"]; ok {
+			t.Errorf("function_call item gained content = %s", raw)
+		}
+	})
+}
+
 // TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
 func TestCustomToolInputDoneRoundTrip(t *testing.T) {
 	raw := []byte(`{"type":"response.custom_tool_call_input.done","item_id":"tool1","output_index":0,"input":"grep alice@example.com"}`)
