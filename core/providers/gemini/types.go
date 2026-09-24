@@ -417,6 +417,41 @@ type FunctionDeclaration struct {
 	ResponseJSONSchema any `json:"responseJsonSchema,omitempty"`
 }
 
+// UnmarshalJSON handles both camelCase and snake_case. google-genai >= 2.0.0
+// (including Google ADK) serializes the JSON-schema fields under their Python
+// names (parameters_json_schema / response_json_schema); Go field matching is
+// case-insensitive but not punctuation-insensitive, so without the aliases
+// those schemas were silently dropped and the tool was forwarded upstream with
+// no parameters. The other fields (behavior, description, name, parameters,
+// response) spell identically in both conventions.
+func (fd *FunctionDeclaration) UnmarshalJSON(data []byte) error {
+	type Alias FunctionDeclaration
+	aux := &struct {
+		*Alias
+		ParametersJSONSchemaSnake any `json:"parameters_json_schema,omitempty"`
+		ResponseJSONSchemaSnake   any `json:"response_json_schema,omitempty"`
+	}{
+		Alias: (*Alias)(fd),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case only when the camelCase key is absent. Presence, not the
+	// decoded value, decides on both sides: an explicit null decodes to nil
+	// just like an omitted key, so a camelCase null must not be overridden by
+	// the snake_case sibling, and a snake_case null must clear any stale value
+	// on a reused declaration. See hasJSONKey.
+	if !hasJSONKey(data, "parametersJsonSchema") && hasJSONKey(data, "parameters_json_schema") {
+		fd.ParametersJSONSchema = aux.ParametersJSONSchemaSnake
+	}
+	if !hasJSONKey(data, "responseJsonSchema") && hasJSONKey(data, "response_json_schema") {
+		fd.ResponseJSONSchema = aux.ResponseJSONSchemaSnake
+	}
+	return nil
+}
+
 // Behavior defines the function behavior. Defaults to `BLOCKING`.
 type Behavior string
 
