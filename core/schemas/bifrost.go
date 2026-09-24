@@ -298,6 +298,7 @@ const (
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"            // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyStreamGated                         BifrostContextKey = "bifrost-stream-gated"                    // bool (set by ctx.PauseStream/ResumeStream/EndStream when a plugin first engages the pause/resume gate; provider helpers use this as a fast-path check to skip Tracer.GateSend on streams that never engage the gate)
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"             // time.Duration (per-chunk idle timeout for streaming)
+	BifrostContextKeyStreamFirstTokenTimeout             BifrostContextKey = "bifrost-stream-first-token-timeout"      // time.Duration (TTFT deadline for streaming requests: an attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. Set by the routing plugin or an SDK caller)
 	BifrostContextKeyStreamAttemptAbort                  BifrostContextKey = "bifrost-stream-attempt-abort"            // *providerUtils.AttemptAbort (set by bifrost for one stream attempt with a first-token deadline - DO NOT SET THIS MANUALLY)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"              // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                   // map[string][]string

@@ -115,6 +115,8 @@ func isAzureResponsesStreamPreamble(response *schemas.BifrostResponsesStreamResp
 		schemas.ResponsesStreamResponseTypeInProgress,
 		schemas.ResponsesStreamResponseTypeQueued,
 		schemas.ResponsesStreamResponseTypePing,
+		// Anthropic classifier metadata, sent before content: not a first token.
+		schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
 		schemas.ResponsesStreamResponseTypeOutputItemAdded,
 		schemas.ResponsesStreamResponseTypeContentPartAdded:
 	default:
