@@ -113096,6 +113096,11 @@
             "format": "date-time",
             "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
           },
+          "delete_after_expire": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, a daily cleanup job deletes the key once expires_at has passed and posts a notification."
+          },
           "previous_value_expires_at": {
             "type": [
               "string",
@@ -113665,6 +113670,11 @@
             "type": "string",
             "format": "date-time",
             "description": "Optional expiry timestamp. Must be in the future. Omit for a key that never expires."
+          },
+          "delete_after_expire": {
+            "type": "boolean",
+            "default": false,
+            "description": "Delete the key automatically once expires_at has passed. Rejected with 400 when expires_at is not set."
           }
         },
         "example": {
@@ -113818,6 +113828,10 @@
           "expires_at": {
             "type": "string",
             "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
+          },
+          "delete_after_expire": {
+            "type": "boolean",
+            "description": "Delete the key automatically once it has expired. Requires an expiry; clearing expires_at resets it to false. Omitted leaves it unchanged."
           }
         },
         "example": {
