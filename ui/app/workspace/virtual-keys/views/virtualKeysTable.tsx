@@ -996,8 +996,12 @@ export default function VirtualKeysTable({
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												{showExpiredBadge ? (
-													<Badge variant="destructive" className="text-xs">
-														Expired
+													<Badge
+														variant="destructive"
+														className="text-xs"
+														title={vk.delete_after_expire ? "Deleted automatically within 24 hours" : undefined}
+													>
+														{vk.delete_after_expire ? "Expired · auto-delete" : "Expired"}
 													</Badge>
 												) : (
 													<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
