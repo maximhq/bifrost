@@ -140762,6 +140762,147 @@
               }
             }
           ]
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 1: foreign redactedContent is standard base64 beside a toolUse (#7514) - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Find the capital of the country whose largest city is Istanbul, then get that capital's current weather.\"}]}],\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"none\",\"toolConfig\":{\"tools\":[{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\"toolChoice\":{\"any\":{}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Converse types redactedContent as a blob: strict SDKs (aws-sdk-go-v2, boto3)",
+                  "// base64-decode it. Azure mints URL-safe Fernet tokens ('-', '_'), which fail that",
+                  "// decode with \"illegal base64 data\" unless Bifrost wraps them (#7514).",
+                  "var STD_B64 = /^(?:[A-Za-z0-9+\\/]{4})*(?:[A-Za-z0-9+\\/]{2}==|[A-Za-z0-9+\\/]{3}=)?$/;",
+                  "var body = pm.response.text() || '';",
+                  "var j = null;",
+                  "var captured = false;",
+                  "pm.test('capture turn returns reasoning and a tool call', function () {",
+                  "  pm.expect(pm.response.code, 'capture request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  j = pm.response.json();",
+                  "  var content = ((j.output || {}).message || {}).content || [];",
+                  "  pm.expect(content.some(function (c) { return c && c.toolUse; }), 'no toolUse block - the defect needs reasoning and a tool call in one turn: ' + body.slice(0, 500)).to.be.true;",
+                  "  var redacted = content.filter(function (c) { return c && c.reasoningContent && c.reasoningContent.redactedContent; });",
+                  "  pm.expect(redacted.length, 'no redactedContent came back, so this row would test nothing - encrypted reasoning was not requested or was dropped: ' + body.slice(0, 500)).to.be.above(0);",
+                  "  captured = true;",
+                  "});",
+                  "pm.test('every redactedContent is standard base64 an AWS SDK can decode', function () {",
+                  "  var content = ((j || {}).output || {}).message ? j.output.message.content : [];",
+                  "  content.forEach(function (c) {",
+                  "    if (!c || !c.reasoningContent || c.reasoningContent.redactedContent === undefined) { return; }",
+                  "    var blob = c.reasoningContent.redactedContent;",
+                  "    pm.expect(STD_B64.test(blob), 'redactedContent is not standard base64, so aws-sdk-go-v2 fails with \"decode base64 blob: illegal base64 data\": ' + String(blob).slice(0, 80)).to.be.true;",
+                  "  });",
+                  "});",
+                  "// Save the conversation only when the capture proved what turn 2 needs, so a",
+                  "// failed capture fails here instead of cascading into a misleading replay error.",
+                  "try {",
+                  "  var msg = j && j.output && j.output.message;",
+                  "  var toolUses = msg ? msg.content.filter(function (c) { return c && c.toolUse; }) : [];",
+                  "  if (captured && toolUses.length) {",
+                  "    pm.collectionVariables.set(",
+                  "      'bedrockConverseForeignRedactedMessages',",
+                  "      JSON.stringify([",
+                  "        { role: \"user\", content: [{ text: \"Find the capital of the country whose largest city is Istanbul, then get that capital's current weather.\" }] },",
+                  "        msg,",
+                  "        // Answer every toolUse: a parallel call left unanswered is a 400.",
+                  "        { role: \"user\", content: toolUses.map(function (c) { return { toolResult: { toolUseId: c.toolUse.toolUseId, content: [{ text: \"Ankara: 18C, clear\" }] } }; }) }",
+                  "      ])",
+                  "    );",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 2: foreign redactedContent replays to Azure (#7514) - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":{{bedrockConverseForeignRedactedMessages}},\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"none\",\"toolConfig\":{\"tools\":[{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\"toolChoice\":{\"auto\":{}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The client replays the blob exactly as turn 1 rendered it. Bifrost must unwrap",
+                  "// it back to the token Azure minted. The unit test",
+                  "// TestConverseRedactedContentSurvivesSDKReplay pins the exact bytes; this row pins",
+                  "// that the full stack accepts the replayed turn and answers it.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('capture turn produced a conversation to replay', function () {",
+                  "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseForeignRedactedMessages, so nothing was replayed').to.equal(-1);",
+                  "});",
+                  "pm.test('replayed foreign redactedContent is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  pm.expect(body, 'Azure refused the replayed reasoning token').to.not.include('invalid_encrypted_content');",
+                  "  var content = ((pm.response.json().output || {}).message || {}).content || [];",
+                  "  pm.expect(content, 'no content returned on the replayed turn: ' + body.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -150566,7 +150707,7 @@
                   "  for (var i = 0; i < tools.length; i++) {",
                   "    var name = (tools[i].function || {}).name || '';",
                   "    pm.expect(name, 'tool[' + i + '] name ' + JSON.stringify(name) + ' (len ' + name.length + ') breaks the 64-char contract').to.match(/^[A-Za-z0-9_-]{1,64}$/);",
-                  "    pm.expect(name, 'a 98-char alias must take the <8-hex hash>_<function> form on a 64-char wire').to.match(/^[0-9a-f]{8}_/);",
+                  "    pm.expect(name, 'a 98-char alias must take the letter-first t<8-hex hash>_<function> form on a 64-char wire').to.match(/^t[0-9a-f]{8}_/);",
                   "  }",
                   "  pm.expect(tools[0].function.name, 'the function name must stay readable after the hash prefix').to.include('read_repository_file');",
                   "});"
@@ -150589,6 +150730,86 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"mcp__server_with_a_very_long_name_server_with_a_very_long_name_x\",\n      \"description\": \"A long MCP-style namespace\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"read_repository_file_contents_v2\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"list_repository_directory_entries\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock/us.moonshotai.kimi-k3 /v1/responses over-64-char namespace alias: hashed name is letter-first so kimi answers (was digit-leading, empty stream) (raw_request) - namespace-alias-length",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bifrost hashes an over-64-char namespace alias to <hash>_<function>. A bare 8-hex",
+                  "// hash starts with a digit 10 times in 16, and moonshotai.kimi-k3 on Bedrock answers",
+                  "// any digit-leading tool name with HTTP 200 and an empty stream (Codex: 0 tokens, no",
+                  "// text). This namespace hashes to 7e4a44cb under the old scheme, so pre-fix the wire",
+                  "// carries '7e4a44cb_execute_document_command' and the model never answers.",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = ((rr || {}).toolConfig || {}).tools || [];",
+                  "var names = tools.map(function (t) { return (t.toolSpec || {}).name || ''; });",
+                  "pm.test('bedrock kimi-k3: request accepted - namespace-alias-length', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('bedrock kimi-k3: hashed alias is letter-first on the wire - namespace-alias-length', function () {",
+                  "  pm.expect(names, 'outbound tool names: ' + JSON.stringify(names)).to.eql(['t7e4a44cb_execute_document_command']);",
+                  "  pm.expect(names[0], 'a digit-leading tool name makes kimi-k3 return an empty stream').to.match(/^[A-Za-z]/);",
+                  "});",
+                  "pm.test('bedrock kimi-k3: the model answers - namespace-alias-length', function () {",
+                  "  // Positive usage alone is not an answer. The model must either reply in text or",
+                  "  // call the tool, and a call must come back under the caller's own namespace and",
+                  "  // name: the hashed alias is Bifrost's wire name and must never leak to the client.",
+                  "  var NS = 'mcp__codex_apps__codex_document_control_harness_alias_00';",
+                  "  var output = body.output || [];",
+                  "  var text = output.filter(function (o) { return o && o.type === 'message'; }).map(function (o) {",
+                  "    return (o.content || []).filter(function (c) { return c && c.type === 'output_text'; }).map(function (c) { return c.text || ''; }).join('');",
+                  "  }).join('');",
+                  "  var calls = output.filter(function (o) { return o && o.type === 'function_call'; });",
+                  "  var restored = calls.filter(function (o) { return o.name === 'execute_document_command' && o.namespace === NS; });",
+                  "  pm.expect(text.trim().length > 0 || restored.length > 0, 'want output_text or a function_call restored to ' + NS + '/execute_document_command, got output: ' + JSON.stringify(output).slice(0, 400) + ' body: ' + txt.slice(0, 300)).to.be.true;",
+                  "  pm.expect(calls.length, 'every function_call must be restored to the caller namespace and name: ' + JSON.stringify(calls).slice(0, 300)).to.equal(restored.length);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.moonshotai.kimi-k3\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"mcp__codex_apps__codex_document_control_harness_alias_00\",\n      \"description\": \"A long Codex-style MCP namespace\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"execute_document_command\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
