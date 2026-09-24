@@ -859,8 +859,8 @@ users-access-profile-budget-override:
       calendar period start — so every node in a cluster derives the same number of remaining cycles.
       The change is propagated cluster-wide and survives access-profile cloning and propagation.
 
-      Requires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy
-      of the profile, not on the shared template.
+      `budget_id` must be a budget on the user's own copy of the profile, not on the
+      shared template.
     tags:
       - Access Profiles
     parameters:
@@ -927,8 +927,6 @@ users-access-profile-budget-override:
       Removes any active override from the user's budget, so it is enforced against its base `max_limit`
       again. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a
       cleared grant cannot be re-derived. Safe to call on a budget that has no override.
-
-      Requires the `AccessProfiles.Update` permission.
     tags:
       - Access Profiles
     parameters:

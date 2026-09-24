@@ -27,7 +27,7 @@ Keys can also be managed over the API itself — see [Create an API key](/api-re
 
 ## Required Permissions
 
-Every management endpoint in the [API reference](/api-reference) states the permission it needs in a **Required permission** line, written as `Resource:Operation` (for example `Dashboard:View`). You do not need to work it out from the URL: open the endpoint page and grant exactly what it lists.
+Every management endpoint in the [API reference](/api-reference) shows a **Required Permissions** table above its Authorizations section, listing each permission as `Resource:Operation` (for example `Dashboard:View`). You do not need to work it out from the URL: open the endpoint page and grant exactly what the table lists.
 
 One permission catalog backs both ways of calling the management API:
 
@@ -43,7 +43,7 @@ A request whose role or key lacks the permission is rejected with `403 Forbidden
 - **Resource** is taken from the URL. It is usually the first segment after `/api/` (`/api/webhooks/...` requires `Webhooks`), but several paths map to a different resource. For example, `/api/logs/stats`, `/api/logs/histogram/*`, and `/api/logs/rankings*` require `Dashboard`, not `Logs`, and `/api/governance/audit-logs*` requires `AuditLogs`, not `Governance`.
 - **Operation** defaults to the HTTP method: `GET` requires `View`, `POST` requires `Create`, `PUT` and `PATCH` require `Update`, and `DELETE` requires `Delete`. A few endpoints override this, for example `POST /api/logs/recalculate-cost` requires `Logs:Update` and `POST /api/license` requires `Settings:Update`.
 
-Because these rules have exceptions, always rely on the **Required permission** line on the endpoint page rather than the URL.
+Because these rules have exceptions, always rely on the **Required Permissions** table on the endpoint page rather than the URL.
 
 ### Endpoints that list no permission
 

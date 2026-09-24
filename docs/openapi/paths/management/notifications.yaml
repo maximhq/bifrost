@@ -66,6 +66,10 @@ notifications:
         | Permission | Granted via |
         | --- | --- |
         | `Notifications:Create` | RBAC role or API key scope |
+        | Local admin session | Admin password, or a deployment with dashboard auth disabled |
+
+        Both are required: the handler rejects a caller that is not a local admin
+        with `403 Forbidden` even when the scope is held.
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Publish a dashboard notification
@@ -73,7 +77,7 @@ notifications:
       Persists a notification and pushes it over the dashboard WebSocket to
       every connected client the audience covers.
 
-      Administrators only. Reading is open to any authenticated user because a
+      Administrators only. Listing needs just `Notifications:View`, because a
       caller only ever receives rows their role already entitles them to, but a
       single publish reaches every dashboard user on the deployment, so it is
       restricted to the local admin. On a deployment with dashboard auth

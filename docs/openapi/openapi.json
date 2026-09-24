@@ -58394,7 +58394,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AccessProfiles:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Set a user's access-profile budget override",
-        "description": "Sets or replaces the spending override on one budget of a single user's copy of an access profile.\nThe override is additive — while it is active the budget is enforced against\n`max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset\nschedule untouched. Only this user is affected; the access profile template and every other user\nassigned to it keep their original limits.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the\ncalendar period start — so every node in a cluster derives the same number of remaining cycles.\nThe change is propagated cluster-wide and survives access-profile cloning and propagation.\n\nRequires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy\nof the profile, not on the shared template.\n",
+        "description": "Sets or replaces the spending override on one budget of a single user's copy of an access profile.\nThe override is additive — while it is active the budget is enforced against\n`max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset\nschedule untouched. Only this user is affected; the access profile template and every other user\nassigned to it keep their original limits.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the\ncalendar period start — so every node in a cluster derives the same number of remaining cycles.\nThe change is propagated cluster-wide and survives access-profile cloning and propagation.\n\n`budget_id` must be a budget on the user's own copy of the profile, not on the\nshared template.\n",
         "tags": [
           "Access Profiles"
         ],
@@ -58490,7 +58490,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AccessProfiles:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Remove a user's access-profile budget override",
-        "description": "Removes any active override from the user's budget, so it is enforced against its base `max_limit`\nagain. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a\ncleared grant cannot be re-derived. Safe to call on a budget that has no override.\n\nRequires the `AccessProfiles.Update` permission.\n",
+        "description": "Removes any active override from the user's budget, so it is enforced against its base `max_limit`\nagain. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a\ncleared grant cannot be re-derived. Safe to call on a budget that has no override.\n",
         "tags": [
           "Access Profiles"
         ],
@@ -76547,7 +76547,7 @@
           "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AccessProfiles:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Set a user's access-profile budget override (deprecated path)",
-        "description": "Sets or replaces the spending override on one budget of a single user's copy of an access profile.\nThe override is additive — while it is active the budget is enforced against\n`max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset\nschedule untouched. Only this user is affected; the access profile template and every other user\nassigned to it keep their original limits.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the\ncalendar period start — so every node in a cluster derives the same number of remaining cycles.\nThe change is propagated cluster-wide and survives access-profile cloning and propagation.\n\nRequires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy\nof the profile, not on the shared template.\n",
+        "description": "Sets or replaces the spending override on one budget of a single user's copy of an access profile.\nThe override is additive — while it is active the budget is enforced against\n`max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset\nschedule untouched. Only this user is affected; the access profile template and every other user\nassigned to it keep their original limits.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the\ncalendar period start — so every node in a cluster derives the same number of remaining cycles.\nThe change is propagated cluster-wide and survives access-profile cloning and propagation.\n\n`budget_id` must be a budget on the user's own copy of the profile, not on the\nshared template.\n",
         "tags": [
           "Access Profiles"
         ],
@@ -76646,7 +76646,7 @@
           "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AccessProfiles:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Remove a user's access-profile budget override (deprecated path)",
-        "description": "Removes any active override from the user's budget, so it is enforced against its base `max_limit`\nagain. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a\ncleared grant cannot be re-derived. Safe to call on a budget that has no override.\n\nRequires the `AccessProfiles.Update` permission.\n",
+        "description": "Removes any active override from the user's budget, so it is enforced against its base `max_limit`\nagain. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a\ncleared grant cannot be re-derived. Safe to call on a budget that has no override.\n",
         "tags": [
           "Access Profiles"
         ],
@@ -96813,7 +96813,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/APIKeyRequest"
+                "$ref": "#/components/schemas/APIKeyCreateRequest"
               }
             }
           }
@@ -96966,7 +96966,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `APIKeys:Update` | RBAC role or API key scope |\n| every permission named in `scopes` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update an API key",
-        "description": "Updates a key's name, description, scopes, or expiry. The key value itself is\nnever changed — rotating a credential means deleting the key and creating a\nnew one.\n\nOmitted fields keep their current value. Sending `scopes` replaces the\nexisting list, and the same ceiling as creation applies: the caller must hold\nevery permission being granted. Send `expires_at` as an empty string to remove\nan existing expiry.\n",
+        "description": "Updates a key's name, description, scopes, or expiry. The key value itself is\nnever changed — rotating a credential means deleting the key and creating a\nnew one.\n\nOmitted fields keep their current value, with one exception: `description` is\nalways applied, so leaving it out clears any existing description. Sending\n`scopes` replaces the existing list, and the same ceiling as creation applies:\nthe caller must hold every permission being granted. Send `expires_at` as an\nempty string to remove an existing expiry.\n",
         "tags": [
           "API Keys"
         ],
@@ -96987,7 +96987,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/APIKeyRequest"
+                "$ref": "#/components/schemas/APIKeyUpdateRequest"
               }
             }
           }
@@ -97986,10 +97986,10 @@
       "post": {
         "operationId": "createNotification",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Notifications:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Notifications:Create` | RBAC role or API key scope |\n| Local admin session | Admin password, or a deployment with dashboard auth disabled |\n\nBoth are required: the handler rejects a caller that is not a local admin\nwith `403 Forbidden` even when the scope is held.\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Publish a dashboard notification",
-        "description": "Persists a notification and pushes it over the dashboard WebSocket to\nevery connected client the audience covers.\n\nAdministrators only. Reading is open to any authenticated user because a\ncaller only ever receives rows their role already entitles them to, but a\nsingle publish reaches every dashboard user on the deployment, so it is\nrestricted to the local admin. On a deployment with dashboard auth\ndisabled every request is treated as local admin.\n\nNotifications expire 30 days after creation and are pruned hourly.\n",
+        "description": "Persists a notification and pushes it over the dashboard WebSocket to\nevery connected client the audience covers.\n\nAdministrators only. Listing needs just `Notifications:View`, because a\ncaller only ever receives rows their role already entitles them to, but a\nsingle publish reaches every dashboard user on the deployment, so it is\nrestricted to the local admin. On a deployment with dashboard auth\ndisabled every request is treated as local admin.\n\nNotifications expire 30 days after creation and are pruned hourly.\n",
         "tags": [
           "Notifications"
         ],
@@ -98066,7 +98066,7 @@
       "ManagementBearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Management API authentication for `/api/*` endpoints. Use the `Authorization` header\nwith `Bearer <token>`, where `<token>` is one of:\n\n- a Bifrost management API key,\n- a dashboard session token issued by `POST /api/session/login`,\n- base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).\n\nVirtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -\nthe sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.\n\nAuthentication alone is not sufficient in Bifrost Enterprise: each operation's description\ncarries a **Required permission** line (`Resource:Operation`, for example `Dashboard:View`)\nthat the caller's RBAC role or management API key scopes must include, otherwise the\nrequest is rejected with `403 Forbidden`. See\n[Required permissions](/api/procuring-api-keys#required-permissions) for how permissions\nare derived and which endpoints are exempt.\n"
+        "description": "Management API authentication for `/api/*` endpoints. Use the `Authorization` header\nwith `Bearer <token>`, where `<token>` is one of:\n\n- a Bifrost management API key,\n- a dashboard session token issued by `POST /api/session/login`,\n- base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).\n\nVirtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -\nthe sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.\n\nAuthentication alone is not sufficient in Bifrost Enterprise: each operation page shows a\n**Required Permissions** table (`Resource:Operation`, for example `Dashboard:View`) above\nits Authorizations section, and the caller's RBAC role or management API key scopes must\ninclude what it lists, otherwise the request is rejected with `403 Forbidden`.\n\nA local admin — authenticated with the admin password, or any caller on a deployment with\ndashboard auth disabled — bypasses these checks and can call every management endpoint.\nSee [Required permissions](/api/procuring-api-keys#required-permissions) for how\npermissions are derived and which endpoints are exempt.\n"
       },
       "BasicAuth": {
         "type": "http",
@@ -119397,16 +119397,24 @@
           }
         }
       },
-      "APIKeyRequest": {
+      "APIKeyScopes": {
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "format": "uint"
+        },
+        "description": "Permission ids to grant, from `GET /api/governance/rbac/permissions`. A key\ncarries only the permissions listed here — the creator's own role is not\ninherited. You cannot grant a permission you do not hold yourself; doing so\nreturns 403.\n"
+      },
+      "APIKeyCreateRequest": {
         "type": "object",
         "required": [
           "name"
         ],
-        "description": "Create or update body for a management API key. The key value is generated by\nthe server and can never be supplied or changed here.\n",
+        "description": "Create body for a management API key. The key value is generated by the server\nand can never be supplied here.\n",
         "properties": {
           "name": {
             "type": "string",
-            "description": "Unique name for the key. Required on create; on update, an empty or omitted\nvalue leaves the existing name unchanged.\n"
+            "description": "Unique name for the key."
           },
           "description": {
             "type": "string",
@@ -119414,18 +119422,53 @@
             "description": "Optional note about what the key is for."
           },
           "scopes": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "uint"
-            },
-            "description": "Permission ids to grant, from `GET /api/governance/rbac/permissions`. A key\ncarries only the permissions listed here — the creator's own role is not\ninherited. You cannot grant a permission you do not hold yourself; doing so\nreturns 403. Omit on update to leave the current scopes unchanged.\n"
+            "$ref": "#/components/schemas/APIKeyScopes"
           },
           "expires_at": {
             "type": "string",
             "format": "date-time",
             "nullable": true,
-            "description": "Expiry timestamp in RFC3339 format. Omit or send null for a key that never\nexpires; on update, send an empty string to clear an existing expiry.\n"
+            "description": "Expiry timestamp in RFC3339 format. Omit or send null for a key that never\nexpires.\n"
+          }
+        }
+      },
+      "APIKeyUpdateRequest": {
+        "type": "object",
+        "description": "Update body for a management API key. Every field is optional; the key value\nitself can never be changed here.\n",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "New name for the key. Omit it, or send an empty string, to keep the\ncurrent name.\n"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Note about what the key is for. This field is always applied, so omitting\nit clears any existing description — send the current value to preserve it.\n"
+          },
+          "scopes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/APIKeyScopes"
+              }
+            ],
+            "description": "Replaces the key's scopes in full. Omit to leave the current scopes\nunchanged. Permission ids come from\n`GET /api/governance/rbac/permissions`, and you can only grant permissions\nyou hold yourself.\n"
+          },
+          "expires_at": {
+            "nullable": true,
+            "description": "New expiry. Send an RFC3339 timestamp to set one, an empty string to\nremove an existing expiry, or omit the field to leave it unchanged.\n",
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ],
+                "description": "Clears the existing expiry."
+              }
+            ]
           }
         }
       },
