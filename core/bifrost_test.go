@@ -3671,6 +3671,49 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	}
 }
 
+func TestExecuteRequestWithRetries_ClearsStreamEndAfterFirstChunkError(t *testing.T) {
+	config := createTestConfig(1, 0, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	attempts := 0
+
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		attempts++
+		stream := make(chan *schemas.BifrostStreamChunk, 1)
+		if attempts == 1 {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			stream <- &schemas.BifrostStreamChunk{
+				BifrostError: createBifrostError(schemas.ErrProviderNetworkError, nil, nil, false),
+			}
+		} else {
+			if ctx.Value(schemas.BifrostContextKeyStreamEndIndicator) != nil {
+				t.Error("retry inherited the failed stream's end indicator")
+			}
+			stream <- &schemas.BifrostStreamChunk{
+				BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+					Type: schemas.ResponsesStreamResponseTypeCompleted,
+				},
+			}
+		}
+		close(stream)
+		return stream, nil
+	}
+
+	stream, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Bedrock, "eu.anthropic.claude-opus-4-8", nil, logger)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected two attempts, got %d", attempts)
+	}
+	chunk, ok := <-stream
+	if !ok || chunk.BifrostResponsesStreamResponse == nil || chunk.BifrostResponsesStreamResponse.Type != schemas.ResponsesStreamResponseTypeCompleted {
+		t.Fatalf("expected completed response from retry, got %+v", chunk)
+	}
+}
+
 // TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel pins the public
 // streaming contract for zero-chunk streams: when the provider's channel closes
 // before the first chunk, the caller must receive a NON-nil, closed channel with

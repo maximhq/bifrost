@@ -459,6 +459,47 @@ func TestResponsesStream_EmptyOpus48ConverseIsError(t *testing.T) {
 	}
 }
 
+func TestResponsesStream_PartialConverseWithoutMessageStopIsError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		encoder := eventstream.NewEncoder()
+		for _, event := range []struct{ name, payload string }{
+			{"messageStart", `{"role":"assistant"}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"partial"}}`},
+		} {
+			headers := eventstream.Headers{
+				{Name: ":message-type", Value: eventstream.StringValue("event")},
+				{Name: ":event-type", Value: eventstream.StringValue(event.name)},
+				{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+			}
+			if err := encoder.Encode(w, eventstream.Message{Headers: headers, Payload: []byte(event.payload)}); err != nil {
+				t.Errorf("encode %s: %v", event.name, err)
+				return
+			}
+		}
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	request := testResponsesRequest()
+	request.Model = "eu.anthropic.claude-opus-4-8"
+	stream, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), request)
+	require.Nil(t, bifrostErr)
+
+	var sawError bool
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			sawError = true
+			assert.Equal(t, schemas.ErrProviderNetworkError, chunk.BifrostError.Error.Message)
+		}
+		if response := chunk.BifrostResponsesStreamResponse; response != nil {
+			assert.NotEqual(t, schemas.ResponsesStreamResponseTypeCompleted, response.Type)
+		}
+	}
+	assert.True(t, sawError, "expected incomplete partial stream to report an error")
+}
+
 func TestResponsesStream_MessageStopWithoutMetadataIsError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
