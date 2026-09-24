@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/netip"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -688,21 +690,52 @@ func (c *ComplexityJevConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON writes Timeout as a duration string so persisted configs decode
-// back to the same value, matching ComplexityLLMConfig.
+// MarshalJSON writes Timeout as milliseconds, the canonical JSON duration
+// form for configstore contracts. The decoder still accepts duration strings,
+// so previously persisted configs keep loading.
 func (c ComplexityJevConfig) MarshalJSON() ([]byte, error) {
 	type alias ComplexityJevConfig
-	var timeout string
+	var timeout float64
 	if c.Timeout != 0 {
-		timeout = c.Timeout.String()
+		timeout = float64(c.Timeout) / float64(time.Millisecond)
 	}
 	return json.Marshal(struct {
-		Timeout string `json:"timeout,omitempty"`
+		Timeout float64 `json:"timeout,omitempty"`
 		alias
 	}{
 		Timeout: timeout,
 		alias:   alias(c),
 	})
+}
+
+
+// validateJevBaseURL requires HTTPS for Jev endpoints so the Bearer API key is
+// never sent in cleartext. Plain HTTP is accepted only for loopback or
+// RFC-1918/private addresses (local proxies, self-hosted deployments).
+func validateJevBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("jev base_url is not a valid URL: %q", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if strings.EqualFold(host, "localhost") {
+			return nil
+		}
+		if addr, err := netip.ParseAddr(host); err == nil &&
+			(addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()) {
+			return nil
+		}
+		return fmt.Errorf(
+			"jev base_url %q uses plaintext http for a non-private endpoint; the API key would be sent in cleartext — use https or a loopback/private address",
+			raw,
+		)
+	default:
+		return fmt.Errorf("jev base_url %q must use http or https, got scheme %q", raw, u.Scheme)
+	}
 }
 
 // normalized returns a canonical deep copy with defaults applied.
@@ -752,8 +785,12 @@ func (c *ComplexityJevConfig) Validate() error {
 	if c.Timeout <= 0 {
 		return fmt.Errorf("jev timeout must be positive, got %v", c.Timeout)
 	}
-	if strings.TrimSpace(c.BaseURL) == "" {
+	baseURL := strings.TrimSpace(c.BaseURL)
+	if baseURL == "" {
 		return fmt.Errorf("jev config requires a base_url")
+	}
+	if err := validateJevBaseURL(baseURL); err != nil {
+		return err
 	}
 	if strings.TrimSpace(c.Model) == "" {
 		return fmt.Errorf("jev config requires a model")

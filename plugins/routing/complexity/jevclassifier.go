@@ -259,7 +259,11 @@ func (c *JevClassifier) Classify(ctx context.Context, input ComplexityInput) (*J
 		return nil, nil
 	}
 
-	decisionCtx, cancel := context.WithTimeout(ctx, c.Timeout())
+	timeout := jev.Timeout
+	if timeout <= 0 {
+		timeout = configstore.DefaultComplexityJevTimeout
+	}
+	decisionCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	resp, err := systemOne(decisionCtx, jev, &SystemOneRequest{
@@ -286,7 +290,10 @@ func decideJev(answers map[string]SystemOneAnswer, jev *configstore.ComplexityJe
 	// (0..n-1) and are normalized before the gates compare them.
 	complexity := 1.0
 	complexityConfidence := 0.0
-	if answer, ok := answers["complexity"]; ok && answer.Score != nil {
+	if answer, ok := answers["complexity"]; ok && answer.Score != nil &&
+		answer.Type == SystemOneQuestionScore &&
+		*answer.Score >= 0 && *answer.Score <= float64(len(jevComplexityCriteria)-1) &&
+		answer.Confidence >= 0 && answer.Confidence <= 1 {
 		complexity = normalizeJevComplexity(*answer.Score)
 		complexityConfidence = answer.Confidence
 	}
@@ -297,7 +304,8 @@ func decideJev(answers map[string]SystemOneAnswer, jev *configstore.ComplexityJe
 	}
 
 	choice, ok := answers["tier"]
-	if !ok || choice.Choice == "" {
+	if !ok || choice.Choice == "" || choice.Type != SystemOneQuestionChoice ||
+		choice.Confidence < 0 || choice.Confidence > 1 {
 		result.Reason = JevReasonEngineUnavailable
 		return result
 	}

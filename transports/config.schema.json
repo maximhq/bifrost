@@ -5721,6 +5721,12 @@
           "minimum": 0,
           "maximum": 1,
           "description": "Confidence required on the complexity score before it may allow publishing a tier (default: 0.5)."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are combined (oldest first) into the state sent to the decision API (default: 1, the latest message only). Higher values let a short follow-up inherit the intent of earlier turns, at the cost of diluting the latest message and more input tokens per decision call. Only user turns count; system prompts and assistant replies are never included."
         }
       },
       "additionalProperties": false
