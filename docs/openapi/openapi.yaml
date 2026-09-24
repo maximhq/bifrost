@@ -1111,7 +1111,15 @@ paths:
   /api/audit-logs/{id}/verify:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-verify"
 
-  # MCP Tool Groups
+  # Virtual MCPs
+  /api/mcp/virtual-mcps:
+    $ref: "./paths/management/virtualmcps.yaml#/virtual-mcps"
+  /api/mcp/virtual-mcps/{id}:
+    $ref: "./paths/management/virtualmcps.yaml#/virtual-mcps-by-id"
+  /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}:
+    $ref: "./paths/management/virtualmcps.yaml#/virtual-mcps-virtual-key"
+
+  # MCP Tool Groups (Enterprise; deprecated alias for /api/mcp/virtual-mcps)
   /api/mcp/tool-groups:
     $ref: "./paths/management/mcptoolgroups.yaml#/mcp-tool-groups"
   /api/mcp/tool-groups/{id}:

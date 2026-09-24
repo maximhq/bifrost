@@ -1,0 +1,153 @@
+# Schemas for Virtual MCP management.
+
+VirtualMCP:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+      readOnly: true
+    name:
+      type: string
+    endpoint_slug:
+      type: string
+      description: |
+        Slug this Virtual MCP is served under at `/mcp/{endpoint_slug}`.
+        Set on create and immutable afterwards.
+    description:
+      type: string
+      nullable: true
+      description: Operator-facing note. Never sent to a model.
+    instructions:
+      type: string
+      nullable: true
+      description: |
+        Model-facing guidance served with this Virtual MCP's tools, wrapped in a
+        `<virtual_mcp name="...">` block on the `/mcp/{endpoint_slug}` initialize
+        response. Unlike `description`, this reaches the model.
+
+        Only forwarded when the deployment's `mcp_server_instructions_mode` is
+        `gateway` or `all`; at `off` it is stored but never sent.
+    instructions_mode:
+      type: string
+      enum: [append, replace]
+      default: append
+      description: |
+        How `instructions` combines with what the source MCP servers advertise.
+        `append` keeps the inherited text and adds this Virtual MCP's own after
+        it. `replace` drops the inherited text from every source server, sending
+        only `instructions`.
+    enabled:
+      type: boolean
+    tools:
+      type: array
+      items:
+        $ref: './mcptoolgroups.yaml#/MCPToolSpec'
+    virtual_key_ids:
+      type: array
+      readOnly: true
+      description: Virtual keys this Virtual MCP is assigned to. Change it with the attach and detach endpoints.
+      items:
+        type: string
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+CreateVirtualMCPRequest:
+  type: object
+  description: |
+    `name` and `tools` are required. `enabled` defaults to `true` and
+    `instructions_mode` to `append`.
+  required:
+    - name
+    - tools
+  properties:
+    name:
+      type: string
+    endpoint_slug:
+      type: string
+      description: Honored on create only.
+    description:
+      type: string
+      nullable: true
+    instructions:
+      type: string
+      nullable: true
+      description: Model-facing guidance. See `VirtualMCP.instructions`.
+    instructions_mode:
+      type: string
+      enum: [append, replace]
+      default: append
+    enabled:
+      type: boolean
+    tools:
+      type: array
+      items:
+        $ref: './mcptoolgroups.yaml#/MCPToolSpec'
+
+UpdateVirtualMCPRequest:
+  type: object
+  description: |
+    Partial update: every field is optional and an omitted one preserves its current
+    value. `endpoint_slug` is ignored because it is immutable after create.
+
+    To clear `instructions`, send an empty string; `null` reads as "not provided" and
+    leaves the stored text in place.
+  properties:
+    name:
+      type: string
+    endpoint_slug:
+      type: string
+      description: Honored on create only.
+    description:
+      type: string
+      nullable: true
+    instructions:
+      type: string
+      nullable: true
+      description: Model-facing guidance. See `VirtualMCP.instructions`.
+    instructions_mode:
+      type: string
+      enum: [append, replace]
+      default: append
+    enabled:
+      type: boolean
+    tools:
+      type: array
+      items:
+        $ref: './mcptoolgroups.yaml#/MCPToolSpec'
+
+VirtualMCPResponse:
+  type: object
+  properties:
+    virtual_mcp:
+      $ref: '#/VirtualMCP'
+
+VirtualMCPListResponse:
+  type: object
+  properties:
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/VirtualMCP'
+    count:
+      type: integer
+      description: Number of Virtual MCPs in this page.
+    total_count:
+      type: integer
+      description: Total matching the query across all pages.
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+VirtualMCPSuccessResponse:
+  type: object
+  properties:
+    success:
+      type: boolean

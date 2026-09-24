@@ -1,4 +1,8 @@
 # Schemas for MCP Tool Group management.
+#
+# Deprecated alongside the /api/mcp/tool-groups paths. MCPToolSpec is still the
+# current tool-selection shape and is reused by the Virtual MCP schemas; the
+# request/response wrappers below are the Enterprise alias's shape only.
 
 MCPToolSpec:
   type: object
@@ -18,6 +22,10 @@ MCPToolSpec:
 
 MCPToolGroup:
   type: object
+  description: |
+    Deprecated shape returned by the `/api/mcp/tool-groups` alias. The current
+    resource is `VirtualMCP`, which adds `endpoint_slug`, `instructions`, and
+    `instructions_mode`.
   properties:
     id:
       type: integer

@@ -1181,7 +1181,20 @@
                 ]
               },
               {
-                "group": "MCP Tool Groups",
+                "group": "Virtual MCPs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/mcp/virtual-mcps",
+                  "POST /api/mcp/virtual-mcps",
+                  "GET /api/mcp/virtual-mcps/{id}",
+                  "PUT /api/mcp/virtual-mcps/{id}",
+                  "DELETE /api/mcp/virtual-mcps/{id}",
+                  "POST /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}",
+                  "DELETE /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}"
+                ]
+              },
+              {
+                "group": "MCP Tool Groups (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/mcp/tool-groups",
