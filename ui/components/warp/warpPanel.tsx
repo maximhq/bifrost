@@ -275,8 +275,8 @@ export default function WarpPanel() {
 					<h2 className="truncate text-sm font-semibold">Warp</h2>
 					{/* Warp answers questions people will act on, so its maturity belongs
 					    next to its name rather than buried in a tooltip. */}
-					<Badge variant="secondary" className="shrink-0 text-[10px]">
-						ALPHA
+					<Badge variant="secondary" className="shrink-0 text-[10px] font-normal">
+						Preview
 					</Badge>
 					{indexChip && <WarpIndexChip status={indexChip} />}
 					{indexStatusUnavailable && (
