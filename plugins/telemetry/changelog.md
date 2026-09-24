@@ -1,2 +1,0 @@
-- fix: persist user_labels_enabled with the telemetry config (#7490)
-- chore: upgraded core to v1.10.2 and framework to v1.7.4
