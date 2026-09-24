@@ -42,7 +42,7 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
 import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
@@ -69,7 +69,16 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { extractProviderErrorMessage, parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import {
+	extractProviderErrorMessage,
+	hasNoToolArguments,
+	isClientToolCallItem,
+	nextSessionLookupStart,
+	isResponsesToolCallItem,
+	parseRoutingDecisionLine,
+	pickNextSessionLog,
+	resolveRawJsonNoticeState,
+} from "./logDetailView.utils";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -1037,6 +1046,63 @@ function ToolNameLabel({ name }: { name: string }) {
 	);
 }
 
+// A response that ends on a tool call the caller runs itself (Warp's agent loop, any
+// Responses client) has no result in this row: the caller executes the tool and, if
+// it carries on, sends the output with a later request. Point at the next row in the
+// same session, without claiming it is the one that carries the result.
+function NextSessionRequestLink({ log, onOpenLog }: { log: LogEntry; onOpenLog: (logId: string) => void }) {
+	// currentData, not data: data keeps the previous log's page while this one's
+	// lookup runs, which would briefly link to the wrong request.
+	const { currentData, isError, refetch } = useGetLogsQuery(
+		{
+			filters: { session_id: log.session_id, start_time: nextSessionLookupStart(log.timestamp) },
+			pagination: { limit: 2, offset: 0, sort_by: "timestamp", order: "asc" },
+			rootsOnly: true,
+		},
+		// The caller may send its follow-up after this opens, so look again while
+		// the page is in view.
+		{ skip: !log.session_id, pollingInterval: 10_000, skipPollingIfUnfocused: true },
+	);
+	const next = currentData ? pickNextSessionLog(currentData.logs, log) : undefined;
+	// A failed lookup is not "there is no next request": say so, and offer a retry.
+	if (isError && !currentData) {
+		return (
+			<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request-error">
+				Couldn't look up the next request in this session.{" "}
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => void refetch()}
+					data-testid="log-tool-call-next-request-retry"
+				>
+					Retry
+				</button>
+			</div>
+		);
+	}
+	return (
+		<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request">
+			The tool's result isn't in this request.{" "}
+			{next ? (
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => onOpenLog(next.id)}
+					data-testid="log-tool-call-next-request-link"
+				>
+					Open next request
+				</button>
+			) : !log.session_id ? null : currentData ? (
+				// The lookup finished and found nothing: the caller has not sent a
+				// follow-up in this session, or has not yet.
+				<span data-testid="log-tool-call-next-request-none">No later request in this session.</span>
+			) : (
+				<span data-testid="log-tool-call-next-request-loading">Looking for the next request…</span>
+			)}
+		</div>
+	);
+}
+
 function MessageRow({
 	role,
 	meta,
@@ -1098,6 +1164,7 @@ interface LogDetailViewProps {
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 	onFilterBySessionId?: (sessionId: string) => void;
+	onOpenLog?: (logId: string) => void;
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -1176,6 +1243,7 @@ export function LogDetailView({
 	headerAction,
 	onFilterByParentRequestId,
 	onFilterBySessionId,
+	onOpenLog,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -3389,16 +3457,23 @@ export function LogDetailView({
 						const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
 						const outputMsgs =
 							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
-						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
-							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
-							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
+						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string>; fromOutput: boolean }> = [
+							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping, fromOutput: false })),
+							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping, fromOutput: true })),
 						];
 						if (all.length === 0) return null;
+						// The link to the request carrying the results goes under the last call
+						// the caller has to run, once, however many calls the response made.
+						const lastClientCallIndex =
+							onOpenLog && log.session_id ? all.findLastIndex((entry) => entry.fromOutput && isClientToolCallItem(entry.msg.type)) : -1;
 						return (
 							<div className="bg-card rounded-sm border p-5">
 								{all.map(({ msg, mapping }, index) => {
 									const role = getResponsesRole(msg);
 									const isLast = index === all.length - 1;
+									const isToolCall = isResponsesToolCallItem(msg.type);
+									// `{}` arguments rendered as a one-line body read as an empty result.
+									const noArguments = isToolCall && hasNoToolArguments(msg.arguments);
 									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, mapping) : null;
 									const reasoningHasAny =
 										!!reasoningParts &&
@@ -3406,7 +3481,7 @@ export function LogDetailView({
 											!!reasoningParts.encrypted ||
 											!!reasoningParts.contentText ||
 											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
+									const text = role === "reasoning" || noArguments ? "" : extractResponsesText(msg, mapping);
 									// Whatever the item carries outside the fields rendered below — a server tool's `action`,
 									// a custom_tool_call's `input`, a compaction item's `encrypted_content`.
 									const itemPayload = extractResponsesItemPayload(msg);
@@ -3442,6 +3517,11 @@ export function LogDetailView({
 											) : (
 												`${lineCount} line${lineCount === 1 ? "" : "s"}`
 											)
+										) : noArguments ? (
+											<>
+												{msg.name ? <ToolNameLabel name={msg.name} /> : null}
+												{msg.name ? " · no arguments" : "no arguments"}
+											</>
 										) : msg.name ? (
 											<ToolNameLabel name={msg.name} />
 										) : msg.type === "function_call_output" && msg.call_id ? (
@@ -3459,7 +3539,7 @@ export function LogDetailView({
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
-										<MessageRow key={index} role={role} meta={meta} last={isLast}>
+										<MessageRow key={index} role={role} meta={meta} last={isLast} label={isToolCall ? "Tool Call" : undefined}>
 											{role === "reasoning" ? (
 												reasoningHasAny && reasoningParts ? (
 													<div className="space-y-3">
@@ -3491,6 +3571,8 @@ export function LogDetailView({
 												) : (
 													<div className="text-muted-foreground text-[12px] italic">No reasoning content available</div>
 												)
+											) : noArguments ? (
+												<div className="text-muted-foreground text-[12px] italic">No arguments</div>
 											) : text ? (
 												usePlainText ? (
 													<CollapsibleCode text={text} preview={3} mono={false} />
@@ -3526,6 +3608,7 @@ export function LogDetailView({
 															className="mt-2 max-w-full rounded border"
 														/>
 													))}
+											{index === lastClientCallIndex && onOpenLog ? <NextSessionRequestLink log={log} onOpenLog={onOpenLog} /> : null}
 										</MessageRow>
 									);
 								})}
