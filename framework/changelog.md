@@ -1,0 +1,1 @@
+- [fix]: keep every Responses field through the streaming accumulator deep copy [@citrocat](https://github.com/citrocat)

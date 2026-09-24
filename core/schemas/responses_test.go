@@ -892,7 +892,8 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 			},
 		}}},
 		ResponsesToolMessage: &ResponsesToolMessage{
-			Action: &ResponsesToolMessageActionStruct{ResponsesToolCallActionStr: Ptr("generate")},
+			ToolsetName: Ptr("computer"),
+			Action:      &ResponsesToolMessageActionStruct{ResponsesToolCallActionStr: Ptr("generate")},
 			ResponsesComputerToolCall: &ResponsesComputerToolCall{PendingSafetyChecks: []ResponsesComputerToolCallPendingSafetyCheck{{
 				ID: "check_1", Code: "confirm", Message: "confirm action",
 			}}},
@@ -954,6 +955,9 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 	}
 	if original.ResponsesToolMessage.Action.ResponsesToolCallActionStr == copied.ResponsesToolMessage.Action.ResponsesToolCallActionStr {
 		t.Fatal("copy aliases bare tool action")
+	}
+	if original.ResponsesToolMessage.ToolsetName == copied.ResponsesToolMessage.ToolsetName {
+		t.Fatal("copy aliases toolset name")
 	}
 
 	copied.ProviderNativeParts[0] = '['
