@@ -90,6 +90,12 @@ describe("extractAuthFromHeaders", () => {
 		expect(extractAuthFromHeaders({ "X-Api-Key": "x" }).problem).toBe("missing");
 		expect(extractAuthFromHeaders({ Authorization: "Basic abc" }).problem).toBe("not_bearer");
 	});
+
+	it("reports a header the API returned masked", () => {
+		expect(extractAuthFromHeaders({ Authorization: "<REDACTED>" }).problem).toBe("masked");
+		expect(extractAuthFromHeaders({ Authorization: `Bear${"*".repeat(24)}cret` }).problem).toBe("masked");
+		expect(extractAuthFromHeaders({ Authorization: "****" }).problem).toBe("masked");
+	});
 });
 
 describe("maskSecret", () => {
@@ -145,6 +151,24 @@ describe("buildDatabricksMigrationPlan", () => {
 			url: { value: "", ref: "env.PROXY" },
 		});
 		expect(plan.warnings.some((w) => w.includes("proxy password"))).toBe(true);
+	});
+
+	it("drops masked extra headers with a warning and keeps secret references", () => {
+		const source = custom("my-dbx", {
+			network_config: {
+				...custom("x").network_config!,
+				extra_headers: {
+					Authorization: "<REDACTED>",
+					"X-Client-Secret": "<REDACTED>",
+					"X-From-Env": "env.DBX_HEADER",
+				},
+			},
+		});
+		const plan = buildDatabricksMigrationPlan(source, []);
+		expect(plan.providerSettings.network_config.extra_headers).toEqual({ "X-From-Env": "env.DBX_HEADER" });
+		expect(plan.warnings.some((w) => w.includes('"X-Client-Secret" extra header'))).toBe(true);
+		expect(plan.warnings.some((w) => w.includes("Authorization header is stored as a literal value"))).toBe(true);
+		expect(plan.keys[0].needsValue).toBe(true);
 	});
 
 	it("maps keyed sources, requiring re-entry for masked values and keeping refs", () => {
