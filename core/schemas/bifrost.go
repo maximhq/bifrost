@@ -278,7 +278,7 @@ const (
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"      // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"    // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "jev", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityScore           BifrostContextKey = "bifrost-governance-complexity-score"     // float64 (classifier score behind the tier: the semantic classifier's similarity to the nearest reference phrase; only present alongside a computed tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"       // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"            // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
@@ -793,6 +793,7 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 	return "", "", nil
 }
 
+// SetProvider sets the provider on the active request variant.
 func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
 	case br.ListModelsRequest != nil:
@@ -860,6 +861,7 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	}
 }
 
+// SetModel sets the model on the active request variant.
 func (br *BifrostRequest) SetModel(model string) {
 	switch {
 	case br.TextCompletionRequest != nil:
@@ -919,6 +921,7 @@ func (br *BifrostRequest) SetModel(model string) {
 	}
 }
 
+// SetFallbacks sets fallback providers on the active request variant.
 func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 	switch {
 	case br.TextCompletionRequest != nil:
@@ -956,6 +959,7 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 	}
 }
 
+// SetRawRequestBody stores the original body on the active request variant.
 func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 	switch {
 	case br.TextCompletionRequest != nil:
@@ -1118,6 +1122,7 @@ type BifrostMCPListToolsRequest struct {
 type BifrostMCPExecuteToolRequest struct {
 }
 
+// GetToolName returns the tool name from the active MCP request variant.
 func (r *BifrostMCPRequest) GetToolName() string {
 	if r.ChatAssistantMessageToolCall != nil {
 		if r.ChatAssistantMessageToolCall.Function.Name != nil {
@@ -1132,6 +1137,7 @@ func (r *BifrostMCPRequest) GetToolName() string {
 	return ""
 }
 
+// GetToolArguments returns arguments from the active MCP request variant.
 func (r *BifrostMCPRequest) GetToolArguments() interface{} {
 	if r.ChatAssistantMessageToolCall != nil {
 		return r.ChatAssistantMessageToolCall.Function.Arguments
@@ -1197,6 +1203,7 @@ type BifrostResponse struct {
 	PassthroughResponse           *BifrostPassthroughResponse
 }
 
+// GetExtraFields returns metadata from the active response variant.
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
 	case r.ListModelsResponse != nil:
@@ -2025,6 +2032,7 @@ func (e *BifrostError) String() string {
 	return string(b)
 }
 
+// GetErrorString returns the most useful human-readable error detail.
 func (e *BifrostError) GetErrorString() string {
 	if e == nil {
 		return ""
@@ -2099,6 +2107,7 @@ func (e *ErrorField) MarshalJSON() ([]byte, error) {
 	return json.Marshal(aux)
 }
 
+// UnmarshalJSON normalizes provider error fields whose code or message shapes vary.
 func (e *ErrorField) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		Type    *string     `json:"type,omitempty"`

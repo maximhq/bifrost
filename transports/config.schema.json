@@ -5450,8 +5450,20 @@
         "keywords": {
           "$ref": "#/$defs/complexity_analyzer_keywords"
         },
+        "classifier": {
+          "type": "string",
+          "enum": [
+            "semantic",
+            "jev"
+          ],
+          "default": "semantic",
+          "description": "Primary complexity classifier. Defaults to semantic."
+        },
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "jev": {
+          "$ref": "#/$defs/complexity_jev_config"
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
@@ -5480,7 +5492,17 @@
             },
             "required": [
               "session"
-            ]
+            ],
+            "not": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "jev"
+                }
+              }
+            }
           },
           "then": {
             "required": [
@@ -5518,11 +5540,11 @@
     },
     "complexity_session_config": {
       "type": "object",
-      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. The configured primary classifier supplies tiers; overlapping requests are best-effort.",
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+          "description": "Enable monotonic session tier retention; default false."
         }
       },
       "required": [
@@ -5586,9 +5608,10 @@
           "type": "string",
           "enum": [
             "none",
-            "llm"
+            "llm",
+            "jev"
           ],
-          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block, which is required when this is set."
+          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or Typesafe Jev."
         }
       },
       "required": [
@@ -11631,6 +11654,34 @@
         ],
         "additionalProperties": false
       }
+    },
+    "complexity_jev_config": {
+      "type": "object",
+      "description": "Typesafe Jev complexity-classifier request settings. Uses the configured Typesafe provider credentials.",
+      "properties": {
+        "previous_message_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 1,
+          "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."
+        },
+        "timeout": {
+          "description": "Maximum Jev classification latency (duration string or milliseconds as a number; default 1500ms).",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "1500ms"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

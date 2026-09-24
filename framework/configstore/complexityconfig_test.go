@@ -86,6 +86,14 @@ func TestComplexitySemanticConfigTimeoutDecoding(t *testing.T) {
 	}
 }
 
+// TestComplexityJevConfigDefaults verifies the default user-history window and timeout.
+func TestComplexityJevConfigDefaults(t *testing.T) {
+	config := (&ComplexityJevConfig{}).normalized()
+	require.NotNil(t, config.PreviousMessageCount)
+	assert.Equal(t, 1, *config.PreviousMessageCount)
+	assert.Equal(t, 1500*time.Millisecond, config.Timeout)
+}
+
 // "fallback" is deliberately absent here: it was removed with the lexical
 // fallback and later reintroduced for the llm fallback classifier, so it is a
 // live field again (decoding covered by TestComplexitySemanticFallbackValidation).

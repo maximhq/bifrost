@@ -2559,13 +2559,30 @@ ComplexitySemanticConfig:
         and falls back to the embedded store otherwise.
     fallback:
       type: string
-      enum: [none, llm]
+      enum: [none, llm, jev]
       description: |
-        What answers when semantic classification produces no tier (a match
-        below `min_similarity`, a timeout, or an unfinished warmup). `none`
-        (the default) records the request as skipped. `llm` asks the chat
-        model configured in the analyzer's `llm` block, which is required
-        when this is set.
+        What answers when semantic classification produces no tier. `none`
+        (the default) records the request as skipped, `llm` uses the configured
+        chat model, and `jev` uses the Typesafe decision API.
+
+ComplexityJevConfig:
+  type: object
+  description: Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.
+  additionalProperties: false
+  properties:
+    previous_message_count:
+      type: integer
+      minimum: 0
+      maximum: 5
+      default: 5
+      description: Number of preceding user/assistant messages sent with the current user request.
+    timeout:
+      description: Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 4s.
+      oneOf:
+        - type: string
+          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+        - type: number
+          minimum: 0
 
 ComplexityLLMConfig:
   type: object
@@ -2680,6 +2697,11 @@ ComplexityAnalyzerConfig:
     - keywords
   allOf:
     - if:
+        not:
+          required: [classifier]
+          properties:
+            classifier:
+              const: jev
         properties:
           session:
             properties:
@@ -2710,8 +2732,15 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexityTierBoundaries'
     keywords:
       $ref: '#/ComplexityKeywordConfig'
+    classifier:
+      type: string
+      enum: [semantic, jev]
+      default: semantic
+      description: Primary complexity classifier; omitted configuration keeps the semantic default.
     semantic:
       $ref: '#/ComplexitySemanticConfig'
+    jev:
+      $ref: '#/ComplexityJevConfig'
     llm:
       $ref: '#/ComplexityLLMConfig'
     session:
@@ -2719,11 +2748,11 @@ ComplexityAnalyzerConfig:
 
 ComplexitySessionConfig:
   type: object
-  description: Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.
+  description: Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.
   additionalProperties: false
   required:
     - enabled
   properties:
     enabled:
       type: boolean
-      description: Enable monotonic session tier retention. Requires semantic complexity classification; default is false.
+      description: Enable monotonic session tier retention; default is false.

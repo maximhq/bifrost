@@ -73,11 +73,11 @@ LogEntry:
       nullable: true
     complexity_mechanism:
       type: [string, 'null']
-      enum: [semantic, llm, session, skipped, null]
-      description: How the effective complexity tier was determined. session means retained session state supplied the tier; skipped means classification was demanded but produced no tier.
+      enum: [semantic, jev, llm, session, skipped, null]
+      description: How the effective complexity tier was determined. jev means Typesafe Jev supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier.
     complexity_score:
       type: number
-      description: Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.
+      description: Similarity score of the nearest reference phrase behind the tier. Absent for Jev, LLM, session, and skipped decisions.
       nullable: true
     session_id:
       type: string

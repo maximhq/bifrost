@@ -61,7 +61,7 @@ type SearchFilters struct {
 	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
 	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
 	SessionID            string            `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
 	TeamIDs              []string          `json:"team_ids,omitempty"`
 	CustomerIDs          []string          `json:"customer_ids,omitempty"`
@@ -226,7 +226,7 @@ type Log struct {
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
 	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`

@@ -145,6 +145,7 @@ func (c *ComplexityEditableKeywordConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// hasAnyComplexityField reports whether any named key is present in decoded JSON.
 func hasAnyComplexityField(fields map[string]json.RawMessage, names ...string) bool {
 	for _, name := range names {
 		if _, ok := fields[name]; ok {
@@ -366,24 +367,33 @@ func (c *ComplexitySemanticConfig) Validate() error {
 			ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured, c.VectorStore)
 	}
 	switch c.Fallback {
-	case ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM:
+	case ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackJev:
 	default:
-		return fmt.Errorf("semantic fallback must be %q or %q, got %q",
-			ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, c.Fallback)
+		return fmt.Errorf("semantic fallback must be %q, %q, or %q, got %q",
+			ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackJev, c.Fallback)
 	}
 	return nil
 }
 
-// Semantic fallback selection. The fallback names what answers when semantic
-// classification produces no tier — a rejection below min_similarity, a
-// timeout, an unready warmup, or an unwired executor. "none" (also the
-// meaning of an absent field) keeps today's behaviour: the request is
-// recorded as "skipped". "llm" asks the configured chat model instead. The
-// LLM classifier only ever runs on this path; it is never the primary.
+// Semantic fallback selection names the optional classifier invoked when semantic
+// classification produces no tier. The fallback is only used by the semantic primary.
 const (
+	ComplexityClassifierSemantic   = "semantic"
+	ComplexityClassifierJev        = "jev"
 	ComplexitySemanticFallbackNone = "none"
 	ComplexitySemanticFallbackLLM  = "llm"
+	ComplexitySemanticFallbackJev  = "jev"
 )
+
+// DefaultComplexityJevTimeout bounds one Typesafe Jev decision call.
+const DefaultComplexityJevTimeout = 1500 * time.Millisecond
+
+// DefaultComplexityJevPreviousMessageCount is the number of prior user messages
+// sent when the Jev classifier does not specify a history window.
+const DefaultComplexityJevPreviousMessageCount = 1
+
+// MaxComplexityJevPreviousMessageCount bounds the number of prior user messages sent to Jev.
+const MaxComplexityJevPreviousMessageCount = 5
 
 // DefaultComplexityLLMTimeout bounds one LLM classification call. It is
 // deliberately larger than the semantic default: a chat completion is slower
@@ -554,6 +564,104 @@ func (c *ComplexityLLMConfig) Validate() error {
 	return nil
 }
 
+// ComplexityJevConfig controls the Typesafe Jev classification request.
+// Jev uses the configured Typesafe provider credentials and a fixed model; this
+// block only controls request history and the classifier timeout.
+type ComplexityJevConfig struct {
+	// PreviousMessageCount is the number of preceding user messages sent before
+	// the current human request. Assistant messages are excluded.
+	PreviousMessageCount *int          `json:"previous_message_count,omitempty"`
+	Timeout              time.Duration `json:"timeout,omitempty"`
+}
+
+// UnmarshalJSON accepts Timeout as a duration string or milliseconds and rejects unknown fields.
+func (c *ComplexityJevConfig) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for field := range fields {
+		if field != "previous_message_count" && field != "timeout" {
+			return fmt.Errorf("unknown jev complexity field %q", field)
+		}
+	}
+	type alias ComplexityJevConfig
+	aux := &struct {
+		Timeout json.RawMessage `json:"timeout,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.Timeout) == 0 || string(aux.Timeout) == "null" {
+		return nil
+	}
+	var duration string
+	if err := json.Unmarshal(aux.Timeout, &duration); err == nil {
+		parsed, err := time.ParseDuration(duration)
+		if err != nil {
+			return fmt.Errorf("failed to parse jev timeout duration string %q: %w", duration, err)
+		}
+		c.Timeout = parsed
+	} else {
+		var milliseconds float64
+		if err := json.Unmarshal(aux.Timeout, &milliseconds); err != nil {
+			return fmt.Errorf("unsupported jev timeout value: %s", string(aux.Timeout))
+		}
+		c.Timeout = time.Duration(milliseconds * float64(time.Millisecond))
+	}
+	if c.Timeout < 0 {
+		return fmt.Errorf("jev timeout must be non-negative, got %v", c.Timeout)
+	}
+	return nil
+}
+
+// MarshalJSON writes Timeout as a duration string for a stable round trip.
+func (c ComplexityJevConfig) MarshalJSON() ([]byte, error) {
+	type alias ComplexityJevConfig
+	var timeout string
+	if c.Timeout != 0 {
+		timeout = c.Timeout.String()
+	}
+	return json.Marshal(struct {
+		Timeout string `json:"timeout,omitempty"`
+		alias
+	}{Timeout: timeout, alias: alias(c)})
+}
+
+// normalized returns a Jev config copy with its default history and timeout.
+func (c *ComplexityJevConfig) normalized() *ComplexityJevConfig {
+	if c == nil {
+		return nil
+	}
+	out := &ComplexityJevConfig{Timeout: c.Timeout}
+	if c.PreviousMessageCount == nil {
+		count := DefaultComplexityJevPreviousMessageCount
+		out.PreviousMessageCount = &count
+	} else {
+		count := *c.PreviousMessageCount
+		out.PreviousMessageCount = &count
+	}
+	if out.Timeout == 0 {
+		out.Timeout = DefaultComplexityJevTimeout
+	}
+	return out
+}
+
+// Validate checks the Jev request history and timeout bounds.
+func (c *ComplexityJevConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.Timeout < 0 {
+		return fmt.Errorf("jev timeout must be non-negative, got %v", c.Timeout)
+	}
+	if c.PreviousMessageCount != nil && (*c.PreviousMessageCount < 0 || *c.PreviousMessageCount > MaxComplexityJevPreviousMessageCount) {
+		return fmt.Errorf("jev previous_message_count must be between 0 and %d, got %d", MaxComplexityJevPreviousMessageCount, *c.PreviousMessageCount)
+	}
+	return nil
+}
+
 // ComplexitySessionConfig controls monotonic complexity-tier retention across
 // requests belonging to the same session.
 //
@@ -592,6 +700,7 @@ func (c *ComplexitySessionConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// normalized returns a canonical copy of the session settings.
 func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
 	if c == nil {
 		return nil
@@ -607,10 +716,12 @@ type ComplexityAnalyzerConfigHashes struct {
 	SimpleKeywords  string `json:"simple_keywords,omitempty"`
 	MediumKeywords  string `json:"medium_keywords,omitempty"`
 	ComplexKeywords string `json:"complex_keywords,omitempty"`
-	// SemanticSettings covers the semantic block (provider, model, timeout,
-	// budgets flag, vector store). The semantic classifier's
-	// exemplars are the shared keyword lists, tracked by the sections above.
+	// SemanticSettings covers semantic classifier settings and its fallback.
 	SemanticSettings string `json:"semantic_settings,omitempty"`
+	// ClassifierSettings tracks the primary classifier selection.
+	ClassifierSettings string `json:"classifier_settings,omitempty"`
+	// JevSettings tracks the Typesafe Jev history window and timeout.
+	JevSettings string `json:"jev_settings,omitempty"`
 	// LLMSettings covers the llm block (provider, model, timeout, prompt,
 	// history window, budgets flag). The fallback selector rides the
 	// SemanticSettings hash: it is a field of the semantic block.
@@ -619,11 +730,16 @@ type ComplexityAnalyzerConfigHashes struct {
 }
 
 type legacyComplexityAnalyzerConfigHashes struct {
-	TierBoundaries    string `json:"tier_boundaries,omitempty"`
-	CodeKeywords      string `json:"code_keywords,omitempty"`
-	ReasoningKeywords string `json:"reasoning_keywords,omitempty"`
-	TechnicalKeywords string `json:"technical_keywords,omitempty"`
-	SimpleKeywords    string `json:"simple_keywords,omitempty"`
+	TierBoundaries     string `json:"tier_boundaries,omitempty"`
+	CodeKeywords       string `json:"code_keywords,omitempty"`
+	ReasoningKeywords  string `json:"reasoning_keywords,omitempty"`
+	TechnicalKeywords  string `json:"technical_keywords,omitempty"`
+	SimpleKeywords     string `json:"simple_keywords,omitempty"`
+	SemanticSettings   string `json:"semantic_settings,omitempty"`
+	ClassifierSettings string `json:"classifier_settings,omitempty"`
+	JevSettings        string `json:"jev_settings,omitempty"`
+	LLMSettings        string `json:"llm_settings,omitempty"`
+	SessionSettings    string `json:"session_settings,omitempty"`
 }
 
 // UnmarshalJSON translates persisted legacy section hashes into the canonical
@@ -649,10 +765,15 @@ func (h *ComplexityAnalyzerConfigHashes) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*h = ComplexityAnalyzerConfigHashes{
-			TierBoundaries:  legacy.TierBoundaries,
-			SimpleKeywords:  legacy.SimpleKeywords,
-			MediumKeywords:  mediumHash,
-			ComplexKeywords: legacy.ReasoningKeywords,
+			TierBoundaries:     legacy.TierBoundaries,
+			SimpleKeywords:     legacy.SimpleKeywords,
+			MediumKeywords:     mediumHash,
+			ComplexKeywords:    legacy.ReasoningKeywords,
+			SemanticSettings:   legacy.SemanticSettings,
+			ClassifierSettings: legacy.ClassifierSettings,
+			JevSettings:        legacy.JevSettings,
+			LLMSettings:        legacy.LLMSettings,
+			SessionSettings:    legacy.SessionSettings,
 		}
 		return nil
 	}
@@ -680,7 +801,12 @@ func (h ComplexityAnalyzerConfigHashes) Equal(other ComplexityAnalyzerConfigHash
 type ComplexityAnalyzerConfig struct {
 	TierBoundaries ComplexityTierBoundaries        `json:"tier_boundaries"`
 	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
-	Semantic       *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	// Classifier selects the primary complexity classifier. An omitted value
+	// defaults to semantic for compatibility with existing configurations.
+	Classifier string                    `json:"classifier,omitempty"`
+	Semantic   *ComplexitySemanticConfig `json:"semantic,omitempty"`
+	// Jev configures the optional Typesafe Jev classifier and its history window.
+	Jev *ComplexityJevConfig `json:"jev,omitempty"`
 	// LLM configures the chat-completion fallback classifier, engaged only
 	// when Semantic.Fallback selects "llm". It may be present while the
 	// fallback says "none": the block is retained so toggling the fallback
@@ -741,7 +867,9 @@ type persistedComplexityTierBoundaries struct {
 // router from rewriting it as though it were a lexical keyword.
 type complexitySemanticConfigRecord struct {
 	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
+	Classifier           string                          `json:"classifier,omitempty"`
 	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	Jev                  *ComplexityJevConfig            `json:"jev,omitempty"`
 	LLM                  *ComplexityLLMConfig            `json:"llm,omitempty"`
 	Session              *ComplexitySessionConfig        `json:"session,omitempty"`
 	ConfigHashes         complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
@@ -751,12 +879,14 @@ type complexitySemanticConfigRecord struct {
 // complexitySemanticRowHashes carries the section hashes for everything the
 // semantic row owns.
 type complexitySemanticRowHashes struct {
-	SimpleKeywords   string `json:"simple_keywords,omitempty"`
-	MediumKeywords   string `json:"medium_keywords,omitempty"`
-	ComplexKeywords  string `json:"complex_keywords,omitempty"`
-	SemanticSettings string `json:"semantic_settings,omitempty"`
-	LLMSettings      string `json:"llm_settings,omitempty"`
-	SessionSettings  string `json:"session_settings,omitempty"`
+	SimpleKeywords     string `json:"simple_keywords,omitempty"`
+	MediumKeywords     string `json:"medium_keywords,omitempty"`
+	ComplexKeywords    string `json:"complex_keywords,omitempty"`
+	SemanticSettings   string `json:"semantic_settings,omitempty"`
+	ClassifierSettings string `json:"classifier_settings,omitempty"`
+	JevSettings        string `json:"jev_settings,omitempty"`
+	LLMSettings        string `json:"llm_settings,omitempty"`
+	SessionSettings    string `json:"session_settings,omitempty"`
 }
 
 // LLMFallbackEnabled reports whether a semantic non-answer should be retried
@@ -796,7 +926,13 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("keyword lists must be non-empty: %s", strings.Join(missing, ", "))
 	}
+	if c.Classifier != "" && c.Classifier != ComplexityClassifierSemantic && c.Classifier != ComplexityClassifierJev {
+		return fmt.Errorf("complexity classifier must be %q or %q, got %q", ComplexityClassifierSemantic, ComplexityClassifierJev, c.Classifier)
+	}
 	if err := c.Semantic.Validate(); err != nil {
+		return err
+	}
+	if err := c.Jev.Validate(); err != nil {
 		return err
 	}
 	if c.Semantic != nil {
@@ -810,7 +946,7 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackLLM && c.LLM == nil {
 		return fmt.Errorf("semantic fallback %q requires an llm config block", ComplexitySemanticFallbackLLM)
 	}
-	if c.SessionRoutingEnabled() && c.Semantic == nil {
+	if c.SessionRoutingEnabled() && c.Semantic == nil && c.Classifier != ComplexityClassifierJev {
 		return fmt.Errorf("complexity session routing requires a semantic config block")
 	}
 	return nil
@@ -825,6 +961,14 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 	if tierBoundaries == (ComplexityTierBoundaries{}) {
 		tierBoundaries = DefaultComplexityTierBoundaries()
 	}
+	classifier := strings.ToLower(strings.TrimSpace(c.Classifier))
+	if classifier == "" {
+		classifier = ComplexityClassifierSemantic
+	}
+	jev := c.Jev.normalized()
+	if jev == nil && (classifier == ComplexityClassifierJev || (c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackJev)) {
+		jev = (&ComplexityJevConfig{}).normalized()
+	}
 	return ComplexityAnalyzerConfig{
 		TierBoundaries: tierBoundaries,
 		Keywords: ComplexityEditableKeywordConfig{
@@ -832,7 +976,9 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 			MediumKeywords:  normalizeComplexityKeywordList(c.Keywords.MediumKeywords),
 			ComplexKeywords: normalizeComplexityKeywordList(c.Keywords.ComplexKeywords),
 		},
+		Classifier:           classifier,
 		Semantic:             c.Semantic.normalized(),
+		Jev:                  jev,
 		LLM:                  c.LLM.normalized(),
 		Session:              c.Session.normalized(),
 		ConfigHashes:         c.ConfigHashes,
@@ -919,14 +1065,20 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 		}
 	}
 
+	mergedClassifier := normalizedBase.Classifier
+	if file.Classifier != "" {
+		mergedClassifier = normalizedFile.Classifier
+	}
 	merged := ComplexityAnalyzerConfig{
 		TierBoundaries: normalizedFile.TierBoundaries,
+		Classifier:     mergedClassifier,
 		Keywords: ComplexityEditableKeywordConfig{
 			SimpleKeywords:  mergeComplexityKeywordLists(normalizedBase.Keywords.SimpleKeywords, normalizedFile.Keywords.SimpleKeywords),
 			MediumKeywords:  mergeComplexityKeywordLists(normalizedBase.Keywords.MediumKeywords, normalizedFile.Keywords.MediumKeywords),
 			ComplexKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords),
 		},
 		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
+		Jev:                  mergeComplexityJevConfig(normalizedBase.Jev, normalizedFile.Jev),
 		LLM:                  mergeComplexityLLMConfig(normalizedBase.LLM, normalizedFile.LLM),
 		Session:              mergeComplexitySessionConfig(normalizedBase.Session, normalizedFile.Session),
 		ConfigHashes:         normalizedFile.ConfigHashes,
@@ -942,6 +1094,14 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 // mergeComplexitySemanticConfig overlays the file semantic settings. A nil
 // file section keeps the base untouched.
 func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *ComplexitySemanticConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
+}
+
+// mergeComplexityJevConfig overlays file Jev settings. A nil file section keeps the base.
+func mergeComplexityJevConfig(base, file *ComplexityJevConfig) *ComplexityJevConfig {
 	if file == nil {
 		return base.normalized()
 	}
@@ -1001,6 +1161,14 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 	if merged.ConfigHashes.ComplexKeywords != normalizedFile.ConfigHashes.ComplexKeywords {
 		merged.Keywords.ComplexKeywords = mergeComplexityKeywordLists(merged.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords)
 		merged.ConfigHashes.ComplexKeywords = normalizedFile.ConfigHashes.ComplexKeywords
+	}
+	if file.Classifier != "" && merged.ConfigHashes.ClassifierSettings != normalizedFile.ConfigHashes.ClassifierSettings {
+		merged.Classifier = normalizedFile.Classifier
+		merged.ConfigHashes.ClassifierSettings = normalizedFile.ConfigHashes.ClassifierSettings
+	}
+	if file.Jev != nil && (merged.Jev == nil || merged.ConfigHashes.JevSettings != normalizedFile.ConfigHashes.JevSettings) {
+		merged.Jev = normalizedFile.Jev.normalized()
+		merged.ConfigHashes.JevSettings = normalizedFile.ConfigHashes.JevSettings
 	}
 	// A config.json without a semantic section leaves DB semantic state (and its
 	// section hash) untouched: the section is optional, so absence means "no
@@ -1108,17 +1276,21 @@ func decodeComplexitySemanticConfigRow(data []byte) (*complexitySemanticConfigRe
 // encodeComplexitySemanticConfigRow writes the semantic row.
 func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte, error) {
 	record := complexitySemanticConfigRecord{
-		Keywords: config.Keywords,
-		Semantic: config.Semantic,
-		LLM:      config.LLM,
-		Session:  config.Session,
+		Keywords:   config.Keywords,
+		Classifier: config.Classifier,
+		Semantic:   config.Semantic,
+		Jev:        config.Jev,
+		LLM:        config.LLM,
+		Session:    config.Session,
 		ConfigHashes: complexitySemanticRowHashes{
-			SimpleKeywords:   config.ConfigHashes.SimpleKeywords,
-			MediumKeywords:   config.ConfigHashes.MediumKeywords,
-			ComplexKeywords:  config.ConfigHashes.ComplexKeywords,
-			SemanticSettings: config.ConfigHashes.SemanticSettings,
-			LLMSettings:      config.ConfigHashes.LLMSettings,
-			SessionSettings:  config.ConfigHashes.SessionSettings,
+			SimpleKeywords:     config.ConfigHashes.SimpleKeywords,
+			MediumKeywords:     config.ConfigHashes.MediumKeywords,
+			ComplexKeywords:    config.ConfigHashes.ComplexKeywords,
+			SemanticSettings:   config.ConfigHashes.SemanticSettings,
+			ClassifierSettings: config.ConfigHashes.ClassifierSettings,
+			JevSettings:        config.ConfigHashes.JevSettings,
+			LLMSettings:        config.ConfigHashes.LLMSettings,
+			SessionSettings:    config.ConfigHashes.SessionSettings,
 		},
 		EmbeddingFingerprint: config.EmbeddingFingerprint,
 	}
@@ -1137,19 +1309,24 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	}
 	combined := *base
 	combined.Keywords = row.Keywords
+	combined.Classifier = row.Classifier
 	combined.Semantic = row.Semantic
+	combined.Jev = row.Jev
 	combined.LLM = row.LLM
 	combined.Session = row.Session
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords
 	combined.ConfigHashes.MediumKeywords = row.ConfigHashes.MediumKeywords
 	combined.ConfigHashes.ComplexKeywords = row.ConfigHashes.ComplexKeywords
 	combined.ConfigHashes.SemanticSettings = row.ConfigHashes.SemanticSettings
+	combined.ConfigHashes.ClassifierSettings = row.ConfigHashes.ClassifierSettings
+	combined.ConfigHashes.JevSettings = row.ConfigHashes.JevSettings
 	combined.ConfigHashes.LLMSettings = row.ConfigHashes.LLMSettings
 	combined.ConfigHashes.SessionSettings = row.ConfigHashes.SessionSettings
 	combined.EmbeddingFingerprint = row.EmbeddingFingerprint
 	return &combined
 }
 
+// normalizeComplexityKeywordList trims, lowercases, sorts, and deduplicates phrases.
 func normalizeComplexityKeywordList(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -1172,6 +1349,7 @@ func normalizeComplexityKeywordList(values []string) []string {
 	return out
 }
 
+// mergeComplexityKeywordLists combines base and overlay phrases without duplicates.
 func mergeComplexityKeywordLists(base, overlay []string) []string {
 	values := make([]string, 0, len(base)+len(overlay))
 	values = append(values, base...)

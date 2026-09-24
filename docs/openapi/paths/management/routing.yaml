@@ -178,7 +178,7 @@ complexity:
   get:
     operationId: getComplexityAnalyzerConfig
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
+    description: Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and Jev settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
     tags:
       - Routing
     security:
@@ -199,7 +199,7 @@ complexity:
   put:
     operationId: updateComplexityAnalyzerConfig
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. Jev can be selected as the primary classifier or semantic fallback and uses configured Typesafe provider credentials.
     tags:
       - Routing
     requestBody:
@@ -229,7 +229,7 @@ complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
     summary: Reset complexity analyzer config
-    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved.
+    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, Jev settings, semantic and LLM configuration, and session settings are preserved.
     tags:
       - Routing
     security:
@@ -539,7 +539,7 @@ complexity-legacy:
     operationId: getComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Get complexity analyzer config (deprecated path)
-    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and Jev settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:
@@ -561,7 +561,7 @@ complexity-legacy:
     operationId: updateComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Update complexity analyzer config (deprecated path)
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. Jev can be selected as the primary classifier or semantic fallback and uses configured Typesafe provider credentials. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     requestBody:
@@ -592,7 +592,7 @@ complexity-reset-legacy:
     operationId: resetComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Reset complexity analyzer config (deprecated path)
-    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, Jev settings, semantic and LLM configuration, and session settings are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:

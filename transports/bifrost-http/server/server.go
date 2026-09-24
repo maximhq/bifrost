@@ -321,6 +321,7 @@ type GovernanceInMemoryStore struct {
 	Config *lib.Config
 }
 
+// GetConfiguredProviders returns the configured provider map.
 func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
 	// Use read lock for thread-safe access - no need to copy on hot path
 	s.Config.Mu.RLock()
@@ -343,14 +344,17 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviderNames() []string {
 	return names
 }
 
+// GetMCPClientsAllowedByDefault returns the default MCP client allowlist.
 func (s *GovernanceInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string {
 	return s.Config.GetMCPClientsAllowedByDefault()
 }
 
+// GetMCPClientNames returns configured MCP client names indexed by slug.
 func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
 	return s.Config.GetMCPClientNames()
 }
 
+// GetMCPClientBySlug resolves an MCP client configuration by slug.
 func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, string, bool) {
 	return s.Config.GetMCPClientBySlug(slug)
 }
@@ -450,6 +454,7 @@ func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, 
 	}
 }
 
+// UpdateMCPClientCredentials saves credentials and refreshes the MCP server configuration.
 func (s *BifrostHTTPServer) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
 	if err := s.Config.UpdateMCPClientCredentials(ctx, id, newConfig); err != nil {
 		return err
@@ -543,6 +548,7 @@ func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCal
 	return s.Client.ExecuteResponsesMCPTool(bifrostCtx, toolCall)
 }
 
+// GetAvailableMCPTools returns the tools currently available to the Bifrost client.
 func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
 	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	return s.Client.GetAvailableMCPTools(bifrostCtx)
@@ -678,6 +684,7 @@ type virtualMCPCache interface {
 	DetachVirtualMCPInMemory(string, uint)
 }
 
+// governanceVirtualMCPCache returns the governance store cache when it supports virtual MCP operations.
 func (s *BifrostHTTPServer) governanceVirtualMCPCache() virtualMCPCache {
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
@@ -943,6 +950,7 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 	return nil
 }
 
+// ReloadProvider reloads persisted provider settings into the live client.
 func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
@@ -2279,6 +2287,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingResponsesPlugin, ok := plugin.(routing.ResponsesExecutorSetter); ok {
 		routingResponsesPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 	}
+	if routingDecisionPlugin, ok := plugin.(routing.DecisionExecutorSetter); ok {
+		routingDecisionPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
+	}
 	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
 		return err
 	}
@@ -3003,6 +3014,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
+		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 	}
 
 	// Initialize Sidekiq runner for background jobs

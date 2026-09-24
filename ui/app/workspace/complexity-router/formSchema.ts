@@ -1,7 +1,9 @@
 import {
 	AnalyzerConfig,
+	DEFAULT_JEV_CONFIG,
 	DEFAULT_LLM_CONFIG,
 	DEFAULT_SEMANTIC_CONFIG,
+	MAX_JEV_PREVIOUS_MESSAGE_COUNT,
 	KeywordListKey,
 	MAX_LLM_PROMPT_CHARACTERS,
 	MAX_LLM_MESSAGE_HISTORY,
@@ -58,7 +60,19 @@ const semanticSchema = z.object({
 		.max(MAX_SEMANTIC_MESSAGE_HISTORY, `Must be at most ${MAX_SEMANTIC_MESSAGE_HISTORY}`),
 	count_toward_budgets: z.boolean().optional(),
 	vector_store: z.enum(["embedded", "vector_store"]).optional(),
-	fallback: z.enum(["none", "llm"]),
+	fallback: z.enum(["none", "llm", "jev"]),
+});
+
+const jevSchema = z.object({
+	previous_message_count: z
+		.number()
+		.int("Must be a whole number")
+		.min(0, "Must be at least 0")
+		.max(MAX_JEV_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_JEV_PREVIOUS_MESSAGE_COUNT}`),
+	timeout: z
+		.string()
+		.min(1, "Enter a Jev timeout")
+		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
 });
 
 const llmSchema = z.object({
@@ -83,12 +97,14 @@ const llmSchema = z.object({
 
 export const analyzerConfigSchema = z
 	.object({
+		classifier: z.enum(["semantic", "jev"]),
 		keywords: z.object({
 			simple_keywords: z.array(z.string()).min(1, "Simple phrases cannot be empty"),
 			medium_keywords: z.array(z.string()).min(1, "Medium phrases cannot be empty"),
 			complex_keywords: z.array(z.string()).min(1, "Complex phrases cannot be empty"),
 		}),
 		semantic: semanticSchema,
+		jev: jevSchema,
 		llm: llmSchema,
 		session: z.object({ enabled: z.boolean() }),
 	})
@@ -114,7 +130,7 @@ export const analyzerConfigSchema = z
 				});
 			}
 		}
-		if (data.session.enabled && (!hasProvider || !hasModel)) {
+		if (data.session.enabled && data.classifier === "semantic" && (!hasProvider || !hasModel)) {
 			ctx.addIssue({
 				code: "custom",
 				message: "Configure the semantic classifier before enabling session routing",
@@ -219,7 +235,9 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 		medium_keywords: [],
 		complex_keywords: [],
 	},
+	classifier: "semantic",
 	semantic: DEFAULT_SEMANTIC_FORM_VALUES,
+	jev: DEFAULT_JEV_CONFIG,
 	llm: DEFAULT_LLM_FORM_VALUES,
 	session: { enabled: false },
 };
@@ -228,8 +246,11 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
 	const saved = config.semantic;
 	const savedLLM = config.llm;
+	const classifier = config.classifier?.trim().toLowerCase();
 	return {
+		classifier: classifier === "jev" ? "jev" : "semantic",
 		keywords: config.keywords,
+		jev: config.jev ? { ...DEFAULT_JEV_CONFIG, ...config.jev, timeout: config.jev.timeout ?? DEFAULT_JEV_CONFIG.timeout } : DEFAULT_JEV_CONFIG,
 		session: config.session ?? { enabled: false },
 		llm: savedLLM
 			? {
@@ -263,7 +284,9 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 	const llm = values.llm.provider && values.llm.model ? values.llm : (saved?.llm ?? undefined);
 
 	return {
+		classifier: values.classifier,
 		keywords: values.keywords,
+		...(values.classifier === "jev" || values.semantic.fallback === "jev" || saved?.jev ? { jev: values.jev } : {}),
 		...(values.session.enabled ? { session: values.session } : {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),

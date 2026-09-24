@@ -13,6 +13,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scrollArea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -105,7 +106,9 @@ function testIdPart(value: string) {
 
 export default function ComplexityRouterPage() {
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
-	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery();
+	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery(undefined, {
+		refetchOnMountOrArgChange: true,
+	});
 	const [updateConfig, { isLoading: isSaving }] = useUpdateComplexityAnalyzerConfigMutation();
 	const [resetConfig, { isLoading: isResetting }] = useResetComplexityAnalyzerConfigMutation();
 	const [retrySemanticWarmup, { isLoading: isRetryingWarmup }] = useRetryComplexitySemanticWarmupMutation();
@@ -151,6 +154,7 @@ export default function ComplexityRouterPage() {
 	// both: gating on one alone flashes "no provider configured" on every load.
 	const isProviderListLoading = providersLoading || keysLoading;
 
+	const liveClassifier = watch("classifier");
 	const liveSemantic = watch("semantic");
 	const liveLLM = watch("llm");
 	const liveSession = watch("session");
@@ -171,7 +175,8 @@ export default function ComplexityRouterPage() {
 	);
 
 	const isClassifierConfigured = Boolean(liveSemantic?.provider && liveSemantic?.embedding_model);
-	const isLLMFallbackEnabled = liveSemantic?.fallback === "llm";
+	const isLLMFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "llm";
+	const usesJev = liveClassifier === "jev" || liveSemantic?.fallback === "jev";
 
 	// Only the unsettled states are polled. Ready and disabled are steady until
 	// the next save, which refetches through the cache tag anyway.
@@ -413,7 +418,7 @@ export default function ComplexityRouterPage() {
 	}
 
 	const keywordErrors = errors.keywords;
-	const hasErrors = Boolean(keywordErrors || errors.semantic || errors.llm || errors.session);
+	const hasErrors = Boolean(keywordErrors || errors.semantic || errors.jev || errors.llm || errors.session || errors.classifier);
 	const canSave = canUpdate && isDirty && !isResetting && !(isSubmitted && hasErrors);
 
 	// Rendered on the page and again inside the sheet: the re-embed cost is a
@@ -464,9 +469,12 @@ export default function ComplexityRouterPage() {
 						    work surface. */}
 						<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-end">
 							<PageTitle title="Complexity Router" beta>
-								Each request is embedded and takes the tier of the nearest reference phrase, filling the{" "}
+								{liveClassifier === "jev"
+									? "Typesafe Jev classifies each new human request, filling the"
+									: "Each request takes the tier of its nearest semantic reference phrase, filling the"}{" "}
 								<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules target.
 								{isLLMFallbackEnabled ? " Requests matching no phrase confidently fall back to the LLM classifier." : ""}
+								{liveClassifier === "semantic" && liveSemantic?.fallback === "jev" ? " Requests matching no phrase confidently fall back to Jev." : ""}
 								{liveSession.enabled ? " Session-aware routing keeps the highest tier reached during the active session." : ""}
 							</PageTitle>
 
@@ -474,39 +482,43 @@ export default function ComplexityRouterPage() {
 							    sections of their own: both are checked occasionally, while the
 							    phrase lists below are the page's actual work surface. */}
 							<div className="flex shrink-0 flex-wrap items-center gap-2">
-								<ClassifierStatusBadge
-									status={semanticStatus}
-									isLoading={statusLoading}
-									isNotConfigured={!isClassifierConfigured}
-									isNotSaved={isClassifierConfigured && !data.semantic}
-									hasUnsavedChanges={willReembed}
-									hasEmbeddingProviders={embeddingProviders.length > 0}
-									statusUnavailable={statusIsError && !semanticStatus}
-									statusRefreshFailed={statusIsError && Boolean(semanticStatus)}
-									isRetryingStatus={statusFetching}
-									canRetryWarmup={canUpdate}
-									isRetryingWarmup={isRetryingWarmup}
-									onConfigure={() => setEmbeddingSheetOpen(true)}
-									onRetryStatus={() => void refetchStatus()}
-									onRetryWarmup={handleRetrySemanticWarmup}
-								/>
-								<Button
-									type="button"
-									variant="outline"
-									size="sm"
-									onClick={() => setEmbeddingSheetOpen(true)}
-									data-testid="complexity-router-embedding-config-button"
-								>
-									<Settings2 className="size-3.5" />
-									{isClassifierConfigured ? "Edit embedding configuration" : "Configure embedding"}
-									{hasUnsavedEmbeddingConfigChanges && (
-										<span
-											className="size-1.5 rounded-full bg-amber-500"
-											role="status"
-											aria-label="Unsaved embedding configuration changes"
-										/>
-									)}
-								</Button>
+								{liveClassifier === "semantic" && (
+									<ClassifierStatusBadge
+										status={semanticStatus}
+										isLoading={statusLoading}
+										isNotConfigured={!isClassifierConfigured}
+										isNotSaved={isClassifierConfigured && !data.semantic}
+										hasUnsavedChanges={willReembed}
+										hasEmbeddingProviders={embeddingProviders.length > 0}
+										statusUnavailable={statusIsError && !semanticStatus}
+										statusRefreshFailed={statusIsError && Boolean(semanticStatus)}
+										isRetryingStatus={statusFetching}
+										canRetryWarmup={canUpdate}
+										isRetryingWarmup={isRetryingWarmup}
+										onConfigure={() => setEmbeddingSheetOpen(true)}
+										onRetryStatus={() => void refetchStatus()}
+										onRetryWarmup={handleRetrySemanticWarmup}
+									/>
+								)}
+								{liveClassifier === "semantic" && (
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										onClick={() => setEmbeddingSheetOpen(true)}
+										data-testid="complexity-router-embedding-config-button"
+									>
+										<Settings2 className="size-3.5" />
+										{isClassifierConfigured ? "Edit embedding configuration" : "Configure embedding"}
+										{hasUnsavedEmbeddingConfigChanges && (
+											<span
+												className="size-1.5 rounded-full bg-amber-500"
+												role="status"
+												aria-label="Unsaved embedding configuration changes"
+											/>
+										)}
+									</Button>
+								)}
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
 									<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
 										<ExternalLink className="size-3.5" />
@@ -514,6 +526,63 @@ export default function ComplexityRouterPage() {
 									</a>
 								</Button>
 							</div>
+						</div>
+
+						<div className="space-y-3 rounded-lg border p-4" data-testid="complexity-router-classifier-config">
+							<SectionHeading
+								title="Primary classifier"
+								description="Choose which classifier assigns the complexity tier used by routing rules."
+							/>
+							<Controller
+								control={control}
+								name="classifier"
+								render={({ field }) => (
+									<Select value={field.value} onValueChange={field.onChange} disabled={!canUpdate}>
+										<SelectTrigger className="w-full max-w-sm" data-testid="complexity-router-primary-classifier-select">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="semantic">Semantic</SelectItem>
+											<SelectItem value="jev">Jev (Typesafe)</SelectItem>
+										</SelectContent>
+									</Select>
+								)}
+							/>
+							{usesJev && (
+								<div className="grid gap-4 sm:grid-cols-2">
+									<div className="space-y-2">
+										<FieldLabel htmlFor="jev-previous-message-count">Previous user messages</FieldLabel>
+										<input
+											id="jev-previous-message-count"
+											type="number"
+											min={0}
+											max={5}
+											{...register("jev.previous_message_count", { valueAsNumber: true })}
+											disabled={!canUpdate}
+											className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+										/>
+										<p className="text-muted-foreground text-xs">
+											0–5 earlier user messages are sent with the current request. Assistant messages are excluded. Jev uses the configured Typesafe provider credentials.
+										</p>
+										{errors.jev?.previous_message_count && (
+											<p className="text-destructive text-xs">{errors.jev.previous_message_count.message}</p>
+										)}
+									</div>
+									<div className="space-y-2">
+										<FieldLabel htmlFor="jev-timeout">Classification timeout</FieldLabel>
+										<input
+											id="jev-timeout"
+											type="text"
+											{...register("jev.timeout")}
+											disabled={!canUpdate}
+											className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+											placeholder="1500ms"
+										/>
+										<p className="text-muted-foreground text-xs">Maximum time Jev may delay the routed request.</p>
+										{errors.jev?.timeout && <p className="text-destructive text-xs">{errors.jev.timeout.message}</p>}
+									</div>
+								</div>
+							)}
 						</div>
 
 						{/* The missing-provider warning lives in the embedding sheet, next to
@@ -525,7 +594,11 @@ export default function ComplexityRouterPage() {
 						<div className="space-y-3">
 							<SectionHeading
 								title="Phrase to Tier Mapping"
-								description="A request takes the tier of its nearest phrase."
+								description={
+								liveClassifier === "jev"
+									? "These saved phrases are inactive while Jev is the primary classifier."
+									: "A request takes the tier of its nearest phrase."
+							}
 								aside={
 									<span className="text-muted-foreground font-mono text-[11px] tabular-nums" data-testid="complexity-router-phrase-total">
 										{isClassifierConfigured ? `${totalPhrases} / ${MAX_SEMANTIC_PHRASES} phrases` : `${totalPhrases} phrases`}

@@ -14,7 +14,13 @@ export type SemanticVectorStore = "embedded" | "vector_store";
 // Mirrors ComplexitySemanticFallback* in framework/configstore: what answers
 // when semantic classification produces no tier. An absent field on the wire
 // means "none".
-export type SemanticFallback = "none" | "llm";
+export type ClassifierMode = "semantic" | "jev";
+export type SemanticFallback = "none" | "llm" | "jev";
+
+export interface JevConfig {
+	previous_message_count: number;
+	timeout?: string;
+}
 
 export interface LLMConfig {
 	provider: string;
@@ -95,6 +101,8 @@ export interface SemanticStatusInfo {
 
 export interface AnalyzerConfig {
 	keywords: EditableKeywordConfig;
+	classifier?: ClassifierMode;
+	jev?: JevConfig;
 	semantic?: SemanticConfig;
 	// The fallback classifier, engaged only when semantic.fallback selects
 	// "llm". May be present while the fallback says "none": the block is
@@ -121,7 +129,7 @@ export const LEGACY_COMPLEXITY_TIER_VALUES = ["REASONING"] as const;
 // LEGACY_COMPLEXITY_TIER_VALUES): the complexity_mechanism column ships with the
 // semantic classifier, so no row was ever written with the retired "lexical"
 // mechanism and filtering on it could only ever return nothing.
-export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "llm", "session", "skipped"] as const;
+export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "jev", "llm", "session", "skipped"] as const;
 
 // Labels cover "lexical" even though nothing filters on it. Rows predating the
 // structured columns record their decision only in the prose routing log, and
@@ -130,6 +138,7 @@ export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "llm", "session", "skipp
 export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
 	lexical: "Lexical",
 	semantic: "Semantic",
+	jev: "Jev",
 	llm: "LLM",
 	session: "Session",
 	skipped: "Skipped",
@@ -166,8 +175,11 @@ export const TIER_PHRASE_LIST_DEFINITIONS: Array<{
 	},
 ];
 
-// Mirrors DefaultComplexitySemanticTimeout in framework/configstore.
+// Mirrors classifier timeout and history defaults in framework/configstore.
 export const DEFAULT_SEMANTIC_TIMEOUT_MS = 1500;
+export const DEFAULT_JEV_TIMEOUT_MS = 1500;
+export const DEFAULT_JEV_PREVIOUS_MESSAGE_COUNT = 1;
+export const MAX_JEV_PREVIOUS_MESSAGE_COUNT = 5;
 
 // The timeout is stored as a Go time.Duration — int64 nanoseconds — so this is
 // the largest whole millisecond value time.ParseDuration accepts. One more and
@@ -181,6 +193,12 @@ export const MIN_SEMANTIC_MESSAGE_HISTORY = 1;
 export const MAX_SEMANTIC_MESSAGE_HISTORY = 10;
 export const MAX_SEMANTIC_PHRASE_CHARACTERS = 2000;
 export const MAX_SEMANTIC_PHRASES = 750;
+
+// DEFAULT_JEV_CONFIG supplies the history window and timeout for Jev requests.
+export const DEFAULT_JEV_CONFIG: Required<JevConfig> = {
+	previous_message_count: DEFAULT_JEV_PREVIOUS_MESSAGE_COUNT,
+	timeout: `${DEFAULT_JEV_TIMEOUT_MS}ms`,
+};
 
 // Seeded when a deployment has no semantic block saved yet. Provider and model
 // stay blank because only the operator knows them.
@@ -283,11 +301,17 @@ export const SEMANTIC_FALLBACK_OPTIONS: Array<{ value: SemanticFallback; label: 
 		label: "LLM classifier",
 		description: "A chat model names the tier instead. Slower and costlier than an embedding, but only unmatched requests pay for it.",
 	},
+	{
+		value: "jev",
+		label: "Jev classifier",
+		description: "Typesafe Jev names the tier when semantic matching has no result. Typesafe provider credentials are used.",
+	},
 ];
 
 export const SEMANTIC_FALLBACK_LABELS: Record<SemanticFallback, string> = {
 	none: "None",
 	llm: "LLM classifier",
+	jev: "Jev classifier",
 };
 
 // Same duration round-trip as parseSemanticTimeoutMs, with the llm default.

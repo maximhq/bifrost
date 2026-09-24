@@ -1418,6 +1418,22 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.SemanticSettings = settingsHash
 	}
 
+	if config.Classifier != "" {
+		settingsHash, err := hashComplexityValue(normalized.Classifier)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash classifier settings: %w", err)
+		}
+		hashes.ClassifierSettings = settingsHash
+	}
+
+	if normalized.Jev != nil {
+		settingsHash, err := hashComplexityValue(normalized.Jev)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash jev settings: %w", err)
+		}
+		hashes.JevSettings = settingsHash
+	}
+
 	if normalized.LLM != nil {
 		settingsHash, err := hashComplexityValue(normalized.LLM)
 		if err != nil {
@@ -1437,6 +1453,7 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 	return hashes, nil
 }
 
+// legacyMediumKeywordsHashFromSectionHashes combines legacy code and technical hashes into the canonical medium hash.
 func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (string, error) {
 	if codeHash == "" && technicalHash == "" {
 		return "", nil
@@ -1450,6 +1467,7 @@ func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (
 	})
 }
 
+// hashComplexityValue returns a stable hash for one complexity configuration section.
 func hashComplexityValue(value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {

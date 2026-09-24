@@ -60,7 +60,7 @@ logs:
           type: string
       - name: complexity_mechanisms
         in: query
-        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, jev, llm, session, or skipped)
         schema:
           type: string
       - name: session_id
@@ -267,7 +267,7 @@ logs-stats:
           type: string
       - name: complexity_mechanisms
         in: query
-        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, jev, llm, session, or skipped)
         schema:
           type: string
       - name: session_id
@@ -1000,7 +1000,7 @@ _histogram-parameters:
   complexity_mechanisms:
     name: complexity_mechanisms
     in: query
-    description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+    description: Comma-separated list of complexity decision mechanisms to filter by (semantic, jev, llm, session, or skipped)
     schema:
       type: string
   session_id:
