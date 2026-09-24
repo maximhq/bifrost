@@ -55,3 +55,25 @@ func TestNetworkConfigExtraHeaders_MarshalKeepsStringShape(t *testing.T) {
 		t.Errorf("env header should serialize as its reference, got %q", got)
 	}
 }
+
+// TestNetworkConfigExtraHeaders_DecodesJSONEscapes checks that header values decode as
+// JSON strings: an escaped slash or \u escape must yield the character, not the quoted
+// JSON text, or the header fails upstream authentication.
+func TestNetworkConfigExtraHeaders_DecodesJSONEscapes(t *testing.T) {
+	var nc NetworkConfig
+	raw := `{"extra_headers":{"Authorization":"Bearer a\/b","X-Name":"caf\u00e9 \ud83d\ude00","X-Quote":"say \"hi\""}}`
+	if err := json.Unmarshal([]byte(raw), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := map[string]string{
+		"Authorization": "Bearer a/b",
+		"X-Name":        "café 😀",
+		"X-Quote":       `say "hi"`,
+	}
+	for name, value := range want {
+		got := nc.ExtraHeaders[name]
+		if got.GetValue() != value {
+			t.Errorf("%s: got %q, want %q", name, got.GetValue(), value)
+		}
+	}
+}
