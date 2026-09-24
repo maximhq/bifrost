@@ -532,3 +532,55 @@ func TestExecuteRequestWithRetries_TransportFailureStampsTransientAndSyntheticSt
 		t.Errorf("successful attempt carries failure data: %+v", trail[1])
 	}
 }
+
+// A key that was rotated away from keeps the wait the provider asked for. The request ends on
+// another key, so its final error carries that key's answer; the trail is the only place the
+// rate-limited key's own hint survives, and it is what a load balancer needs to know how long
+// to leave that key alone.
+func TestExecuteRequestWithRetries_TrailKeepsThePerAttemptRetryHint(t *testing.T) {
+	ctx := rotationTestContext()
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		if k.ID == rotationKeyA.ID {
+			limited := providerError(429, "rate_limit_error", "rate_limit_exceeded", "Rate limit reached")
+			limited.ExtraFields.RetryAfter = 12000
+			return "", limited
+		}
+		return "ok", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, createTestConfig(1, 0, 0), handler,
+		poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
+		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+	if err != nil || result != "ok" {
+		t.Fatalf("expected the second key to serve, got %q %v", result, err)
+	}
+
+	trail := attemptTrail(t, ctx, 2)
+	if trail[0].RetryAfter != 12000 {
+		t.Errorf("rotated-away attempt kept retry_after_ms=%d, want 12000", trail[0].RetryAfter)
+	}
+	if trail[1].RetryAfter != 0 {
+		t.Errorf("the successful attempt carries a hint: %+v", trail[1])
+	}
+}
+
+// A failure the provider gave no hint for leaves the field at zero rather than inventing one.
+func TestExecuteRequestWithRetries_TrailHasNoHintWhenTheProviderGaveNone(t *testing.T) {
+	ctx := rotationTestContext()
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		if k.ID == rotationKeyA.ID {
+			return "", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")
+		}
+		return "ok", nil
+	}
+
+	if _, err := executeRequestWithRetries(ctx, createTestConfig(0, 0, 0), handler,
+		poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
+		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError)); err != nil {
+		t.Fatalf("expected the second key to serve, got %v", err)
+	}
+
+	if trail := attemptTrail(t, ctx, 2); trail[0].RetryAfter != 0 {
+		t.Errorf("retry_after_ms=%d without a provider hint, want 0", trail[0].RetryAfter)
+	}
+}

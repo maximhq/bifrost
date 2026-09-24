@@ -2154,11 +2154,20 @@ func rootErrorMessage(raw interface{}) string {
 
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
-// with the appropriate status code and error information.
+// with the appropriate status code and error information, and the retry hint from the
+// response headers (see ApplyRetryAfter).
 // HTML detection only runs if JSON parsing fails to avoid expensive regex operations
 // on responses that are almost certainly valid JSON. errorResp must be a pointer to
 // the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+	bifrostErr := handleProviderAPIError(resp, errorResp)
+	ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
+}
+
+// handleProviderAPIError builds the error from the response, leaving the retry hint to its
+// caller so every branch below picks it up.
+func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 
 	// Decode body
