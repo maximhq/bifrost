@@ -127,6 +127,74 @@ func TestPrepareResponsesRequestWithResolvedFilesUsesStorageURI(t *testing.T) {
 	requireGeminiFileURI(t, converted, "https://generativelanguage.googleapis.com/v1beta/files/abc123")
 }
 
+func TestPrepareChatRequestWithResolvedFilesPrefersInlineFileData(t *testing.T) {
+	fileID := "abc123"
+	fileData := "JVBERi0xLjQK"
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.5-flash",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{{
+					Type: schemas.ChatContentBlockTypeFile,
+					File: &schemas.ChatInputFile{
+						FileID:   &fileID,
+						FileData: &fileData,
+					},
+				}},
+			},
+		}},
+	}
+	provider := newGeminiFileResolverTestProvider(t, "{\"name\":\"files/abc123\",\"uri\":\"https://generativelanguage.googleapis.com/v1beta/files/abc123\",\"mimeType\":\"application/pdf\",\"state\":\"ACTIVE\"}")
+
+	prepared, err := provider.prepareChatRequestWithResolvedFiles(
+		geminiFileResolverTestContext(),
+		geminiFileResolverTestKey(),
+		request,
+	)
+	require.NoError(t, err)
+	file := prepared.Input[0].Content.ContentBlocks[0].File
+	require.NotNil(t, file)
+	require.NotNil(t, file.FileData)
+	assert.Equal(t, fileData, *file.FileData)
+	assert.Nil(t, file.FileURL, "inline file data must take precedence over file ID resolution")
+}
+
+func TestPrepareResponsesRequestWithResolvedFilesPrefersInlineFileData(t *testing.T) {
+	fileID := "abc123"
+	fileData := "JVBERi0xLjQK"
+	role := schemas.ResponsesInputMessageRoleUser
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.5-flash",
+		Input: []schemas.ResponsesMessage{{
+			Role: &role,
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:   schemas.ResponsesInputMessageContentBlockTypeFile,
+					FileID: &fileID,
+					ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+						FileData: &fileData,
+					},
+				}},
+			},
+		}},
+	}
+	provider := newGeminiFileResolverTestProvider(t, "{\"name\":\"files/abc123\",\"uri\":\"https://generativelanguage.googleapis.com/v1beta/files/abc123\",\"mimeType\":\"application/pdf\",\"state\":\"ACTIVE\"}")
+
+	prepared, err := provider.prepareResponsesRequestWithResolvedFiles(
+		geminiFileResolverTestContext(),
+		geminiFileResolverTestKey(),
+		request,
+	)
+	require.NoError(t, err)
+	file := prepared.Input[0].Content.ContentBlocks[0].ResponsesInputMessageContentBlockFile
+	require.NotNil(t, file)
+	require.NotNil(t, file.FileData)
+	assert.Equal(t, fileData, *file.FileData)
+	assert.Nil(t, file.FileURL, "inline file data must take precedence over file ID resolution")
+}
 func TestPrepareChatRequestWithResolvedFilesRejectsMissingURI(t *testing.T) {
 	fileID := "abc123"
 	request := &schemas.BifrostChatRequest{

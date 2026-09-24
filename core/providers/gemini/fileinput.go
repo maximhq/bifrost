@@ -45,6 +45,9 @@ func (provider *GeminiProvider) resolveChatFileBlock(
 	if strings.TrimSpace(*block.File.FileID) == "" {
 		return nil
 	}
+	if block.File.FileData != nil {
+		return nil
+	}
 	if block.File.FileURL != nil && strings.TrimSpace(*block.File.FileURL) != "" {
 		return nil
 	}
@@ -70,6 +73,9 @@ func (provider *GeminiProvider) resolveResponsesFileBlock(
 	}
 	if block.Type != schemas.ResponsesInputMessageContentBlockTypeFile &&
 		block.Type != schemas.ResponsesInputMessageContentBlockTypeContainer {
+		return nil
+	}
+	if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileData != nil {
 		return nil
 	}
 	if block.ResponsesInputMessageContentBlockFile != nil &&
