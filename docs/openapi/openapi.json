@@ -1406,7 +1406,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -5659,7 +5666,14 @@
                               "type": "object"
                             },
                             "error": {
-                              "type": "string"
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
                             },
                             "queries": {
                               "type": "array",
@@ -6171,7 +6185,14 @@
                             "type": "object"
                           },
                           "error": {
-                            "type": "string"
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object"
+                              }
+                            ]
                           },
                           "queries": {
                             "type": "array",
@@ -6880,7 +6901,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -13773,7 +13801,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -14717,7 +14752,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -15698,7 +15740,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -16794,7 +16843,14 @@
                               "type": "object"
                             },
                             "error": {
-                              "type": "string"
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
                             },
                             "queries": {
                               "type": "array",
@@ -17306,7 +17362,14 @@
                             "type": "object"
                           },
                           "error": {
-                            "type": "string"
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object"
+                              }
+                            ]
                           },
                           "queries": {
                             "type": "array",
@@ -30769,7 +30832,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -33857,7 +33927,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -37056,7 +37133,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -44260,7 +44344,14 @@
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -99393,7 +99484,14 @@
                       "type": "object"
                     },
                     "error": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
                     },
                     "queries": {
                       "type": "array",
@@ -99450,7 +99548,19 @@
             "type": "boolean"
           },
           "conversation": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
           },
           "context_management": {
             "$ref": "#/components/schemas/ContextManagement"
@@ -99758,7 +99868,17 @@
                   "type": "string"
                 },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -100298,7 +100418,14 @@
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -100632,7 +100759,17 @@
                   "type": "string"
                 },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -101221,7 +101358,14 @@
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -102475,7 +102619,14 @@
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -102630,7 +102781,17 @@
                   "type": "string"
                 },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -104699,7 +104860,14 @@
                       "type": "object"
                     },
                     "error": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
                     },
                     "queries": {
                       "type": "array",
@@ -105021,7 +105189,17 @@
                   "type": "string"
                 },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -116548,7 +116726,14 @@
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -117009,7 +117194,14 @@
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
