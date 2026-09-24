@@ -226,6 +226,7 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	query_metrics: { running: "Querying metrics", done: "Queried metrics" },
 	query_usage_by: { running: "Ranking usage", done: "Ranked usage" },
 	query_model_performance: { running: "Comparing models and providers", done: "Compared models and providers" },
+	render_chart: { running: "Drawing a chart", done: "Drew a chart" },
 	describe_filter_space: { running: "Checking available values", done: "Checked available values" },
 	describe_virtual_key: { running: "Checking virtual key limits", done: "Checked virtual key limits" },
 	ask_user: { running: "Asking a question", done: "Asked a question" },
@@ -719,4 +720,151 @@ export function formatWarpUsage(usage: WarpUsage | undefined): string | null {
 	}
 
 	return parts.length > 0 ? parts.join(" · ") : null;
+}
+/** One mark on a Warp chart: a time bucket on a line, a category on a bar. */
+export interface WarpChartPoint {
+	x: string;
+	/** Display name when x is an id (a team or key id). */
+	label?: string;
+	y: number;
+}
+
+/**
+ * A chart Warp drew with its render_chart tool. The server replaces the id the
+ * model pasted with this spec before the answer streams, so every point is data
+ * a tool read - never numbers the model typed.
+ */
+export interface WarpChartSpec {
+	id: string;
+	kind: "line" | "bar";
+	title: string;
+	metric: string;
+	unit: "count" | "usd" | "tokens" | "ms" | "percent";
+	/** Set for a series over time - a line, or bars in time order. */
+	interval?: "hour" | "day" | "week";
+	group?: string;
+	points: WarpChartPoint[];
+	window?: { start?: string; end?: string };
+	link?: string;
+}
+
+export type WarpAnswerSegment =
+	| { kind: "text"; text: string }
+	| { kind: "chart"; spec: WarpChartSpec }
+	/** A chart block that has started streaming but not closed yet. */
+	| { kind: "chart-pending" }
+	/** A closed chart block whose content is not a spec this view can draw. */
+	| { kind: "chart-invalid" };
+
+const WARP_CHART_FENCE = /```warp-chart[ \t]*\n([\s\S]*?)```/g;
+const WARP_CHART_OPEN = "```warp-chart";
+const WARP_CHART_UNITS = new Set(["count", "usd", "tokens", "ms", "percent"]);
+
+/**
+ * Parses a chart block's content, or null when it is not a drawable spec.
+ *
+ * Checked field by field rather than cast: the block is text in an answer, and a
+ * malformed one - an older shape, a truncated stream - must fall back to "chart
+ * unavailable" instead of taking the whole message down in the renderer.
+ */
+export function parseWarpChartSpec(raw: string): WarpChartSpec | null {
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (!value || typeof value !== "object") return null;
+	const spec = value as Record<string, unknown>;
+	if (spec.kind !== "line" && spec.kind !== "bar") return null;
+	if (typeof spec.title !== "string" || typeof spec.id !== "string" || typeof spec.metric !== "string") return null;
+	if (typeof spec.unit !== "string" || !WARP_CHART_UNITS.has(spec.unit)) return null;
+	if (!Array.isArray(spec.points)) return null;
+	const points: WarpChartPoint[] = [];
+	for (const point of spec.points) {
+		if (!point || typeof point !== "object") return null;
+		const { x, y, label } = point as Record<string, unknown>;
+		if (typeof x !== "string" || typeof y !== "number" || !Number.isFinite(y)) return null;
+		points.push(typeof label === "string" && label ? { x, y, label } : { x, y });
+	}
+	return {
+		id: spec.id,
+		kind: spec.kind,
+		title: spec.title,
+		metric: spec.metric,
+		unit: spec.unit as WarpChartSpec["unit"],
+		interval: spec.interval === "hour" || spec.interval === "day" || spec.interval === "week" ? spec.interval : undefined,
+		group: typeof spec.group === "string" ? spec.group : undefined,
+		points,
+		window: spec.window && typeof spec.window === "object" ? (spec.window as WarpChartSpec["window"]) : undefined,
+		link: typeof spec.link === "string" ? spec.link : undefined,
+	};
+}
+
+/**
+ * Splits answer text around its chart blocks, in order.
+ *
+ * The chart JSON would otherwise render as a code block. An unclosed block at the
+ * end of text still streaming is a chart on its way: it becomes a placeholder
+ * rather than a flash of raw JSON. In finished text it will never close, so it
+ * is invalid.
+ */
+export function splitWarpCharts(text: string, isStreaming: boolean): WarpAnswerSegment[] {
+	const segments: WarpAnswerSegment[] = [];
+	const pushText = (value: string) => {
+		if (value.trim()) segments.push({ kind: "text", text: value });
+	};
+	let cursor = 0;
+	for (const match of text.matchAll(WARP_CHART_FENCE)) {
+		pushText(text.slice(cursor, match.index));
+		const spec = parseWarpChartSpec(match[1].trim());
+		segments.push(spec ? { kind: "chart", spec } : { kind: "chart-invalid" });
+		cursor = (match.index ?? 0) + match[0].length;
+	}
+	const rest = text.slice(cursor);
+	const open = rest.indexOf(WARP_CHART_OPEN);
+	if (open === -1) {
+		pushText(rest);
+	} else {
+		pushText(rest.slice(0, open));
+		segments.push({ kind: isStreaming ? "chart-pending" : "chart-invalid" });
+	}
+	return segments;
+}
+
+/** A chart value in its unit, short enough for an axis tick or a tooltip. */
+export function formatWarpChartValue(unit: WarpChartSpec["unit"], value: number): string {
+	switch (unit) {
+		case "usd":
+			if (value === 0) return "$0";
+			// As in formatWarpUsage: "$0.0000" would read a real cost as free.
+			if (value > 0 && value < 0.0001) return "<$0.0001";
+			return value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`;
+		case "ms":
+			return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value.toFixed(0)}ms`;
+		case "percent":
+			return `${Number(value.toFixed(2))}%`;
+		default:
+			return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+	}
+}
+
+/**
+ * A point's x label. Line charts carry UTC bucket starts, shown in UTC because
+ * that is what the buckets are - a local-time label would put an hour's traffic
+ * under the wrong hour. Bars show the display name when there is one.
+ */
+export function formatWarpChartX(spec: Pick<WarpChartSpec, "kind" | "interval">, point: WarpChartPoint): string {
+	// Bars over time carry an interval and timestamps; bars across a group do not.
+	if (!spec.interval) return point.label || point.x;
+	const date = new Date(point.x);
+	if (Number.isNaN(date.getTime())) return point.x;
+	if (spec.interval === "week") {
+		return `Wk of ${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(date)}`;
+	}
+	const options: Intl.DateTimeFormatOptions =
+		spec.interval === "hour"
+			? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }
+			: { month: "short", day: "numeric", timeZone: "UTC" };
+	return new Intl.DateTimeFormat("en-US", options).format(date);
 }

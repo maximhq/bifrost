@@ -78,7 +78,7 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 	}
 	limit = min(limit, config.EffectiveSemanticSearchLimit(), warpMaxSemanticLimit())
 	threshold := config.EffectiveSemanticSearchThreshold()
-	embedding, err := generateWarpEmbedding(ctx, s.embed, config, query)
+	embedding, _, err := generateWarpEmbedding(ctx, s.embed, config, query)
 	if err != nil {
 		return SemanticSearchResult{}, fmt.Errorf("embed semantic query: %w", err)
 	}

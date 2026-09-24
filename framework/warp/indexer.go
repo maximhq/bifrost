@@ -127,7 +127,8 @@ func (i *LogIndexer) Enqueue(_ context.Context, entry *logstore.Log) {
 
 // Index performs the same idempotent operation synchronously for Sidekiq.
 func (i *LogIndexer) Index(ctx context.Context, entry *logstore.Log) (IndexOutcome, error) {
-	return i.IndexWithConfig(ctx, nil, entry)
+	outcome, _, err := i.IndexWithConfig(ctx, nil, entry)
+	return outcome, err
 }
 
 // IndexWithConfig indexes against a caller-pinned configuration.
@@ -140,22 +141,26 @@ func (i *LogIndexer) Index(ctx context.Context, entry *logstore.Log) (IndexOutco
 // with no lock spanning the two.
 //
 // A nil config restores the live read, which is what the in-process queue wants.
-func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) (IndexOutcome, error) {
+//
+// The returned usage is what the embedding call consumed, reported even when
+// the upsert after it failed: the provider billed the call either way, and the
+// backfill totals it so an operator can see what a window cost to index.
+func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) (IndexOutcome, *schemas.BifrostLLMUsage, error) {
 	item, ok := buildLogIndexItem(entry)
 	if !ok {
-		return IndexOutcomeSkipped, nil
+		return IndexOutcomeSkipped, nil, nil
 	}
-	indexed, err := i.indexItemWithConfig(ctx, config, item)
+	indexed, usage, err := i.indexItemWithConfig(ctx, config, item)
 	if err != nil {
-		return "", err
+		return "", usage, err
 	}
 	if !indexed {
 		// Nothing was written - Warp is not configured to embed. Reporting this
 		// as indexed tells the backfill it has covered a log it never touched, so
 		// the gap is never repaired.
-		return IndexOutcomeSkipped, nil
+		return IndexOutcomeSkipped, usage, nil
 	}
-	return IndexOutcomeIndexed, nil
+	return IndexOutcomeIndexed, usage, nil
 }
 
 func (i *LogIndexer) worker() {
@@ -195,30 +200,32 @@ func (i *LogIndexer) runItem(item logIndexItem) {
 }
 
 func (i *LogIndexer) indexItem(ctx context.Context, item logIndexItem) (bool, error) {
-	return i.indexItemWithConfig(ctx, nil, item)
+	indexed, _, err := i.indexItemWithConfig(ctx, nil, item)
+	return indexed, err
 }
 
 // indexItemWithConfig indexes against a caller-pinned configuration, and
 // reports whether anything was actually written so callers can tell "indexed"
-// apart from "there was nothing to index".
-func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.WarpConfig, item logIndexItem) (bool, error) {
+// apart from "there was nothing to index", along with the embedding call's
+// usage whenever one was made.
+func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.WarpConfig, item logIndexItem) (bool, *schemas.BifrostLLMUsage, error) {
 	if config == nil {
 		row, err := i.store.GetWarpConfig(ctx)
 		if err != nil {
-			return false, fmt.Errorf("read Warp configuration: %w", err)
+			return false, nil, fmt.Errorf("read Warp configuration: %w", err)
 		}
 		config = configFromRow(row)
 	}
 	if !config.IsConfigured() {
-		return false, nil
+		return false, nil, nil
 	}
 	namespace := config.EffectiveLogVectorStoreNamespace()
 	if err := i.ensureNamespaceOnce(ctx, namespace, config.EmbeddingDimension); err != nil {
-		return false, err
+		return false, nil, err
 	}
-	embedding, err := generateWarpEmbedding(ctx, i.embed, config, item.text)
+	embedding, usage, err := generateWarpEmbedding(ctx, i.embed, config, item.text)
 	if err != nil {
-		return false, err
+		return false, usage, err
 	}
 	if err := i.vectors.Add(ctx, namespace, item.id, embedding, item.metadata); err != nil {
 		// The failure may mean the namespace vanished underneath the cache, so
@@ -226,9 +233,9 @@ func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.Wa
 		i.ensureMu.Lock()
 		i.ensuredNamespace, i.ensuredDimension = "", 0
 		i.ensureMu.Unlock()
-		return false, err
+		return false, usage, err
 	}
-	return true, nil
+	return true, usage, nil
 }
 
 // ensureNamespaceOnce provisions the namespace unless the last successful
@@ -341,9 +348,9 @@ func ensureWarpNamespace(ctx context.Context, store vectorstore.VectorStore, nam
 	})
 }
 
-func generateWarpEmbedding(ctx context.Context, executor EmbeddingExecutor, config *schemas.WarpConfig, text string) ([]float32, error) {
+func generateWarpEmbedding(ctx context.Context, executor EmbeddingExecutor, config *schemas.WarpConfig, text string) ([]float32, *schemas.BifrostLLMUsage, error) {
 	if executor == nil {
-		return nil, fmt.Errorf("embedding executor is not configured")
+		return nil, nil, fmt.Errorf("embedding executor is not configured")
 	}
 	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	defer embeddingCtx.Cancel()
@@ -365,19 +372,24 @@ func generateWarpEmbedding(ctx context.Context, executor EmbeddingExecutor, conf
 		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 			message = bifrostErr.Error.Message
 		}
-		return nil, fmt.Errorf("%s", message)
+		return nil, nil, fmt.Errorf("%s", message)
 	}
-	if response == nil || len(response.Data) == 0 {
-		return nil, fmt.Errorf("embedding provider returned no vectors")
+	if response == nil {
+		return nil, nil, fmt.Errorf("embedding provider returned no vectors")
+	}
+	// Usage rides along on every failure after this point: the provider
+	// answered, so the call was billed whether or not its vector is usable.
+	if len(response.Data) == 0 {
+		return nil, response.Usage, fmt.Errorf("embedding provider returned no vectors")
 	}
 	vector, err := embeddingToFloat32(response.Data[0].Embedding)
 	if err != nil {
-		return nil, err
+		return nil, response.Usage, err
 	}
 	if len(vector) != config.EmbeddingDimension {
-		return nil, fmt.Errorf("embedding dimension mismatch: got %d, want %d", len(vector), config.EmbeddingDimension)
+		return nil, response.Usage, fmt.Errorf("embedding dimension mismatch: got %d, want %d", len(vector), config.EmbeddingDimension)
 	}
-	return vector, nil
+	return vector, response.Usage, nil
 }
 
 func embeddingToFloat32(value schemas.EmbeddingStruct) ([]float32, error) {

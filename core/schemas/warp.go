@@ -52,8 +52,12 @@ const (
 	// log window or logs are kept for as long as anyone might want a chat back.
 	WarpDefaultHistoryRetentionDays = 30
 	// WarpDefaultSemanticSearchThreshold is the minimum similarity accepted by
-	// semantic log search when an operator has not supplied one.
-	WarpDefaultSemanticSearchThreshold = 0.80
+	// semantic log search when an operator has not supplied one. It is a
+	// Weaviate certainty, (1 + cosine) / 2, and a question matched against a
+	// logged conversation scores well below a near-duplicate: 0.80 (cosine 0.6)
+	// cut off clearly relevant rows with text-embedding-3-small, so search came
+	// back empty for ordinary questions. 0.70 is cosine 0.4.
+	WarpDefaultSemanticSearchThreshold = 0.70
 
 	// WarpDefaultSemanticSearchLimit is the default number of semantic matches.
 	WarpDefaultSemanticSearchLimit = 10

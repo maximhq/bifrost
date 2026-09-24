@@ -576,6 +576,30 @@ func TestWarpBackfillStatusKeepsRealTimestamps(t *testing.T) {
 	}
 }
 
+// The job's embedding spend travels from its checkpoint to the status payload
+// the backfill panel renders; a cost the deployment cannot price stays absent
+// rather than arriving as 0, which would read as free.
+func TestWarpBackfillStatusCarriesEmbeddingSpend(t *testing.T) {
+	priced := warpBackfillStatusFromRow(&tables.TableSidekiqJob{
+		ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"total":10,"scanned":4,"embedding_tokens":1200,"embedding_cost":0.000024}`,
+	})
+	require.Equal(t, int64(1200), priced.EmbeddingTokens)
+	require.NotNil(t, priced.EmbeddingCost)
+	require.InDelta(t, 0.000024, *priced.EmbeddingCost, 1e-12)
+
+	unpriced := warpBackfillStatusFromRow(&tables.TableSidekiqJob{
+		ID: "job-2", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"total":10,"scanned":4,"embedding_tokens":1200}`,
+	})
+	encoded, err := sonic.Marshal(unpriced)
+	require.NoError(t, err)
+	var shape map[string]any
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+	require.Equal(t, float64(1200), shape["embedding_tokens"])
+	require.NotContains(t, shape, "embedding_cost")
+}
+
 // A malformed time range is a bad request whether or not a job is running.
 //
 // startBackfill checked for an active job before BuildBackfillJobMeta, which is

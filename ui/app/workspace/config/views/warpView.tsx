@@ -1,4 +1,5 @@
 import PageTitle from "@/components/pageTitle";
+import { formatWarpUsage } from "@/components/warp/warpStream.utils";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -59,7 +60,7 @@ const DEFAULT_HISTORY_RETENTION_DAYS = 30;
 const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
-const DEFAULT_SEARCH_THRESHOLD = 0.8;
+const DEFAULT_SEARCH_THRESHOLD = 0.7;
 const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_BACKFILL_PERIOD = "7d";
 
@@ -223,6 +224,11 @@ export default function WarpView() {
 		backfillStatus?.status === "pending" || backfillStatus?.status === "running" || backfillStatus?.status === "cancelling";
 	// A live job always wins; otherwise fall back to the run that just ended.
 	const shownBackfill = backfillStatus?.id ? backfillStatus : finishedBackfill;
+	// These embedding calls skip the plugin pipeline, so they never show up in
+	// the logs - this line is the only place their spend is visible.
+	const backfillSpend = shownBackfill
+		? formatWarpUsage({ total_tokens: shownBackfill.embedding_tokens, cost: { total_cost: shownBackfill.embedding_cost } })
+		: null;
 
 	// Adopt a job discovered by the id-less request. Without this a reload during
 	// a running backfill kept polling id-less, and the moment the job finished
@@ -1111,9 +1117,12 @@ export default function WarpView() {
 												}}
 											/>
 										</div>
-										<p className="text-muted-foreground text-xs">
-											{shownBackfill.indexed} indexed · {shownBackfill.skipped} skipped · {shownBackfill.failed} failed
-										</p>
+										<div className="text-muted-foreground flex items-center justify-between gap-3 text-xs">
+											<span>
+												{shownBackfill.indexed} indexed · {shownBackfill.skipped} skipped · {shownBackfill.failed} failed
+											</span>
+											{backfillSpend && <span data-testid="warp-backfill-spend">{backfillSpend}</span>}
+										</div>
 										{shownBackfill.message && <p className="text-muted-foreground text-xs">{shownBackfill.message}</p>}
 										{shownBackfill.last_error && <p className="text-destructive text-xs">Latest error: {shownBackfill.last_error}</p>}
 									</div>

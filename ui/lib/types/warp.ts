@@ -112,6 +112,10 @@ export interface WarpBackfillJob {
 	indexed: number;
 	skipped: number;
 	failed: number;
+	/** Tokens the job's embedding calls have consumed so far, across resumes. */
+	embedding_tokens?: number;
+	/** USD cost of those calls. Absent when the deployment cannot price them - unknown, not free. */
+	embedding_cost?: number;
 	last_error?: string;
 	message?: string;
 	created_at?: string;

@@ -54,8 +54,15 @@ type BackfillJobMeta struct {
 	Indexed         int        `json:"indexed"`
 	Skipped         int        `json:"skipped"`
 	Failed          int        `json:"failed"`
-	LastError       string     `json:"last_error,omitempty"`
-	Message         string     `json:"message,omitempty"`
+	// EmbeddingTokens and EmbeddingCost total what the job's embedding calls
+	// consumed, across every resume of this checkpoint. They are spend, not
+	// progress: a page rolled back out of the counters above was still billed,
+	// so it stays in here. EmbeddingCost is nil when no model catalog is wired
+	// to price it - absent reads as "unknown", where 0 would read as free.
+	EmbeddingTokens int64    `json:"embedding_tokens,omitempty"`
+	EmbeddingCost   *float64 `json:"embedding_cost,omitempty"`
+	LastError       string   `json:"last_error,omitempty"`
+	Message         string   `json:"message,omitempty"`
 }
 
 // embeddingConfigSignature identifies the embedding space a backfill was frozen
@@ -215,6 +222,12 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 		}
 
 		outcomes, pageErr := s.indexBackfillPage(ctx, config, result.Logs)
+		// Recorded before anything below can return: a page that is cut short or
+		// rolled back is retried on resume, but the calls it already made were
+		// billed and are not refunded by the retry.
+		for index := range outcomes {
+			s.recordBackfillSpend(&meta, config, outcomes[index].usage)
+		}
 		if pageErr != nil {
 			// The page was cut short - by external cancellation, or a fetch that
 			// failed before any log in it was even attempted: nothing in it is
@@ -299,6 +312,8 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 type backfillPageOutcome struct {
 	outcome IndexOutcome
 	err     error
+	// usage is the embedding call's consumption, set whenever a call was made.
+	usage *schemas.BifrostLLMUsage
 	// vanished marks a log Search listed but the page fetch no longer found.
 	// Recorded as failed, but kept out of the consecutive-failure streak.
 	vanished bool
@@ -393,7 +408,7 @@ func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpCon
 			// The config verified for this job, not a fresh read: a save landing
 			// between the check in RunBackfillJob and this write would otherwise
 			// index into a different embedding space than the job froze.
-			outcome, indexErr := s.indexer.IndexWithConfig(groupCtx, config, entry)
+			outcome, usage, indexErr := s.indexer.IndexWithConfig(groupCtx, config, entry)
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				// ctx was cancelled while this log was mid-flight. Checked
 				// regardless of whether indexing reported an error: a cancellation
@@ -406,7 +421,7 @@ func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpCon
 				// propagated so RunBackfillJob knows the page was cut short.
 				return cancelErr
 			}
-			results[index] = backfillPageOutcome{outcome: outcome, err: indexErr}
+			results[index] = backfillPageOutcome{outcome: outcome, err: indexErr, usage: usage}
 			done[index] = true
 			return nil
 		})
@@ -420,6 +435,29 @@ func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpCon
 		}
 	}
 	return outcomes, waitErr
+}
+
+// recordBackfillSpend adds one embedding call's usage to the job's running
+// spend. Priced the way the call was routed - a provider-qualified embedding
+// model runs on its own prefix's provider, so it is priced off that rate card.
+func (s *Service) recordBackfillSpend(meta *BackfillJobMeta, config *schemas.WarpConfig, usage *schemas.BifrostLLMUsage) {
+	if usage == nil {
+		return
+	}
+	tokens := usage.TotalTokens
+	if tokens == 0 {
+		tokens = usage.PromptTokens
+	}
+	meta.EmbeddingTokens += int64(tokens)
+	if s.catalog == nil {
+		return
+	}
+	provider, model := schemas.ParseModelString(config.EmbeddingModel, config.EmbeddingProvider)
+	cost := s.catalog.CalculateCostForUsage(usage, provider, model, schemas.EmbeddingRequest, nil)
+	if meta.EmbeddingCost == nil {
+		meta.EmbeddingCost = new(float64)
+	}
+	*meta.EmbeddingCost += cost
 }
 
 func backfillFilters(start, end time.Time) logstore.SearchFilters {

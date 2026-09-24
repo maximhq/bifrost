@@ -295,6 +295,16 @@ WarpBackfillStatus:
     indexed: { type: integer, format: int64 }
     skipped: { type: integer, format: int64 }
     failed: { type: integer, format: int64 }
+    embedding_tokens:
+      type: integer
+      format: int64
+      description: Tokens consumed by the job's embedding calls so far, across resumes of the same checkpoint.
+    embedding_cost:
+      type: number
+      format: double
+      description: >-
+        USD cost of the job's embedding calls so far, across resumes of the same
+        checkpoint. Omitted when the deployment has no model catalog to price it.
     last_error: { type: string }
     message: { type: string }
     created_at: { type: string, format: date-time }

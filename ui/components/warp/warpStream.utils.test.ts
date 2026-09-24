@@ -5,6 +5,8 @@ import {
 	encodeTurnError,
 	errorMessage,
 	historyForRequest,
+	formatWarpChartValue,
+	formatWarpChartX,
 	formatWarpUsage,
 	indexStatusLabel,
 	isEncodedTurnError,
@@ -13,10 +15,12 @@ import {
 	isPlainLeftClick,
 	isTypingInto,
 	isWarpQuestionFinish,
+	parseWarpChartSpec,
 	parseWarpFrame,
 	pendingWarpQuestion,
 	shouldDrainQueue,
 	splitWarpAnswer,
+	splitWarpCharts,
 	splitWarpFrames,
 	turnsFromStoredMessages,
 	warpErrorDetail,
@@ -109,6 +113,7 @@ describe("warpToolLabel", () => {
 			"query_metrics",
 			"query_usage_by",
 			"query_model_performance",
+			"render_chart",
 			"describe_filter_space",
 			"describe_virtual_key",
 			"ask_user",
@@ -817,5 +822,134 @@ describe("warpTimeline", () => {
 			},
 		]);
 		expect(turns[0].toolCalls?.[0].textOffset).toBe(9);
+	});
+});
+const chartSpec = {
+	id: "chart-1",
+	kind: "line",
+	title: "Errors per day",
+	metric: "errors",
+	unit: "count",
+	interval: "day",
+	points: [
+		{ x: "2026-09-22T00:00:00Z", y: 5 },
+		{ x: "2026-09-23T00:00:00Z", y: 30 },
+	],
+	window: { start: "2026-09-17T00:00:00Z", end: "2026-09-24T00:00:00Z" },
+	link: "/workspace/logs?status=error",
+};
+
+describe("splitWarpCharts", () => {
+	// A chart arrives as a warp-chart block the server filled with render_chart's
+	// spec. Rendered as markdown it would be a wall of JSON.
+	it("lifts chart blocks out of the text, in order", () => {
+		const text = "Errors spiked on the 23rd.\n\n```warp-chart\n" + JSON.stringify(chartSpec) + "\n```\n\nMost were overloads.";
+		const segments = splitWarpCharts(text, false);
+		expect(segments.map((segment) => segment.kind)).toEqual(["text", "chart", "text"]);
+		expect(segments[1]).toEqual({ kind: "chart", spec: chartSpec });
+	});
+
+	it("shows a pending chart while its block is still streaming", () => {
+		expect(splitWarpCharts('Here it is:\n\n```warp-chart\n{"id":"chart-1","ki', true)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-pending" },
+		]);
+	});
+
+	// An earlier narration item, or a finished answer, will never close its
+	// block: a placeholder there would spin forever.
+	it("marks an unclosed block invalid once the text is finished", () => {
+		expect(splitWarpCharts('Here it is:\n\n```warp-chart\n{"id":"chart-1","ki', false)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-invalid" },
+		]);
+	});
+
+	it("marks a closed block it cannot draw as invalid rather than failing", () => {
+		expect(splitWarpCharts("```warp-chart\nnot json\n```", false)).toEqual([{ kind: "chart-invalid" }]);
+	});
+
+	it("leaves text without charts as one segment", () => {
+		expect(splitWarpCharts("Just prose.", false)).toEqual([{ kind: "text", text: "Just prose." }]);
+	});
+});
+
+describe("parseWarpChartSpec", () => {
+	it("accepts a spec render_chart produced", () => {
+		expect(parseWarpChartSpec(JSON.stringify(chartSpec))).toEqual(chartSpec);
+	});
+
+	it("keeps a bar label only when there is one", () => {
+		const bar = {
+			...chartSpec,
+			kind: "bar",
+			interval: undefined,
+			group: "team",
+			points: [{ x: "team-platform", label: "Platform Engineering", y: 15 }],
+		};
+		expect(parseWarpChartSpec(JSON.stringify(bar))?.points).toEqual([{ x: "team-platform", label: "Platform Engineering", y: 15 }]);
+	});
+
+	it.each([
+		["a kind it cannot draw", { ...chartSpec, kind: "pie" }],
+		["an unknown unit", { ...chartSpec, unit: "furlongs" }],
+		["a non-numeric point", { ...chartSpec, points: [{ x: "a", y: "5" }] }],
+		["missing points", { ...chartSpec, points: undefined }],
+	])("rejects %s", (_, spec) => {
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toBeNull();
+	});
+});
+
+describe("formatWarpChartValue", () => {
+	it.each([
+		["usd", 2.58, "$2.58"],
+		["usd", 0.0004, "$0.0004"],
+		// Below what four places show, a real cost is not rounded down to "$0.0000".
+		["usd", 0.00004, "<$0.0001"],
+		["usd", 0.0001, "$0.0001"],
+		["usd", 0, "$0"],
+		["ms", 45000, "45.00s"],
+		["ms", 320.4, "320ms"],
+		["tokens", 956229, "956.2K"],
+		["count", 30, "30"],
+	] as const)("formats %s %s as %s", (unit, value, want) => {
+		expect(formatWarpChartValue(unit, value)).toBe(want);
+	});
+});
+
+describe("formatWarpChartX", () => {
+	// Buckets are UTC; a local-time label would file traffic under the wrong day.
+	it("labels line points by their UTC bucket", () => {
+		expect(formatWarpChartX({ kind: "line", interval: "day" }, { x: "2026-09-23T00:00:00Z", y: 1 })).toBe("Sep 23");
+		expect(formatWarpChartX({ kind: "line", interval: "hour" }, { x: "2026-09-23T14:00:00Z", y: 1 })).toBe("Sep 23, 14:00");
+	});
+
+	it("labels bars by display name, falling back to the id", () => {
+		expect(formatWarpChartX({ kind: "bar" }, { x: "team-platform", label: "Platform Engineering", y: 1 })).toBe("Platform Engineering");
+		expect(formatWarpChartX({ kind: "bar" }, { x: "anthropic", y: 1 })).toBe("anthropic");
+	});
+});
+// render_chart grew failure rates, weeks and bars over time; a spec carrying any
+// of them was rejected as unknown and showed "Chart unavailable".
+describe("weekly and rate charts", () => {
+	it("accepts a weekly error-rate bar chart", () => {
+		const spec = {
+			...chartSpec,
+			kind: "bar",
+			metric: "error_rate",
+			unit: "percent",
+			interval: "week",
+			points: [{ x: "2026-09-14T00:00:00Z", y: 3 }],
+		};
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toEqual(spec);
+	});
+
+	it("formats a rate as a percent", () => {
+		expect(formatWarpChartValue("percent", 2.987)).toBe("2.99%");
+	});
+
+	it("labels weekly points and time bars by date, not as category names", () => {
+		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Wk of Sep 14");
+		expect(formatWarpChartX({ kind: "bar", interval: "day" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Sep 14");
 	});
 });

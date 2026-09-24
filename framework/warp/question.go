@@ -97,6 +97,7 @@ func askUserToolDef() Tool {
 		name: AskUserTool,
 		description: "Ask the person a short multiple-choice question and wait for their answer. " +
 			"Use this when a metric question does not say which time range it means, or whose traffic it means - both change the answer, and guessing produces a confident number about the wrong thing. " +
+			"Never call this for a message you are declining: a request to write something, general knowledge, or anything else not about this deployment's traffic or the virtual-key settings describe_virtual_key reads gets a one-sentence refusal, not a question about time range or scope. " +
 			"Offer concrete options they can pick rather than asking them to type. Ask about one thing at a time, and do not ask again once they have told you. " +
 			"This tool call is what renders as something the person can click - writing the same question and options into your answer as prose or a markdown list instead is not a substitute: it leaves them typing a reply you then have to re-parse, or worse, ends the turn with no way for them to answer at all.",
 		schemaJSON: AskUserSchema,
@@ -200,6 +201,7 @@ const QuestionGuidance = `
 
 Asking before you answer:
 
+- These rules apply only to a question you are going to answer from the data. A message outside what you cover is declined without asking anything (see "Staying on topic").
 - Two things decide a metric answer: which time range, and whose traffic. If the question does not say, ask with ` + AskUserTool + ` rather than choosing for them. A number computed over the wrong window or the wrong scope is not a smaller answer, it is a different one.
 - Offer options they can pick. For a time range that is usually: Last 24 hours (-24h), Last 7 days (-7d), Last 30 days (-30d), and a custom range. For scope, use what describe_filter_space reported - the teams, customers or business units that actually have traffic.
 - Ask about one thing at a time. If both the window and the scope are missing, ask the window first, then the scope once they answer.

@@ -1445,8 +1445,8 @@ type fakeFilterSpaceReader struct {
 	LogReaderStub
 }
 
-func (f *fakeFilterSpaceReader) GetAvailableModels(context.Context, int, string) ([]string, error) {
-	return []string{"gpt-4o"}, nil
+func (f *fakeFilterSpaceReader) GetAvailableModels(_ context.Context, _ int, query string) ([]string, error) {
+	return matchingValues(query, "gpt-4o"), nil
 }
 
 // Nothing routed in this deployment: the lookups exist and come back empty.
@@ -1468,23 +1468,45 @@ func (f *fakeFilterSpaceReader) GetAvailableToolCallNames(context.Context, int, 
 func (f *fakeFilterSpaceReader) GetAvailableMetadataKeys(context.Context, int, string) (map[string][]string, error) {
 	return nil, nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableApps(context.Context, int, string) ([]string, error) {
-	return []string{"dashboard"}, nil
+func (f *fakeFilterSpaceReader) GetAvailableApps(_ context.Context, _ int, query string) ([]string, error) {
+	return matchingValues(query, "dashboard"), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableStopReasons(context.Context, int, string) ([]string, error) {
-	return []string{"stop"}, nil
+func (f *fakeFilterSpaceReader) GetAvailableStopReasons(_ context.Context, _ int, query string) ([]string, error) {
+	return matchingValues(query, "stop"), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableTeams(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "team-1", Name: "Team One"}}, nil
+func (f *fakeFilterSpaceReader) GetAvailableTeams(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "team-1", Name: "Team One"}), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableCustomers(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "cust-1", Name: "Customer One"}}, nil
+func (f *fakeFilterSpaceReader) GetAvailableCustomers(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "cust-1", Name: "Customer One"}), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableBusinessUnits(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "bu-1", Name: "Unit One"}}, nil
+func (f *fakeFilterSpaceReader) GetAvailableBusinessUnits(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "bu-1", Name: "Unit One"}), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableVirtualKeys(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "vk-1", Name: "default"}}, nil
+
+// matchingValues and matchingPairs apply search the way the store does: a
+// case-insensitive substring of the value (or its name), empty matching all.
+func matchingValues(query string, values ...string) []string {
+	out := []string{}
+	for _, v := range values {
+		if strings.Contains(strings.ToLower(v), strings.ToLower(query)) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func matchingPairs(query string, pairs ...KeyPair) []KeyPair {
+	out := []KeyPair{}
+	for _, p := range pairs {
+		if strings.Contains(strings.ToLower(p.Name), strings.ToLower(query)) || strings.Contains(strings.ToLower(p.ID), strings.ToLower(query)) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+func (f *fakeFilterSpaceReader) GetAvailableVirtualKeys(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "vk-1", Name: "default"}), nil
 }
 
 // The same principle parseFilters already applies to unknown field names: a
@@ -2415,4 +2437,108 @@ func TestWarpLogRowsCarryRoutingFields(t *testing.T) {
 	require.Equal(t, "smart", rows[0]["alias"])
 	require.Equal(t, "COMPLEX", rows[0]["complexity_tier"])
 	require.Equal(t, []any{"get_weather"}, rows[0]["tool_calls"])
+}
+
+// search narrows by part of a value's name. A live run passed {"search":"team"}
+// to find teams, got back only teams whose names contain "team" - none - and
+// told the person no team had traffic. The schema says what search is, and an
+// empty filtered result says how to recover rather than reading as a census.
+func TestWarpDescribeFilterSpaceSearchIsANameFragment(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "describe_filter_space")
+	require.True(t, ok)
+	require.Contains(t, tool.schemaJSON, "never a category such as")
+
+	result, err := tool.execute(context.Background(), &ToolDeps{logManager: &fakeFilterSpaceReader{}}, map[string]any{"search": "customer segment"})
+	require.NoError(t, err)
+	guidance, _ := result.(map[string]any)["guidance"].(string)
+	require.Contains(t, guidance, `Nothing matched search "customer segment"`)
+	require.Contains(t, guidance, "without search")
+
+	unfiltered, err := tool.execute(context.Background(), &ToolDeps{logManager: &fakeFilterSpaceReader{}}, map[string]any{})
+	require.NoError(t, err)
+	require.NotContains(t, unfiltered.(map[string]any), "guidance", "an unfiltered listing is the census; it needs no recovery hint")
+}
+
+// Live runs asked query_usage_by for a model breakdown (no such dimension, so
+// the model gave up) and answered "which provider errors most" with the
+// selected_key ranking, naming an API key instead of the provider.
+func TestWarpUsageByPointsProviderAndModelBreakdownsElsewhere(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "query_usage_by")
+	require.True(t, ok)
+	require.Contains(t, tool.description, "There is no provider or model dimension")
+	require.Contains(t, tool.description, "selected_key (the provider API key Bifrost sent the request with, by name - not the provider")
+}
+
+// A live run filtered error_codes: ["overloaded_error"]. That is an error type,
+// error_code is empty for Anthropic, so the incident matched zero rows.
+func TestWarpErrorCodesFilterSendsErrorTypesElsewhere(t *testing.T) {
+	require.Contains(t, FilterSchema, "overloaded_error and rate_limit_error are error types")
+}
+
+// Told there is no model dimension, a live run ranked by alias instead to
+// answer "was the incident isolated to one model?". The requests named their
+// models directly, so every alias was empty, and Warp concluded the overload
+// "affected Anthropic broadly" when all 30 failures were one model.
+func TestWarpAliasIsNotAModelStandIn(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "query_usage_by")
+	require.True(t, ok)
+	require.Contains(t, tool.description, "empty when a request named its model directly - never a stand-in for the model")
+}
+
+// Two further live runs still asked query_usage_by for dimension "model", got
+// the generic "unknown dimension" list, and then ranked by alias or gave up.
+// The model reads the error at the moment it retries, so the error names the
+// tool that answers the question it was trying to ask.
+func TestWarpUsageByRedirectsModelAndProviderDimensions(t *testing.T) {
+	for dimension, want := range map[string]string{
+		"model":    "query_model_performance",
+		"models":   "query_model_performance",
+		"provider": "query_metrics with group_by provider",
+	} {
+		_, err := runTool(t, "query_usage_by", &ToolDeps{logManager: &fakeFilterSpaceReader{}}, map[string]any{"dimension": dimension, "filters": map[string]any{"start_time": "-7d"}})
+		require.Error(t, err, dimension)
+		require.Contains(t, err.Error(), want, dimension)
+		require.Contains(t, err.Error(), "same filters", dimension)
+	}
+}
+
+// query_metrics reduced every ungrouped series to one summary, and grouped ones
+// to a dozen buckets that do not line up with days, so "errors per day this
+// week" had no single call: a live run made a count_logs call per day - seven
+// to nine calls for a table, or for the numbers behind a chart it then drew in
+// mermaid. interval returns the series bucket by bucket at an hour or a day.
+func TestWarpQueryMetricsIntervalReturnsBuckets(t *testing.T) {
+	day := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{
+		BucketSizeSeconds: 86400,
+		Buckets: []logstore.HistogramBucket{
+			{Timestamp: day, Count: 10, Success: 9, Error: 1},
+			{Timestamp: day.Add(24 * time.Hour), Count: 12, Success: 8, Error: 4},
+		},
+	}}
+	out, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d"}, "metrics": []any{"requests"}, "interval": "day",
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(86400), fake.histogramBucket)
+	encoded, err := sonic.Marshal(out)
+	require.NoError(t, err)
+	var shape struct {
+		Requests struct {
+			Buckets []logstore.HistogramBucket `json:"buckets"`
+		} `json:"requests"`
+	}
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+	require.Len(t, shape.Requests.Buckets, 2, "a day interval returns every bucket, not a summary: %s", encoded)
+	require.Equal(t, int64(4), shape.Requests.Buckets[1].Error)
+
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "-30d"}, "metrics": []any{"requests"}, "interval": "hour",
+	})
+	require.ErrorContains(t, err, `interval "day"`, "720 hourly buckets is over the cap; the error names the way out")
+
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d"}, "metrics": []any{"cost"}, "group_by": "provider", "interval": "day",
+	})
+	require.ErrorContains(t, err, "interval")
 }
