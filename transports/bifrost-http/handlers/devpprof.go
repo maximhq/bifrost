@@ -586,6 +586,7 @@ func categorizeGoroutine(g *GoroutineGroup) {
 		"PostMCPHook",
 		"HTTPTransportPreHook",
 		"HTTPTransportPostHook",
+		"HTTPTransportResponseHeadersHook",
 		"CompleteAndFlushTrace",
 		"ProcessAndSend",
 		"handleProvider",

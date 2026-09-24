@@ -8,6 +8,7 @@ import (
 	cryptoRand "crypto/rand"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2647,6 +2648,10 @@ func (p *fakePreAuthPlugin) HTTPTransportPostHook(_ *schemas.BifrostContext, _ *
 	return nil
 }
 
+func (p *fakePreAuthPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 func (p *fakePreAuthPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
 }
@@ -2832,6 +2837,233 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 
 	if !nextCalled {
 		t.Error("expected the request to pass straight through when no plugin implements the hook")
+	}
+}
+
+type fakeResponseHeadersPlugin struct {
+	name string
+	hook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error
+}
+
+func (p *fakeResponseHeadersPlugin) GetName() string { return p.name }
+
+func (p *fakeResponseHeadersPlugin) Cleanup() error { return nil }
+
+func (p *fakeResponseHeadersPlugin) HTTPTransportResponseHeadersHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+	return p.hook(ctx, req, resp)
+}
+
+func (p *fakeResponseHeadersPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
+func (p *fakeResponseHeadersPlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
+func (p *fakeResponseHeadersPlugin) HTTPTransportPostHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponse) error {
+	return nil
+}
+
+func (p *fakeResponseHeadersPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
+func responseHeadersTestConfig(t *testing.T, plugins ...schemas.BasePlugin) *lib.Config {
+	t.Helper()
+	config := &lib.Config{}
+	for _, plugin := range plugins {
+		if err := config.ReloadPlugin(plugin); err != nil {
+			t.Fatalf("register response-headers plugin: %v", err)
+		}
+	}
+	return config
+}
+
+func TestTransportResponseHeadersHook_NonStreaming(t *testing.T) {
+	var gotStatus int
+	var gotPath string
+	plugin := &fakeResponseHeadersPlugin{
+		name: "response-headers",
+		hook: func(_ *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+			gotStatus = resp.StatusCode
+			gotPath = req.Path
+			resp.DeleteHeader("X-Remove-Me")
+			resp.SetHeader("X-Custom-Header", "custom-value")
+			resp.SetHeader("Connection", "close")
+			resp.StatusCode = fasthttp.StatusTeapot // Status is intentionally read-only.
+			return nil
+		},
+	}
+
+	handler := TransportInterceptorMiddleware(responseHeadersTestConfig(t, plugin))(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusCreated)
+		ctx.Response.Header.Set("X-Remove-Me", "old")
+		ctx.Response.Header.Set("Connection", "keep-alive")
+		ctx.SetBodyString("ok")
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if gotStatus != fasthttp.StatusCreated {
+		t.Fatalf("hook status = %d, want %d", gotStatus, fasthttp.StatusCreated)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("hook path = %q, want /v1/chat/completions", gotPath)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Custom-Header")); got != "custom-value" {
+		t.Fatalf("X-Custom-Header = %q, want custom-value", got)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Remove-Me")); got != "" {
+		t.Fatalf("X-Remove-Me = %q, want deleted", got)
+	}
+	if got := string(ctx.Response.Header.Peek("Connection")); got != "keep-alive" {
+		t.Fatalf("Connection = %q, want transport-owned keep-alive", got)
+	}
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusCreated {
+		t.Fatalf("status = %d, want read-only status %d", got, fasthttp.StatusCreated)
+	}
+}
+
+func TestTransportResponseHeadersHook_Streaming(t *testing.T) {
+	plugin := &fakeResponseHeadersPlugin{
+		name: "stream-response-headers",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+			if got := resp.Header("Content-Type"); got != "text/event-stream" {
+				t.Fatalf("Content-Type in hook = %q, want text/event-stream", got)
+			}
+			resp.SetHeader("X-Streaming-Header", "present-before-first-chunk")
+			return nil
+		},
+	}
+
+	handler := TransportInterceptorMiddleware(responseHeadersTestConfig(t, plugin))(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("text/event-stream")
+		ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+		ctx.Response.SetBodyStream(bytes.NewReader([]byte("data: ok\n\n")), -1)
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+	defer ctx.Response.CloseBodyStream()
+
+	if got := string(ctx.Response.Header.Peek("X-Streaming-Header")); got != "present-before-first-chunk" {
+		t.Fatalf("X-Streaming-Header = %q, want present-before-first-chunk", got)
+	}
+}
+
+func TestTransportResponseHeadersHook_ReverseOrder(t *testing.T) {
+	var calls []string
+	first := &fakeResponseHeadersPlugin{
+		name: "first",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+			calls = append(calls, "first")
+			resp.SetHeader("X-Order", "first")
+			return nil
+		},
+	}
+	second := &fakeResponseHeadersPlugin{
+		name: "second",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+			calls = append(calls, "second")
+			resp.SetHeader("X-Order", "second")
+			return nil
+		},
+	}
+
+	handler := TransportInterceptorMiddleware(responseHeadersTestConfig(t, first, second))(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if got := strings.Join(calls, ","); got != "second,first" {
+		t.Fatalf("hook order = %q, want second,first", got)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Order")); got != "first" {
+		t.Fatalf("X-Order = %q, want first", got)
+	}
+}
+
+// responseHeaderValues returns every value of a live response header, including Set-Cookie.
+func responseHeaderValues(ctx *fasthttp.RequestCtx, name string) []string {
+	var values []string
+	for key, value := range ctx.Response.Header.All() {
+		if strings.EqualFold(string(key), name) {
+			values = append(values, string(value))
+		}
+	}
+	return values
+}
+
+func TestTransportResponseHeadersHook_RepeatedHeaders(t *testing.T) {
+	tests := []struct {
+		name       string
+		hook       func(resp *schemas.HTTPResponseMetadata)
+		wantLink   []string
+		wantCookie []string
+		wantExtra  string
+	}{
+		{
+			name:       "no-op hook preserves repeated headers",
+			hook:       func(*schemas.HTTPResponseMetadata) {},
+			wantLink:   []string{"<a>; rel=preload", "<b>; rel=preload"},
+			wantCookie: []string{"a=1", "b=2"},
+		},
+		{
+			name:       "unrelated header change leaves repeated headers untouched",
+			hook:       func(resp *schemas.HTTPResponseMetadata) { resp.SetHeader("X-Extra", "1") },
+			wantLink:   []string{"<a>; rel=preload", "<b>; rel=preload"},
+			wantCookie: []string{"a=1", "b=2"},
+			wantExtra:  "1",
+		},
+		{
+			name:       "deleting a repeated header removes every value",
+			hook:       func(resp *schemas.HTTPResponseMetadata) { resp.DeleteHeader("Link") },
+			wantLink:   nil,
+			wantCookie: []string{"a=1", "b=2"},
+		},
+		{
+			name:       "changing a repeated header replaces every value",
+			hook:       func(resp *schemas.HTTPResponseMetadata) { resp.SetHeader("Link", "<c>; rel=preload") },
+			wantLink:   []string{"<c>; rel=preload"},
+			wantCookie: []string{"a=1", "b=2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := &fakeResponseHeadersPlugin{
+				name: "repeated-headers",
+				hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+					tt.hook(resp)
+					return nil
+				},
+			}
+			// Streaming path: the buffered path also runs the post-hook write-back, which is covered separately.
+			handler := TransportInterceptorMiddleware(responseHeadersTestConfig(t, plugin))(func(ctx *fasthttp.RequestCtx) {
+				ctx.SetContentType("text/event-stream")
+				ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+				ctx.Response.SetBodyStream(bytes.NewReader([]byte("data: ok\n\n")), -1)
+				ctx.Response.Header.Add("Link", "<a>; rel=preload")
+				ctx.Response.Header.Add("Link", "<b>; rel=preload")
+				ctx.Response.Header.Add("Set-Cookie", "a=1")
+				ctx.Response.Header.Add("Set-Cookie", "b=2")
+			})
+			ctx := preAuthTestCtx()
+			handler(ctx)
+			defer ctx.Response.CloseBodyStream()
+
+			if got := responseHeaderValues(ctx, "Link"); !reflect.DeepEqual(got, tt.wantLink) {
+				t.Fatalf("Link = %q, want %q", got, tt.wantLink)
+			}
+			if got := responseHeaderValues(ctx, "Set-Cookie"); !reflect.DeepEqual(got, tt.wantCookie) {
+				t.Fatalf("Set-Cookie = %q, want %q", got, tt.wantCookie)
+			}
+			if got := string(ctx.Response.Header.Peek("X-Extra")); got != tt.wantExtra {
+				t.Fatalf("X-Extra = %q, want %q", got, tt.wantExtra)
+			}
+		})
 	}
 }
 

@@ -3,13 +3,64 @@ package handlers
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// TestResponseHeadersHookAppliedBeforeSSEStreamStarts exercises the actual wire
+// boundary: the hook runs after SetBodyStream, yet its header must be present in
+// the HTTP response block that precedes the first SSE bytes.
+func TestResponseHeadersHookAppliedBeforeSSEStreamStarts(t *testing.T) {
+	plugin := &fakeResponseHeadersPlugin{
+		name: "wire-response-headers",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+			resp.SetHeader("X-Streaming-Header", "set-before-commit")
+			return nil
+		},
+	}
+
+	handler := TransportInterceptorMiddleware(responseHeadersTestConfig(t, plugin))(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("text/event-stream")
+		ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+		ctx.Response.SetBodyStream(strings.NewReader("data: ok\n\n"), -1)
+	})
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go func() {
+		_ = fasthttp.ServeConn(serverConn, handler)
+	}()
+
+	if _, err := clientConn.Write([]byte("GET /stream HTTP/1.1\r\nHost: test\r\n\r\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://test/stream", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("X-Streaming-Header"); got != "set-before-commit" {
+		t.Fatalf("X-Streaming-Header = %q, want set-before-commit", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read stream body: %v", err)
+	}
+	if got := string(body); got != "data: ok\n\n" {
+		t.Fatalf("stream body = %q, want data event", got)
+	}
+}
 
 // TestSSEStreamReaderNoEventBatching verifies that SSE events are delivered
 // individually through fasthttp's chunked transfer encoding, not batched

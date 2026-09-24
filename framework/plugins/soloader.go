@@ -119,6 +119,13 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: HTTPTransportResponseHeadersHook
+	if sym, err := pluginObj.Lookup("HTTPTransportResponseHeadersHook"); err == nil {
+		if dp.httpTransportResponseHeadersHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportResponseHeadersHook to expected signature")
+		}
+	}
+
 	// Optional: PreRequestHook — new .so plugins built against LLMPlugin can export this
 	// to participate in routing. Legacy plugins predating PreRequestHook keep working;
 	// DynamicPlugin's default PreRequestHook is a no-op passthrough.

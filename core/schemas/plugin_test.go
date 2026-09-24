@@ -218,3 +218,30 @@ func TestHTTPRequest_CaseInsensitiveQueryLookup(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPResponseMetadataHeaderHelpers(t *testing.T) {
+	resp := &HTTPResponseMetadata{
+		Headers: map[string]string{"X-Custom-Header": "old"},
+	}
+
+	assert.Equal(t, "old", resp.Header("x-custom-header"))
+	resp.SetHeader("x-custom-header", "new")
+	assert.Equal(t, "new", resp.Header("X-Custom-Header"))
+	assert.Len(t, resp.Headers, 1, "SetHeader should not leave differently-cased duplicates")
+
+	resp.DeleteHeader("X-CUSTOM-HEADER")
+	assert.Empty(t, resp.Header("x-custom-header"))
+	assert.Empty(t, resp.Headers)
+}
+
+func TestHTTPResponseMetadataPoolReset(t *testing.T) {
+	resp := AcquireHTTPResponseMetadata()
+	resp.StatusCode = 201
+	resp.SetHeader("X-Test", "value")
+	ReleaseHTTPResponseMetadata(resp)
+
+	reused := AcquireHTTPResponseMetadata()
+	defer ReleaseHTTPResponseMetadata(reused)
+	assert.Zero(t, reused.StatusCode)
+	assert.Empty(t, reused.Headers)
+}

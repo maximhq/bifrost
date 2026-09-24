@@ -96,6 +96,73 @@ type HTTPResponse struct {
 	Body       []byte            `json:"body"`
 }
 
+// HTTPResponseMetadata is the body-free portion of an HTTP response exposed to
+// response-header plugins immediately before the transport commits the headers.
+// StatusCode is informational; HTTPTransportResponseHeadersHook implementations
+// may add, replace, or delete entries in Headers.
+type HTTPResponseMetadata struct {
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers"`
+}
+
+// Header returns a response header value using a case-insensitive lookup.
+func (resp *HTTPResponseMetadata) Header(key string) string {
+	if resp == nil {
+		return ""
+	}
+	return caseInsensitiveLookup(resp.Headers, key)
+}
+
+// SetHeader sets a response header without leaving a duplicate key with different casing.
+func (resp *HTTPResponseMetadata) SetHeader(key, value string) {
+	if resp == nil || key == "" {
+		return
+	}
+	if resp.Headers == nil {
+		resp.Headers = make(map[string]string)
+	}
+	resp.DeleteHeader(key)
+	resp.Headers[key] = value
+}
+
+// DeleteHeader removes a response header using a case-insensitive match.
+func (resp *HTTPResponseMetadata) DeleteHeader(key string) {
+	if resp == nil || key == "" {
+		return
+	}
+	for existingKey := range resp.Headers {
+		if strings.EqualFold(existingKey, key) {
+			delete(resp.Headers, existingKey)
+		}
+	}
+}
+
+var httpResponseMetadataPool = sync.Pool{
+	New: func() any {
+		return &HTTPResponseMetadata{Headers: make(map[string]string, 8)}
+	},
+}
+
+// AcquireHTTPResponseMetadata gets reusable response metadata for a pre-commit hook.
+func AcquireHTTPResponseMetadata() *HTTPResponseMetadata {
+	return httpResponseMetadataPool.Get().(*HTTPResponseMetadata)
+}
+
+// ReleaseHTTPResponseMetadata resets and returns response metadata to its pool.
+// Do not use resp after calling this function.
+func ReleaseHTTPResponseMetadata(resp *HTTPResponseMetadata) {
+	if resp == nil {
+		return
+	}
+	resp.StatusCode = 0
+	if resp.Headers == nil {
+		resp.Headers = make(map[string]string, 8)
+	} else {
+		clear(resp.Headers)
+	}
+	httpResponseMetadataPool.Put(resp)
+}
+
 // httpRequestPool is the pool for HTTPRequest objects to reduce allocations.
 var httpRequestPool = sync.Pool{
 	New: func() any {
@@ -180,7 +247,9 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // 4. Provider call
 // 5. PostLLMHook (executed in reverse order of PreHooks, runs on each fallback attempt)
 // 6. HTTPTransportPostHook (HTTP transport only, once per request, executed in reverse order)
-// 6a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
+// 6a. HTTPTransportResponseHeadersHook (HTTP transport only, once immediately before headers commit,
+//     executed in reverse order)
+// 6b. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
 //
 // Per-request vs per-attempt phases:
 // - HTTPTransportPreAuthHook, HTTPTransportPreHook, PreRequestHook, HTTPTransportPostHook run
@@ -273,7 +342,9 @@ type HTTPTransportPlugin interface {
 	// It receives a serializable HTTPRequest and HTTPResponse and allows plugins to modify it in-place.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Works with both native .so plugins and WASM plugins due to serializable types.
-	// NOTE: This hook is NOT called for streaming responses. Use HTTPTransportStreamChunkHook instead.
+	// NOTE: Do not use this hook to modify streaming response headers. Streaming post-processing
+	// may run after the headers are committed, so mutations cannot reach the client. Use
+	// HTTPTransportResponseHeadersHook for headers and HTTPTransportStreamChunkHook for payloads.
 	// NOTE: For large streamed responses (non-streaming APIs that switch to body streaming for memory safety),
 	// resp.Body may be nil by design while StatusCode and Headers remain populated.
 	//
@@ -283,6 +354,22 @@ type HTTPTransportPlugin interface {
 	//
 	// Return nil if the plugin doesn't need HTTP transport interception.
 	HTTPTransportPostHook(ctx *BifrostContext, req *HTTPRequest, resp *HTTPResponse) error
+
+	// HTTPTransportResponseHeadersHook is called once for both streaming and non-streaming
+	// responses at the last safe point before response headers are committed. For a buffered
+	// response it runs after the handler and transport post-hooks finalize the response. For a
+	// streaming response it runs after stream setup, but before fasthttp writes the response
+	// headers to the client. Hooks execute in reverse plugin registration order.
+	//
+	// StatusCode is read-only. Plugins may mutate Headers in place. Adding or replacing a map
+	// entry sets the corresponding response header; deleting an entry removes it. Framing headers
+	// controlled by the transport (Content-Length, Transfer-Encoding, and Connection) cannot be
+	// changed by this hook. The metadata is pooled and must not be retained after the hook returns.
+	//
+	// Return values:
+	// - nil: Continue to the next plugin and apply the header mutations
+	// - error: Log a warning, keep mutations already made, and skip remaining header hooks
+	HTTPTransportResponseHeadersHook(ctx *BifrostContext, req *HTTPRequest, resp *HTTPResponseMetadata) error
 
 	// HTTPTransportStreamChunkHook is called for each chunk during streaming responses.
 	// It receives the BifrostStreamChunk BEFORE they are written to the client.

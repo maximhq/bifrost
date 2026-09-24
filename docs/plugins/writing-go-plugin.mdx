@@ -109,12 +109,10 @@ func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest)
 
 // HTTPTransportPostHook intercepts responses AFTER they exit Bifrost core
 // Modify resp in-place. Called in reverse order of pre-hooks.
-// Only called for NON-STREAMING responses when using HTTP transport (bifrost-http)
+// Streaming post-processing may run after headers are committed; use
+// HTTPTransportResponseHeadersHook for headers that must reach streaming clients.
 func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
 	ctx.Log(schemas.LogLevelInfo, "HTTPTransportPostHook called")
-
-	// Modify response headers
-	resp.Headers["x-processed-by"] = "my-plugin"
 
 	// Read context values set in pre-hook
 	if val := ctx.Value(schemas.BifrostContextKey("my-plugin-key")); val != nil {
@@ -122,6 +120,13 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 	}
 
 	// Return nil to continue, or return error to short-circuit
+	return nil
+}
+
+// HTTPTransportResponseHeadersHook runs once at the last safe point before headers
+// are committed. Use it for headers that must also be present on streaming responses.
+func HTTPTransportResponseHeadersHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+	resp.SetHeader("x-processed-by", "my-plugin")
 	return nil
 }
 
@@ -590,7 +595,19 @@ Key points:
 - Modify `resp.Headers`, `resp.Body`, `resp.StatusCode` directly
 - Return `nil` to continue to next plugin/handler
 - Return `error` to short-circuit with error and skip remaining post-hooks
-- **NOT called for streaming responses** - use `HTTPTransportStreamChunkHook` instead
+- Do not use it to set streaming response headers; those may already be committed by the time deferred streaming post-processing runs
+
+#### `HTTPTransportResponseHeadersHook(ctx, req, resp)`
+
+**HTTP transport only.** Runs once at the last safe point before response headers are committed. It works for both buffered and streaming responses and executes in reverse plugin registration order.
+
+Key points:
+- Receives `*HTTPRequest` and body-free `*HTTPResponseMetadata`
+- `resp.StatusCode` is informational; use `resp.SetHeader`, `resp.Header`, and `resp.DeleteHeader` to modify headers
+- `Content-Length`, `Transfer-Encoding`, and `Connection` remain controlled by the transport
+- The metadata is pooled; do not retain it after the hook returns
+- For native `.so` plugins, exporting this symbol is optional and older binaries continue to load
+- Direct Go implementations of `schemas.HTTPTransportPlugin` must implement the method; return `nil` for a no-op
 
 #### `HTTPTransportStreamChunkHook(ctx, req, chunk)`
 
@@ -609,7 +626,7 @@ Key points:
 - Return `(nil, error)` to send error to client and stop streaming
 
 <Warning>
-`HTTPTransportPostHook` is **NOT called** for streaming responses. Use `HTTPTransportStreamChunkHook` to intercept streaming data.
+Use `HTTPTransportResponseHeadersHook` for streaming headers and `HTTPTransportStreamChunkHook` for streaming payload data. A chunk hook runs after the HTTP headers have already been committed.
 </Warning>
 
 <Note>
