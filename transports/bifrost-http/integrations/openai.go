@@ -758,8 +758,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return string(resp.Type), openAIWireCostResponse(converted), nil
 				},
+				// Responses streams must end on a typed event; the raw error envelope
+				// carries no Responses `type` for the client to dispatch on.
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-					return err
+					return openai.ToOpenAIResponsesStreamError(err)
 				},
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
@@ -852,8 +854,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return string(resp.Type), openAIWireCostResponse(converted), nil
 				},
+				// Responses streams must end on a typed event; the raw error envelope
+				// carries no Responses `type` for the client to dispatch on.
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-					return err
+					return openai.ToOpenAIResponsesStreamError(err)
 				},
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
