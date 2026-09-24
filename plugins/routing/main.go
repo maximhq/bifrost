@@ -552,6 +552,12 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, decision.KeyID)
 	}
 
+	// TTFT deadline for streaming requests. Core applies it to every attempt but
+	// the last, so it only takes effect when this request has fallbacks.
+	if decision.TTFTTimeout > 0 && bifrost.IsStreamRequestType(req.RequestType) {
+		ctx.SetValue(schemas.BifrostContextKeyStreamFirstTokenTimeout, decision.TTFTTimeout)
+	}
+
 	p.logger.Debug("[Routing] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, configstoreTables.RoutingFallbackStrings(decision.Fallbacks))
 	return decision, nil
 }

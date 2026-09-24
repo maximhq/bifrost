@@ -5149,6 +5149,12 @@
             "$ref": "#/$defs/routing_fallback"
           }
         },
+        "ttft_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000,
+          "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests this rule routes. An attempt that produces no first token in time is cut off and the next fallback runs. The last attempt is never cut off, so the setting only takes effect when fallbacks exist. Omit to disable."
+        },
         "scope": {
           "type": "string",
           "enum": [

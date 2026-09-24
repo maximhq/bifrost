@@ -171953,6 +171953,317 @@
           }
         }
       ]
+    },
+    {
+      "name": "118. Routing rule TTFT cutoff (ttft)",
+      "description": "Pins routing rule ttft_timeout_ms (time-to-first-token cutoff). Each case creates a request-header-scoped global rule targeting openai/gpt-4o-mini with ttft_timeout_ms=1, so the primary streaming attempt always misses its deadline, then deletes the rule. (1) Streaming with one fallback: the primary is cut off without a same-provider retry and the fallback (index 1) serves the whole stream. (2) Streaming with no fallbacks: the last attempt is never cut off, so the primary serves it. (3) Non-streaming with a fallback: the deadline applies to streams only, so the primary serves it. Before the change the routing API drops ttft_timeout_ms and case 1 is served by the primary. Requires management access (optional managementApiKey environment variable when authentication is enabled).",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini ttft cutoff hands over to fallback streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('ttftMarker', marker);",
+                  "pm.variables.unset('ttftRuleID');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "var rule = {",
+                  "  name: 'harness-ttft-' + marker,",
+                  "  enabled: true,",
+                  "  scope: 'global',",
+                  "  priority: Date.now() % 1000000000,",
+                  "  cel_expression: '\"x-ttft-test\" in headers && headers[\"x-ttft-test\"] == \"' + marker + '\"',",
+                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1}],",
+                  "  fallbacks: ['openai/gpt-4o-mini'],",
+                  "  ttft_timeout_ms: 1",
+                  "};",
+                  "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+                  "  pm.test('routing API accepts a rule with ttft_timeout_ms', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + response.text()).to.equal(200);",
+                  "  });",
+                  "  if (err || response.code !== 200) { return; }",
+                  "  var created = response.json().rule;",
+                  "  pm.variables.set('ttftRuleID', created.id);",
+                  "  pm.test('routing API echoes ttft_timeout_ms', function () {",
+                  "    pm.expect(created.ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ruleID = pm.variables.get('ttftRuleID');",
+                  "if (ruleID) {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    pm.test('temporary TTFT rule is removed', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(response.code, response.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('rule was created before the request', function () { pm.expect(ruleID, 'the routing rule was not created').to.be.a('string').that.is.not.empty; });",
+                  "pm.test('TTFT miss on the primary is served by fallback 1', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'primary was not cut off').to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index')).to.equal('1');",
+                  "});",
+                  "pm.test('fallback stream completes without error events', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body).to.include('data: [DONE]');",
+                  "  pm.expect(body).to.not.include('ttft_timeout');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-ttft-test",
+                "value": "{{ttftMarker}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini ttft never cuts off the last attempt streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('ttftMarker', marker);",
+                  "pm.variables.unset('ttftRuleID');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "var rule = {",
+                  "  name: 'harness-ttft-' + marker,",
+                  "  enabled: true,",
+                  "  scope: 'global',",
+                  "  priority: Date.now() % 1000000000,",
+                  "  cel_expression: '\"x-ttft-test\" in headers && headers[\"x-ttft-test\"] == \"' + marker + '\"',",
+                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1}],",
+                  "  fallbacks: [],",
+                  "  ttft_timeout_ms: 1",
+                  "};",
+                  "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+                  "  pm.test('routing API accepts a rule with ttft_timeout_ms', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + response.text()).to.equal(200);",
+                  "  });",
+                  "  if (err || response.code !== 200) { return; }",
+                  "  var created = response.json().rule;",
+                  "  pm.variables.set('ttftRuleID', created.id);",
+                  "  pm.test('routing API echoes ttft_timeout_ms', function () {",
+                  "    pm.expect(created.ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ruleID = pm.variables.get('ttftRuleID');",
+                  "if (ruleID) {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    pm.test('temporary TTFT rule is removed', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(response.code, response.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('rule was created before the request', function () { pm.expect(ruleID, 'the routing rule was not created').to.be.a('string').that.is.not.empty; });",
+                  "pm.test('a rule with no fallbacks leaves the only attempt alone', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.not.equal('true');",
+                  "});",
+                  "pm.test('stream completes', function () { pm.expect(pm.response.text()).to.include('data: [DONE]'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-ttft-test",
+                "value": "{{ttftMarker}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini ttft ignored for non-streaming",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('ttftMarker', marker);",
+                  "pm.variables.unset('ttftRuleID');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "var rule = {",
+                  "  name: 'harness-ttft-' + marker,",
+                  "  enabled: true,",
+                  "  scope: 'global',",
+                  "  priority: Date.now() % 1000000000,",
+                  "  cel_expression: '\"x-ttft-test\" in headers && headers[\"x-ttft-test\"] == \"' + marker + '\"',",
+                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1}],",
+                  "  fallbacks: ['openai/gpt-4o-mini'],",
+                  "  ttft_timeout_ms: 1",
+                  "};",
+                  "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+                  "  pm.test('routing API accepts a rule with ttft_timeout_ms', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + response.text()).to.equal(200);",
+                  "  });",
+                  "  if (err || response.code !== 200) { return; }",
+                  "  var created = response.json().rule;",
+                  "  pm.variables.set('ttftRuleID', created.id);",
+                  "  pm.test('routing API echoes ttft_timeout_ms', function () {",
+                  "    pm.expect(created.ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ruleID = pm.variables.get('ttftRuleID');",
+                  "if (ruleID) {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    pm.test('temporary TTFT rule is removed', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(response.code, response.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('rule was created before the request', function () { pm.expect(ruleID, 'the routing rule was not created').to.be.a('string').that.is.not.empty; });",
+                  "pm.test('non-streaming requests are never cut off', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.not.equal('true');",
+                  "});",
+                  "pm.test('chat completion returned', function () { pm.expect(pm.response.json().choices).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-ttft-test",
+                "value": "{{ttftMarker}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

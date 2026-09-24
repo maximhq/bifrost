@@ -4564,6 +4564,62 @@ func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
 	})
 }
 
+// TestRDBConfigStore_RoutingRuleTTFTTimeoutRoundTrip pins ttft_timeout_ms
+// through create, read, update and clearing it back to nil.
+func TestRDBConfigStore_RoutingRuleTTFTTimeoutRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+
+	rule := routingRuleFixture("rule-ttft", 0, "openai")
+	rule.TTFTTimeoutMs = new(1500)
+	require.NoError(t, store.CreateRoutingRule(ctx, rule))
+	got, err := store.GetRoutingRule(ctx, "rule-ttft")
+	require.NoError(t, err)
+	require.NotNil(t, got.TTFTTimeoutMs)
+	require.Equal(t, 1500, *got.TTFTTimeoutMs)
+
+	got.TTFTTimeoutMs = new(800)
+	require.NoError(t, store.UpdateRoutingRule(ctx, got))
+	got, err = store.GetRoutingRule(ctx, "rule-ttft")
+	require.NoError(t, err)
+	require.NotNil(t, got.TTFTTimeoutMs)
+	require.Equal(t, 800, *got.TTFTTimeoutMs)
+
+	got.TTFTTimeoutMs = nil
+	require.NoError(t, store.UpdateRoutingRule(ctx, got))
+	got, err = store.GetRoutingRule(ctx, "rule-ttft")
+	require.NoError(t, err)
+	require.Nil(t, got.TTFTTimeoutMs, "clearing the field must persist as NULL")
+}
+
+// TestGenerateRoutingRuleHash_TTFTTimeout: a rule without the field keeps the
+// hash it had before the field existed, and setting it changes the hash.
+func TestGenerateRoutingRuleHash_TTFTTimeout(t *testing.T) {
+	// Hash of this fixture from the implementation before ttft_timeout_ms
+	// existed. Comparing two current hashes would not catch a change to it.
+	const preTTFTHash = "f9808962adb5bd07a2da3521037890b40ebafbafc61881986c3830f6d362e053"
+
+	rule := *routingRuleFixture("rule-hash", 0, "openai")
+	unset, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.Equal(t, preTTFTHash, unset, "a rule without ttft_timeout_ms must keep its pre-upgrade hash")
+
+	rule.TTFTTimeoutMs = new(1500)
+	set, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.NotEqual(t, unset, set, "setting ttft_timeout_ms must change the config hash")
+
+	rule.TTFTTimeoutMs = new(2000)
+	changed, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.NotEqual(t, set, changed, "changing ttft_timeout_ms must change the config hash")
+
+	rule.TTFTTimeoutMs = nil
+	cleared, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.Equal(t, unset, cleared, "a rule without ttft_timeout_ms must keep its pre-upgrade hash")
+}
+
 // TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync pins the
 // ON CONFLICT DO UPDATE path: a column missing from pricingSyncUpdateColumns is
 // written on the initial Create but silently dropped on every later sync of an
