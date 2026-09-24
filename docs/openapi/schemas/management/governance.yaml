@@ -410,6 +410,19 @@ VirtualKey:
         When true, this virtual key may use every configured provider. provider_configs still apply as
         optional per-provider overrides (budgets, rate limits, model allow/blacklists, key selection);
         a provider without a config gets all models, all keys, and no per-provider limits.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: >
+        The key's own content-logging decision. Absent or null inherits client.disable_content_logging.
+        true keeps request and response content out of the log store and out of OpenTelemetry export for
+        this key's traffic; other observability connectors follow their own disable_content_logging until
+        they adopt the trace mark. false forces content into the log store even when the client setting
+        is true; observability connectors keep following their own disable_content_logging.
+        When content logging ends up disabled for a request, the log row is still written without content;
+        with client.retain_content_in_object_storage on and an object-storage-backed log store, the full
+        payload is then kept there as hidden content that the API and UI never serve.
+        When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging
+        request header still takes precedence over this value for the log store.
     team:
       $ref: '#/Team'
     customer:
@@ -531,6 +544,18 @@ CreateVirtualKeyRequest:
       description: >
         When true, this virtual key may use every configured provider. provider_configs remain optional
         per-provider overrides for budgets, rate limits, model allow/blacklists, and key selection.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: >
+        The key's own content-logging decision. Omit or set null to inherit client.disable_content_logging. true keeps
+        content out of the log store and out of OpenTelemetry export for this key's traffic (other
+        observability connectors follow their own disable_content_logging until they adopt the trace mark);
+        false forces content into the log store even when the client setting is true.
+        When content logging ends up disabled for a request, the log row is still written without content;
+        with client.retain_content_in_object_storage on and an object-storage-backed log store, the full
+        payload is then kept there as hidden content that the API and UI never serve. When
+        client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request
+        header still takes precedence over this value for the log store.
     expires_at:
       type: string
       format: date-time
@@ -625,6 +650,18 @@ UpdateVirtualKeyRequest:
       description: >
         When true, this virtual key may use every configured provider. provider_configs remain optional
         per-provider overrides. Omit to leave the current setting unchanged.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: >
+        Tri-state. Omit to leave the current decision unchanged, null to clear it back to inheriting
+        client.disable_content_logging, true to keep content out of the log store and out of OpenTelemetry
+        export (other observability connectors follow their own disable_content_logging until they adopt the
+        trace mark), false to force content into the log store.
+        When content logging ends up disabled for a request, the log row is still written without content;
+        with client.retain_content_in_object_storage on and an object-storage-backed log store, the full
+        payload is then kept there as hidden content that the API and UI never serve. When
+        client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request
+        header still takes precedence over this value for the log store.
     reset_budget_usage:
       type: boolean
       description: >
