@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/url"
 	"time"
 )
 
@@ -58,7 +59,12 @@ const (
 //   - Duration string: "500ms", "5s", "1m" — parsed via time.ParseDuration (preferred)
 //   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
-	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
+	// BaseURL is supported on a per-provider basis (required for Ollama; see each
+	// provider's package for whether it honors this field).
+	// Accepts an "env.VAR_NAME" (or, for Enterprise, "vault.path") reference. Unlike
+	// CACertPEM, a reference is only accepted if it resolves to an http(s) URL --
+	// see UnmarshalJSON, including why that's enforced by substitution rather
+	// than by returning an error.
 	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
 	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
 	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
@@ -74,6 +80,12 @@ type NetworkConfig struct {
 	HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
+
+	// baseURLRef holds the original "env."/"vault." reference for BaseURL, if any.
+	// MarshalJSON re-emits this instead of the resolved value so the reference
+	// survives a round-trip (API response, DB write-back) instead of being
+	// replaced by whatever it resolved to at parse time.
+	baseURLRef string
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -108,7 +120,47 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	// Copy all non-duration fields
-	nc.BaseURL = alias.BaseURL
+	// Resolve BaseURL through SecretVar so "env.VAR_NAME" (and, for Enterprise,
+	// "vault.path") references are supported. This intentionally never returns
+	// an error for a bad reference (unlike, say, parseNetworkBackoffDuration
+	// below): NetworkConfig.UnmarshalJSON also runs inside TableProvider's
+	// GORM AfterFind hook, and GORM surfaces an AfterFind error by discarding
+	// the *entire* batch a Find() call loaded -- confirmed empirically -- so
+	// one provider with a stale env var would silently drop every other
+	// DB-configured provider on gateway restart (loadProviders treats a
+	// GetProvidersConfig error as "no providers in the store") and 500 the
+	// whole `GET /api/providers` endpoint. A single bad reference must only
+	// ever affect that one provider.
+	//
+	// So: a reference that doesn't resolve to an http(s) URL (unset var, or a
+	// resolved value that isn't a URL -- e.g. an API key someone put here by
+	// mistake) is never stored in BaseURL and never leaves this function --
+	// only the reference itself does, unresolved, in both BaseURL and
+	// baseURLRef. That is not empty, so providers won't apply their "" =
+	// "use the public default" fallback (see e.g. openai.go, cerebras.go);
+	// instead the invalid literal fails the first real request to that
+	// provider immediately and loudly, exactly like an unresolved reference
+	// always did before this field supported them, scoped to that provider
+	// alone. Every later reparse (config reload, a fresh DB read) retries
+	// resolution, so the provider recovers on its own once the reference
+	// starts resolving.
+	if IsSecretRef(alias.BaseURL) {
+		resolved := NewSecretVar(alias.BaseURL).GetValue()
+		// A prefix check alone would accept "https://" with no host at all.
+		// Parse it and require an actual authority, not just a scheme.
+		if resolvedURL, err := url.Parse(resolved); err == nil &&
+			(resolvedURL.Scheme == "http" || resolvedURL.Scheme == "https") &&
+			resolvedURL.Host != "" {
+			nc.BaseURL = resolved
+			nc.baseURLRef = alias.BaseURL
+		} else {
+			nc.BaseURL = alias.BaseURL
+			nc.baseURLRef = ""
+		}
+	} else {
+		nc.BaseURL = alias.BaseURL
+		nc.baseURLRef = ""
+	}
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
@@ -216,6 +268,13 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	}
 	if nc.CACertPEM != nil {
 		alias.CACertPEM = SecretVarAsString(nc.CACertPEM)
+	}
+	// Re-emit the original reference (e.g. "env.CEREBRAS_BASE_URL") rather than
+	// the resolved literal, so the reference survives a round-trip through the
+	// API or a DB write-back (TableProvider.BeforeSave/AfterFind) instead of
+	// being replaced by whatever it resolved to at the time of the last parse.
+	if nc.baseURLRef != "" {
+		alias.BaseURL = nc.baseURLRef
 	}
 
 	return json.Marshal(alias)
