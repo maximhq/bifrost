@@ -810,6 +810,8 @@ A fallback can pin its own provider key, which skips load balancing for that att
 
 Each attempt is pinned independently, so an unpinned fallback later in the chain still load balances normally. If the pinned key is not in that provider's pool, the attempt is skipped and the chain moves to the next entry.
 
+A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
+
 ---
 
 ## Execution & Performance

@@ -1,9 +1,13 @@
 package schemas
 
-// Route is one provider and model a request can be sent to.
+// Route is one provider and model a request can be sent to, with the provider key pinned for
+// that attempt when a routing rule named one. An empty KeyID leaves the key to selection.
+// The pin belongs to the route: an implementation that reorders a chain moves each route
+// whole, so a pin stays with the provider it was decided for wherever that provider ends up.
 type Route struct {
 	Provider ModelProvider
 	Model    string
+	KeyID    string
 }
 
 // RouteOutcome is how a request ended.

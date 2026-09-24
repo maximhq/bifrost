@@ -260,10 +260,15 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	if provider == "" {
 		return
 	}
+	// Every route carries the key pinned for it: the primary's is the routing pin
+	// RunPreRequestHooks committed, each fallback's is its own. A pin names a key of one
+	// provider, so it must follow that provider through the reorder: looked up among another
+	// provider's keys it can only fail, and the attempt would die before the provider was called.
+	primaryKeyPin := routingKeyPinFromContext(ctx)
 	chain := make([]schemas.Route, 0, 1+len(fallbacks))
-	chain = append(chain, schemas.Route{Provider: provider, Model: model})
+	chain = append(chain, schemas.Route{Provider: provider, Model: model, KeyID: primaryKeyPin})
 	for _, fallback := range fallbacks {
-		chain = append(chain, schemas.Route{Provider: fallback.Provider, Model: fallback.Model})
+		chain = append(chain, schemas.Route{Provider: fallback.Provider, Model: fallback.Model, KeyID: strings.TrimSpace(fallback.KeyID)})
 	}
 	resolved := bifrost.sessionAffinity.ResolveRoute(ctx, requested, chain)
 	if len(resolved) == 0 || slices.Equal(resolved, chain) {
@@ -271,11 +276,49 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	}
 	req.SetProvider(resolved[0].Provider)
 	req.SetModel(resolved[0].Model)
+	// A demoted primary keeps its pin as a fallback pin, which the fallback loop re-applies
+	// after clearing the previous attempt's context; a promoted fallback brings its own.
 	next := make([]schemas.Fallback, 0, len(resolved)-1)
 	for _, route := range resolved[1:] {
-		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model})
+		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model, KeyID: route.KeyID})
 	}
 	req.SetFallbacks(next)
+	if resolved[0].KeyID == primaryKeyPin {
+		return
+	}
+	setRoutingPin(ctx, resolved[0].KeyID)
+	moved := fmt.Sprintf("Session moved the request from %s to %s", provider, resolved[0].Provider)
+	if resolved[0].KeyID != "" {
+		moved += ", which brings the key pinned for it"
+	} else {
+		moved += ", so a key is picked normally there"
+	}
+	if primaryKeyPin != "" {
+		moved += fmt.Sprintf("; the key pinned for %s applies if %s is tried as a fallback", provider, provider)
+	}
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, moved)
+}
+
+// routingKeyPinFromContext returns the key a matched routing rule pinned for the primary attempt,
+// as the routing plugin recorded it and RunPreRequestHooks committed it, or "" when none did.
+func routingKeyPinFromContext(ctx *schemas.BifrostContext) string {
+	pin, _ := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+	return strings.TrimSpace(pin)
+}
+
+// setRoutingPin makes keyID the pin the primary attempt reads, in the routing pin and in the
+// api-key-id it is committed into, or clears both when keyID is empty so the attempt selects a
+// key normally. It runs after the hooks' blocked phase, where the reserved key is writable, as
+// it is when RunPreRequestHooks commits the pin. A caller's own pins are not touched: with no
+// routing pin the api-key-id is the caller's, and it is left as it is.
+func setRoutingPin(ctx *schemas.BifrostContext, keyID string) {
+	if keyID == "" {
+		ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
+		ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, keyID)
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
 }
 
 // observeSessionOutcome tells the session affinity how a request ended: the route that served

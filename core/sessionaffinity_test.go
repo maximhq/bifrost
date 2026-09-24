@@ -741,6 +741,155 @@ func TestResolveSessionRouteAppliesTheAnswer(t *testing.T) {
 	})
 }
 
+// TestResolveSessionRouteMovesKeyPinsWithTheirRoutes pins the bug where a routing rule's key
+// pin stayed on the request when the session moved the primary to another provider: a Vertex
+// key looked up among Anthropic's keys can only fail, and the attempt died with "no supported
+// key found" before Anthropic was ever called. A pin belongs to the route it was decided for,
+// so it follows that route wherever the session puts it in the chain, and a fallback the
+// session promotes brings its own pin along.
+func TestResolveSessionRouteMovesKeyPinsWithTheirRoutes(t *testing.T) {
+	const vertexPin, anthropicPin = "vertex-key-id", "anthropic-key-id"
+	reverse := func(chain []schemas.Route) []schemas.Route {
+		out := slices.Clone(chain)
+		slices.Reverse(out)
+		return out
+	}
+	newRequest := func(fallbackPin string) *schemas.BifrostRequest {
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "claude-opus-5"},
+		}
+		req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-opus-5", KeyID: fallbackPin}})
+		return req
+	}
+	setup := func(t *testing.T, answer func([]schemas.Route) []schemas.Route) *Bifrost {
+		t.Helper()
+		client, err := Init(context.Background(), schemas.BifrostConfig{
+			Account:         NewMockAccount(),
+			Logger:          NewDefaultLogger(schemas.LogLevelError),
+			SessionAffinity: &recordingAffinity{routeAnswer: answer},
+		})
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		t.Cleanup(client.Shutdown)
+		return client
+	}
+	// pinned is a context as RunPreRequestHooks leaves it once a rule pinned a key for the
+	// primary: the routing pin recorded, and committed into the api-key-id key selection reads.
+	pinned := func() *schemas.BifrostContext {
+		ctx := sessionCtx("s")
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, vertexPin)
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, vertexPin)
+		return ctx
+	}
+	// primaryPin is the pin the primary attempt will read, checking that the routing pin and
+	// the committed api-key-id never disagree.
+	primaryPin := func(t *testing.T, ctx *schemas.BifrostContext) string {
+		t.Helper()
+		routing, _ := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+		apiKey, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
+		if routing != apiKey {
+			t.Fatalf("routing pin %q and api-key-id %q disagree", routing, apiKey)
+		}
+		return apiKey
+	}
+	fallbacksOf := func(req *schemas.BifrostRequest) []schemas.Fallback {
+		_, _, fallbacks := req.GetRequestFields()
+		return fallbacks
+	}
+
+	t.Run("the primary's pin follows it when the session demotes it to a fallback", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := pinned()
+		req := newRequest("")
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+		if provider, _, _ := req.GetRequestFields(); provider != schemas.Anthropic {
+			t.Fatalf("primary = %s, want anthropic", provider)
+		}
+		if pin := primaryPin(t, ctx); pin != "" {
+			t.Fatalf("the moved primary still reads pin %q, which names a vertex key", pin)
+		}
+		want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5", KeyID: vertexPin}}
+		if got := fallbacksOf(req); !slices.Equal(got, want) {
+			t.Fatalf("fallbacks = %+v, want the demoted vertex route carrying its pin %+v", got, want)
+		}
+		if !trailMentions(ctx, "pinned") {
+			t.Fatalf("moving the pin left no trace in the trail: %v", ctx.GetRoutingEngineLogs())
+		}
+	})
+
+	t.Run("a promoted fallback's own pin becomes the primary pin", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := pinned()
+		req := newRequest(anthropicPin)
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+		if pin := primaryPin(t, ctx); pin != anthropicPin {
+			t.Fatalf("primary pin = %q, want the promoted route's own %q", pin, anthropicPin)
+		}
+		want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5", KeyID: vertexPin}}
+		if got := fallbacksOf(req); !slices.Equal(got, want) {
+			t.Fatalf("fallbacks = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("an unpinned primary demoted behind a pinned fallback claims no pin of its own", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := sessionCtx("s")
+		req := newRequest(anthropicPin)
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+		if pin := primaryPin(t, ctx); pin != anthropicPin {
+			t.Fatalf("primary pin = %q, want the promoted route's own %q", pin, anthropicPin)
+		}
+		want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5"}}
+		if got := fallbacksOf(req); !slices.Equal(got, want) {
+			t.Fatalf("fallbacks = %+v, want the demoted vertex route with no pin %+v", got, want)
+		}
+		if trailMentions(ctx, "applies if") {
+			t.Fatalf("the trail claims a pin for vertex that the rule never set: %v", ctx.GetRoutingEngineLogs())
+		}
+	})
+
+	t.Run("pins stay where they are when the session agrees with routing", func(t *testing.T) {
+		for name, answer := range map[string]func([]schemas.Route) []schemas.Route{
+			"same":  nil,
+			"empty": func([]schemas.Route) []schemas.Route { return nil },
+		} {
+			client := setup(t, answer)
+			ctx := pinned()
+			req := newRequest(anthropicPin)
+			client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+			if pin := primaryPin(t, ctx); pin != vertexPin {
+				t.Fatalf("%s: primary pin = %q, want %q untouched", name, pin, vertexPin)
+			}
+			want := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-opus-5", KeyID: anthropicPin}}
+			if got := fallbacksOf(req); !slices.Equal(got, want) {
+				t.Fatalf("%s: fallbacks = %+v, want %+v untouched", name, got, want)
+			}
+			if trailMentions(ctx, "pinned") {
+				t.Fatalf("%s: the trail claims a pin moved: %v", name, ctx.GetRoutingEngineLogs())
+			}
+		}
+	})
+
+	t.Run("a caller's own pins are left alone", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := sessionCtx("s")
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-key")
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "caller-name")
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), newRequest(""))
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "caller-key" {
+			t.Fatalf("api-key-id = %q after a session move, want the caller's own pin kept", got)
+		}
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); got != "caller-name" {
+			t.Fatalf("api-key name = %q after a session move, want the caller's own pin kept", got)
+		}
+		if trailMentions(ctx, "pinned") {
+			t.Fatalf("the trail mentions a routing pin the request never had: %v", ctx.GetRoutingEngineLogs())
+		}
+	})
+}
+
 func TestObserveSessionOutcomeReportsServedRouteAndKey(t *testing.T) {
 	fake := &recordingAffinity{}
 	client, err := Init(context.Background(), schemas.BifrostConfig{
