@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -235,11 +236,16 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	if original.Recipient != nil {
 		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
+	if original.ProviderNativeParts != nil {
+		copy.ProviderNativeParts = append(json.RawMessage(nil), original.ProviderNativeParts...)
+	}
 	// The framework module still compiles against released core versions that
 	// do not expose every Responses API field, so newer fields are copied by name
 	// when a workspace build provides them.
 	copyRawMessageFieldByName(&copy, original, "ToolSearchOutputTools")
 	copyRawMessageFieldByName(&copy, original, "AdditionalTools")
+
+	copy.CacheControl = deepCopyCacheControl(original.CacheControl)
 
 	// Deep copy ResponsesReasoning if present
 	if original.ResponsesReasoning != nil {
@@ -288,6 +294,11 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 		}
 
 		copyOptionalStringFieldByName(copy.ResponsesToolMessage, original.ResponsesToolMessage, "Execution")
+
+		if original.ResponsesToolMessage.ToolsetName != nil {
+			copyToolsetName := *original.ResponsesToolMessage.ToolsetName
+			copy.ResponsesToolMessage.ToolsetName = &copyToolsetName
+		}
 
 		if original.ResponsesToolMessage.Error != nil {
 			copyError := *original.ResponsesToolMessage.Error
@@ -341,6 +352,20 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 
 			if original.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+				copyAction.URL = clonePtr(copyAction.URL)
+				copyAction.Query = clonePtr(copyAction.Query)
+				copyAction.Pattern = clonePtr(copyAction.Pattern)
+				copyAction.Queries = slices.Clone(copyAction.Queries)
+				copyAction.ImageQueries = slices.Clone(copyAction.ImageQueries)
+				copyAction.Sources = slices.Clone(copyAction.Sources)
+				for i := range copyAction.Sources {
+					source := &copyAction.Sources[i]
+					source.Title = clonePtr(source.Title)
+					source.EncryptedContent = clonePtr(source.EncryptedContent)
+					source.PageAge = clonePtr(source.PageAge)
+					source.ImageURL = clonePtr(source.ImageURL)
+					source.Domain = clonePtr(source.Domain)
+				}
 				copy.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction = &copyAction
 			}
 
@@ -482,9 +507,73 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			copyApproval := *original.ResponsesToolMessage.ResponsesMCPApprovalResponse
 			copy.ResponsesToolMessage.ResponsesMCPApprovalResponse = &copyApproval
 		}
+
+		// Anthropic server-tool payloads that the neutral tool call structs cannot hold.
+		if original.ResponsesToolMessage.ResponsesAdvisorCall != nil {
+			copyAdvisor := *original.ResponsesToolMessage.ResponsesAdvisorCall
+			copyAdvisor.Text = clonePtr(copyAdvisor.Text)
+			copyAdvisor.EncryptedContent = clonePtr(copyAdvisor.EncryptedContent)
+			copyAdvisor.ErrorCode = clonePtr(copyAdvisor.ErrorCode)
+			copyAdvisor.StopReason = clonePtr(copyAdvisor.StopReason)
+			copy.ResponsesToolMessage.ResponsesAdvisorCall = &copyAdvisor
+		}
+
+		if original.ResponsesToolMessage.ResponsesToolSearchCall != nil {
+			copyToolSearch := *original.ResponsesToolMessage.ResponsesToolSearchCall
+			copyToolSearch.ToolReferences = slices.Clone(copyToolSearch.ToolReferences)
+			copy.ResponsesToolMessage.ResponsesToolSearchCall = &copyToolSearch
+		}
+
+		if original.ResponsesToolMessage.ResponsesCodeExecutionCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesCodeExecutionCall
+			copyCall.Input = clonePtr(copyCall.Input)
+			copyCall.Stdout = clonePtr(copyCall.Stdout)
+			copyCall.Stderr = clonePtr(copyCall.Stderr)
+			copyCall.ReturnCode = clonePtr(copyCall.ReturnCode)
+			copyCall.EncryptedStdout = clonePtr(copyCall.EncryptedStdout)
+			copyCall.FileType = clonePtr(copyCall.FileType)
+			copyCall.FileContent = clonePtr(copyCall.FileContent)
+			copyCall.StartLine = clonePtr(copyCall.StartLine)
+			copyCall.NumLines = clonePtr(copyCall.NumLines)
+			copyCall.TotalLines = clonePtr(copyCall.TotalLines)
+			copyCall.IsFileUpdate = clonePtr(copyCall.IsFileUpdate)
+			copyCall.OldStart = clonePtr(copyCall.OldStart)
+			copyCall.OldLines = clonePtr(copyCall.OldLines)
+			copyCall.NewStart = clonePtr(copyCall.NewStart)
+			copyCall.NewLines = clonePtr(copyCall.NewLines)
+			copyCall.Lines = slices.Clone(copyCall.Lines)
+			copyCall.ErrorCode = clonePtr(copyCall.ErrorCode)
+			copyCall.Files = slices.Clone(copyCall.Files)
+			copyCall.ContainerExpiresAt = clonePtr(copyCall.ContainerExpiresAt)
+			if copyCall.Caller != nil {
+				copyCaller := *copyCall.Caller
+				copyCaller.ToolID = clonePtr(copyCaller.ToolID)
+				copyCall.Caller = &copyCaller
+			}
+			copy.ResponsesToolMessage.ResponsesCodeExecutionCall = &copyCall
+		}
 	}
 
 	return copy
+}
+
+// clonePtr returns a pointer to a copy of *p, or nil when p is nil.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func deepCopyCacheControl(original *schemas.CacheControl) *schemas.CacheControl {
+	if original == nil {
+		return nil
+	}
+	copyCacheControl := *original
+	copyCacheControl.TTL = clonePtr(original.TTL)
+	copyCacheControl.Scope = clonePtr(original.Scope)
+	return &copyCacheControl
 }
 
 func copyRawMessageFieldByName(dst *schemas.ResponsesMessage, src schemas.ResponsesMessage, fieldName string) {
@@ -566,6 +655,50 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 			Refusal: original.ResponsesOutputMessageContentRefusal.Refusal,
 		}
 		copy.ResponsesOutputMessageContentRefusal = &copyRefusal
+	}
+
+	// Blocks that providers emit whole on output_item.added/done (compaction,
+	// fallback, rendered search entry point) plus the input-side block fields.
+	copy.ResponsesOutputMessageContentRenderedContent = clonePtr(original.ResponsesOutputMessageContentRenderedContent)
+	copy.ResponsesOutputMessageContentCompaction = clonePtr(original.ResponsesOutputMessageContentCompaction)
+	if original.ResponsesOutputMessageContentFallback != nil {
+		copyFallback := *original.ResponsesOutputMessageContentFallback
+		copyFallback.TriggerCategory = clonePtr(copyFallback.TriggerCategory)
+		copy.ResponsesOutputMessageContentFallback = &copyFallback
+	}
+
+	copy.FileID = clonePtr(original.FileID)
+	if original.ResponsesInputMessageContentBlockImage != nil {
+		copyImage := *original.ResponsesInputMessageContentBlockImage
+		copyImage.ImageURL = clonePtr(copyImage.ImageURL)
+		copyImage.Detail = clonePtr(copyImage.Detail)
+		copy.ResponsesInputMessageContentBlockImage = &copyImage
+	}
+	if original.ResponsesInputMessageContentBlockFile != nil {
+		copyFile := *original.ResponsesInputMessageContentBlockFile
+		copyFile.FileData = clonePtr(copyFile.FileData)
+		copyFile.FileURL = clonePtr(copyFile.FileURL)
+		copyFile.Filename = clonePtr(copyFile.Filename)
+		copyFile.FileType = clonePtr(copyFile.FileType)
+		copy.ResponsesInputMessageContentBlockFile = &copyFile
+	}
+	copy.Audio = clonePtr(original.Audio)
+
+	copy.CacheControl = deepCopyCacheControl(original.CacheControl)
+	if original.Citations != nil {
+		copyCitations := *original.Citations
+		copyCitations.Enabled = clonePtr(copyCitations.Enabled)
+		copy.Citations = &copyCitations
+	}
+	if original.MediaResolution != nil {
+		copyMediaResolution := *original.MediaResolution
+		copyMediaResolution.NumTokens = clonePtr(copyMediaResolution.NumTokens)
+		copy.MediaResolution = &copyMediaResolution
+	}
+	if original.PromptCacheBreakpoint != nil {
+		copyBreakpoint := *original.PromptCacheBreakpoint
+		copyBreakpoint.Mode = clonePtr(copyBreakpoint.Mode)
+		copy.PromptCacheBreakpoint = &copyBreakpoint
 	}
 
 	return copy

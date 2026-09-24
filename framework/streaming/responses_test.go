@@ -1,7 +1,9 @@
 package streaming
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -534,4 +536,347 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.Len(t, msgs[0].Content.ContentBlocks, 1)
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
+}
+
+// streamThroughResponsesAccumulator assembles messages from events the way the
+// accumulator does in production: each event is deep-copied when it is
+// ingested, and each item is deep-copied again when messages are built.
+func streamThroughResponsesAccumulator(tb testing.TB, events ...*schemas.BifrostResponsesStreamResponse) []schemas.ResponsesMessage {
+	tb.Helper()
+	acc := testResponsesAccumulator(tb)
+	chunks := make([]*ResponsesStreamChunk, len(events))
+	for i, event := range events {
+		chunks[i] = &ResponsesStreamChunk{ChunkIndex: i, StreamResponse: deepCopyResponsesStreamResponse(event)}
+	}
+	return acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+}
+
+func responsesItemEvent(eventType schemas.ResponsesStreamResponseType, item schemas.ResponsesMessage) *schemas.BifrostResponsesStreamResponse {
+	return &schemas.BifrostResponsesStreamResponse{Type: eventType, ItemID: item.ID, Item: &item}
+}
+
+// TestBuildResponsesMessageKeepsToolsetName verifies that a computer-toolset
+// member call keeps toolset_name. The Anthropic stream converter puts it on
+// output_item.added; the argument deltas that follow make the accumulator keep
+// that copy and take only the status from output_item.done, so a copy that
+// drops the field loses it for good.
+func TestBuildResponsesMessageKeepsToolsetName(t *testing.T) {
+	call := func(status string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			ID:     schemas.Ptr("toolu_1"),
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Status: schemas.Ptr(status),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:      schemas.Ptr("toolu_1"),
+				Name:        schemas.Ptr("screenshot"),
+				ToolsetName: schemas.Ptr("computer"),
+				Arguments:   schemas.Ptr(""),
+			},
+		}
+	}
+
+	msgs := streamThroughResponsesAccumulator(t,
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemAdded, call("in_progress")),
+		&schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			ItemID: schemas.Ptr("toolu_1"),
+			Delta:  schemas.Ptr("{}"),
+		},
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemDone, call("completed")),
+	)
+
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].ResponsesToolMessage)
+	require.NotNil(t, msgs[0].ResponsesToolMessage.ToolsetName, "toolset_name was dropped")
+	require.Equal(t, "computer", *msgs[0].ResponsesToolMessage.ToolsetName)
+	require.Equal(t, "{}", *msgs[0].ResponsesToolMessage.Arguments)
+}
+
+// TestBuildResponsesMessageKeepsServerToolResults verifies the Anthropic
+// server-tool payloads that only the provider-specific carriers can hold: the
+// advisor result, the tool references a tool_search discovered, and the
+// code-execution call details. The stream converter sends each on
+// output_item.done, which the accumulator adopts through a deep copy.
+func TestBuildResponsesMessageKeepsServerToolResults(t *testing.T) {
+	advisor := &schemas.ResponsesAdvisorCall{
+		ResultType: "advisor_result",
+		Text:       schemas.Ptr("Decide what graceful means."),
+	}
+	toolSearch := &schemas.ResponsesToolSearchCall{ToolReferences: []string{"get_weather"}}
+	codeExecution := &schemas.ResponsesCodeExecutionCall{
+		ToolName:   "bash_code_execution",
+		Input:      schemas.Ptr(`{"command":"pwd"}`),
+		ResultType: "bash_code_execution_result",
+		Stdout:     schemas.Ptr("/tmp\n"),
+		ReturnCode: schemas.Ptr(0),
+		Files:      []schemas.ResponsesCodeExecutionFileOutput{{FileID: "file_1"}},
+	}
+	item := func(id string, msgType schemas.ResponsesMessageType, status string, toolMessage schemas.ResponsesToolMessage) schemas.ResponsesMessage {
+		toolMessage.CallID = schemas.Ptr(id)
+		return schemas.ResponsesMessage{
+			ID:                   schemas.Ptr(id),
+			Type:                 schemas.Ptr(msgType),
+			Status:               schemas.Ptr(status),
+			ResponsesToolMessage: &toolMessage,
+		}
+	}
+
+	msgs := streamThroughResponsesAccumulator(t,
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemAdded, item("srvtoolu_adv", schemas.ResponsesMessageTypeAdvisorCall, "in_progress", schemas.ResponsesToolMessage{})),
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemDone, item("srvtoolu_adv", schemas.ResponsesMessageTypeAdvisorCall, "completed", schemas.ResponsesToolMessage{ResponsesAdvisorCall: advisor})),
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemAdded, item("srvtoolu_ts", schemas.ResponsesMessageTypeToolSearchCall, "in_progress", schemas.ResponsesToolMessage{})),
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemDone, item("srvtoolu_ts", schemas.ResponsesMessageTypeToolSearchCall, "completed", schemas.ResponsesToolMessage{ResponsesToolSearchCall: toolSearch})),
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemAdded, item("srvtoolu_ce", schemas.ResponsesMessageTypeCodeInterpreterCall, "in_progress", schemas.ResponsesToolMessage{
+			ResponsesCodeExecutionCall: &schemas.ResponsesCodeExecutionCall{ToolName: "bash_code_execution"},
+		})),
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemDone, item("srvtoolu_ce", schemas.ResponsesMessageTypeCodeInterpreterCall, "completed", schemas.ResponsesToolMessage{ResponsesCodeExecutionCall: codeExecution})),
+	)
+
+	require.Len(t, msgs, 3)
+	byID := map[string]*schemas.ResponsesToolMessage{}
+	for _, msg := range msgs {
+		require.NotNil(t, msg.ID)
+		byID[*msg.ID] = msg.ResponsesToolMessage
+	}
+	require.Equal(t, advisor, byID["srvtoolu_adv"].ResponsesAdvisorCall)
+	require.NotSame(t, advisor, byID["srvtoolu_adv"].ResponsesAdvisorCall)
+	require.Equal(t, toolSearch, byID["srvtoolu_ts"].ResponsesToolSearchCall)
+	require.NotSame(t, toolSearch, byID["srvtoolu_ts"].ResponsesToolSearchCall)
+	require.Equal(t, codeExecution, byID["srvtoolu_ce"].ResponsesCodeExecutionCall)
+	require.NotSame(t, codeExecution, byID["srvtoolu_ce"].ResponsesCodeExecutionCall)
+}
+
+// TestBuildResponsesMessageKeepsProviderNativeParts verifies that the raw
+// Gemini parts the stream converter attaches to a reasoning item survive the
+// accumulator, and that the accumulated item owns its bytes.
+func TestBuildResponsesMessageKeepsProviderNativeParts(t *testing.T) {
+	native := json.RawMessage(`[{"toolCall":{"id":"tc_1"},"thoughtSignature":"c2ln"}]`)
+	item := func(status string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			ID:     schemas.Ptr("rs_0"),
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Status: schemas.Ptr(status),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{},
+				EncryptedContent: schemas.Ptr("c2ln"),
+			},
+			ProviderNativeParts: native,
+		}
+	}
+
+	msgs := streamThroughResponsesAccumulator(t,
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemAdded, item("in_progress")),
+		responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemDone, item("completed")),
+	)
+
+	require.Len(t, msgs, 1)
+	require.Equal(t, string(native), string(msgs[0].ProviderNativeParts))
+	require.NotSame(t, &native[0], &msgs[0].ProviderNativeParts[0])
+}
+
+// TestBuildResponsesMessageKeepsNonTextContentBlocks verifies content blocks
+// the stream converters emit whole on output_item.added/done: an Anthropic
+// compaction summary with its cache_control, an Anthropic server-side fallback
+// boundary, and Gemini's rendered search entry point.
+func TestBuildResponsesMessageKeepsNonTextContentBlocks(t *testing.T) {
+	blocks := map[string]schemas.ResponsesMessageContentBlock{
+		"cmp_0": {
+			Type:                                    schemas.ResponsesOutputMessageContentTypeCompaction,
+			ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{Summary: "Earlier turns covered the schema."},
+			CacheControl:                            &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: schemas.Ptr("1h")},
+		},
+		"fb_1": {
+			Type: schemas.ResponsesOutputMessageContentTypeFallback,
+			ResponsesOutputMessageContentFallback: &schemas.ResponsesOutputMessageContentFallback{
+				FromModel:       "claude-fable-5",
+				ToModel:         "claude-opus-4-8",
+				TriggerType:     "refusal",
+				TriggerCategory: schemas.Ptr("cyber"),
+			},
+		},
+		"rc_2": {
+			Type: schemas.ResponsesOutputMessageContentTypeRenderedContent,
+			ResponsesOutputMessageContentRenderedContent: &schemas.ResponsesOutputMessageContentRenderedContent{RenderedContent: "<div>chips</div>"},
+		},
+	}
+	var events []*schemas.BifrostResponsesStreamResponse
+	for _, id := range []string{"cmp_0", "fb_1", "rc_2"} {
+		item := schemas.ResponsesMessage{
+			ID:      schemas.Ptr(id),
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Status:  schemas.Ptr("completed"),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{blocks[id]}},
+		}
+		events = append(events,
+			responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemAdded, item),
+			responsesItemEvent(schemas.ResponsesStreamResponseTypeOutputItemDone, item),
+		)
+	}
+
+	msgs := streamThroughResponsesAccumulator(t, events...)
+
+	require.Len(t, msgs, 3)
+	for _, msg := range msgs {
+		require.NotNil(t, msg.ID)
+		require.NotNil(t, msg.Content)
+		require.Len(t, msg.Content.ContentBlocks, 1)
+		require.Equal(t, blocks[*msg.ID], msg.Content.ContentBlocks[0], "content block %s", *msg.ID)
+	}
+}
+
+// TestDeepCopyResponsesMessageDoesNotShareWebSearchAction verifies the copy
+// owns the web_search_call action's slices and pointers. The accumulator
+// copies stream items so that no plugin observes another's writes; the action
+// used to be copied one level deep and still shared its queries and sources.
+func TestDeepCopyResponsesMessageDoesNotShareWebSearchAction(t *testing.T) {
+	newAction := func() *schemas.ResponsesWebSearchToolCallAction {
+		return &schemas.ResponsesWebSearchToolCallAction{
+			Type:    "search",
+			URL:     schemas.Ptr("https://example.com"),
+			Query:   schemas.Ptr("bifrost"),
+			Queries: []string{"bifrost"},
+			Sources: []schemas.ResponsesWebSearchToolCallActionSearchSource{{
+				Type:  "url",
+				URL:   "https://example.com/a",
+				Title: schemas.Ptr("A"),
+			}},
+			Pattern:      schemas.Ptr("bif.*"),
+			ImageQueries: []string{"bridge"},
+		}
+	}
+	original := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: newAction()},
+		},
+	}
+
+	copied := deepCopyResponsesMessage(original)
+
+	action := original.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	*action.URL = "mutated"
+	*action.Query = "mutated"
+	action.Queries[0] = "mutated"
+	action.Sources[0].URL = "mutated"
+	*action.Sources[0].Title = "mutated"
+	*action.Pattern = "mutated"
+	action.ImageQueries[0] = "mutated"
+	require.Equal(t, newAction(), copied.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction)
+}
+
+// knownResponsesDeepCopyGaps lists fields deepCopyResponsesMessage does not
+// carry yet because a separate change covers them. Drop an entry once its
+// field is copied.
+var knownResponsesDeepCopyGaps = map[string]bool{
+	// Bare-string tool call actions, e.g. image_generation_call's "generate".
+	"ResponsesMessage.ResponsesToolMessage.Action.ResponsesToolCallActionStr": true,
+}
+
+// TestDeepCopyResponsesMessageKeepsEveryField sets every exported field of a
+// ResponsesMessage, including ones no provider streams today, and fails if the
+// accumulator's copy drops any. The copy is written out field by field, so a
+// field added to the schema is lost here until the copy is taught about it.
+func TestDeepCopyResponsesMessageKeepsEveryField(t *testing.T) {
+	var original schemas.ResponsesMessage
+	fillExportedFields(reflect.ValueOf(&original).Elem(), 0)
+
+	copied := deepCopyResponsesMessage(original)
+
+	var lost []string
+	collectDroppedFields(reflect.ValueOf(original), reflect.ValueOf(copied), "ResponsesMessage", &lost)
+	var unexpected []string
+	for _, path := range lost {
+		if !knownResponsesDeepCopyGaps[path] {
+			unexpected = append(unexpected, path)
+		}
+	}
+	if len(unexpected) > 0 {
+		t.Fatalf("deepCopyResponsesMessage dropped %d field(s):\n  %s", len(unexpected), strings.Join(unexpected, "\n  "))
+	}
+}
+
+// fillExportedFields gives every exported field reachable from v a non-zero
+// value: pointers are allocated, slices and maps get one element.
+func fillExportedFields(v reflect.Value, depth int) {
+	if depth > 12 {
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillExportedFields(v.Elem(), depth+1)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() {
+				fillExportedFields(v.Field(i), depth+1)
+			}
+		}
+	case reflect.Slice:
+		if v.Type() == reflect.TypeOf(json.RawMessage(nil)) {
+			v.Set(reflect.ValueOf(json.RawMessage(`{"k":1}`)))
+			return
+		}
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fillExportedFields(v.Index(0), depth+1)
+	case reflect.Map:
+		key := reflect.New(v.Type().Key()).Elem()
+		fillExportedFields(key, depth+1)
+		elem := reflect.New(v.Type().Elem()).Elem()
+		fillExportedFields(elem, depth+1)
+		v.Set(reflect.MakeMap(v.Type()))
+		v.SetMapIndex(key, elem)
+	case reflect.Interface:
+		if v.NumMethod() == 0 {
+			v.Set(reflect.ValueOf("set"))
+		}
+	case reflect.String:
+		v.SetString("set")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(1)
+	}
+}
+
+// collectDroppedFields appends the path of every value set in original that is
+// missing or different in copied.
+func collectDroppedFields(original, copied reflect.Value, path string, lost *[]string) {
+	switch original.Kind() {
+	case reflect.Pointer:
+		if original.IsNil() {
+			return
+		}
+		if copied.IsNil() {
+			*lost = append(*lost, path)
+			return
+		}
+		collectDroppedFields(original.Elem(), copied.Elem(), path, lost)
+	case reflect.Struct:
+		for i := 0; i < original.NumField(); i++ {
+			if field := original.Type().Field(i); field.IsExported() {
+				collectDroppedFields(original.Field(i), copied.Field(i), path+"."+field.Name, lost)
+			}
+		}
+	case reflect.Slice:
+		if original.Len() == 0 {
+			return
+		}
+		if copied.Len() != original.Len() {
+			*lost = append(*lost, path)
+			return
+		}
+		for i := 0; i < original.Len(); i++ {
+			collectDroppedFields(original.Index(i), copied.Index(i), path+"[]", lost)
+		}
+	default:
+		if !original.IsZero() && !reflect.DeepEqual(original.Interface(), copied.Interface()) {
+			*lost = append(*lost, path)
+		}
+	}
 }
