@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -763,4 +764,119 @@ func TestDeepCopyResponsesMessageDoesNotShareWebSearchAction(t *testing.T) {
 	*action.Pattern = "mutated"
 	action.ImageQueries[0] = "mutated"
 	require.Equal(t, newAction(), copied.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction)
+}
+
+// knownResponsesDeepCopyGaps lists fields deepCopyResponsesMessage does not
+// carry yet because a separate change covers them. Drop an entry once its
+// field is copied.
+var knownResponsesDeepCopyGaps = map[string]bool{
+	// Bare-string tool call actions, e.g. image_generation_call's "generate".
+	"ResponsesMessage.ResponsesToolMessage.Action.ResponsesToolCallActionStr": true,
+}
+
+// TestDeepCopyResponsesMessageKeepsEveryField sets every exported field of a
+// ResponsesMessage, including ones no provider streams today, and fails if the
+// accumulator's copy drops any. The copy is written out field by field, so a
+// field added to the schema is lost here until the copy is taught about it.
+func TestDeepCopyResponsesMessageKeepsEveryField(t *testing.T) {
+	var original schemas.ResponsesMessage
+	fillExportedFields(reflect.ValueOf(&original).Elem(), 0)
+
+	copied := deepCopyResponsesMessage(original)
+
+	var lost []string
+	collectDroppedFields(reflect.ValueOf(original), reflect.ValueOf(copied), "ResponsesMessage", &lost)
+	var unexpected []string
+	for _, path := range lost {
+		if !knownResponsesDeepCopyGaps[path] {
+			unexpected = append(unexpected, path)
+		}
+	}
+	if len(unexpected) > 0 {
+		t.Fatalf("deepCopyResponsesMessage dropped %d field(s):\n  %s", len(unexpected), strings.Join(unexpected, "\n  "))
+	}
+}
+
+// fillExportedFields gives every exported field reachable from v a non-zero
+// value: pointers are allocated, slices and maps get one element.
+func fillExportedFields(v reflect.Value, depth int) {
+	if depth > 12 {
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillExportedFields(v.Elem(), depth+1)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() {
+				fillExportedFields(v.Field(i), depth+1)
+			}
+		}
+	case reflect.Slice:
+		if v.Type() == reflect.TypeOf(json.RawMessage(nil)) {
+			v.Set(reflect.ValueOf(json.RawMessage(`{"k":1}`)))
+			return
+		}
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fillExportedFields(v.Index(0), depth+1)
+	case reflect.Map:
+		key := reflect.New(v.Type().Key()).Elem()
+		fillExportedFields(key, depth+1)
+		elem := reflect.New(v.Type().Elem()).Elem()
+		fillExportedFields(elem, depth+1)
+		v.Set(reflect.MakeMap(v.Type()))
+		v.SetMapIndex(key, elem)
+	case reflect.Interface:
+		if v.NumMethod() == 0 {
+			v.Set(reflect.ValueOf("set"))
+		}
+	case reflect.String:
+		v.SetString("set")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(1)
+	}
+}
+
+// collectDroppedFields appends the path of every value set in original that is
+// missing or different in copied.
+func collectDroppedFields(original, copied reflect.Value, path string, lost *[]string) {
+	switch original.Kind() {
+	case reflect.Pointer:
+		if original.IsNil() {
+			return
+		}
+		if copied.IsNil() {
+			*lost = append(*lost, path)
+			return
+		}
+		collectDroppedFields(original.Elem(), copied.Elem(), path, lost)
+	case reflect.Struct:
+		for i := 0; i < original.NumField(); i++ {
+			if field := original.Type().Field(i); field.IsExported() {
+				collectDroppedFields(original.Field(i), copied.Field(i), path+"."+field.Name, lost)
+			}
+		}
+	case reflect.Slice:
+		if original.Len() == 0 {
+			return
+		}
+		if copied.Len() != original.Len() {
+			*lost = append(*lost, path)
+			return
+		}
+		for i := 0; i < original.Len(); i++ {
+			collectDroppedFields(original.Index(i), copied.Index(i), path+"[]", lost)
+		}
+	default:
+		if !original.IsZero() && !reflect.DeepEqual(original.Interface(), copied.Interface()) {
+			*lost = append(*lost, path)
+		}
+	}
 }
