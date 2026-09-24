@@ -49,7 +49,7 @@ func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key 
 			"Authorization": "Bearer " + value,
 		}
 		for k, v := range provider.networkConfig.ExtraHeaders {
-			headers[k] = v
+			headers[k] = v.GetValue()
 		}
 		return headers, nil
 	}
@@ -59,7 +59,7 @@ func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key 
 		return nil, authErr
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers, nil
 }
@@ -122,7 +122,7 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 	}
 
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		req.Header.Set(k, v)
+		req.Header.Set(k, v.GetValue())
 	}
 	req.SetBody(bodyBuf.Bytes())
 
@@ -226,7 +226,7 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 		req.Header.Set(k, v)
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		req.Header.Set(k, v)
+		req.Header.Set(k, v.GetValue())
 	}
 	req.SetBody(normalizedBody)
 

@@ -101,7 +101,7 @@ func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model i
 			iter := fv.MapRange()
 			for iter.Next() {
 				e := iter.Value().Interface().(SecretVar)
-				if err := removeOwnedVaultSecretVar(ctx, ownedPrefix, &e); err != nil {
+				if err := RemoveOwnedVaultSecretVar(ctx, ownedPrefix, &e); err != nil {
 					errs = append(errs, err)
 				}
 			}
@@ -116,17 +116,18 @@ func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model i
 				field = fv.Interface().(*SecretVar)
 			}
 		}
-		if err := removeOwnedVaultSecretVar(ctx, ownedPrefix, field); err != nil {
+		if err := RemoveOwnedVaultSecretVar(ctx, ownedPrefix, field); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errs
 }
 
-// removeOwnedVaultSecretVar removes a single SecretVar's vault secret if it is a
+// RemoveOwnedVaultSecretVar removes a single SecretVar's vault secret if it is a
 // vault-backed, non-fragment reference under ownedPrefix. Fragment refs (#key)
 // point at shared, externally-managed secrets and are never auto-deleted.
-func removeOwnedVaultSecretVar(ctx context.Context, ownedPrefix string, field *SecretVar) error {
+// Callers must check VaultStoreWriteEnabled first.
+func RemoveOwnedVaultSecretVar(ctx context.Context, ownedPrefix string, field *SecretVar) error {
 	path := field.GetRef()
 	if path == "" {
 		return nil
