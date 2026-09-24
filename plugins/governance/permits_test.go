@@ -808,6 +808,49 @@ func TestResolveAccessCompletesTheIdentity(t *testing.T) {
 	assert.Equal(t, "cust-1", ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID))
 }
 
+// Resolving access publishes the key's content-logging decision for the logging plugin to read:
+// true and false are each stamped as said, and a key that never said anything stamps nothing, so
+// the plugin falls through to the client setting rather than seeing a false it must treat as a
+// decision.
+func TestResolveAccessStampsContentLoggingDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		decision *bool
+	}{
+		{name: "inherit stamps nothing", decision: nil},
+		{name: "off is stamped as true", decision: new(true)},
+		{name: "on is stamped as false", decision: new(false)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.DisableContentLogging = tc.decision
+
+			logger := NewMockLogger()
+			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, &mockInMemoryStore{})
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			ctx := emptyCtx()
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+
+			_, err = plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+			require.Equal(t, vk.ID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the key resolved")
+
+			stamped := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging)
+			if tc.decision == nil {
+				assert.Nil(t, stamped, "inherit must leave the key absent, not stamp false")
+				return
+			}
+			assert.Equal(t, *tc.decision, stamped)
+		})
+	}
+}
+
 // The key a request presented is read off the identity the transport settled, and only falls back
 // to the context key for a context nothing settled an identity on.
 func TestPresentedVirtualKey(t *testing.T) {

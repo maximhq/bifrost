@@ -1318,6 +1318,7 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	recordVirtualKeyIdentity(ctx, virtualKey)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, virtualKey.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, virtualKey.Name)
+	stampVirtualKeyContentLogging(ctx, virtualKey)
 	if virtualKey.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, virtualKey.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
@@ -1332,6 +1333,17 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, virtualKey.Customer.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
 	}
+}
+
+// stampVirtualKeyContentLogging publishes the key's own content-logging decision for the logging
+// plugin, which runs before governance in the plugin chain and so cannot look the key up itself.
+// Only a decision is stamped: a key that inherits leaves the context alone, so the plugin falls
+// through to the client setting instead of reading a false it would have to treat as a choice.
+func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
+	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *virtualKey.DisableContentLogging)
 }
 
 // recordVirtualKeyIdentity completes the request's identity with what the presented key resolved to:

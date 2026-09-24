@@ -118,6 +118,41 @@ func TestPreMCPConnectionHook_KnownVirtualKeyStampsIdentity(t *testing.T) {
 	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName))
 }
 
+// The connect path stamps the key by hand rather than through StampVirtualKeyScope, so it carries
+// the content-logging decision on its own: stamped as said for true and false, absent for a key
+// that inherits.
+func TestPreMCPConnectionHook_StampsContentLoggingDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		decision *bool
+	}{
+		{name: "inherit stamps nothing", decision: nil},
+		{name: "off is stamped as true", decision: new(true)},
+		{name: "on is stamped as false", decision: new(false)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.DisableContentLogging = tc.decision
+			plugin := newPluginForConnectionHook(t, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			})
+			ctx := connectCtx(mcpTestVKValue)
+
+			_, shortCircuit, err := plugin.PreMCPConnectionHook(ctx, connectReq("sentry"))
+
+			require.NoError(t, err)
+			require.Nil(t, shortCircuit)
+			require.Equal(t, vk.ID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the key resolved")
+			stamped := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging)
+			if tc.decision == nil {
+				assert.Nil(t, stamped, "inherit must leave the key absent, not stamp false")
+				return
+			}
+			assert.Equal(t, *tc.decision, stamped)
+		})
+	}
+}
+
 // A key owned by a team stamps the team, and the customer that team belongs to. The customer is
 // reached through the team rather than off the key, which is the case a key holding a direct
 // customer cannot cover.
