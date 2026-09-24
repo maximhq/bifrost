@@ -192,6 +192,11 @@ export default function VirtualKeyDetailSheet({
 											addSuffix: true,
 										})}
 										<span className="text-muted-foreground ml-1 text-xs">({new Date(virtualKey.expires_at).toLocaleString()})</span>
+										{virtualKey.delete_after_expire && (
+											<span className="text-muted-foreground ml-1 text-xs" data-testid="vk-details-delete-after-expire">
+												· deleted automatically after expiry
+											</span>
+										)}
 									</div>
 								</div>
 							)}

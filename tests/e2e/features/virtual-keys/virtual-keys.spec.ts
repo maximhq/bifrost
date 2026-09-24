@@ -19,6 +19,22 @@ type VirtualKeyApiResponse = {
   }
 }
 
+type VirtualKeyListApiResponse = {
+  virtual_keys: Array<{
+    id: string
+    name: string
+    expires_at?: string | null
+    delete_after_expire?: boolean
+  }>
+}
+
+async function findVirtualKeyByName(request: Parameters<typeof virtualKeysApi.getAll>[0], name: string) {
+  const list = (await virtualKeysApi.getAll(request)) as VirtualKeyListApiResponse
+  const vk = list.virtual_keys.find((candidate) => candidate.name === name)
+  expect(vk, `virtual key ${name} should exist`).toBeDefined()
+  return vk!
+}
+
 type BulkRotateVirtualKeysApiResponse = {
   virtual_keys: Array<{
     id: string
@@ -265,6 +281,63 @@ test.describe('Virtual Keys', () => {
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+    })
+  })
+
+  test.describe('Virtual Key Expiry', () => {
+    test('should hide the delete-after-expire checkbox until an expiry is picked', async ({ virtualKeysPage }) => {
+      await virtualKeysPage.createBtn.click()
+      await expect(virtualKeysPage.sheet).toBeVisible()
+
+      await expect(virtualKeysPage.deleteAfterExpireCheckbox).toHaveCount(0)
+      await virtualKeysPage.page.getByTestId('vk-expiry-preset-24-hours').click()
+      await expect(virtualKeysPage.deleteAfterExpireCheckbox).toBeVisible()
+      await virtualKeysPage.page.getByTestId('vk-expiry-never').click()
+      await expect(virtualKeysPage.deleteAfterExpireCheckbox).toHaveCount(0)
+    })
+
+    test('should persist delete-after-expire with the expiry and clear it with the expiry', async ({
+      virtualKeysPage,
+      request,
+    }) => {
+      const vkData = createVirtualKeyData({
+        name: `Auto Delete VK ${Date.now()}`,
+        expiryPreset: '24 hours',
+        deleteAfterExpire: true,
+      })
+
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const created = await findVirtualKeyByName(request, vkData.name)
+      expect(created.expires_at).toBeTruthy()
+      expect(created.delete_after_expire).toBe(true)
+
+      // Unticking the box keeps the expiry but drops the flag.
+      await virtualKeysPage.editVirtualKey(vkData.name, { deleteAfterExpire: false })
+      const unticked = await findVirtualKeyByName(request, vkData.name)
+      expect(unticked.expires_at).toBeTruthy()
+      expect(unticked.delete_after_expire ?? false).toBe(false)
+
+      // Re-tick, then clearing the expiry resets the flag server-side.
+      await virtualKeysPage.editVirtualKey(vkData.name, { deleteAfterExpire: true })
+      expect((await findVirtualKeyByName(request, vkData.name)).delete_after_expire).toBe(true)
+
+      await virtualKeysPage.editVirtualKey(vkData.name, { expiryPreset: 'Never' })
+      const cleared = await findVirtualKeyByName(request, vkData.name)
+      expect(cleared.expires_at ?? null).toBeNull()
+      expect(cleared.delete_after_expire ?? false).toBe(false)
+    })
+
+    test('should reject delete_after_expire without an expiry through the API', async ({ request }) => {
+      const response = await request.post('/api/governance/virtual-keys', {
+        data: {
+          name: `API No Expiry VK ${Date.now()}`,
+          delete_after_expire: true,
+        },
+      })
+      expect(response.status()).toBe(400)
+      expect(await response.text()).toContain('delete_after_expire requires expires_at')
     })
   })
 })

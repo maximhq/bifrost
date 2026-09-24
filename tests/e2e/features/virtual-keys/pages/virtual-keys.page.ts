@@ -81,6 +81,10 @@ export interface VirtualKeyConfig {
   customerId?: string;
   // Content logging for the key's traffic; omitted leaves the form on "inherit"
   contentLogging?: "inherit" | "disabled" | "enabled";
+  /** Expiry preset button label; "Never" clears the expiry. */
+  expiryPreset?: "Never" | "30 min" | "1 hour" | "24 hours" | "7 days";
+  /** Only meaningful with an expiry; the checkbox is hidden otherwise. */
+  deleteAfterExpire?: boolean;
 }
 
 /**
@@ -98,6 +102,7 @@ export class VirtualKeysPage extends BasePage {
   readonly descriptionInput: Locator;
   readonly isActiveToggle: Locator;
   readonly contentLoggingSelect: Locator;
+  readonly deleteAfterExpireCheckbox: Locator;
   readonly providerSelect: Locator;
   readonly saveBtn: Locator;
   readonly cancelBtn: Locator;
@@ -116,6 +121,7 @@ export class VirtualKeysPage extends BasePage {
     this.descriptionInput = page.getByTestId("vk-description-input");
     this.isActiveToggle = page.getByTestId("vk-is-active-toggle");
     this.contentLoggingSelect = page.getByTestId("vk-content-logging-select");
+    this.deleteAfterExpireCheckbox = page.getByTestId("vk-delete-after-expire");
     this.providerSelect = page.getByTestId("vk-provider-select");
     this.saveBtn = page.getByTestId("vk-save-btn");
     this.cancelBtn = page.getByTestId("vk-cancel-btn");
@@ -277,6 +283,7 @@ export class VirtualKeysPage extends BasePage {
     if (config.contentLogging && config.contentLogging !== "inherit") {
       await this.setContentLogging(config.contentLogging);
     }
+    await this.setExpiry(config.expiryPreset, config.deleteAfterExpire);
 
     // Add provider configurations
     if (config.providerConfigs && config.providerConfigs.length > 0) {
@@ -488,6 +495,8 @@ export class VirtualKeysPage extends BasePage {
       await this.setRateLimit(updates.rateLimit);
     }
 
+    await this.setExpiry(updates.expiryPreset, updates.deleteAfterExpire);
+
     await expect(this.saveBtn).toBeEnabled({ timeout: 10000 });
 
     // Save changes by clicking the save button
@@ -502,6 +511,24 @@ export class VirtualKeysPage extends BasePage {
     }
     await this.searchVirtualKeys(targetName);
     await expect(this.getVirtualKeyRow(targetName)).toBeVisible({ timeout: 10000 });
+  }
+
+  /**
+   * Pick an expiry preset and, when an expiry is set, the delete-after-expire checkbox.
+   * Either argument may be omitted to leave that control untouched.
+   */
+  private async setExpiry(preset?: VirtualKeyConfig["expiryPreset"], deleteAfterExpire?: boolean): Promise<void> {
+    if (preset) {
+      const testId = preset === "Never" ? "vk-expiry-never" : `vk-expiry-preset-${preset.replace(/\s+/g, "-")}`;
+      await this.page.getByTestId(testId).click();
+    }
+    if (deleteAfterExpire !== undefined) {
+      await expect(this.deleteAfterExpireCheckbox).toBeVisible({ timeout: 5000 });
+      const isChecked = (await this.deleteAfterExpireCheckbox.getAttribute("data-state")) === "checked";
+      if (isChecked !== deleteAfterExpire) {
+        await this.deleteAfterExpireCheckbox.click();
+      }
+    }
   }
 
   /**
