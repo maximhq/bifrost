@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 
@@ -232,8 +233,9 @@ func storedNetworkConfigHeaders(t *testing.T, db *gorm.DB, name string) map[stri
 
 // TestVaultCallbacks_ProviderExtraHeaders covers provider extra headers through the store's
 // add, update, config.json sync and delete paths: plaintext values go to the vault, the row
-// keeps only refs, env refs are left alone, the caller's config is not rewritten, and
-// deleting the provider removes the secrets it owns.
+// keeps only refs, env refs are left alone, the caller's config is not rewritten, a header
+// dropped by update or sync has its owned secret removed, and deleting the provider removes
+// the secrets it still owns.
 func TestVaultCallbacks_ProviderExtraHeaders(t *testing.T) {
 	stored, removed := stubVaultHooks(t)
 	stubVaultResolve(t, stored)
@@ -275,18 +277,31 @@ func TestVaultCallbacks_ProviderExtraHeaders(t *testing.T) {
 		require.Equal(t, "oauth-client-secret", secret.GetValue())
 	})
 
-	t.Run("update stores a changed value and a new header", func(t *testing.T) {
+	t.Run("update stores a changed value and new headers", func(t *testing.T) {
 		updated := config
 		updated.NetworkConfig = &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
 			"X-Client-Secret": {Val: "rotated-secret"},
 			"X-From-Env":      *schemas.NewSecretVar("env.BF_TEST_HEADER_FROM_ENV"),
 			"X-Client-Id":     {Val: "client-id-123"},
+			"X-Temporary":     {Val: "temporary-secret"},
 		}}
 		require.NoError(t, store.UpdateProvider(ctx, provider, updated))
 		require.Equal(t, "rotated-secret", stored[base+"X-Client-Secret"])
 		require.Equal(t, "client-id-123", stored[base+"X-Client-Id"])
 		headers := storedNetworkConfigHeaders(t, store.DB(), string(provider))
 		require.Equal(t, "vault."+base+"X-Client-Id", headers["X-Client-Id"])
+		require.Empty(t, *removed, "a rewritten header keeps its path, so nothing is removed")
+	})
+
+	t.Run("update removes the secret of a dropped header", func(t *testing.T) {
+		loaded, err := store.GetProviderConfig(ctx, provider)
+		require.NoError(t, err)
+		headers := maps.Clone(loaded.NetworkConfig.ExtraHeaders)
+		delete(headers, "X-Temporary")
+		updated := config
+		updated.NetworkConfig = &schemas.NetworkConfig{ExtraHeaders: headers}
+		require.NoError(t, store.UpdateProvider(ctx, provider, updated))
+		require.Equal(t, []string{base + "X-Temporary"}, *removed)
 	})
 
 	t.Run("config.json sync stores values too", func(t *testing.T) {
@@ -300,11 +315,16 @@ func TestVaultCallbacks_ProviderExtraHeaders(t *testing.T) {
 		require.Equal(t, "vault."+base+"X-Client-Secret", headers["X-Client-Secret"])
 		caller := synced.NetworkConfig.ExtraHeaders["X-Client-Secret"]
 		require.False(t, caller.IsFromVault(), "sync must not rewrite the live config's header map")
+		require.Contains(t, *removed, base+"X-Client-Id", "sync dropped X-Client-Id, so its secret must be removed")
+		require.NotContains(t, *removed, base+"X-Client-Secret", "X-Client-Secret is still in use")
 	})
 
 	t.Run("delete removes the owned secrets", func(t *testing.T) {
 		require.NoError(t, store.DeleteProvider(ctx, provider))
 		require.Contains(t, *removed, base+"X-Client-Secret")
+		for _, path := range []string{base + "X-Client-Secret", base + "X-Client-Id", base + "X-Temporary"} {
+			require.Contains(t, *removed, path, "every secret the provider stored must be removed by the end")
+		}
 		for _, path := range *removed {
 			require.True(t, strings.HasPrefix(path, base), "removed a path the provider does not own: %s", path)
 		}
