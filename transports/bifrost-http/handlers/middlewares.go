@@ -1610,3 +1610,17 @@ func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.Observabili
 
 	return obsPlugins
 }
+
+// AuthBypassedMiddleware marks every request as admitted without a credential check. The
+// server installs it in place of AuthMiddleware.APIMiddleware when there is no config store
+// (and so no auth at all), so handlers that require genuine auth for dangerous changes - which
+// key off BifrostContextKeyAuthBypassed - still refuse them in that mode instead of reading an
+// unmarked request as authenticated and failing open.
+func AuthBypassedMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			next(ctx)
+		}
+	}
+}

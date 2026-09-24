@@ -104,7 +104,13 @@ proxy-config:
   put:
     operationId: updateProxyConfig
     summary: Update proxy configuration
-    description: Updates the global proxy configuration.
+    description: |
+      Updates the global proxy configuration.
+      Setting a new proxy url or turning on skip_tls_verify requires a genuinely
+      authenticated admin session - it is refused with 403 if dashboard authentication is
+      disabled or unconfigured, even though other management endpoints remain reachable in
+      that state. Saving other fields with the stored url, disabling the proxy, or turning
+      skip_tls_verify off is allowed.
     tags:
       - Configuration
     requestBody:
@@ -125,6 +131,11 @@ proxy-config:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          A new proxy url was supplied or skip_tls_verify was turned on, and dashboard
+          authentication is disabled or unconfigured (the request was not genuinely
+          authenticated)
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

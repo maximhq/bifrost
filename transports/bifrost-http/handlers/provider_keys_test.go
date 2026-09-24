@@ -7,6 +7,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -746,6 +748,205 @@ func TestCreateProviderKey_CustomBedrockRequiresRegion(t *testing.T) {
 	}
 	if body := string(ctx.Response.Body()); !strings.Contains(body, "bedrock_key_config.region") {
 		t.Fatalf("expected bedrock_key_config.region error, got %s", body)
+	}
+}
+
+// TestUpdateProviderKey_EndpointGuardWhenAuthBypassed pins that the fail-open bypass only
+// blocks a key update that moves the dial destination. Keeping the stored endpoint and
+// editing an unrelated field (weight) must still go through, or the auth-disabled UI
+// cannot edit any existing Ollama/SGL/VLLM/Azure key.
+func TestUpdateProviderKey_EndpointGuardWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const storedURL = "http://localhost:11434"
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantURL    string
+		wantWeight float64
+	}{
+		{
+			name:       "unchanged endpoint, weight edit",
+			body:       `{"weight":2,"ollama_key_config":{"url":"` + storedURL + `"}}`,
+			wantStatus: fasthttp.StatusOK,
+			wantURL:    storedURL,
+			wantWeight: 2,
+		},
+		{
+			name:       "changed endpoint",
+			body:       `{"weight":1,"ollama_key_config":{"url":"http://169.254.169.254/"}}`,
+			wantStatus: fasthttp.StatusForbidden,
+			wantURL:    storedURL,
+			wantWeight: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						schemas.Ollama: {Keys: []schemas.Key{{
+							ID:              "key-1",
+							Name:            "ollama-key",
+							Weight:          1,
+							OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(storedURL)},
+						}}},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.Ollama))
+			ctx.SetUserValue("key_id", "key-1")
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+			h.updateProviderKey(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			stored := h.inMemoryStore.Providers[schemas.Ollama].Keys[0]
+			if got := stored.OllamaKeyConfig.URL.GetValue(); got != tc.wantURL {
+				t.Fatalf("stored url got %q, want %q", got, tc.wantURL)
+			}
+			if stored.Weight != tc.wantWeight {
+				t.Fatalf("stored weight got %v, want %v", stored.Weight, tc.wantWeight)
+			}
+		})
+	}
+}
+
+// TestProviderKeyEndpointGuard_CoversEveryDialTarget pins that the fail-open bypass guard
+// keys off the fields Bifrost dials, not a provider-type list. Each of these fields sends the
+// key's credential to the configured host, so a bypassed caller must not be able to set or
+// move any of them. A Bedrock key with only a region carries no caller-chosen host and must
+// still be creatable, which a provider-type guard would wrongly reject.
+func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	copilotPEM := pkcs1TestPEM(t)
+	copilotConfig := func(domain string) string {
+		return `{"app_id":"123","installation_id":"456","repository_id":"789","private_key":` + strconv.Quote(copilotPEM) + `,"github_domain":"` + domain + `"}`
+	}
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		stored   *schemas.Key // nil means the request creates the key
+		body     string
+		want403  bool
+	}{
+		{
+			name:     "create bedrock key with region only",
+			provider: schemas.Bedrock,
+			body:     `{"name":"bedrock-key","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"}}`,
+			want403:  false,
+		},
+		{
+			name:     "create bedrock key with runtime endpoint override",
+			provider: schemas.Bedrock,
+			body:     `{"name":"bedrock-key","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1","endpoints":{"runtime":"evil.example.com"}}}`,
+			want403:  true,
+		},
+		{
+			name:     "update databricks workspace url",
+			provider: schemas.Databricks,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "databricks-key", Weight: 1,
+				Value:               *schemas.NewSecretVar("dapi-token"),
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: *schemas.NewSecretVar("https://adb-1.azuredatabricks.net")},
+			},
+			body:    `{"value":"dapi-token","weight":1,"databricks_key_config":{"workspace_url":"https://evil.example.com"}}`,
+			want403: true,
+		},
+		{
+			name:     "update bedrock mantle endpoint override",
+			provider: schemas.BedrockMantle,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "mantle-key", Weight: 1,
+				BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{Region: schemas.NewSecretVar("us-east-1")},
+			},
+			body:    `{"weight":1,"bedrock_mantle_key_config":{"region":"us-east-1","endpoints":{"mantle":"evil.example.com"}}}`,
+			want403: true,
+		},
+		{
+			name:     "update github copilot github_domain",
+			provider: schemas.GithubCopilot,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "copilot-key", Weight: 1,
+				Value: *schemas.NewSecretVar("ghu_copilot_token"),
+				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+					AppID:          *schemas.NewSecretVar("123"),
+					InstallationID: *schemas.NewSecretVar("456"),
+					RepositoryID:   *schemas.NewSecretVar("789"),
+					PrivateKey:     *schemas.NewSecretVar(copilotPEM),
+					GithubDomain:   *schemas.NewSecretVar("acme.ghe.com"),
+				},
+			},
+			body:    `{"value":"ghu_copilot_token","weight":1,"github_copilot_key_config":` + copilotConfig("evil.example.com") + `}`,
+			want403: true,
+		},
+		{
+			name:     "update azure key adding a per-alias endpoint",
+			provider: schemas.Azure,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "azure-key", Weight: 1,
+				Value:          *schemas.NewSecretVar("azure-api-key"),
+				AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://myres.openai.azure.com")},
+			},
+			body:    `{"value":"azure-api-key","weight":1,"azure_key_config":{"endpoint":"https://myres.openai.azure.com"},"aliases":{"gpt-4o":{"model_id":"gpt-4o","endpoint":"https://evil.example.com"}}}`,
+			want403: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providerConfig := configstore.ProviderConfig{}
+			if tc.stored != nil {
+				providerConfig.Keys = []schemas.Key{*tc.stored}
+			}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: providerConfig}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(tc.provider))
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			if tc.stored != nil {
+				ctx.SetUserValue("key_id", tc.stored.ID)
+				h.updateProviderKey(ctx)
+			} else {
+				h.createProviderKey(ctx)
+			}
+
+			got403 := ctx.Response.StatusCode() == fasthttp.StatusForbidden
+			if got403 != tc.want403 {
+				t.Fatalf("got status %d, want403=%v; body=%s", ctx.Response.StatusCode(), tc.want403, ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[tc.provider].Keys
+			switch {
+			case tc.want403 && tc.stored != nil:
+				if len(keys) != 1 || !reflect.DeepEqual(keys[0], *tc.stored) {
+					t.Fatalf("expected stored key unchanged after 403, got %+v", keys)
+				}
+			case tc.want403:
+				if len(keys) != 0 {
+					t.Fatalf("expected no key persisted after 403, got %d", len(keys))
+				}
+			default:
+				if ctx.Response.StatusCode() != fasthttp.StatusOK || len(keys) != 1 {
+					t.Fatalf("expected key persisted with 200, got status %d and %d keys; body=%s", ctx.Response.StatusCode(), len(keys), ctx.Response.Body())
+				}
+			}
+		})
 	}
 }
 

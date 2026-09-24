@@ -1072,6 +1072,21 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Under the fail-open bypass (dashboard auth disabled/unconfigured), refuse to point the
+	// global proxy somewhere new or to stop verifying its TLS: either lets whoever runs the
+	// proxy read the provider credentials of every proxied request.
+	if isAuthBypassed(ctx) {
+		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+			return
+		}
+		if changed := globalProxyInterceptionChanges(existingConfig, payload); len(changed) > 0 {
+			SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing the global proxy (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+			return
+		}
+	}
+
 	// Validate proxy config
 	if payload.Enabled {
 		// Validate proxy type
@@ -1301,4 +1316,23 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 		return fmt.Errorf("mcp_tool_sync_interval must be at most %d minutes", maxToolSyncIntervalMinutes)
 	}
 	return nil
+}
+
+// globalProxyInterceptionChanges returns the global proxy settings next adds or changes,
+// relative to old (nil when none is stored), that widen who can read proxied traffic: a new
+// proxy URL or TLS verification turned off. Keeping the stored URL while editing other fields,
+// disabling the proxy, or turning verification back on is not reported.
+func globalProxyInterceptionChanges(old *configstoreTables.GlobalProxyConfig, next configstoreTables.GlobalProxyConfig) []string {
+	var prev configstoreTables.GlobalProxyConfig
+	if old != nil {
+		prev = *old
+	}
+	var changed []string
+	if next.URL != "" && next.URL != prev.URL {
+		changed = append(changed, "url")
+	}
+	if next.SkipTLSVerify && !prev.SkipTLSVerify {
+		changed = append(changed, "skip_tls_verify")
+	}
+	return changed
 }
