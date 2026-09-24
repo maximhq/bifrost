@@ -3,9 +3,55 @@ package vertex
 import (
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
+
+// Vertex resolves gs:// through fileData.fileUri, the only way to embed media too large to
+// inline. The embedding path used to run image URLs through the http/https-only allowlist,
+// so a GCS URI failed inside the converter - and as a conversion fault, at HTTP 500.
+func TestToVertexGeminiEmbeddingRequestAllowsGCSImages(t *testing.T) {
+	t.Run("gs image url survives as fileData", func(t *testing.T) {
+		req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "gemini-embedding-2-preview",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("gs://my-bucket/xxx.png")}},
+			}}},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Content.Parts, 1)
+		require.NotNil(t, req.Content.Parts[0].FileData)
+		require.Equal(t, "gs://my-bucket/xxx.png", req.Content.Parts[0].FileData.FileURI)
+	})
+
+	t.Run("a scheme no one allows is a caller error, not a conversion fault", func(t *testing.T) {
+		_, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: "gemini-embedding-2-preview",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("ftp://my-host/xxx.png")}},
+			}}},
+		})
+		require.Error(t, err)
+		require.True(t, providerUtils.IsInvalidRequestError(err), "expected a 400-class error, got %v", err)
+	})
+
+	// The other modalities never went through the image allowlist, so a gs:// URI already
+	// reached Vertex for them. Pinned so the allowlist cannot be widened to cover them.
+	t.Run("audio and video gs urls still pass through", func(t *testing.T) {
+		for _, part := range []schemas.EmbeddingContentPart{
+			{Type: schemas.EmbeddingContentPartTypeAudio, Audio: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("gs://my-bucket/clip.mp3")}},
+			{Type: schemas.EmbeddingContentPartTypeVideo, Video: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("gs://my-bucket/clip.mp4")}},
+		} {
+			req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+				Model: "gemini-embedding-2-preview",
+				Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{part}}},
+			})
+			require.NoError(t, err, "part type %s", part.Type)
+			require.NotNil(t, req.Content.Parts[0].FileData, "part type %s", part.Type)
+		}
+	})
+}
 
 func TestToVertexGeminiEmbeddingRequest(t *testing.T) {
 	text := "hello"
