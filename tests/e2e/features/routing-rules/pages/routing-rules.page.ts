@@ -19,6 +19,8 @@ export interface RoutingRuleConfig {
   // The key is named, not identified: the key select renders key_id as the option value
   // and the key's name as its text, and pinFallbackKey locates the option by that text.
   fallbacks?: Array<string | { provider: string; model?: string; key_name?: string }>
+  // Time-to-first-token cutoff in ms; null clears it on edit.
+  ttftTimeoutMs?: number | null
 }
 
 /**
@@ -49,6 +51,7 @@ export class RoutingRulesPage extends BasePage {
   readonly priorityInput: Locator
   readonly enabledToggle: Locator
   readonly scopeSelect: Locator
+  readonly ttftTimeoutInput: Locator
   readonly saveBtn: Locator
   readonly cancelBtn: Locator
 
@@ -90,6 +93,7 @@ export class RoutingRulesPage extends BasePage {
     this.scopeSelect = page.locator('[data-testid="rule-scope-select"]').or(
       page.locator('button').filter({ hasText: /Scope/i })
     )
+    this.ttftTimeoutInput = page.getByTestId('routing-rule-ttft-timeout-input')
     // Use exact button names to avoid matching wrong buttons
     // Match both "Save Rule" (create) and "Update Rule" (edit)
     this.saveBtn = page.locator('[data-testid="save-rule-btn"]').or(
@@ -212,6 +216,8 @@ export class RoutingRulesPage extends BasePage {
       }
     }
 
+    await this.fillTTFTTimeout(config.ttftTimeoutMs)
+
     // Save
     await this.saveBtn.waitFor({ state: 'visible' })
     await this.saveBtn.click()
@@ -274,6 +280,8 @@ export class RoutingRulesPage extends BasePage {
       await this.priorityInput.fill(String(updates.priority))
     }
 
+    await this.fillTTFTTimeout(updates.ttftTimeoutMs)
+
     // Save
     await this.saveBtn.waitFor({ state: 'visible' })
     await this.saveBtn.click()
@@ -281,6 +289,20 @@ export class RoutingRulesPage extends BasePage {
     await this.waitForToastAndAssertSuccess('edit routing rule')
     await expect(this.sheet).not.toBeVisible({ timeout: 10000 })
     await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Set the TTFT cutoff input: a number fills it, null clears it, undefined leaves it alone.
+   */
+  async fillTTFTTimeout(ms: number | null | undefined): Promise<void> {
+    if (ms === undefined) {
+      return
+    }
+    await this.ttftTimeoutInput.scrollIntoViewIfNeeded()
+    await this.ttftTimeoutInput.clear()
+    if (ms !== null) {
+      await this.ttftTimeoutInput.fill(String(ms))
+    }
   }
 
   /**

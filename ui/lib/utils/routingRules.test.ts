@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { denormalizeFallback, normalizeFallback } from "./routingRules";
+import { denormalizeFallback, MAX_TTFT_TIMEOUT_MS, normalizeFallback, parseTTFTTimeoutInput } from "./routingRules";
 
 describe("routing fallback wire format", () => {
 	it.each([
@@ -27,5 +27,24 @@ describe("routing fallback wire format", () => {
 	it("returns to valid legacy syntax when a provider-only fallback pin is cleared", () => {
 		const form = normalizeFallback({ provider: "azure", key_id: "key-1" });
 		expect(denormalizeFallback({ ...form, key_id: "" })).toBe("azure/");
+	});
+});
+
+describe("TTFT deadline input", () => {
+	it("treats an empty input as no deadline", () => {
+		expect(parseTTFTTimeoutInput("")).toBeUndefined();
+		expect(parseTTFTTimeoutInput("  ")).toBeUndefined();
+	});
+
+	it.each([
+		["1", 1],
+		[" 1500 ", 1500],
+		[String(MAX_TTFT_TIMEOUT_MS), MAX_TTFT_TIMEOUT_MS],
+	] as const)("accepts %s", (raw, ms) => {
+		expect(parseTTFTTimeoutInput(raw)).toBe(ms);
+	});
+
+	it.each(["0", "-5", "1.5", "abc", "1e3", String(MAX_TTFT_TIMEOUT_MS + 1)])("rejects %s", (raw) => {
+		expect(parseTTFTTimeoutInput(raw)).toBeNull();
 	});
 });
