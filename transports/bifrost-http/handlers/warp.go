@@ -205,7 +205,7 @@ type warpBackfillStatus struct {
 }
 
 func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can backfill Warp embeddings")
 		return
 	}
@@ -269,7 +269,7 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 const warpBackfillUnavailable = "Background job runner or backfill store is not available"
 
 func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can inspect Warp backfills")
 		return
 	}
@@ -315,7 +315,7 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 }
 
 func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can cancel Warp backfills")
 		return
 	}
@@ -449,6 +449,8 @@ func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
 		// endpoints, models and internal detail. An administrator debugging a
 		// stalled index needs exactly that text; an ordinary dashboard user needs
 		// the state and the counts, and gets those without the provider's words.
+		// This stays on the local admin, not warpAdmin: the route only needs
+		// Warp View in enterprise, so a role ID here proves nothing about admin.
 		if !warpLocalAdmin(ctx) {
 			backfill.LastError = ""
 		}
@@ -496,9 +498,29 @@ func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {
 	return status
 }
 
+// warpLocalAdmin reports whether the caller is the local admin: the password
+// login, or any caller while dashboard auth is off.
 func warpLocalAdmin(ctx *fasthttp.RequestCtx) bool {
 	admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
 	return admin
+}
+
+// warpAdmin reports whether the caller may manage Warp: change its config and
+// start, inspect or cancel a log index backfill.
+//
+// In OSS the only admin is the local admin. Enterprise turns the password login
+// off once SSO is on, so no SSO user, even one holding the Admin role, ever
+// carries the local-admin marker. Enterprise's RBAC middleware gates these
+// routes on the Warp resource before the handler runs, and it puts the caller's
+// role ID on the context only after that check passes. A role ID on the context
+// therefore means RBAC already authorized this caller for this route. OSS never
+// sets it, so this adds nothing there.
+func warpAdmin(ctx *fasthttp.RequestCtx) bool {
+	if warpLocalAdmin(ctx) {
+		return true
+	}
+	roleID, _ := ctx.UserValue(schemas.BifrostContextKeyUserRoleID).(uint)
+	return roleID != 0
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller
@@ -519,11 +541,12 @@ func (h *WarpHandler) getConfig(ctx *fasthttp.RequestCtx) {
 
 // putConfig is admin-only, on the same reasoning notifications.go applies to
 // publishing: RBAC in this transport is enterprise-only and path-based, so the
-// OSS floor is enforced in the handler. A single PUT plants a credential that
+// OSS floor is enforced in the handler. warpAdmin also admits a caller that
+// enterprise RBAC already authorized for this route. A single PUT plants a credential that
 // the server will then use to make outbound calls, which is not something an
 // ordinary dashboard user should be able to do.
 func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
-	if localAdmin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); !localAdmin {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can configure Warp")
 		return
 	}
