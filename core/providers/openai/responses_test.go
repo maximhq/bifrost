@@ -2247,6 +2247,101 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 	}
 }
 
+// TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchDomainFilter
+// covers the CodeRabbit-flagged gap in filterUnsupportedTools' Perplexity
+// web_search exemption: Bifrost's cross-provider ResponsesToolWebSearchFilters.AllowedDomains
+// field was being forwarded unchanged, but Perplexity's Agent API wire format
+// only understands search_domain_filter (docs.perplexity.ai/docs/agent-api/tools/web-search).
+func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchDomainFilter(t *testing.T) {
+	buildRequest := func(filters *schemas.ResponsesToolWebSearchFilters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Perplexity,
+			Model:    "sonar",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{
+					{
+						Type: schemas.ResponsesToolTypeWebSearch,
+						ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+							Filters: filters,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("maps AllowedDomains onto search_domain_filter on the wire", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			AllowedDomains: []string{"wikipedia.org", "nasa.gov"},
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result == nil || len(result.Tools) != 1 {
+			t.Fatalf("expected 1 tool in result, got %+v", result)
+		}
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if filters == nil {
+			t.Fatal("expected filters to be non-nil")
+		}
+		if len(filters.AllowedDomains) != 0 {
+			t.Fatalf("expected AllowedDomains to be cleared, got %v", filters.AllowedDomains)
+		}
+		if want := []string{"wikipedia.org", "nasa.gov"}; len(filters.SearchDomainFilter) != len(want) ||
+			filters.SearchDomainFilter[0] != want[0] || filters.SearchDomainFilter[1] != want[1] {
+			t.Fatalf("expected SearchDomainFilter=%v, got %v", want, filters.SearchDomainFilter)
+		}
+
+		data, err := json.Marshal(result.Tools[0])
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		body := string(data)
+		if !strings.Contains(body, `"search_domain_filter":["wikipedia.org","nasa.gov"]`) {
+			t.Fatalf("expected serialized filters.search_domain_filter, got %s", body)
+		}
+		if strings.Contains(body, "allowed_domains") {
+			t.Fatalf("expected filters.allowed_domains to be absent from the wire payload, got %s", body)
+		}
+
+		// The caller's own request must not be mutated.
+		if len(bifrostReq.Params.Tools[0].ResponsesToolWebSearch.Filters.AllowedDomains) != 2 {
+			t.Fatal("caller's AllowedDomains was mutated")
+		}
+	})
+
+	t.Run("does not clobber an explicitly-set native search_domain_filter", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			AllowedDomains:     []string{"wikipedia.org"},
+			SearchDomainFilter: []string{"nasa.gov"},
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if len(filters.SearchDomainFilter) != 1 || filters.SearchDomainFilter[0] != "nasa.gov" {
+			t.Fatalf("expected native SearchDomainFilter to win, got %v", filters.SearchDomainFilter)
+		}
+		if len(filters.AllowedDomains) != 0 {
+			t.Fatalf("expected AllowedDomains to still be cleared, got %v", filters.AllowedDomains)
+		}
+	})
+
+	t.Run("leaves other Perplexity-native filter fields untouched", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			SearchRecencyFilter: schemas.Ptr("week"),
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if filters == nil || filters.SearchRecencyFilter == nil || *filters.SearchRecencyFilter != "week" {
+			t.Fatalf("expected search_recency_filter to pass through unchanged, got %+v", filters)
+		}
+	})
+}
+
 func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing.T) {
 	tests := []struct {
 		name         string
