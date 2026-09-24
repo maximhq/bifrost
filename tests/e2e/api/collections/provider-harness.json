@@ -131965,6 +131965,55 @@
               ]
             },
             {
+              "name": "53.C2a gemini/gemini-embedding-2 - reports prompt token usage",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-2\",\n  \"input\": \"Hello world\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "if (pm.response.code < 200 || pm.response.code >= 300) return;",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "pm.test('returns an embedding with prompt token usage', function () {",
+                      "  pm.expect(j.data, 'embedding data is missing').to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(j.data[0].embedding, 'embedding vector is missing').to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(j.usage, 'usage is missing; body: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                      "  pm.expect(j.usage.prompt_tokens, 'prompt_tokens is missing or zero').to.be.above(0);",
+                      "  pm.expect(j.usage.prompt_tokens_details.text_tokens, 'text token details are missing').to.eql(j.usage.prompt_tokens);",
+                      "  pm.expect(j.usage.total_tokens, 'embedding total_tokens should equal prompt_tokens').to.eql(j.usage.prompt_tokens);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
               "name": "53.C3 vertex/text-embedding-005 - array of 3 returns 3 vectors",
               "request": {
                 "method": "POST",

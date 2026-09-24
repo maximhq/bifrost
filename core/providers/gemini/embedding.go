@@ -164,7 +164,16 @@ func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model strin
 	}
 
 	// Convert usage metadata if available
-	if geminiResp.Metadata != nil || (len(geminiResp.Embeddings) > 0 && geminiResp.Embeddings[0].Statistics != nil) {
+	if geminiResp.UsageMetadata != nil && geminiResp.UsageMetadata.PromptTokenCount > 0 {
+		bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(&GenerateContentResponseUsageMetadata{
+			PromptTokenCount:    geminiResp.UsageMetadata.PromptTokenCount,
+			PromptTokensDetails: geminiResp.UsageMetadata.PromptTokenDetails,
+			TotalTokenCount:     geminiResp.UsageMetadata.TotalTokenCount,
+		})
+		if bifrostResp.Usage.TotalTokens == 0 {
+			bifrostResp.Usage.TotalTokens = bifrostResp.Usage.PromptTokens
+		}
+	} else if geminiResp.Metadata != nil || (len(geminiResp.Embeddings) > 0 && geminiResp.Embeddings[0].Statistics != nil) {
 		bifrostResp.Usage = &schemas.BifrostLLMUsage{}
 
 		// Use statistics from the first embedding if available
