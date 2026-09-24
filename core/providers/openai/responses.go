@@ -243,7 +243,9 @@ const maxResponsesCacheBreakpoints = 4
 func responsesUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenRouter:
-		return schemas.IsAnthropicModel(model) || schemas.IsGPT56Model(model)
+		return caps.SupportsPromptCacheBreakpoints(
+			schemas.IsAnthropicModel(model) || schemas.ModelSupportsPromptCacheBreakpoint(model),
+		)
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
 	default:
