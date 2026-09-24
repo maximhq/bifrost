@@ -4363,6 +4363,42 @@ func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
 	}
 }
 
+// TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled pins the update path for a rule whose
+// enabled field is omitted, as every config.json rule without "enabled" is. Save writes every
+// column, so a nil Enabled used to write NULL into the NOT NULL column and fail startup.
+func TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled(t *testing.T) {
+	ctx := context.Background()
+
+	updaters := map[string]func(store *RDBConfigStore, rule *tables.TableRoutingRule) error{
+		"SyncRoutingRules": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.SyncRoutingRules(ctx, nil, []tables.TableRoutingRule{*rule})
+		},
+		"UpdateRoutingRule": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.UpdateRoutingRule(ctx, rule)
+		},
+	}
+
+	for name, update := range updaters {
+		for _, stored := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/stored=%t", name, stored), func(t *testing.T) {
+				store := setupRDBTestStore(t)
+				created := routingRuleFixture("rule-a", 0, "openai")
+				created.Enabled = new(stored)
+				require.NoError(t, store.CreateRoutingRule(ctx, created))
+
+				incoming := routingRuleFixture("rule-a", 0, "openai")
+				incoming.Enabled = nil
+				require.NoError(t, update(store, incoming))
+
+				got, err := store.GetRoutingRule(ctx, "rule-a")
+				require.NoError(t, err)
+				require.NotNil(t, got.Enabled)
+				require.Equal(t, stored, *got.Enabled, "omitted enabled must keep the stored value")
+			})
+		}
+	}
+}
+
 // TestUpsertModelPricesBatch_InputCostPerQuerySurvivesResync guards the ON CONFLICT DO UPDATE
 // column list. Create() writes every column, so a first sync looks correct even when a field is
 // missing from pricingSyncUpdateColumns - the value only disappears on the next resync of an

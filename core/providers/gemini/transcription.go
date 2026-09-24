@@ -196,12 +196,12 @@ func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schem
 			if textContent != "" {
 				bifrostResp.Text = textContent
 				bifrostResp.Task = schemas.Ptr("transcribe")
-
-				// Set usage information with modality details
-				bifrostResp.Usage = convertGeminiUsageMetadataToTranscriptionUsage(response.UsageMetadata)
 			}
 		}
 	}
+
+	// Usage is billed even when the transcript is empty.
+	bifrostResp.Usage = convertGeminiUsageMetadataToTranscriptionUsage(response.UsageMetadata)
 
 	return bifrostResp
 }
