@@ -53,6 +53,7 @@ import {
 } from "lucide-react";
 
 import { WarpIcon } from "@/components/ui/icons";
+import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
 	Sidebar,
@@ -70,8 +71,10 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
+import { useFeatureFlag } from "@/hooks/useFeatureFlag";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
@@ -511,6 +514,25 @@ const compareVersions = (v1: string, v2: string): number => {
 	return 0;
 };
 
+/**
+ * Warp's mark, sized above the settings nav's default.
+ *
+ * The nav sizes every sub-item icon at h-3.5. Warp's is a filled glyph among
+ * lucide's stroked ones, and a filled shape reads smaller at the same box
+ * because its weight sits in the middle rather than on the outline, so it needs
+ * to render larger to match them.
+ *
+ * It is scaled rather than resized, and that is the whole point. A bigger box
+ * moves two things at once: the icon's left edge shifts out of the column its
+ * neighbours share, and every pixel of extra width pushes the label right, so
+ * "Warp" no longer starts where "Security" and "API Keys" do. A transform
+ * changes none of that - layout still sees h-3.5, so the row stays on the grid
+ * while the mark alone grows.
+ */
+function WarpNavIcon({ className, ...props }: React.SVGProps<SVGSVGElement>) {
+	return <WarpIcon className={cn(className, "scale-125")} {...props} />;
+}
+
 export default function AppSidebar() {
 	const pathname = useLocation({ select: (l) => l.pathname });
 	const search = useLocation({ select: (l) => l.searchStr ?? "" });
@@ -563,6 +585,7 @@ export default function AppSidebar() {
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
+	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
@@ -1035,9 +1058,9 @@ export default function AppSidebar() {
 					{
 						title: "Warp",
 						url: "/workspace/config/warp",
-						icon: WarpIcon,
+						icon: WarpNavIcon,
 						description: "Warp agent configuration",
-						hasAccess: hasSettingsAccess,
+						hasAccess: hasSettingsAccess && isWarpEnabled,
 					},
 					...(IS_ENTERPRISE
 						? [
@@ -1125,6 +1148,7 @@ export default function AppSidebar() {
 			hasAccessProfilesAccess,
 			hasProjectsAccess,
 			hasFeatureFlagsAccess,
+			isWarpEnabled,
 			hasDevicesAccess,
 			hasInventoryAccess,
 			hasEdgeConfigAccess,

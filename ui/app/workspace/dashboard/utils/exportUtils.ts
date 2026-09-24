@@ -134,8 +134,8 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 		r.avg_latency,
 		r.throughput,
 		r.trend.has_previous_period ? r.trend.requests_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.tokens_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.cost_trend : "N/A",
+		r.trend.has_previous_period ? (r.trend.tokens_trend ?? "N/A") : "N/A",
+		r.trend.has_previous_period ? (r.trend.cost_trend ?? "N/A") : "N/A",
 		r.trend.has_previous_period ? r.trend.latency_trend : "N/A",
 		r.trend.has_previous_period ? r.trend.throughput_trend : "N/A",
 	]);
@@ -160,8 +160,8 @@ export function dimensionRankingsToCSV(data: DimensionRankingsResponse | null, d
 		r.total_tokens,
 		r.total_cost,
 		r.trend.has_previous_period ? r.trend.requests_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.tokens_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.cost_trend : "N/A",
+		r.trend.has_previous_period ? (r.trend.tokens_trend ?? "N/A") : "N/A",
+		r.trend.has_previous_period ? (r.trend.cost_trend ?? "N/A") : "N/A",
 	]);
 	return { headers, rows };
 }

@@ -4196,3 +4196,78 @@ func TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable(t *testing.T) {
 	require.NoError(t, db.Where("id = ?", seed.ID).First(&got).Error)
 	assert.Equal(t, "key-abc", got.APIKeyID, "the surviving key reference must be untouched")
 }
+
+// TestMigrationAddWarpHistoryRetentionDaysColumn pins the upgrade path for a
+// deployment whose warp_config row predates the setting.
+//
+// The column has to arrive with a zero, and zero has to keep meaning "not set"
+// all the way through to schemas.WarpConfig.EffectiveHistoryRetentionDays. If
+// it were ever read literally, the first sweep after an upgrade would delete
+// every saved chat on the deployment.
+func TestMigrationAddWarpHistoryRetentionDaysColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, "history_retention_days"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "history_retention_days"),
+		"precondition: the column must be absent to reproduce the upgrade path")
+	// Raw SQL, not Create: the model now carries the column this test just
+	// dropped, so GORM would name it in the INSERT and fail before the migration
+	// gets a chance to add it.
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(
+		"INSERT INTO warp_config (id, enabled, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		tables.WarpConfigRowID, true, "openai", "gpt-4o", now, now).Error)
+
+	require.NoError(t, migrationAddWarpHistoryRetentionDaysColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "history_retention_days"),
+		"migration should have added history_retention_days")
+
+	var got tables.TableWarpConfig
+	require.NoError(t, db.Where("id = ?", tables.WarpConfigRowID).First(&got).Error)
+	assert.Zero(t, got.HistoryRetentionDays, "an existing row must come back unset, not expired")
+
+	config := schemas.WarpConfig{HistoryRetentionDays: got.HistoryRetentionDays}
+	assert.Equal(t, schemas.WarpDefaultHistoryRetentionDays, config.EffectiveHistoryRetentionDays(),
+		"unset must resolve to the default rather than deleting everything")
+}
+
+// The embedding columns must not arrive NULL on an existing row.
+//
+// migrationAddWarpLogEmbeddingColumns adds them with AutoMigrate, and without a
+// default the existing warp_config row gets NULL. GetWarpConfig scans them into
+// plain Go strings, where database/sql reports "converting NULL to string is
+// unsupported" - so reading the configuration fails outright on any deployment
+// that had Warp set up before this migration.
+func TestMigrationAddWarpLogEmbeddingColumnsBackfillsExistingRows(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	for _, column := range []string{"embedding_provider", "embedding_model", "embedding_api_key_id", "log_vector_store_namespace"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, column))
+	}
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(
+		"INSERT INTO warp_config (id, enabled, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		tables.WarpConfigRowID, true, "openai", "gpt-4o", now, now).Error)
+
+	require.NoError(t, migrationAddWarpLogEmbeddingColumns(ctx, db, testMigrationLogger))
+
+	// The read that used to fail: scanning into non-pointer strings.
+	var got tables.TableWarpConfig
+	require.NoError(t, db.Where("id = ?", tables.WarpConfigRowID).First(&got).Error,
+		"reading the configuration must not fail on a row that predates these columns")
+	require.Empty(t, got.EmbeddingProvider)
+	require.Empty(t, got.LogVectorStoreNamespace)
+
+	// And the columns must hold '' rather than NULL. SQLite will scan a NULL
+	// into a string without complaint, so the assertion above passes either way;
+	// Postgres is where database/sql refuses, and this is the check that would
+	// have caught it.
+	var nulls int64
+	require.NoError(t, db.Raw(`SELECT count(*) FROM warp_config WHERE embedding_provider IS NULL
+		OR embedding_model IS NULL OR embedding_api_key_id IS NULL OR log_vector_store_namespace IS NULL`).Scan(&nulls).Error)
+	require.Zero(t, nulls, "these columns are scanned into plain strings, so NULL breaks the read on Postgres")
+}

@@ -264,7 +264,7 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 
 			// Check if tool can be auto-executed
-			if canAutoExecuteTool(toolName, client.ExecutionConfig) {
+			if CanAutoExecuteTool(toolName, client.ExecutionConfig) {
 				autoExecutableTools = append(autoExecutableTools, toolCall)
 				a.logger.Debug("Tool %s can be auto-executed", toolName)
 			} else {
@@ -295,6 +295,9 @@ func (a *AgentModeExecutor) executeAgent(
 					// plugin can create separate log entries for each parallel tool call.
 					toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
+					// No human approved this call, so Code Mode must hold every nested
+					// tool invocation to tools_to_auto_execute (see AuthorizeCodeModeToolCall).
+					toolCtx.SetValue(schemas.BifrostContextKeyMCPUnattendedExecution, true)
 
 					// Create MCP request for this tool call
 					mcpRequest := &schemas.BifrostMCPRequest{

@@ -2474,21 +2474,21 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.NotificationPublisher = s.NotificationService.Publish
 		s.NotificationService.Start(s.Ctx)
 	}
-	// Rebuilt unconditionally rather than behind a nil check: Bootstrap constructs
-	// Warp before plugins load, so the instance it made has no log manager and
-	// would never register the chat route. This is the first point where the
-	// logging plugin is known, so this is where the real service is made.
+	// This is the first point in Bootstrap where the logging plugin - and so
+	// the log manager Warp's chat route needs - is known, which is why Warp is
+	// built here rather than earlier.
 	//
-	// A nil log manager here is a supported deployment (logging disabled), not a
-	// failure - Warp then serves only its config routes.
-	var warpLogManager logging.LogManager
-	if loggerPlugin != nil {
-		warpLogManager = loggerPlugin.GetPluginLogManager()
-	}
+	// A nil log manager here is a supported deployment (logging disabled), not
+	// a failure - Warp then serves only its config routes.
+	//
+	// The nil check stays even though nothing builds a prior instance today:
+	// RegisterAPIRoutes has exactly one caller now, but if that ever changes -
+	// a config or plugin reload re-running it - this must not leak the
+	// previous instance's subscriptions and worker pool.
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, warpLogManager, logger)
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool { return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp) })
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2789,9 +2789,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 	s.Config.NotificationPublisher = s.NotificationService.Publish
 	s.NotificationService.Start(s.Ctx)
-	// Bootstrap runs before plugins load, so Warp gets its config routes here and
-	// its chat route later in RegisterAPIRoutes once the log manager is known.
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, nil, logger)
+	// Warp is built once, in RegisterAPIRoutes below (called from this same
+	// Bootstrap, before it returns): that is the first point the logging
+	// plugin - and so the log manager Warp's chat route needs - is known.
+	// Building one here too used to seem necessary so the config routes would
+	// exist early, but RegisterRoutes is only ever called once, later, on
+	// whichever handler is current then - so a handler built here never
+	// serves a request or gets its routes registered before being replaced.
+	// It still cost a full warp.NewService (its own dedicated Bifrost
+	// instance and worker pool) that was immediately shut down again a few
+	// lines into RegisterAPIRoutes, on every boot.
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
@@ -3208,14 +3215,18 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			// Warp first. Its indexer workers call s.Client.EmbeddingRequest, and
+			// LogIndexer.Close waits for them - so shutting the client down first
+			// cancelled its context underneath work that was still being waited on,
+			// and pending indexing failed during an orderly shutdown.
+			if s.WarpHandler != nil {
+				logger.Info("shutting down warp...")
+				s.WarpHandler.Shutdown()
+				logger.Info("warp shutdown completed")
+			}
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")
-			// Warp holds a second, dedicated Bifrost instance with its own worker
-			// pool, so it needs its own shutdown.
-			if s.WarpHandler != nil {
-				s.WarpHandler.Shutdown()
-			}
 			logger.Info("cleaning up storage engines...")
 			// Cleanup server-specific components
 			if s.LogsCleaner != nil {

@@ -1008,6 +1008,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.MinCost == nil && f.MaxCost == nil &&
 		!f.MissingCostOnly &&
 		len(f.CacheHitTypes) == 0 &&
+		len(f.ErrorTypes) == 0 && len(f.ErrorCodes) == 0 && len(f.StatusCodes) == 0 &&
 		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
@@ -2449,8 +2450,8 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			mrt.Trend = ModelRankingTrend{
 				HasPreviousPeriod: true,
 				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
-				TokensTrend:       trendPct(float64(r.TotalTokens), float64(prev.TotalTokens)),
-				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+				TokensTrend:       metricTrend(float64(prev.TotalTokens), float64(r.TotalTokens)),
+				CostTrend:         metricTrend(prev.TotalCost, r.TotalCost),
 				LatencyTrend:      trendPct(r.AvgLatency, prev.AvgLatency),
 				ThroughputTrend:   trendPct(entry.Throughput, tokensPerSecond(prev.TPCompletionTokens, prev.TPLatencyMs)),
 			}
@@ -2546,8 +2547,8 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 			urt.Trend = UserRankingTrend{
 				HasPreviousPeriod: true,
 				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
-				TokensTrend:       trendPct(float64(r.TotalTokens), float64(prev.TotalTokens)),
-				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+				TokensTrend:       metricTrend(float64(prev.TotalTokens), float64(r.TotalTokens)),
+				CostTrend:         metricTrend(prev.TotalCost, r.TotalCost),
 			}
 		}
 		rankings = append(rankings, urt)
@@ -2665,8 +2666,8 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 			drt.Trend = DimensionRankingTrend{
 				HasPreviousPeriod: true,
 				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
-				TokensTrend:       trendPct(float64(r.TotalTkns), float64(prev.TotalTkns)),
-				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+				TokensTrend:       metricTrend(float64(prev.TotalTkns), float64(r.TotalTkns)),
+				CostTrend:         metricTrend(prev.TotalCost, r.TotalCost),
 			}
 		}
 		rankings = append(rankings, drt)

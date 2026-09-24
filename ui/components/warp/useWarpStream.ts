@@ -6,8 +6,12 @@ import {
 	parseWarpFrame,
 	splitWarpFrames,
 	type WarpEvent,
+	type WarpQuestion,
+	type WarpUsage,
+	isPartialAnswer,
+	warpTextLength,
 } from "@/components/warp/warpStream.utils";
-import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
+import { useWarp, type WarpTurn, type WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -22,12 +26,23 @@ interface UseWarpStreamResult {
 	/** Tool calls made during the in-flight answer, in order. */
 	streamingToolCalls: WarpTurnToolCall[];
 	isStreaming: boolean;
-	/** Terminal error for the in-flight turn, if it failed. */
+	/**
+	 * Terminal error from the most recently finished turn, if it failed. Reset
+	 * to null at the start of every send, so it never outlives the turn it
+	 * belongs to.
+	 */
 	error: string | null;
+	/** Set when Warp ended its turn by asking something. */
+	question: WarpQuestion | null;
+	clearQuestion: () => void;
 	send: (history: WarpTurn[], question: string) => Promise<void>;
-	/** Abandons the in-flight request and its partial answer. See discard(). */
-	discard: () => void;
 	stop: () => void;
+	/** Abort and drop whatever the aborted request produced. */
+	discard: () => void;
+	/** Forgets the current thread, so the next question opens a new one. */
+	resetConversation: () => void;
+	/** Continues a stored thread: the next question is filed under it. */
+	openConversation: (id: string) => void;
 }
 
 /**
@@ -50,25 +65,55 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 	// (leaving the live request unstoppable), flip isStreaming off underneath it,
 	// and commit its own abandoned turn into the transcript.
 	const requestIdRef = useRef(0);
+	// The thread every message in this chat belongs to. A ref rather than state
+	// because nothing renders from it and the next send has to read it
+	// synchronously - a state setter would still be pending, and the follow-up
+	// question would open a second thread.
+	//
+	// It also travels upstream as a log label, so the model calls behind one
+	// conversation can be grouped in the LLM Logs view instead of appearing as
+	// unrelated requests.
+	// Mirrors the context value into a ref so send() can read it synchronously
+	// without re-creating the callback on every turn. The context is the source
+	// of truth, because it outlives this hook: the panel unmounts when the dock
+	// closes, and a ref alone lost the thread every time.
+	const warp = useWarp();
+	const conversationRef = useRef<string>(warp?.conversationId ?? "");
+	useEffect(() => {
+		conversationRef.current = warp?.conversationId ?? "";
+	}, [warp?.conversationId]);
+	const setConversationID = warp?.setConversationId;
+	// Held by the provider, not here: closing the dock unmounts this hook, and a
+	// question that died with it left a thread that had visibly asked something
+	// with no way left to answer.
+	const question = warp?.question ?? null;
+	const setQuestion = useCallback((next: WarpQuestion | null) => warp?.setQuestion(next), [warp]);
+
+	// Unmounting must invalidate and abort. Without this the fetch kept running
+	// after the sheet closed and its completion path could append a turn to a
+	// hook nobody was reading any more - and the next open builds a fresh hook
+	// whose request guard knows nothing about the old request.
+	useEffect(() => {
+		return () => {
+			requestIdRef.current++;
+			abortRef.current?.abort();
+			abortRef.current = null;
+		};
+	}, []);
 
 	const stop = useCallback(() => {
 		abortRef.current?.abort();
 		abortRef.current = null;
 	}, []);
 
-	/**
-	 * Abandons the in-flight request outright.
-	 *
-	 * Distinct from stop(): stop only aborts, leaving requestIdRef untouched, so
-	 * isCurrent() still passes and the completion path commits the partial answer
-	 * it already has. That is right for "stop generating" - you keep what arrived
-	 * - and wrong for New Chat, where warp.clear() empties the transcript and the
-	 * abandoned turn is then appended straight back into it through appendTurn's
-	 * functional update.
-	 *
-	 * Incrementing the id first is what makes the abort final: every later guard
-	 * on that request sees a stale id and declines to write.
-	 */
+	// discard is stop plus "and do not keep what it produced".
+	//
+	// The composer's Stop wants the opposite: a half-written answer is usually
+	// still worth reading, so stop() leaves the request current and its finally
+	// block files the partial turn. Switching or deleting a thread is the case
+	// where that turn must not land - it belongs to the conversation being left,
+	// and committing it files someone's answer under whichever thread is
+	// selected by the time the abort unwinds.
 	const discard = useCallback(() => {
 		requestIdRef.current++;
 		abortRef.current?.abort();
@@ -76,7 +121,6 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 		setStreamingText("");
 		setStreamingToolCalls([]);
 		setIsStreaming(false);
-		setError(null);
 	}, []);
 
 	// Unmount is the one exit nothing else covers. Closing the desktop dock
@@ -106,6 +150,7 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 			setStreamingText("");
 			setStreamingToolCalls([]);
 			setError(null);
+			setQuestion(null);
 			setIsStreaming(true);
 
 			// Accumulated locally as well as in state: the state setters are async,
@@ -119,6 +164,9 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 			// truncated answer - or silently dropped the turn when nothing had
 			// arrived yet - with nothing to tell the reader either happened.
 			let sawTerminal = false;
+			let posed: WarpQuestion | null = null;
+			let usage: WarpUsage | undefined;
+			let partial = false;
 
 			const applyEvent = (event: WarpEvent) => {
 				// A read() that resolved before discard() can still deliver its frames
@@ -132,14 +180,38 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						setStreamingText(text);
 						break;
 					case "tool_call_start":
-						toolCalls = [...toolCalls, { id: event.tool_id ?? "", name: event.tool_name ?? "" }];
+						// Where in the answer this call fell, so the transcript can show
+						// narration and lookups in the order they happened.
+						toolCalls = [...toolCalls, { id: event.tool_id ?? "", name: event.tool_name ?? "", textOffset: warpTextLength(text) }];
 						setStreamingToolCalls(toolCalls);
 						break;
 					case "tool_call_end":
 						toolCalls = toolCalls.map((call) =>
-							call.id === event.tool_id ? { ...call, durationMs: event.duration_ms, failed: event.failed } : call,
+							call.id === event.tool_id ? { ...call, durationMs: event.duration_ms, failed: event.failed, error: event.tool_error } : call,
 						);
 						setStreamingToolCalls(toolCalls);
+						break;
+					case "done":
+						// Terminal, and set here rather than in a second `case "done"`:
+						// a duplicate case later in the same switch is unreachable, so
+						// sawTerminal stayed false after every successful stream and the
+						// EOF check then threw "the connection closed before Warp
+						// finished answering" over a turn that had finished perfectly.
+						sawTerminal = true;
+						usage = event.usage;
+						partial = isPartialAnswer(event.finish_reason);
+						// The server mints the id when a thread is new, so this is the only
+						// place the client learns it.
+						if (event.conversation_id) {
+							conversationRef.current = event.conversation_id;
+							setConversationID?.(event.conversation_id);
+						}
+						break;
+					case "question":
+						// The turn ends here; the answer goes back as an ordinary next
+						// message, so nothing needs to stay open waiting.
+						posed = event.question ?? null;
+						setQuestion(posed);
 						break;
 					case "error":
 						// An error frame is terminal on the server side and never followed
@@ -147,9 +219,6 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						// Encoded either way. A code-less frame whose message contains a
 						// colon would otherwise have its first word read back as a code.
 						terminalError = encodeTurnError(event.code, event.message ?? (event.code ? "" : "error"));
-						sawTerminal = true;
-						break;
-					case "done":
 						sawTerminal = true;
 						break;
 					default:
@@ -164,8 +233,41 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 					headers: { "Content-Type": "application/json" },
 					signal: controller.signal,
 					body: JSON.stringify({
-						messages: [...historyForRequest(history), { role: "user", content: question }],
+						// Failed turns are kept in the transcript so the error card stays
+						// visible, but they carry no text - and replaying an empty
+						// assistant message is what Anthropic rejects with "text content
+						// blocks must be non-empty". The server drops these too; filtering
+						// here keeps them out of the request body in the first place.
+						messages: [
+							...historyForRequest(history)
+								// question marks an assistant turn that asked rather than
+								// answered. The server counts these to cap how many times in a
+								// row Warp may ask instead of answering, and it has no other
+								// way to tell the two apart once the turn is replayed as text.
+								.map((turn) => ({
+									role: turn.role,
+									content: turn.content,
+									...(turn.role === "assistant" && turn.question ? { question: true } : {}),
+								})),
+							{ role: "user", content: question },
+						],
+						// Omitted on the first message of a chat, which is what tells the
+						// server to open a thread rather than append to one.
+						conversation_id: conversationRef.current || undefined,
 						stream: true,
+						// The asker's IANA zone (e.g. "Asia/Kolkata"), sent every turn rather
+						// than once per thread - a laptop can cross timezones mid
+						// conversation. A named date ("on sept 3rd") needs the zone's
+						// identity, not just today's numeric offset: daylight saving can put
+						// that date at a different offset than right now, and only the zone
+						// name lets the server work that out per-date instead of reusing a
+						// stale snapshot.
+						timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+						// Minutes east of UTC right now (e.g. +330 for IST). Kept only so the
+						// server can label "the current time is ..." without a tzdata lookup;
+						// the timezone above, not this, is what a named date is resolved
+						// against.
+						utc_offset_minutes: -new Date().getTimezoneOffset(),
 					}),
 				});
 
@@ -216,6 +318,13 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 				// A superseded request must leave the live one alone: no clearing its
 				// controller, no flipping its streaming flag, and above all no
 				// committing an abandoned turn into a transcript that has moved on.
+				// The guard is the request id rather than a comparison against
+				// abortRef.current: discard() and the unmount effect both bump the id
+				// before aborting, precisely so every later guard on the request sees
+				// a stale id and declines to write, and a controller comparison cannot
+				// see either of those exits. A plain `if` rather than an early return,
+				// since returning from a finally block silently discards whatever the
+				// try/catch above was doing.
 				if (isCurrent()) {
 					setIsStreaming(false);
 					abortRef.current = null;
@@ -225,11 +334,38 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 					// path only, for the same reason everything else here is: a
 					// superseded request must not write into state the live one owns.
 					setError(terminalError);
+					// A turn that ended by asking usually carries no narration text - Warp
+					// is told to ask about one thing and stop - so falling back to the
+					// question itself is what the server already does when it persists
+					// this same turn (see recordTurn in history.go). Without this, the
+					// turn's content stays empty: the next request's history filters it
+					// out entirely (see the messages mapping earlier in this function on
+					// the next send()), and the model sees
+					// its own answer arrive with no question in between - two bare user
+					// turns, and no way to tell what it had asked.
+					//
+					// The cast is a TypeScript control-flow quirk, not a real type gap:
+					// `posed` is reassigned inside applyEvent, a closure invoked from the
+					// try block above, and TS narrows it to `never` in this finally block
+					// as a result - asserting the declared type back is the standard,
+					// compile-time-only fix.
+					//
+					// Whitespace-only text falls back the same as empty text: a model that
+					// streamed nothing but a stray space or newline before asking has still
+					// carried no real narration, and treating that as "real" text would skip
+					// the question fallback above for the same empty-turn failure it exists
+					// to prevent.
+					const content = text.trim() !== "" ? text : ((posed as WarpQuestion | null)?.question ?? "");
 					onTurnComplete({
 						role: "assistant",
-						content: text,
+						content,
 						toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
 						error: terminalError ?? undefined,
+						partial: partial || undefined,
+						// Recorded on the turn so a reopened thread shows the question that
+						// was asked, not just the gap where an answer would be.
+						question: posed ?? undefined,
+						usage,
 					});
 					setStreamingText("");
 					setStreamingToolCalls([]);
@@ -239,5 +375,42 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 		[onTurnComplete, stop],
 	);
 
-	return { streamingText, streamingToolCalls, isStreaming, error, send, stop, discard };
+	const clearQuestion = useCallback(() => setQuestion(null), []);
+
+	const resetConversation = useCallback(() => {
+		// Discards first. Starting a fresh thread means abandoning whatever the
+		// old one was producing: without this, an in-flight request survives the
+		// reset, its finally block still passes isCurrent(), and appendTurn writes
+		// the abandoned assistant turn into the transcript that was just cleared.
+		// Doing it here rather than only at the New Chat button covers Clear too.
+		discard();
+		conversationRef.current = "";
+		setConversationID?.("");
+	}, [discard, setConversationID]);
+
+	const openConversation = useCallback(
+		(id: string) => {
+			conversationRef.current = id;
+			setConversationID?.(id);
+			// The pending question belongs to the thread being left. Leaving it on
+			// screen means its answer is sent with the newly selected conversation
+			// id, filing a reply under a thread that never asked.
+			setQuestion(null);
+		},
+		[setConversationID],
+	);
+
+	return {
+		discard,
+		streamingText,
+		streamingToolCalls,
+		isStreaming,
+		error,
+		question,
+		clearQuestion,
+		send,
+		stop,
+		resetConversation,
+		openConversation,
+	};
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildWarpConfigPayload, requireFiniteNumber, validateWarpBaseURL } from "./warpView.utils";
+import { isValidBaseURL, requireFiniteNumber } from "./warpView.utils";
 
 describe("requireFiniteNumber", () => {
 	// Clearing a number input is the case that matters: valueAsNumber gives NaN,
@@ -31,61 +31,40 @@ describe("requireFiniteNumber", () => {
 		expect(requireFiniteNumber(8, "nope")).toBe(true);
 	});
 });
-describe("buildWarpConfigPayload", () => {
-	const form = {
-		enabled: true,
-		provider: "openai",
-		model: " gpt-4o ",
-		base_url: " https://api.openai.com ",
-		api_key_id: "key-abc",
-		max_iterations: 8,
-		request_timeout_seconds: 120,
-		system_prompt_suffix: "be brief",
-	};
-
-	// The server reads api_key_id; a payload keyed api_key is silently ignored
-	// and SaveConfig then writes the zero value, clearing the stored reference.
-	it("sends the key reference under api_key_id", () => {
-		const payload = buildWarpConfigPayload(form);
-		expect(payload.api_key_id).toBe("key-abc");
-		expect(payload).not.toHaveProperty("api_key");
+describe("isValidBaseURL", () => {
+	it("accepts absolute http(s) URLs with a host", () => {
+		expect(isValidBaseURL("https://api.openai.com")).toBe(true);
+		expect(isValidBaseURL("http://localhost:8080")).toBe(true);
+		expect(isValidBaseURL("https://gw.internal/v1")).toBe(true);
 	});
 
-	// An ordinary save - changing the model - must carry the existing reference
-	// through, or the full PUT stores an empty one.
-	it("preserves the reference on a save that did not touch it", () => {
-		const payload = buildWarpConfigPayload({ ...form, model: "gpt-4o-mini" });
-		expect(payload.api_key_id).toBe("key-abc");
-		expect(payload.model).toBe("gpt-4o-mini");
+	// The case a prefix test waves through: a scheme and nothing else. It only
+	// fails on the first outbound call, long after this page was left.
+	it("rejects a scheme with no host", () => {
+		expect(isValidBaseURL("https://")).toBe(false);
+		expect(isValidBaseURL("http://")).toBe(false);
 	});
 
-	// Clearing is explicit: an empty field means no key, which is legitimate for
-	// a provider on a trusted network.
-	it("sends an empty reference when the operator cleared it", () => {
-		expect(buildWarpConfigPayload({ ...form, api_key_id: "" }).api_key_id).toBe("");
+	it("rejects other schemes and non-URLs", () => {
+		expect(isValidBaseURL("ftp://example.com")).toBe(false);
+		expect(isValidBaseURL("notaurl")).toBe(false);
 	});
 
-	it("trims the free-text fields", () => {
-		const payload = buildWarpConfigPayload(form);
-		expect(payload.model).toBe("gpt-4o");
-		expect(payload.base_url).toBe("https://api.openai.com");
+	// The server refuses credentials in this field, so the form must not offer
+	// them as valid and then fail the save.
+	it("rejects embedded credentials", () => {
+		expect(isValidBaseURL("https://user:pass@example.com")).toBe(false);
 	});
 });
-describe("validateWarpBaseURL", () => {
-	it("validates the value as buildWarpConfigPayload will submit it", () => {
-		// The payload trims, so the form rejecting an untrimmed paste refused a
-		// value the server would have accepted.
-		expect(validateWarpBaseURL("  https://api.example.com  ")).toBe(true);
-		expect(validateWarpBaseURL("")).toBe(true);
-		expect(validateWarpBaseURL("   ")).toBe(true);
-		expect(validateWarpBaseURL(undefined)).toBe(true);
-		expect(validateWarpBaseURL("api.example.com")).toContain("http://");
-	});
-
-	it("rejects credentials in the URL, as the server does", () => {
-		// base_url is stored and returned unredacted, so ValidateConfigInput
-		// returns 400 for userinfo. Saying so here beats surfacing that 400.
-		expect(validateWarpBaseURL("https://token@example.com")).toContain("must not contain credentials");
-		expect(validateWarpBaseURL("https://user:pass@example.com")).toContain("must not contain credentials");
+describe("isValidBaseURL trimming", () => {
+	it("checks the value as the save path submits it", () => {
+		// onSubmit sends form.baseURL.trim(), so checking the raw field refused a
+		// pasted value the server would have taken.
+		expect(isValidBaseURL("  https://api.example.com  ")).toBe(true);
+		expect(isValidBaseURL("\thttps://api.example.com\n")).toBe(true);
+		// Trimming must not rescue a value that is genuinely wrong.
+		expect(isValidBaseURL("  api.example.com  ")).toBe(false);
+		expect(isValidBaseURL("  https://  ")).toBe(false);
+		expect(isValidBaseURL("  https://token@example.com  ")).toBe(false);
 	});
 });

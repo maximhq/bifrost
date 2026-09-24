@@ -17,68 +17,61 @@ import type { WarpConfigInput } from "@/lib/types/warp";
  * server reads as a number.
  */
 export function requireFiniteNumber(value: unknown, message: string): true | string {
-	return typeof value === "number" && Number.isFinite(value) ? true : message;
+	return isFiniteNumber(value) ? true : message;
+}
+
+/**
+ * Narrows to a real, comparable number.
+ *
+ * The form parses its numeric inputs with `Number(...)`, and every comparison
+ * against `NaN` is false - so a range check alone reports a non-numeric value
+ * as valid. This is the guard that has to run before the range check, not after.
+ */
+export function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
 }
 /**
- * Validates the Base URL as it will actually be submitted.
+ * Days to keep saved chats.
  *
- * The inline rule checked the raw field while `buildWarpConfigPayload` trims it,
- * so a pasted `" https://api.example.com "` was rejected by the form and would
- * have been accepted by the server. The userinfo rule mirrors
- * `ValidateConfigInput`: that column is stored and returned unredacted, so a
- * credential in the URL is a 400 - worth saying here rather than letting the
- * save fail with the server's wording.
+ * Zero is a supported value, not a missing one: the server reads 0 as "use the
+ * default" (`WarpDefaultHistoryRetentionDays`), which is exactly how a config
+ * that never set the field behaves. A `min: 1` rule made that documented value
+ * unreachable, so once an operator had typed a number they could not get back
+ * to default retention from the form at all.
+ *
+ * No upper bound: the per-owner conversation cap already limits the table, so
+ * how long a transcript stays readable is a policy choice with no ceiling.
  */
-export function validateWarpBaseURL(value: string | undefined): true | string {
-	const trimmed = (value ?? "").trim();
-	if (!trimmed) return true;
-	if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-		return "URL must start with http:// or https://";
-	}
-	try {
-		if (new URL(trimmed).username || new URL(trimmed).password) {
-			return "Base URL must not contain credentials. Use the API Key field to name a configured provider key.";
-		}
-	} catch {
-		return "URL must start with http:// or https://";
-	}
+export function validateWarpRetentionDays(value: unknown): true | string {
+	if (typeof value !== "number" || !Number.isFinite(value)) return "A value is required";
+	if (!Number.isInteger(value)) return "Must be a whole number of days";
+	if (value < 0) return "Must be 0 or more days (0 keeps the default)";
 	return true;
 }
 
 /**
- * The subset of the Warp form this module builds a payload from.
+ * Checks a Warp base URL.
  *
- * Structural so the rule can be tested without rendering: the form itself has
- * no harness in this repo.
+ * A prefix test accepts "https://" with nothing after it, and the value is
+ * handed to the provider config verbatim - so a scheme-only string is only
+ * discovered on the first outbound call, long after the operator left this
+ * page.
  */
-export interface WarpConfigPayloadFields {
-	enabled: boolean;
-	provider: string;
-	model: string;
-	base_url: string;
-	api_key_id: string;
-	max_iterations: number;
-	request_timeout_seconds: number;
-	system_prompt_suffix: string;
-}
-
-/**
- * Builds the PUT body.
- *
- * `api_key_id` round-trips like every other field. It names one of the
- * deployment's already-configured provider keys - a reference, not a secret -
- * so there is none of the omitted-versus-empty ambiguity a write-only credential
- * forces, and no reason to withhold it from an ordinary save.
- */
-export function buildWarpConfigPayload(form: WarpConfigPayloadFields): WarpConfigInput {
-	return {
-		enabled: form.enabled,
-		provider: form.provider.trim(),
-		model: form.model.trim(),
-		base_url: form.base_url.trim(),
-		api_key_id: form.api_key_id.trim(),
-		max_iterations: form.max_iterations,
-		request_timeout_seconds: form.request_timeout_seconds,
-		system_prompt_suffix: form.system_prompt_suffix,
-	};
+export function isValidBaseURL(value: string): boolean {
+	// Trimmed first, because the save path submits `form.baseURL.trim()`: the
+	// untrimmed check rejected a pasted " https://api.example.com " that the
+	// server would have accepted, and the form could not say why.
+	let parsed: URL;
+	try {
+		parsed = new URL(value.trim());
+	} catch {
+		return false;
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+	if (!parsed.hostname) return false;
+	// The server rejects userinfo here, and for a good reason: this column is
+	// stored unencrypted and read back unredacted, because Warp is designed to
+	// hold a key reference and no secret of its own. Accepting it in the form
+	// only to fail the save would teach operators the field takes credentials.
+	return parsed.username === "" && parsed.password === "";
 }

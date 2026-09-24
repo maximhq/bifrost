@@ -9,7 +9,10 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -20,6 +23,62 @@ import (
 type recordingWarpStore struct {
 	row      *tables.TableWarpConfig
 	upserted []tables.TableWarpConfig
+}
+
+type handlerBackfillReader struct{ warp.LogReader }
+
+func (handlerBackfillReader) Search(_ context.Context, _ *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	return &logstore.SearchResult{Pagination: *pagination}, nil
+}
+
+func (handlerBackfillReader) GetLog(context.Context, string) (*logstore.Log, error) { return nil, nil }
+
+type handlerVectorStore struct{}
+
+func (handlerVectorStore) Ping(context.Context) error { return nil }
+func (handlerVectorStore) CreateNamespace(context.Context, string, int, map[string]vectorstore.VectorStoreProperties) error {
+	return nil
+}
+func (handlerVectorStore) DeleteNamespace(context.Context, string) error { return nil }
+func (handlerVectorStore) ListNamespaces(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (handlerVectorStore) GetChunk(context.Context, string, string) (vectorstore.SearchResult, error) {
+	return vectorstore.SearchResult{}, nil
+}
+func (handlerVectorStore) GetChunks(context.Context, string, []string) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+func (handlerVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
+	return nil, nil, nil
+}
+func (handlerVectorStore) GetNearest(context.Context, string, []float32, []vectorstore.Query, []string, float64, int64) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+func (handlerVectorStore) RequiresVectors() bool { return true }
+func (handlerVectorStore) Add(context.Context, string, string, []float32, map[string]interface{}) error {
+	return nil
+}
+func (handlerVectorStore) Delete(context.Context, string, string) error { return nil }
+func (handlerVectorStore) DeleteAll(context.Context, string, []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
+	return nil, nil
+}
+func (handlerVectorStore) Close(context.Context, string) error { return nil }
+
+func newBackfillTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, func()) {
+	t.Helper()
+	config := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "embed", EmbeddingDimension: 2, LogVectorStoreNamespace: "WarpLogs",
+	}}
+	jobs := newFakeSidekiqStore()
+	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
+	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}}}}, nil
+	}))
+	service.RegisterBackfill(runner)
+	handler := &WarpHandler{service: service, sidekiqRunner: runner, backfillStore: jobs}
+	return handler, jobs, func() { runner.Shutdown(); service.Shutdown() }
 }
 
 func (s *recordingWarpStore) GetWarpConfig(context.Context) (*tables.TableWarpConfig, error) {
@@ -36,6 +95,8 @@ func newTestWarpHandler(store *recordingWarpStore) *WarpHandler {
 	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store))}
 }
 
+const validWarpConfigJSON = `{"enabled":true,"provider":"openai","model":"gpt-4o","embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`
+
 // adminCtx builds a request context that passes the local-admin gate.
 func adminCtx(body string) *fasthttp.RequestCtx {
 	ctx := &fasthttp.RequestCtx{}
@@ -47,7 +108,7 @@ func adminCtx(body string) *fasthttp.RequestCtx {
 func TestWarpConfigPutRequiresLocalAdmin(t *testing.T) {
 	handler := newTestWarpHandler(&recordingWarpStore{})
 	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.SetBodyString(`{"enabled":true,"provider":"openai","model":"gpt-4o"}`)
+	ctx.Request.SetBodyString(validWarpConfigJSON)
 	handler.putConfig(ctx)
 
 	require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
@@ -86,11 +147,21 @@ func TestWarpConfigWithoutStoreIs503(t *testing.T) {
 	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
 }
 
+func TestWarpConfigPutWithoutVectorStoreIs503(t *testing.T) {
+	store := &recordingWarpStore{}
+	ctx := adminCtx(validWarpConfigJSON)
+	newTestWarpHandler(store).putConfig(ctx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), string(schemas.WarpUnavailableNoVectorStore))
+}
+
 // The wire shape the settings page depends on: a key reference is a plain
 // field, and defaults are resolved rather than sent as zero.
 func TestWarpConfigGetBodyShape(t *testing.T) {
 	handler := newTestWarpHandler(&recordingWarpStore{row: &tables.TableWarpConfig{
 		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
 	}})
 	ctx := &fasthttp.RequestCtx{}
 	handler.getConfig(ctx)
@@ -100,8 +171,126 @@ func TestWarpConfigGetBodyShape(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
 	require.Equal(t, true, body["configured"])
 	require.Equal(t, "key-abc", body["api_key_id"])
+	require.Equal(t, "text-embedding-3-small", body["embedding_model"])
 	require.Equal(t, float64(schemas.WarpDefaultMaxIterations), body["max_iterations"])
 	require.NotContains(t, body, "api_key")
+}
+
+func TestWarpBackfillAPIsRequireAdmin(t *testing.T) {
+	handler, _, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	for _, call := range []func(*fasthttp.RequestCtx){handler.startBackfill, handler.backfillStatus, handler.cancelBackfill} {
+		ctx := &fasthttp.RequestCtx{}
+		call(ctx)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	}
+}
+
+func TestWarpStartBackfillEnqueuesDurableJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	ctx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "admin-1")
+	handler.startBackfill(ctx)
+	require.Equal(t, fasthttp.StatusAccepted, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, 1, jobs.createdCount())
+}
+
+func TestWarpStartBackfillReturnsConflictForActiveJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "running", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	ctx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startBackfill(ctx)
+	require.Equal(t, fasthttp.StatusConflict, ctx.Response.StatusCode())
+	require.Zero(t, jobs.createdCount())
+}
+
+func TestWarpBackfillStatusAndCancel(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":4,"indexed":3,"skipped":1}`}
+	jobs.jobs[job.ID] = job
+	jobs.inFlight = job
+
+	statusCtx := adminCtx("")
+	statusCtx.QueryArgs().Set("id", job.ID)
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"indexed":3`)
+
+	cancelCtx := adminCtx(`{"id":"job-1"}`)
+	handler.cancelBackfill(cancelCtx)
+	require.Equal(t, fasthttp.StatusOK, cancelCtx.Response.StatusCode())
+	require.Contains(t, string(cancelCtx.Response.Body()), tables.SidekiqStatusCancelled)
+}
+
+// The tray shows whether semantic search is usable at a glance. This summary
+// is readable by anyone who can chat, unlike the backfill controls, and folds
+// the vector store connection and the latest indexing job into one state.
+func TestWarpLogIndexStatusSummarisesState(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	ctx := adminCtx("")
+	handler.logIndexStatus(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"ready"`)
+	require.Contains(t, body, `"vector_store_connected":true`)
+
+	jobs.latest = &tables.TableSidekiqJob{ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed, LastError: "no keys found", Metadata: `{"scanned":100,"failed":100,"total":5000}`}
+	ctx = adminCtx("")
+	handler.logIndexStatus(ctx)
+	body = string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"failed"`)
+	require.Contains(t, body, "no keys found")
+
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-r", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":40,"total":100}`}
+	ctx = adminCtx("")
+	handler.logIndexStatus(ctx)
+	body = string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"indexing"`)
+	require.Contains(t, body, `"scanned":40`)
+	require.Contains(t, body, `"total":100`)
+}
+
+// A page reload has no job id in memory and asks for "whatever is current".
+// Once a job finishes, nothing is in flight, so without a fallback the last
+// outcome, including a failure and its cause, vanishes from the settings page.
+func TestWarpBackfillStatusWithoutIDFallsBackToLatestJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-old", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed,
+		LastError: "Warp backfill stopped after 100 consecutive failures: no keys found that support model: openai/embed",
+		Metadata:  `{"scanned":100,"failed":100}`,
+	}
+
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	body := string(statusCtx.Response.Body())
+	require.Contains(t, body, `"id":"job-old"`)
+	require.Contains(t, body, `"status":"failed"`)
+	require.Contains(t, body, `"failed":100`)
+	require.Contains(t, body, "no keys found")
+
+	// An in-flight job still takes priority over the historical one.
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-new", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-new"`)
+}
+
+func TestWarpBackfillStatusWithoutAnyJobIsIdle(t *testing.T) {
+	handler, _, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"status":"idle"`)
 }
 
 // The agent runs after the handler returns and fasthttp has recycled the
@@ -211,4 +400,229 @@ func TestWarpHeartbeatIsADelimitedSSEBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ": heartbeat\n\n", string(buf[:n]),
 		"the heartbeat must carry its own frame boundary")
+}
+
+// Both endpoints take an explicit job id and looked it up without checking what
+// kind of job came back. The Warp cancel endpoint could therefore cancel any
+// pending or running sidekiq job in the deployment - a pricing sync, a
+// governance reset - and the status endpoint would hand back that job's
+// metadata to a caller asking about a backfill.
+func TestWarpBackfillEndpointsRejectForeignJobs(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	foreign := &tables.TableSidekiqJob{
+		ID: "pricing-sync-1", Kind: "pricing_sync",
+		Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":99,"indexed":98}`,
+	}
+	jobs.jobs[foreign.ID] = foreign
+
+	statusCtx := adminCtx("")
+	statusCtx.QueryArgs().Set("id", foreign.ID)
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusNotFound, statusCtx.Response.StatusCode(),
+		"a job of another kind is not a Warp backfill and must not be described as one")
+	require.NotContains(t, string(statusCtx.Response.Body()), `"indexed":98`,
+		"another job's metadata must not leak through this endpoint")
+
+	cancelCtx := adminCtx(`{"id":"pricing-sync-1"}`)
+	handler.cancelBackfill(cancelCtx)
+	require.Equal(t, fasthttp.StatusNotFound, cancelCtx.Response.StatusCode(),
+		"the Warp endpoint must not be able to cancel an unrelated job")
+	require.Equal(t, tables.SidekiqStatusRunning, jobs.jobs[foreign.ID].Status,
+		"the foreign job must still be running")
+}
+
+// Cancel writes the terminal status itself, so once it succeeds the job is
+// cancelled whatever the re-read does. Returning the pre-cancel row when that
+// read fails reports "running" for a job that has already been stopped.
+func TestWarpCancelBackfillReportsCancelledWhenRereadFails(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	jobs.jobs[job.ID] = job
+	jobs.inFlight = job
+	jobs.failGetAfterCancel = true
+
+	ctx := adminCtx(`{"id":"job-1"}`)
+	handler.cancelBackfill(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, tables.SidekiqStatusCancelled,
+		"the cancel succeeded, so the response must not say the job is still running")
+	require.NotContains(t, body, `"status":"running"`)
+}
+
+// Runner.Cancel returns false for a job that had already finished. Reporting
+// "cancelled" there claims an outcome this request did not produce - the job may
+// well have completed successfully - so the fallback must be conditional on
+// having actually cancelled something.
+func TestWarpCancelBackfillDoesNotClaimCancellingATerminalJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusCompleted, Metadata: `{}`}
+	jobs.jobs[job.ID] = job
+	// The re-read fails as well, which is the only way the fallback is reached.
+	jobs.failGetAfterCancel = true
+
+	ctx := adminCtx(`{"id":"job-1"}`)
+	handler.cancelBackfill(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	require.NotContains(t, body, tables.SidekiqStatusCancelled,
+		"nothing was cancelled, so the response must not say it was")
+	require.Contains(t, body, tables.SidekiqStatusCompleted,
+		"the row we already hold is the most honest thing available")
+}
+
+// An absent timestamp must be absent from the JSON, not sent as year 1.
+//
+// omitempty does not omit a zero time.Time - it is a struct, never "empty" to
+// the encoder - so the idle and pending responses shipped 0001-01-01 for
+// start_time, end_time and created_at. Those are optional properties in the
+// schema, and a client reading them gets a date that looks real and is not.
+func TestWarpBackfillStatusOmitsAbsentTimestamps(t *testing.T) {
+	for name, status := range map[string]warpBackfillStatus{
+		"idle":    {Status: "idle"},
+		"pending": {ID: "job-1", Status: tables.SidekiqStatusPending},
+	} {
+		encoded, err := sonic.Marshal(status)
+		require.NoError(t, err)
+
+		var shape map[string]any
+		require.NoError(t, sonic.Unmarshal(encoded, &shape))
+		for _, field := range []string{"start_time", "end_time", "created_at"} {
+			require.NotContains(t, shape, field, "%s: %s has no value and must not be sent", name, field)
+		}
+		require.NotContains(t, string(encoded), "0001-01-01", name)
+	}
+}
+
+// A real timestamp still has to travel.
+func TestWarpBackfillStatusKeepsRealTimestamps(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	encoded, err := sonic.Marshal(warpBackfillStatus{
+		ID: "job-1", Status: "running", StartTime: &at, EndTime: &at, CreatedAt: &at,
+	})
+	require.NoError(t, err)
+	var shape map[string]any
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+	for _, field := range []string{"start_time", "end_time", "created_at"} {
+		require.Contains(t, shape, field)
+	}
+}
+
+// A malformed time range is a bad request whether or not a job is running.
+//
+// startBackfill checked for an active job before BuildBackfillJobMeta, which is
+// what rejects start >= end - so with a backfill in flight an inverted range
+// came back 409 with the running job's status. The caller then debugs a
+// conflict it does not have instead of the range it got wrong.
+func TestWarpStartBackfillValidatesRangeBeforeConflict(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	running := &tables.TableSidekiqJob{
+		ID: "warp-backfill-1", Kind: warp.BackfillJobKind,
+		Status: tables.SidekiqStatusRunning, Metadata: `{}`,
+	}
+	jobs.jobs[running.ID] = running
+	// The conflict check reads inFlight, not the map.
+	jobs.inFlight = running
+
+	// end before start, with that job in flight.
+	ctx := adminCtx(`{"start_time":"2026-09-02T00:00:00Z","end_time":"2026-09-01T00:00:00Z"}`)
+	handler.startBackfill(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(),
+		"the range is wrong regardless of what else is running")
+
+	// With no job running the same range must still be rejected the same way.
+	jobs.inFlight = nil
+	delete(jobs.jobs, running.ID)
+	ctx = adminCtx(`{"start_time":"2026-09-02T00:00:00Z","end_time":"2026-09-01T00:00:00Z"}`)
+	handler.startBackfill(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+}
+
+// The tray's index status has no admin gate, unlike the backfill endpoints, and
+// LastError carries whatever the provider or vector store said - endpoints,
+// model names, internal detail. An administrator debugging a stalled index
+// needs that text; everyone else needs the state and the counts.
+func TestWarpLogIndexStatusHidesProviderErrorFromNonAdmins(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed,
+		LastError: "dial tcp 10.0.3.7:6333: connect: connection refused",
+		Metadata:  `{"scanned":100,"failed":100,"total":5000}`,
+	}
+
+	// No local-admin marker on the context.
+	ctx := &fasthttp.RequestCtx{}
+	handler.logIndexStatus(ctx)
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"failed"`, "the state itself is not sensitive")
+	require.Contains(t, body, `"failed":100`, "nor are the counts")
+	require.NotContains(t, body, "10.0.3.7", "the provider's own error text must not reach a non-admin")
+	require.NotContains(t, body, "connection refused")
+
+	// An administrator still gets it, which is the point of keeping it at all.
+	adminRequest := adminCtx("")
+	handler.logIndexStatus(adminRequest)
+	require.Contains(t, string(adminRequest.Response.Body()), "connection refused")
+}
+
+func TestWarpJobMatchesNamespace(t *testing.T) {
+	job := func(metadata string) *tables.TableSidekiqJob {
+		return &tables.TableSidekiqJob{Metadata: metadata}
+	}
+	require.True(t, warpJobMatchesNamespace(job(`{"namespace":"warp-logs"}`), "warp-logs"))
+	require.False(t, warpJobMatchesNamespace(job(`{"namespace":"warp-logs"}`), "warp-logs-v2"),
+		"a run against the previous embedding space says nothing about the current one")
+	// Pre-upgrade jobs carry no namespace at all. Blanking the tray for an index
+	// that was legitimately built is worse than trusting them.
+	require.True(t, warpJobMatchesNamespace(job(`{}`), "warp-logs"))
+	require.True(t, warpJobMatchesNamespace(job(`{"namespace":"  "}`), "warp-logs"))
+	require.False(t, warpJobMatchesNamespace(job(`{ not json`), "warp-logs"),
+		"metadata we cannot read is not evidence about the current index")
+}
+
+// While the Warp feature flag is off every route answers 404, and switching it
+// on takes effect on the next request - routes are registered once at startup,
+// so the flag has to be read per request rather than at registration.
+func TestWarpRoutesAre404WhileFeatureFlagIsOff(t *testing.T) {
+	handler := newTestWarpHandler(&recordingWarpStore{})
+	enabled := false
+	handler.enabled = func() bool { return enabled }
+
+	r := router.New()
+	handler.RegisterRoutes(r)
+
+	serve := func(method, uri, body string) *fasthttp.RequestCtx {
+		ctx := adminCtx(body)
+		ctx.Request.Header.SetMethod(method)
+		ctx.Request.SetRequestURI(uri)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	for _, route := range []struct{ method, uri, body string }{
+		{"GET", "/api/warp/config", ""},
+		{"PUT", "/api/warp/config", validWarpConfigJSON},
+		{"POST", "/api/warp/chat", `{"messages":[{"role":"user","content":"hi"}]}`},
+		{"GET", "/api/warp/log-index/status", ""},
+		{"POST", "/api/warp/log-index/backfill", `{}`},
+		{"GET", "/api/warp/log-index/backfill/status", ""},
+		{"POST", "/api/warp/log-index/backfill/cancel", `{}`},
+	} {
+		ctx := serve(route.method, route.uri, route.body)
+		require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "%s %s must be hidden while the flag is off", route.method, route.uri)
+	}
+
+	enabled = true
+	ctx := serve("POST", "/api/warp/chat", `{"messages":[{"role":"user","content":"hi"}]}`)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(),
+		"with the flag on the request must reach the handler, which reports the missing log store")
 }

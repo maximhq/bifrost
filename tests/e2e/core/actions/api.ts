@@ -195,6 +195,29 @@ export const customersApi = {
 }
 
 /**
+ * Feature flag API helpers
+ */
+export const featureFlagsApi = {
+  /**
+   * Get all feature flags
+   */
+  async getAll(request: APIRequestContext) {
+    const response = await request.get(`${API_BASE}/feature-flags`)
+    return handleResponse<{ flags: { id: string; enabled: boolean }[] }>(response, 'Get feature flags')
+  },
+
+  /**
+   * Turn a feature flag on or off
+   */
+  async set(request: APIRequestContext, id: string, enabled: boolean) {
+    const response = await request.put(`${API_BASE}/feature-flags/${id}`, {
+      data: { enabled },
+    })
+    return handleResponse(response, `Set feature flag ${id}`)
+  },
+}
+
+/**
  * Cleanup helper - delete all test data
  */
 export async function cleanupTestData(

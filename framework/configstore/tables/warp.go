@@ -29,8 +29,27 @@ type TableWarpConfig struct {
 
 	MaxIterations         int `gorm:"default:0" json:"max_iterations,omitempty"`
 	RequestTimeoutSeconds int `gorm:"default:0" json:"request_timeout_seconds,omitempty"`
+	// HistoryRetentionDays expires saved chats. Zero means the default; see
+	// schemas.WarpDefaultHistoryRetentionDays for why this is not the log
+	// store's retention setting.
+	HistoryRetentionDays int `gorm:"default:0" json:"history_retention_days,omitempty"`
 
 	SystemPromptSuffix *string `gorm:"type:text" json:"system_prompt_suffix,omitempty"`
+
+	// Temperature is nil when unconfigured, not 0 - 0 is a real, deterministic
+	// value an operator can choose, and a non-pointer column could not tell
+	// that apart from "never set".
+	Temperature     *float64 `gorm:"default:null" json:"temperature,omitempty"`
+	ReasoningEffort string   `gorm:"type:varchar(32);default:''" json:"reasoning_effort,omitempty"`
+
+	EmbeddingProvider               string  `gorm:"type:varchar(64);default:''" json:"embedding_provider"`
+	EmbeddingModel                  string  `gorm:"type:varchar(255);default:''" json:"embedding_model"`
+	EmbeddingAPIKeyID               string  `gorm:"type:varchar(255);default:''" json:"embedding_api_key_id,omitempty"`
+	EmbeddingDimension              int     `gorm:"default:0" json:"embedding_dimension"`
+	LogVectorStoreNamespace         string  `gorm:"type:varchar(255);default:''" json:"log_vector_store_namespace"`
+	SemanticSearchThreshold         float64 `gorm:"default:0" json:"semantic_search_threshold"`
+	SemanticSearchLimit             int     `gorm:"default:0" json:"semantic_search_limit"`
+	RetiredLogVectorStoreNamespaces *string `gorm:"type:text" json:"-"`
 
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`

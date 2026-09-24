@@ -466,10 +466,7 @@ Define routing rules in your `config.json` file under the governance configurati
   - `model` (string, optional): Target model - omit to use the incoming request model
   - `key_id` (string, optional): UUID of the API key to pin - requires `provider` to be present; omit for load-balanced key selection
   - `weight` (number, required): Probability weight - all weights in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0)
-- **fallbacks** (array, optional): Ordered fallback chain, tried after every target fails. Each entry is either the string `"provider/model"` (use `"provider/"` to keep the incoming model), or an object:
-  - `provider` (string, required): Fallback provider
-  - `model` (string, optional): Fallback model - omit to use the incoming request model
-  - `key_id` (string, optional): UUID of the API key to pin - omit for load-balanced key selection. In `config.json` use `provider_key_name` instead, which resolves to a key ID at load time. A fallback whose pinned key is missing from that provider's pool is skipped, and the chain moves on
+- **fallbacks** (array[string]): Fallback providers in "provider/model" format
 - **scope** (string): Scope level - "global", "customer", "team", or "virtual_key"
 - **scope_id** (string, optional): ID of scoped entity (null for global scope)
 - **priority** (number): Rule evaluation order within scope (lower = evaluated first)
@@ -809,6 +806,8 @@ A fallback can pin its own provider key, which skips load balancing for that att
 ```
 
 Each attempt is pinned independently, so an unpinned fallback later in the chain still load balances normally. If the pinned key is not in that provider's pool, the attempt is skipped and the chain moves to the next entry.
+
+A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
 
 ---
 

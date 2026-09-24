@@ -499,6 +499,131 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
+	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
+	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
+	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
+}
+
+// warpLogEmbeddingColumns are the semantic-search configuration columns added
+// so Warp can embed and search stored logs.
+var warpLogEmbeddingColumns = []string{
+	"embedding_provider",
+	"embedding_model",
+	"embedding_api_key_id",
+	"embedding_dimension",
+	"log_vector_store_namespace",
+	"semantic_search_threshold",
+	"semantic_search_limit",
+	"retired_log_vector_store_namespaces",
+}
+
+func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_log_embedding_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// AutoMigrate on the full model re-verifies every column, index and
+			// association TableWarpConfig has ever grown, not just the ones this
+			// migration is meant to add - the wrong blast radius for a step that
+			// applied migration IDs and never re-runs. Adding just the intended
+			// columns is what every other column-only migration in this file does.
+			for _, column := range warpLogEmbeddingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			// Backfilled, not left to the column default. A column added to a
+			// table that already has a row arrives NULL there, and these are
+			// scanned into plain Go strings - where database/sql refuses a NULL
+			// outright on Postgres. The whole configuration read then fails on
+			// exactly the deployments that had Warp set up before this migration.
+			for _, column := range []string{"embedding_provider", "embedding_model", "embedding_api_key_id", "log_vector_store_namespace"} {
+				if !tx.Migrator().HasColumn(&tables.TableWarpConfig{}, column) {
+					continue
+				}
+				statement := fmt.Sprintf("UPDATE %s SET %s = '' WHERE %s IS NULL",
+					quoteSQLiteIdentifier(tables.TableWarpConfig{}.TableName()),
+					quoteSQLiteIdentifier(column), quoteSQLiteIdentifier(column))
+				if err := tx.Exec(statement).Error; err != nil {
+					return fmt.Errorf("backfill warp %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping embedding configuration would lose operator settings", migrationName)
+		},
+	})
+}
+
+// warpTemperatureReasoningColumns are the sampling-override columns added so
+// an operator can override the model's sampling behavior instead of Warp
+// silently running every deployment at whatever default the provider applies.
+var warpTemperatureReasoningColumns = []string{
+	"temperature",
+	"reasoning_effort",
+}
+
+// migrationAddWarpTemperatureReasoningColumns adds the temperature and
+// reasoning_effort columns, so an operator can override the model's sampling
+// behavior instead of Warp silently running every deployment at whatever
+// default the provider happens to apply.
+func migrationAddWarpTemperatureReasoningColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_temperature_reasoning_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Same reasoning as migrationAddWarpLogEmbeddingColumns above: only the
+			// two columns this migration owns, not a full-model AutoMigrate.
+			for _, column := range warpTemperatureReasoningColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping a configured temperature or reasoning effort would lose operator settings", migrationName)
+		},
+	})
+}
+
+// migrationAddWarpHistoryRetentionDaysColumn adds Warp's own retention setting.
+//
+// A separate step rather than an edit to add_warp_config_table, for the reason
+// the api_key_id migration above spells out: applied ids are recorded and never
+// re-run, so a database that already created the table would keep the old
+// column list forever and every write naming the new one would fail.
+//
+// It arrives zero on existing rows, and zero means "not set" - resolved to
+// schemas.WarpDefaultHistoryRetentionDays on read. That indirection is the
+// whole safety property here: read literally, a fresh column would expire every
+// saved chat on the deployment the first time the sweep ran.
+func migrationAddWarpHistoryRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_history_retention_days_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return fmt.Errorf("failed to add warp history_retention_days column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible, unlike the api_key_id migration: this column replaced
+			// nothing and holds a number an operator can set again, so dropping it
+			// costs a preference rather than data.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "history_retention_days")
+		},
+	})
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.

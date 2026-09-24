@@ -855,9 +855,29 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 	}
 }
 
-// registerFeatureFlags registers feature flags from the config store into the global flag registry.
+// FeatureFlagWarp gates Warp, the in-dashboard agent. Off by default: while it
+// is off every /api/warp route answers 404 and new logs are not embedded into
+// Warp's index, and the dashboard hides the launcher, dock and settings page.
+// The UI references the same id in ui/lib/constants/featureFlags.ts.
+const FeatureFlagWarp = "warp"
+
+// registerFeatureFlags adds Bifrost's code-declared flags to the process-wide
+// registry. LoadConfig runs more than once per process in tests, so a flag that
+// is already registered is not an error.
 func registerFeatureFlags(_ context.Context) error {
-	// No feature flags to register
+	defs := []featureflags.FlagDef{
+		{
+			ID:          FeatureFlagWarp,
+			DisplayName: "Warp",
+			Description: "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
+			Default:     false,
+		},
+	}
+	for _, def := range defs {
+		if err := featureflags.Register(def); err != nil && !errors.Is(err, featureflags.ErrFlagAlreadyRegistered) {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1152,6 +1172,8 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		}
 	}
 
+	attachWarpHistoryLock(config)
+
 	// Initialize vector store (only if explicitly configured)
 	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
 		logger.Info("connecting to vectorstore")
@@ -1166,6 +1188,25 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		}
 	}
 	return nil
+}
+
+// attachWarpHistoryLock gives a ClickHouse logs store the config-store lock, so
+// Warp history writes from every replica sharing that ClickHouse serialize.
+// ClickHouse has no transactions to do it with, and its own locks are
+// per-process. The SQL stores do not take a locker: they use row locks. Without
+// a config store there is nothing shared to lock on, and the store keeps its
+// single-instance behaviour.
+func attachWarpHistoryLock(config *Config) {
+	if config.ConfigStore == nil || config.LogsStore == nil {
+		return
+	}
+	lockable, ok := config.LogsStore.(interface {
+		SetDistributedLocker(logstore.DistributedLocker)
+	})
+	if !ok {
+		return
+	}
+	lockable.SetDistributedLocker(configstore.NewDistributedLockManager(config.ConfigStore, logger, configstore.WithDefaultTTL(30*time.Second)))
 }
 
 // applyClientConfigDefaults fills in default values for zero-value fields in a ClientConfig.

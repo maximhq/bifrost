@@ -82,6 +82,10 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 
 	turn, err := h.service.NewTurn(ctx, &request, len(ctx.PostBody()))
 	switch {
+	case errors.Is(err, warp.ErrNoVectorStore):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore,
+			"Warp requires a connected vector store for semantic log search.")
+		return
 	case errors.Is(err, warp.ErrUnavailable):
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNotConfigured,
 			"Warp is not configured. Set a provider and model in Settings to enable it.")
@@ -92,7 +96,7 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 	case errors.Is(err, warp.ErrConversationTooLong):
 		SendError(ctx, fasthttp.StatusRequestEntityTooLarge, "Conversation is too long. Start a new chat.")
 		return
-	case errors.Is(err, warp.ErrEmptyConversation), errors.Is(err, warp.ErrBadRole):
+	case errors.Is(err, warp.ErrEmptyConversation), errors.Is(err, warp.ErrBadRole), errors.Is(err, warp.ErrEmptyFinalTurn), errors.Is(err, warp.ErrBadConversationID):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	case err != nil:

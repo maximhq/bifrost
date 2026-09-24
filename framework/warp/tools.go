@@ -1,13 +1,16 @@
 package warp
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -42,6 +45,15 @@ const (
 	// MaxHistogramBuckets rejects a range/bucket combination that would
 	// produce more series points than are useful to reason over.
 	MaxHistogramBuckets = 200
+	// LargeResultThreshold is where "list the rows" stops being a sensible
+	// answer and aggregates take over. Set well under what would overflow a tool
+	// result even at the row cap, so the model is redirected before it wastes a
+	// call rather than after.
+	LargeResultThreshold = 500
+	// CoarseBuckets is what a per-provider series is reduced to. A dozen
+	// points carry the shape of a trend; the rest is detail nobody reads out of
+	// a JSON blob.
+	CoarseBuckets = 12
 
 	// MaxFilterValues bounds one filter array, and MaxContentSearchChars one
 	// substring. Both become query predicates, so an unbounded list from the
@@ -71,6 +83,17 @@ var Now = func() time.Time { return time.Now().UTC() }
 // is the decision point for whether Warp can see something new.
 type ToolDeps struct {
 	logManager LogReader
+	semantic   *SemanticSearcher
+	// scope is the caller's default slice of traffic. It narrows a question that
+	// named no scope of its own; it is not an access control, which queryscope
+	// already applies inside the store.
+	scope Scope
+	// governance is nil on a deployment whose config store does not implement
+	// GovernanceReader (or was never given one) - the same optional-dependency
+	// shape as semantic. describe_virtual_key is the only tool that reaches it,
+	// and reports itself unavailable rather than the caller getting a nil-
+	// pointer panic.
+	governance GovernanceReader
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -85,6 +108,24 @@ type Tool struct {
 	execute     func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error)
 }
 
+// argumentNames lists the arguments a tool takes, read off the schema the model
+// is shown, sorted. The schema is the one place they are declared, so reading it
+// here means a refusal can never disagree with what was advertised.
+func (t Tool) argumentNames() []string {
+	var schema struct {
+		Properties map[string]sonic.NoCopyRawMessage `json:"properties"`
+	}
+	if err := sonic.UnmarshalString(t.schemaJSON, &schema); err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // FilterSchema is shared by every flow. It maps one-to-one onto
 // logstore.SearchFilters, which is what lets one parser and one scope-injection
 // point serve all of them.
@@ -93,21 +134,44 @@ const FilterSchema = `{
   "description": "Narrows which requests are considered. Omit a field to leave that dimension unfiltered. If start_time is omitted the last 24 hours are used.",
   "properties": {
     "start_time": {"type": "string", "description": "RFC3339 timestamp, or a relative offset like -7d, -24h, -30m."},
-    "end_time": {"type": "string", "description": "RFC3339 timestamp. Defaults to now."},
+    "end_time": {"type": "string", "description": "RFC3339 timestamp, a relative offset like -1d, or \"now\". Defaults to now; omit it for a window that ends now."},
     "providers": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. openai, anthropic, bedrock."},
     "models": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
-    "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success or error."},
+    "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success, error, or cancelled."},
+    "stop_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. stop, length, content_filter, tool_calls. Call describe_filter_space to see which actually occur."},
+    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Request type, e.g. chat_completion, embedding, speech, transcription, image_generation, video_generation. Use this to exclude non-chat traffic - embeddings, speech, and image/video generation have their own cost and latency shape and otherwise get averaged in with chat requests."},
     "virtual_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "team_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "customer_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "user_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "business_unit_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
-    "apps": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
+    "project_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
+    "apps": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Include only these apps. \"Warp\" is refused: it is this assistant, not the person's traffic."},
     "min_latency": {"type": "number", "description": "Milliseconds."},
     "max_latency": {"type": "number", "description": "Milliseconds."},
+    "min_tokens": {"type": "integer", "description": "Total tokens on the request."},
+    "max_tokens": {"type": "integer", "description": "Total tokens on the request."},
     "min_cost": {"type": "number"},
     "max_cost": {"type": "number"},
-    "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."}
+    "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
+    "routing_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing rules that handled the request. Ids come from describe_filter_space or a query_usage_by routing_rule ranking - never guess one."},
+    "routing_engine_used": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing engines the request passed through, e.g. routing-rule, governance, loadbalancing. A request can pass through several."},
+    "selected_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Provider API keys Bifrost picked for the request - not virtual keys. Ids come from describe_filter_space (provider_keys)."},
+    "aliases": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model aliases the request was addressed to before Bifrost resolved them to a model."},
+    "complexity_tiers": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Tier the complexity router assigned: SIMPLE, MEDIUM or COMPLEX. Only requests the complexity router saw have one."},
+    "complexity_mechanisms": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "How the complexity tier was decided, e.g. semantic, llm, session."},
+    "tool_call_names": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Requests whose response called any of these function names."},
+    "user_agents": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Raw User-Agent strings. Prefer apps, which groups them."},
+    "metadata_filters": {"type": "object", "additionalProperties": {"type": "string"}, "minProperties": 1, "description": "Request metadata, as key to value, e.g. {\"env\": \"prod\"}. Every pair must match. Keys and values that occur are listed by describe_filter_space (metadata)."},
+    "session_id": {"type": "string", "minLength": 1, "description": "Exact Bifrost session id."},
+    "request_id": {"type": "string", "minLength": 1, "description": "Exact request id."},
+    "parent_request_id": {"type": "string", "minLength": 1, "description": "Requests spawned by this request, e.g. the fallback attempts of one call."},
+    "missing_cost_only": {"type": "boolean", "description": "Only successful requests whose cost could not be computed."},
+    "error_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's error classification on failed requests, e.g. invalid_request_error, overloaded_error - the ids a query_usage_by error_type ranking returns. This is how to fetch the rows behind one row of that ranking."},
+    "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values."},
+    "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
+    "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
+    "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
   }
 }`
 
@@ -125,9 +189,16 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 
 	known := map[string]bool{
 		"start_time": true, "end_time": true, "providers": true, "models": true,
-		"status": true, "virtual_key_ids": true, "team_ids": true, "customer_ids": true,
-		"user_ids": true, "business_unit_ids": true, "apps": true, "min_latency": true,
-		"max_latency": true, "min_cost": true, "max_cost": true, "content_search": true,
+		"status": true, "stop_reasons": true, "objects": true, "virtual_key_ids": true,
+		"team_ids": true, "customer_ids": true, "user_ids": true, "business_unit_ids": true,
+		"project_ids": true, "apps": true, "min_latency": true, "max_latency": true,
+		"min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true,
+		"cache_hit_types": true, "content_search": true, "scope": true,
+		"error_types": true, "error_codes": true, "status_codes": true,
+		"routing_rule_ids": true, "routing_engine_used": true, "selected_key_ids": true, "aliases": true,
+		"complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
+		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
+		"missing_cost_only": true,
 	}
 	unknown := []string{}
 	for key := range raw {
@@ -137,7 +208,10 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: start_time, end_time, providers, models, status, virtual_key_ids, team_ids, customer_ids, user_ids, business_unit_ids, apps, min_latency, max_latency, min_cost, max_cost, content_search", strings.Join(unknown, ", "))
+		// Listed from the set the check itself uses. Written out by hand, the
+		// list fell behind the schema the first time a filter was added.
+		supported := slices.Sorted(maps.Keys(known))
+		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: %s", strings.Join(unknown, ", "), strings.Join(supported, ", "))
 	}
 
 	// Presence is checked here, not left to parseTime: indexing a map gives nil
@@ -173,11 +247,22 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	filters.StartTime, filters.EndTime = start, end
 
+	// HEAD's validating field readers are kept over the replayed side's silent
+	// coercions: a filter that rejects a malformed value is the whole point of
+	// parseFilters, and the new fields this commit adds get the same treatment
+	// rather than a second, laxer path alongside it.
 	for key, target := range map[string]*[]string{
 		"providers": &filters.Providers, "models": &filters.Models, "status": &filters.Status,
+		"stop_reasons": &filters.StopReasons, "objects": &filters.Objects,
 		"virtual_key_ids": &filters.VirtualKeyIDs, "team_ids": &filters.TeamIDs,
 		"customer_ids": &filters.CustomerIDs, "user_ids": &filters.UserIDs,
-		"business_unit_ids": &filters.BusinessUnitIDs, "apps": &filters.Apps,
+		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs,
+		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
+		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes,
+		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
+		"selected_key_ids": &filters.SelectedKeyIDs, "aliases": &filters.Aliases,
+		"complexity_tiers": &filters.ComplexityTiers, "complexity_mechanisms": &filters.ComplexityMechanisms,
+		"tool_call_names": &filters.ToolCallNames, "user_agents": &filters.UserAgents,
 	} {
 		values, err := stringSliceField(raw, key)
 		if err != nil {
@@ -195,6 +280,41 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		}
 		*target = value
 	}
+	for key, target := range map[string]**int{
+		"min_tokens": &filters.MinTokens, "max_tokens": &filters.MaxTokens,
+	} {
+		value, err := intPtrChecked(raw[key], key)
+		if err != nil {
+			return nil, err
+		}
+		*target = value
+	}
+	for key, target := range map[string]*string{
+		"session_id": &filters.SessionID, "request_id": &filters.RequestID, "parent_request_id": &filters.ParentRequestID,
+	} {
+		value, err := exactStringField(raw, key)
+		if err != nil {
+			return nil, err
+		}
+		*target = value
+	}
+	if value, present := raw["missing_cost_only"]; present {
+		flag, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("missing_cost_only must be true or false")
+		}
+		filters.MissingCostOnly = flag
+	}
+	metadata, err := metadataFiltersField(raw)
+	if err != nil {
+		return nil, err
+	}
+	filters.MetadataFilters = metadata
+	statusCodes, err := statusCodesField(raw)
+	if err != nil {
+		return nil, err
+	}
+	filters.StatusCodes = statusCodes
 	if value, present := raw["content_search"]; present {
 		// Present-and-null is not the same as absent, for the same reason the time
 		// fields check presence above: the schema types this as a string.
@@ -244,6 +364,10 @@ func parseTime(value any, now time.Time) (*time.Time, error) {
 		return nil, fmt.Errorf("must be an RFC3339 timestamp or a relative offset like -7d, got a blank string")
 	}
 	text = strings.TrimSpace(text)
+	// end_time is documented as defaulting to now, and models spell that out.
+	if strings.EqualFold(text, "now") {
+		return &now, nil
+	}
 	if strings.HasPrefix(text, "-") {
 		// time.ParseDuration has no day unit, which is the one people actually use.
 		if strings.HasSuffix(text, "d") {
@@ -267,7 +391,7 @@ func parseTime(value any, now time.Time) (*time.Time, error) {
 	}
 	parsed, err := time.Parse(time.RFC3339, text)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse %q, expected RFC3339 or a relative offset like -7d", text)
+		return nil, fmt.Errorf("could not parse %q, expected RFC3339, a relative offset like -7d, or \"now\"", text)
 	}
 	return &parsed, nil
 }
@@ -388,6 +512,111 @@ func floatPtr(value any) *float64 {
 	return &number
 }
 
+// intPtr reads an optional JSON number into an int pointer. JSON numbers
+// decode as float64 regardless of the schema's declared type, so this takes
+// the same path as floatPtr rather than a type assertion to int.
+func intPtr(value any) *int {
+	number, ok := value.(float64)
+	if !ok {
+		return nil
+	}
+	result := int(number)
+	return &result
+}
+
+// intPtrChecked reads an optional JSON number into an int pointer, rejecting
+// values that don't round-trip cleanly into a platform int. Unlike intPtr,
+// which silently truncates, this is for filters that feed a log-store
+// comparison directly: a fractional or out-of-range bound truncated to some
+// other int would query on a threshold the caller never asked for, and
+// neither the model nor the reader would know.
+// exactStringField reads an exact-match id filter. Blank is refused rather than
+// read as absent: the store skips an empty id, so the question would be answered
+// unfiltered with nothing to say the filter had been dropped.
+func exactStringField(raw map[string]any, key string) (string, error) {
+	value, present := raw[key]
+	if !present {
+		return "", nil
+	}
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("%s must be a non-empty string; omit the field to leave it unfiltered", key)
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// metadataFiltersField reads metadata_filters: a non-empty object of string
+// values, every pair of which must match.
+func metadataFiltersField(raw map[string]any) (map[string]string, error) {
+	value, present := raw["metadata_filters"]
+	if !present {
+		return nil, nil
+	}
+	pairs, ok := value.(map[string]any)
+	if !ok || len(pairs) == 0 {
+		return nil, fmt.Errorf(`metadata_filters must be a non-empty object of key to value, like {"env": "prod"}; omit the field to leave it unfiltered`)
+	}
+	out := make(map[string]string, len(pairs))
+	for key, item := range pairs {
+		text, ok := item.(string)
+		if !ok || strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("metadata_filters values must be strings, got %v for %q", item, key)
+		}
+		out[key] = text
+	}
+	return out, nil
+}
+
+// statusCodesField reads status_codes: a non-empty array of whole numbers in
+// the HTTP status range. Anything else is refused rather than dropped, since a
+// dropped filter answers a wider question than the one asked and says nothing.
+func statusCodesField(raw map[string]any) ([]int, error) {
+	value, present := raw["status_codes"]
+	if !present {
+		return nil, nil
+	}
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return nil, fmt.Errorf("status_codes must be a non-empty array of HTTP status codes like [400, 429]; omit the field to leave it unfiltered")
+	}
+	codes := make([]int, 0, len(items))
+	for _, item := range items {
+		number, ok := item.(float64)
+		if !ok || number != math.Trunc(number) || number < 100 || number > 599 {
+			return nil, fmt.Errorf("status_codes must hold whole HTTP status codes between 100 and 599, got %v", item)
+		}
+		codes = append(codes, int(number))
+	}
+	return codes, nil
+}
+
+func intPtrChecked(value any, field string) (*int, error) {
+	if value == nil {
+		return nil, nil
+	}
+	number, ok := value.(float64)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an integer", field)
+	}
+	if number != math.Trunc(number) {
+		return nil, fmt.Errorf("%s must be an integer, got %v", field, number)
+	}
+	// float64(math.MaxInt) is not actually math.MaxInt: math.MaxInt (2^63-1)
+	// has more significant bits than float64's 53-bit mantissa can hold at
+	// that magnitude, so it rounds up to the nearest representable value,
+	// 2^63 - one past the largest int64 there is. A `>` check against that
+	// rounded value would let 2^63 itself through as "in range", and
+	// int(2^63) is then a conversion the Go spec leaves implementation-
+	// defined, not a clean round-trip. -float64(math.MinInt) names the same
+	// 2^63 boundary but from the side that *is* exact (math.MinInt is a
+	// power of two), so >= against it is what actually excludes the first
+	// value int cannot represent.
+	if number < float64(math.MinInt) || number >= -float64(math.MinInt) {
+		return nil, fmt.Errorf("%s is out of range: %v", field, number)
+	}
+	return intPtr(value), nil
+}
+
 // intArg reads an optional bounded integer.
 //
 // Absent means the default. Present-but-unusable does not: silently falling back
@@ -453,22 +682,66 @@ func boolArg(args map[string]any, key string) (bool, error) {
 	return flag, nil
 }
 
-// filterArg parses the shared filter object every flow accepts.
-func filterArg(args map[string]any, now time.Time) (*logstore.SearchFilters, error) {
-	value, present := args["filters"]
-	if !present || value == nil {
-		return parseFilters(nil, now)
+// filterArg parses the shared filter object every flow accepts and applies
+// the caller's default scope.
+//
+// Every flow goes through here, which is what makes the default impossible to
+// forget: a tool added later gets the scoping by construction rather than by
+// its author remembering to ask for it.
+func filterArg(args map[string]any, now time.Time, scope Scope) (*logstore.SearchFilters, error) {
+	raw, err := filtersObject(args)
+	if err != nil {
+		return nil, err
 	}
-	// Rejected rather than dropped. A discarded type assertion turned a
-	// malformed argument into "no filters", which parseFilters answers with the
-	// default unfiltered 24-hour window - so a bad filter widened the query
-	// instead of failing it, and the model could not tell the difference
-	// between an unfiltered answer it asked for and one it did not.
-	raw, ok := value.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
+	filters, parseErr := parseFilters(raw, now)
+	if parseErr != nil {
+		return nil, parseErr
 	}
-	return parseFilters(raw, now)
+	all, err := scopeAllArg(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := refuseWarpApp(filters); err != nil {
+		return nil, err
+	}
+	applyScope(filters, scope, all)
+	return filters, nil
+}
+
+// scopeAllArg reads the filter object's scope marker. "all" is the only value;
+// anything else is rejected rather than read as the default, because guessing
+// would answer a different question than the one asked and look right doing it.
+func scopeAllArg(raw map[string]any) (bool, error) {
+	value, present := raw["scope"]
+	if !present {
+		return false, nil
+	}
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) != "all" {
+		return false, fmt.Errorf(`scope must be "all" when given; omit it for the default`)
+	}
+	return true, nil
+}
+
+// warpAppName is the app label Warp's own requests are logged under.
+const warpAppName = "Warp"
+
+// refuseWarpApp keeps any filter from narrowing to Warp's own queries.
+//
+// The model is Warp, so "what did I spend" reads to it as "what was spent in
+// Warp". It sent apps: ["Warp"] under a prompt saying never to, and when that
+// was refused with a scope "warp" escape hatch for questions about Warp itself,
+// it sent that instead for the same question - both times reporting this
+// assistant's own spend as the person's. No filter narrows to Warp now. Warp's
+// own cost is still one row of query_usage_by by app, beside every other app,
+// where it cannot be mistaken for the whole.
+func refuseWarpApp(filters *logstore.SearchFilters) error {
+	for _, app := range filters.Apps {
+		if strings.EqualFold(strings.TrimSpace(app), warpAppName) {
+			return fmt.Errorf(`apps must not name "Warp": it is this assistant, and filtering to it counts only the questions asked here, not the person's traffic. Drop it from apps. If the person asked what Warp itself costs, use query_usage_by with dimension app, where Warp is one row among the others`)
+		}
+	}
+	return nil
 }
 
 // enumArg reads a string argument that the schema declares as an enum.
@@ -583,7 +856,28 @@ type logRow struct {
 	VirtualKeyName string  `json:"virtual_key_name,omitempty"`
 	UserID         string  `json:"user_id,omitempty"`
 	ErrorMessage   string  `json:"error_message,omitempty"`
-	Content        string  `json:"content,omitempty"`
+	// ErrorType, ErrorCode and StatusCode are the structured classification
+	// behind ErrorMessage - the same fields get_request_trace reads. Exposing
+	// them here is what lets a "what kinds of errors" question be answered by
+	// tallying a field query_logs already returns, rather than reading 25
+	// free-text messages and guessing at how many distinct failures they
+	// represent.
+	ErrorType  string `json:"error_type,omitempty"`
+	ErrorCode  string `json:"error_code,omitempty"`
+	StatusCode int    `json:"status_code,omitempty"`
+	// What routed the request: the rule that handled it, the provider key it was
+	// sent with, the alias it was addressed to, the complexity tier it was given
+	// and the functions its response called. All absent on a request none of
+	// them touched, so a plain row costs nothing extra.
+	RoutingRule    string   `json:"routing_rule,omitempty"`
+	ProviderKey    string   `json:"provider_key,omitempty"`
+	Alias          string   `json:"alias,omitempty"`
+	ComplexityTier string   `json:"complexity_tier,omitempty"`
+	ToolCalls      []string `json:"tool_calls,omitempty"`
+	Content        string   `json:"content,omitempty"`
+	// Link opens this request in the Logs view. Built server-side so the
+	// model repeats it rather than guessing the dashboard's URL scheme.
+	Link string `json:"link,omitempty"`
 }
 
 // projectLog reduces a log row to the fields that answer operational
@@ -605,9 +899,26 @@ func projectLog(entry *logstore.Log, includeContent bool, contentLimit int) logR
 		Cost:           derefFloat(entry.Cost),
 		VirtualKeyName: derefString(entry.VirtualKeyName),
 		UserID:         derefString(entry.UserID),
+		RoutingRule:    cmp.Or(derefString(entry.RoutingRuleName), derefString(entry.RoutingRuleID)),
+		ProviderKey:    cmp.Or(entry.SelectedKeyName, entry.SelectedKeyID),
+		Alias:          derefString(entry.Alias),
+		ComplexityTier: derefString(entry.ComplexityTier),
+		ToolCalls:      entry.ToolCallNames,
+		Link:           logDetailLink(entry.ID),
 	}
-	if entry.ErrorDetailsParsed != nil && entry.ErrorDetailsParsed.Error != nil {
-		row.ErrorMessage = truncateText(entry.ErrorDetailsParsed.Error.Message, 300)
+	if be := entry.ErrorDetailsParsed; be != nil {
+		row.ErrorMessage = truncateText(be.GetErrorString(), 300)
+		if be.StatusCode != nil {
+			row.StatusCode = *be.StatusCode
+		}
+		if be.Error != nil {
+			if be.Error.Type != nil {
+				row.ErrorType = *be.Error.Type
+			}
+			if be.Error.Code != nil {
+				row.ErrorCode = *be.Error.Code
+			}
+		}
 	}
 	if includeContent {
 		row.Content = truncateText(logContent(entry), contentLimit)
@@ -664,15 +975,35 @@ func logContent(entry *logstore.Log) string {
 // uses so Warp's numbers line up with the charts a user is looking at. It then
 // widens further if the range would still produce too many buckets.
 func bucketSize(filters *logstore.SearchFilters) (int64, error) {
+	// Every caller reaches this through filterArg -> parseFilters, which always
+	// defaults both bounds before returning - so unlike DefaultBucketSize
+	// itself (a shared helper other callers do use with a possibly-nil bound),
+	// StartTime/EndTime are never nil here.
 	bucket := logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)
-	if filters.StartTime == nil || filters.EndTime == nil {
-		return bucket, nil
-	}
 	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
 	if bucket > 0 && span/float64(bucket) > MaxHistogramBuckets {
 		return 0, fmt.Errorf("the requested time range produces more than %d buckets; use a shorter range", MaxHistogramBuckets)
 	}
 	return bucket, nil
+}
+
+// coarseBucketSize widens the bucket so a per-provider series stays small.
+//
+// The dashboard's bucket size is sized for a chart with hundreds of pixels. The
+// same series serialized as JSON, repeated once per provider, comfortably
+// exceeds the tool-result budget - and an over-budget result is discarded, so
+// the model retries, which is how one question turned into four identical
+// queries in the logs.
+func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
+	// See the same note on bucketSize above: every caller reaches this through
+	// filterArg -> parseFilters, so both bounds are always set here.
+	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
+	if span <= 0 {
+		return 0, fmt.Errorf("the time range is empty")
+	}
+	// Aim for CoarseBuckets points, never finer than the dashboard would use.
+	coarse := int64(span / CoarseBuckets)
+	return max(coarse, logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)), nil
 }
 
 // buildTools returns the tools available for a request.
@@ -681,31 +1012,80 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 // per request, which is what will let a future change withhold content-bearing
 // tools from callers who may not read log bodies.
 func buildTools() []Tool {
-	return []Tool{
-		queryLogsTool(),
-		getLogDetailTool(),
-		queryMetricsTool(),
-		queryUsersTool(),
-		queryVirtualKeysTool(),
-		queryModelsTool(),
-		describeFilterSpaceTool(),
-	}
+	return buildToolsFor(nil)
 }
 
-// chatTools converts the tool set into provider-facing declarations.
-func chatTools(tools []Tool) ([]schemas.ChatTool, error) {
-	declared := make([]schemas.ChatTool, 0, len(tools))
+// buildToolsFor returns the tools a request can actually run.
+//
+// semantic_search_logs needs an embedding executor, which a deployment may not
+// have configured. Declaring it anyway tells the model a capability exists,
+// costs it a step to discover otherwise, and on a deployment with no embedding
+// provider does that on every single attempt.
+func buildToolsFor(searcher *SemanticSearcher) []Tool {
+	tools := []Tool{}
+	if searcher != nil {
+		tools = append(tools, semanticSearchLogsTool())
+	}
+	tools = append(tools,
+		queryLogsTool(),
+		countLogsTool(),
+		getLogDetailTool(),
+		getRequestTraceTool(),
+		queryMetricsTool(),
+		queryUsageByTool(),
+		queryModelsTool(),
+		describeFilterSpaceTool(),
+		describeVirtualKeyTool(),
+		askUserToolDef(),
+	)
+	return tools
+}
+
+// declaredToolSets memoizes responsesTools(buildToolsFor(...)) - Warp's tool
+// set is fixed at compile time apart from whether semantic_search_logs is
+// offered, so every one of its JSON schemas was otherwise being re-parsed with
+// sonic on every single turn for no reason. One set per availability: sharing
+// a single set would either hide semantic_search_logs from a deployment that
+// has it or declare it to one that does not. The parsed result is read-only
+// from every call site (folded straight into an outgoing request's
+// Params.Tools), so sharing a slice across concurrent turns is safe.
+var declaredToolSets [2]struct {
+	once  sync.Once
+	tools []schemas.ResponsesTool
+	err   error
+}
+
+// declaredTools returns Warp's tool declarations for a deployment with or
+// without semantic search, parsing each set once on first use rather than on
+// every turn.
+func declaredTools(semantic bool) ([]schemas.ResponsesTool, error) {
+	index, searcher := 0, (*SemanticSearcher)(nil)
+	if semantic {
+		// buildToolsFor only checks for presence; the tool itself reads the
+		// searcher from ToolDeps at execution time.
+		index, searcher = 1, &SemanticSearcher{}
+	}
+	set := &declaredToolSets[index]
+	set.once.Do(func() {
+		set.tools, set.err = responsesTools(buildToolsFor(searcher))
+	})
+	return set.tools, set.err
+}
+
+// ChatTools converts the tool set into provider-facing declarations.
+func responsesTools(tools []Tool) ([]schemas.ResponsesTool, error) {
+	declared := make([]schemas.ResponsesTool, 0, len(tools))
 	for _, tool := range tools {
 		var parameters schemas.ToolFunctionParameters
 		if err := sonic.UnmarshalString(tool.schemaJSON, &parameters); err != nil {
 			return nil, fmt.Errorf("warp tool %s has an invalid schema: %w", tool.name, err)
 		}
-		declared = append(declared, schemas.ChatTool{
-			Type: schemas.ChatToolTypeFunction,
-			Function: &schemas.ChatToolFunction{
-				Name:        tool.name,
-				Description: &[]string{tool.description}[0],
-				Parameters:  &parameters,
+		declared = append(declared, schemas.ResponsesTool{
+			Type:        schemas.ResponsesToolTypeFunction,
+			Name:        new(tool.name),
+			Description: new(tool.description),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{
+				Parameters: &parameters,
 			},
 		})
 	}
@@ -720,4 +1100,24 @@ func toolByName(tools []Tool, name string) (*Tool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// filtersObject reads the top-level filters argument, rejecting a value of the
+// wrong shape rather than discarding it.
+//
+// A discarded type assertion turned a malformed argument into "no filters",
+// which parseFilters answers with the default unfiltered 24-hour window - so a
+// bad filter widened the query instead of failing it, and nothing told the
+// model its filter had been ignored. This checks only the top-level type; the
+// fields inside a valid object are validated by parseFilters.
+func filtersObject(args map[string]any) (map[string]any, error) {
+	value, present := args["filters"]
+	if !present || value == nil {
+		return nil, nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
+	}
+	return raw, nil
 }

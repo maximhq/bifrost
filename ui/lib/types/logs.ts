@@ -813,6 +813,8 @@ export interface LogFilters {
 	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
+	min_cost?: number;
+	max_cost?: number;
 	min_tokens?: number;
 	max_tokens?: number;
 	missing_cost_only?: boolean;
@@ -1486,8 +1488,8 @@ export interface MCPTopToolsResponse {
 export interface ModelRankingTrend {
 	has_previous_period: boolean;
 	requests_trend: number;
-	tokens_trend: number;
-	cost_trend: number;
+	tokens_trend: number | null;
+	cost_trend: number | null;
 	latency_trend: number;
 	throughput_trend: number;
 }
@@ -1513,8 +1515,8 @@ export interface ModelRankingsResponse {
 export interface UserRankingTrend {
 	has_previous_period: boolean;
 	requests_trend: number;
-	tokens_trend: number;
-	cost_trend: number;
+	tokens_trend: number | null;
+	cost_trend: number | null;
 }
 
 export interface UserRankingEntry {
@@ -1534,8 +1536,8 @@ export type RankingDimension = "team" | "customer" | "business_unit" | "project"
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;
 	requests_trend: number;
-	tokens_trend: number;
-	cost_trend: number;
+	tokens_trend: number | null;
+	cost_trend: number | null;
 }
 
 export interface DimensionRankingEntry {

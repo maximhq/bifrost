@@ -839,9 +839,9 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 	return true // Tool is skipped (nil is treated as [] - no tools)
 }
 
-// canAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
+// CanAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
 // Returns true if the tool can be auto-executed, false otherwise.
-func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
+func CanAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// First check if tool is in ToolsToExecute (must be executable first)
 	if shouldSkipToolForConfig(toolName, config) {
 		return false // Tool is not in ToolsToExecute, so it cannot be auto-executed
@@ -869,6 +869,25 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	}
 
 	return false // Tool is not auto-executed (nil is treated as [] - no tools)
+}
+
+// AuthorizeCodeModeToolCall is the invocation-time allow-list check for a tool that
+// Code Mode is about to call. It runs at the actual chokepoint (callMCPTool), not as a
+// heuristic over generated code text: a model can reach a bound tool through syntactic
+// indirection (e.g. getattr(server, name)) that a source-text scan won't recognize.
+//
+// tools_to_execute always applies. tools_to_auto_execute applies only when the call runs
+// unattended, which the agent loop marks with BifrostContextKeyMCPUnattendedExecution.
+// A call a human approved, or one the application executes itself, keeps the documented
+// "manual approval required" semantics instead of being denied outright.
+func AuthorizeCodeModeToolCall(ctx *schemas.BifrostContext, toolName string, config *schemas.MCPClientConfig) error {
+	if shouldSkipToolForConfig(toolName, config) {
+		return fmt.Errorf("tool %q is not in tools_to_execute for this client", toolName)
+	}
+	if unattended, _ := ctx.Value(schemas.BifrostContextKeyMCPUnattendedExecution).(bool); unattended && !CanAutoExecuteTool(toolName, config) {
+		return fmt.Errorf("tool %q requires approval and cannot be auto-executed via Code Mode", toolName)
+	}
+	return nil
 }
 
 // shouldSkipToolForRequest checks if a tool should be skipped based on the request context.

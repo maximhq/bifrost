@@ -11,6 +11,9 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 var (
@@ -21,6 +24,8 @@ var (
 	// ErrInvalidConfig wraps every validation failure from SaveConfig, so a
 	// caller can map the whole family to one status without matching text.
 	ErrInvalidConfig = errors.New("warp: invalid configuration")
+	// ErrNoVectorStore means Warp's required semantic index has no backend.
+	ErrNoVectorStore = errors.New("warp: vector store is not connected")
 )
 
 // Service is the in-process face of Warp. It is built once at bootstrap, before
@@ -31,10 +36,18 @@ type Service struct {
 	// method treats that as "not configured" rather than a fault.
 	store  configstore.WarpStore
 	logger schemas.Logger
+	// conversations is nil on a deployment with no log store. Chat still works;
+	// it just does not file anything.
+	conversations logstore.WarpConversationStore
 	// logs is nil on deployments with no logging plugin. Warp's tools have
 	// nothing to read there, so chat is reported unavailable rather than
 	// registered and always failing.
 	logs LogReader
+	// governance is nil when the config store does not implement
+	// GovernanceReader. Unlike logs, this is not fatal to CanChat - it only
+	// narrows describe_virtual_key to reporting itself unavailable, the same
+	// pattern semantic search already uses for its own optional dependency.
+	governance GovernanceReader
 	// client owns Warp's dedicated Bifrost instance. It exists only when there is
 	// something to read; tests replace chatOverride instead, so the loop can be
 	// driven by a scripted model.
@@ -49,6 +62,20 @@ type Service struct {
 	// closed records that Shutdown ran, so a later rebind cannot revive a
 	// service whose lifecycle is over.
 	closed bool
+	// cleanupOnce/stopCleanup/cleanupStopOnce own the history retention loop.
+	// The service is rebuilt once at route registration, so start and stop both
+	// have to tolerate being called on an instance that never ran one.
+	cleanupOnce     sync.Once
+	cleanupStopOnce sync.Once
+	stopCleanup     chan struct{}
+	// catalog prices Warp's own usage. Nil is supported: the panel then reports
+	// tokens without a cost, rather than reporting a cost of zero.
+	catalog      *modelcatalog.ModelCatalog
+	vectorStore  vectorstore.VectorStore
+	embed        EmbeddingExecutor
+	indexer      *LogIndexer
+	semantic     *SemanticSearcher
+	backfillJobs BackfillJobStore
 }
 
 // Option configures a Service.
@@ -66,16 +93,57 @@ func WithLogReader(logs LogReader) Option {
 	return func(s *Service) { s.logs = logs }
 }
 
+// WithModelCatalog lets the service price its own spend. Warp's client is
+// plugin-free, so nothing upstream computes a cost for it; its spend is
+// invisible to the gateway's budgets and has to be visible in the panel instead.
+func WithModelCatalog(catalog *modelcatalog.ModelCatalog) Option {
+	return func(s *Service) { s.catalog = catalog }
+}
+
+// WithVectorStore connects Warp to the deployment-wide vector store.
+func WithVectorStore(store vectorstore.VectorStore) Option {
+	return func(s *Service) { s.vectorStore = store }
+}
+
+// WithEmbeddingExecutor supplies the main gateway embedding path.
+func WithEmbeddingExecutor(executor EmbeddingExecutor) Option {
+	return func(s *Service) { s.embed = executor }
+}
+
+// WithBackfillJobStore overrides durable job lookup in tests.
+func WithBackfillJobStore(store BackfillJobStore) Option {
+	return func(s *Service) { s.backfillJobs = store }
+}
+
 // WithChatFunc replaces the real inference path. Test seam only: the agent loop
 // can then be driven by a scripted model with no provider behind it.
 func WithChatFunc(chat ChatFunc) Option {
 	return func(s *Service) { s.chatOverride = chat }
 }
 
+// WithConversationStore gives the service somewhere to file chats.
+//
+// History comes from the log store, which the server only has after plugins
+// load, so this is a real wiring option rather than the test seam it was while
+// transcripts lived alongside configuration. A service built without one serves
+// chat and drops the transcript, which is the right behaviour for a deployment
+// that runs with logging off.
+func WithConversationStore(store logstore.WarpConversationStore) Option {
+	return func(s *Service) { s.conversations = store }
+}
+
 // WithConfigStore sets the configuration store directly, bypassing the
 // ConfigStore narrowing NewService does. Tests use it to inject a double.
 func WithConfigStore(store configstore.WarpStore) Option {
 	return func(s *Service) { s.store = store }
+}
+
+// WithGovernanceReader sets describe_virtual_key's dependency directly, the
+// same test seam as WithConfigStore - a double built to satisfy WarpStore
+// alone has no reason to also implement every method GovernanceReader would
+// otherwise be narrowed from.
+func WithGovernanceReader(reader GovernanceReader) Option {
+	return func(s *Service) { s.governance = reader }
 }
 
 // NewService builds a Service over the deployment's config store. A store that
@@ -85,6 +153,8 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	service := &Service{}
 	if store != nil {
 		service.store, _ = store.(configstore.WarpStore)
+		service.backfillJobs, _ = store.(BackfillJobStore)
+		service.governance, _ = store.(GovernanceReader)
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -92,7 +162,23 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	if service.logs != nil {
 		service.client = NewClient(service.logger)
 	}
+	if service.store != nil && service.vectorStore != nil && service.embed != nil {
+		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
+		if service.logs != nil {
+			// Only when the reader can hydrate. A reader that cannot is still a
+			// perfectly good LogReader for every other Warp tool, so semantic
+			// search is the only thing that goes missing.
+			if hydrator, ok := service.logs.(SemanticHydrator); ok {
+				service.semantic = NewSemanticSearcher(service.store, service.vectorStore, service.embed, hydrator)
+			}
+		}
+	}
 	return service
+}
+
+// HasHistory reports whether conversations can be listed and filed.
+func (s *Service) HasHistory() bool {
+	return s.conversations != nil
 }
 
 // CanChat reports whether the chat endpoint can be served: there is data to
@@ -106,21 +192,23 @@ func (s *Service) CanChat() bool {
 	return s.logs != nil && (s.client != nil || s.chatOverride != nil)
 }
 
-// chatFuncFor resolves the inference function for a request.
 // turnDeps returns the model client and the log reader as one consistent pair.
 //
 // Taken under a single RLock, because SetLogReader replaces both and reading
 // them separately let a turn keep a usable chat func while the reader went nil
 // underneath it - RunTurn then handed nil to NewAgent, and the first log tool
 // the model reached for dereferenced it.
-func (s *Service) turnDeps(ctx context.Context, config *schemas.WarpConfig) (ChatFunc, LogReader) {
+func (s *Service) turnDeps(ctx context.Context, config *schemas.WarpConfig, conversationID string) (ChatFunc, LogReader, *SemanticSearcher) {
 	s.mu.RLock()
-	override, client, logs := s.chatOverride, s.client, s.logs
+	override, client, logs, semantic := s.chatOverride, s.client, s.logs, s.semantic
 	s.mu.RUnlock()
-	return s.chatFuncFrom(ctx, config, override, client), logs
+	return s.chatFuncFrom(ctx, config, conversationID, override, client), logs, semantic
 }
 
-func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig) ChatFunc {
+// chatFuncFor resolves the inference function for a request. The conversation
+// id travels upstream as a logging header, so it is settled before the first
+// model call rather than after the last one.
+func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig, conversationID string) ChatFunc {
 	// Copied out under the read lock rather than used in place: SetLogReader
 	// writes s.client while requests are in flight, so reading it here unguarded
 	// is a race on a pointer another goroutine is assigning. Holding the lock
@@ -129,20 +217,41 @@ func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig) C
 	s.mu.RLock()
 	override, client := s.chatOverride, s.client
 	s.mu.RUnlock()
-	return s.chatFuncFrom(ctx, config, override, client)
+	return s.chatFuncFrom(ctx, config, conversationID, override, client)
 }
 
 // chatFuncFrom resolves an already-snapshotted override and client. Split out so
 // turnDeps can take the client and the reader under one lock without reading
 // s.client a second time.
-func (s *Service) chatFuncFrom(ctx context.Context, config *schemas.WarpConfig, override ChatFunc, client *Client) ChatFunc {
+func (s *Service) chatFuncFrom(ctx context.Context, config *schemas.WarpConfig, conversationID string, override ChatFunc, client *Client) ChatFunc {
 	if override != nil {
 		return override
 	}
 	if client == nil {
 		return nil
 	}
-	return client.Chat(ctx, config)
+	return client.Chat(ctx, config, conversationID)
+}
+
+// costFuncFor prices usage against the model Warp is configured to run on.
+//
+// Priced against the configured model, not the qualified provider/model form
+// sent upstream: the catalog keys on the bare name, and a "openai/gpt-5.5"
+// lookup misses and silently prices the turn at zero.
+func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
+	if s.catalog == nil {
+		return nil
+	}
+	return func(usage *schemas.BifrostLLMUsage) float64 {
+		// ResponsesRequest, because that is what the agent calls. The catalog
+		// keeps separate chat and responses rates and only falls back when the
+		// requested mode is absent, so naming the wrong one silently prices the
+		// turn off the other rate card.
+		// costProviderFor, not config.Provider: a provider-qualified model routes
+		// by its own prefix, and pricing must follow routing or the turn is
+		// priced off the wrong rate card.
+		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesRequest, nil)
+	}
 }
 
 // Shutdown releases Warp's model client. Safe to call on a service that never
@@ -150,8 +259,15 @@ func (s *Service) chatFuncFrom(ctx context.Context, config *schemas.WarpConfig, 
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	s.closed = true
+	// Takes no lock of its own, so it is safe inside this one.
+	s.stopHistoryCleanup()
+	if s.indexer != nil {
+		s.indexer.Close()
+	}
 	client := s.client
 	s.mu.Unlock()
+	// Outside the lock: the instance's own Shutdown drains queued requests, and
+	// closed is already set, so nothing can build a replacement meanwhile.
 	if client != nil {
 		client.Shutdown()
 	}
@@ -178,6 +294,37 @@ func (s *Service) SetLogReader(logs LogReader) {
 	if logs != nil && s.client == nil && s.chatOverride == nil {
 		s.client = NewClient(s.logger)
 	}
+	// The searcher holds its own reference to the reader, so rebinding without
+	// rebuilding it left semantic search hydrating through the reader this
+	// service no longer uses - or absent entirely on a deployment that enabled
+	// logging after startup, which is exactly the case SetLogReader exists for.
+	s.semantic = s.buildSemanticSearcher()
+}
+
+// buildSemanticSearcher returns a searcher for the current dependencies, or nil
+// when any of them is missing. Callers must hold s.mu.
+func (s *Service) buildSemanticSearcher() *SemanticSearcher {
+	if s.store == nil || s.vectorStore == nil || s.embed == nil {
+		return nil
+	}
+	hydrator, ok := s.logs.(SemanticHydrator)
+	if !ok {
+		return nil
+	}
+	return NewSemanticSearcher(s.store, s.vectorStore, s.embed, hydrator)
+}
+
+// researchDeps returns the reader and the searcher as one consistent pair.
+//
+// Taken together under a single RLock, because SetLogReader replaces both and a
+// turn that read them under two locks could get the old reader with the newly
+// rebuilt searcher - the agent's tools would then search one backend and hydrate
+// the details from another, and the inconsistency would look like a data bug
+// rather than a race.
+func (s *Service) researchDeps() (LogReader, *SemanticSearcher) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logs, s.semantic
 }
 
 // logReader returns the current reader under the read lock.
@@ -198,6 +345,14 @@ func (s *Service) ChatUnavailableReason() schemas.WarpUnavailableReason {
 	return schemas.WarpUnavailableNotConfigured
 }
 
+// IndexLog accepts a post-persistence logging notification. It copies and
+// queues bounded data; provider and vector-store I/O happen in worker goroutines.
+func (s *Service) IndexLog(ctx context.Context, entry *logstore.Log) {
+	if s.indexer != nil {
+		s.indexer.Enqueue(ctx, entry)
+	}
+}
+
 // HasConfigStore reports whether configuration can be read and written at all.
 // Transports use it to decide whether to register the settings routes.
 func (s *Service) HasConfigStore() bool {
@@ -209,5 +364,12 @@ func (s *Service) HasConfigStore() bool {
 func (s *Service) warnf(format string, args ...any) {
 	if s.logger != nil {
 		s.logger.Warn(format, args...)
+	}
+}
+
+// infof logs when a logger is present. See warnf.
+func (s *Service) infof(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Info(format, args...)
 	}
 }
