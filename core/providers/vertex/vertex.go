@@ -4483,6 +4483,11 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	return response, nil
 }
 
+// ModelRetrieve is not supported by the Vertex provider.
+func (provider *VertexProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
 // Compaction is not supported by the Vertex provider.
 func (provider *VertexProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())

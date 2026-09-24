@@ -568,6 +568,11 @@ func (provider *DeepSeekProvider) CountTokens(ctx *schemas.BifrostContext, key s
 	)
 }
 
+// ModelRetrieve is not supported by the DeepSeek provider.
+func (provider *DeepSeekProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
 // Compaction is not supported by the DeepSeek provider.
 func (provider *DeepSeekProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())

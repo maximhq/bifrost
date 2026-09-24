@@ -95,6 +95,7 @@ var ErrorTypes = []ErrorType{
 // Not plugins/governance.IsModelRequiredForRequest: that asks whether a model is
 // carried at all, has the opposite default, and governs authorization.
 var modelAddressedRequestTypes = map[RequestType]struct{}{
+	ModelRetrieveRequest:         {},
 	TextCompletionRequest:        {},
 	TextCompletionStreamRequest:  {},
 	EmbeddingRequest:             {},

@@ -701,6 +701,62 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	return response, nil
 }
 
+// ModelRetrieveRequest retrieves a single model's metadata from the specified provider.
+func (bifrost *Bifrost) ModelRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "model retrieve request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ModelRetrieveRequest,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for model retrieve request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ModelRetrieveRequest,
+			},
+		}
+	}
+	if req.Model == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "model is required for model retrieve request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider:    req.Provider,
+				RequestType: schemas.ModelRetrieveRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	// Metadata lookup, no tokens spent.
+	reqCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ModelRetrieveRequest
+	bifrostReq.ModelRetrieveRequest = req
+
+	resp, err := bifrost.handleRequest(reqCtx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.ModelRetrieveResponse, nil
+}
+
 func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {
 	if ctx == nil {
 		return providerKeys
@@ -7843,6 +7899,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.ListModelsResponse = listModelsResponse
+	case schemas.ModelRetrieveRequest:
+		modelRetrieveResponse, bifrostError := provider.ModelRetrieve(req.Context, key, req.BifrostRequest.ModelRetrieveRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ModelRetrieveResponse = modelRetrieveResponse
 	case schemas.TextCompletionRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
@@ -9184,6 +9246,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.RequestType = ""
 	req.ListModelsRequest = nil
+	req.ModelRetrieveRequest = nil
 	req.TextCompletionRequest = nil
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil

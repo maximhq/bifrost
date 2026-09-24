@@ -66,3 +66,55 @@ func TestListModelsByKeyResponseShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestModelRetrieveResponseShape(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"gpt-6-astra","object":"model","created":1686935002,"owned_by":"openai","shutdown_date":"2026-10-23"}`))
+	}))
+	defer server.Close()
+
+	response, bifrostErr := HandleOpenAIModelRetrieveRequest(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&fasthttp.Client{},
+		server.URL+"/v1/models/gpt-6-astra",
+		schemas.Key{},
+		nil,
+		schemas.ModelProvider("test"),
+		false,
+		false,
+	)
+
+	require.Nil(t, bifrostErr)
+	require.Equal(t, "test/gpt-6-astra", response.ID)
+	require.Equal(t, schemas.Ptr("openai"), response.OwnedBy)
+	require.Equal(t, schemas.Ptr(int64(1686935002)), response.Created)
+	require.Equal(t, schemas.Ptr("2026-10-23"), response.ShutdownDate)
+}
+
+func TestModelRetrieveUpstreamErrorIsPropagated(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"The model 'nope' does not exist","type":"invalid_request_error","code":"model_not_found"}}`))
+	}))
+	defer server.Close()
+
+	response, bifrostErr := HandleOpenAIModelRetrieveRequest(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&fasthttp.Client{},
+		server.URL+"/v1/models/nope",
+		schemas.Key{},
+		nil,
+		schemas.ModelProvider("test"),
+		false,
+		false,
+	)
+
+	require.Nil(t, response)
+	require.NotNil(t, bifrostErr)
+	require.Equal(t, schemas.Ptr(http.StatusNotFound), bifrostErr.StatusCode)
+	require.Contains(t, bifrostErr.Error.Message, "does not exist")
+}

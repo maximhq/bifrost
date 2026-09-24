@@ -146,6 +146,18 @@ func (response *BifrostListModelsResponse) ApplyPagination(pageSize int, pageTok
 	return paginatedResponse
 }
 
+// BifrostModelRetrieveRequest retrieves a single model's metadata (OpenAI GET /v1/models/{model}).
+type BifrostModelRetrieveRequest struct {
+	Provider ModelProvider `json:"provider"`
+	Model    string        `json:"model"`
+}
+
+// BifrostModelRetrieveResponse carries the retrieved model inline, alongside the usual extra fields.
+type BifrostModelRetrieveResponse struct {
+	Model
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
@@ -158,6 +170,7 @@ type Model struct {
 	MaxOutputTokens     *int               `json:"max_output_tokens,omitempty"`
 	Architecture        *Architecture      `json:"architecture,omitempty"`
 	IsDeprecated        bool               `json:"is_deprecated,omitempty"`
+	ShutdownDate        *string            `json:"shutdown_date,omitempty"` // Provider-announced retirement date
 	Pricing             *Pricing           `json:"pricing,omitempty"`
 	TopProvider         *TopProvider       `json:"top_provider,omitempty"`
 	PerRequestLimits    *PerRequestLimits  `json:"per_request_limits,omitempty"`

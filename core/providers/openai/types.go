@@ -1061,6 +1061,9 @@ type OpenAIModel struct {
 	OwnedBy string `json:"owned_by"`
 	Created *int64 `json:"created,omitempty"`
 
+	// Retirement date announced by the provider, returned by model retrieve
+	ShutdownDate *string `json:"shutdown_date,omitempty"`
+
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`
 	ContextWindow *int  `json:"context_window,omitempty"`
