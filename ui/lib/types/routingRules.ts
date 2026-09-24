@@ -36,6 +36,8 @@ export interface RoutingRule {
 	cel_expression: string;
 	targets: RoutingTarget[];
 	fallbacks?: RoutingFallbackWire[];
+	/** Time-to-first-token deadline (ms) for streaming requests; unset when off. */
+	ttft_timeout_ms?: number | null;
 	scope: "global" | "team" | "customer" | "virtual_key" | "user";
 	scope_id?: string;
 	priority: number;
@@ -52,6 +54,8 @@ export interface CreateRoutingRuleRequest {
 	cel_expression?: string;
 	targets: RoutingTarget[];
 	fallbacks?: RoutingFallbackWire[];
+	/** 0 turns the TTFT deadline off (and clears it on update). */
+	ttft_timeout_ms?: number;
 	scope: string;
 	scope_id?: string;
 	priority: number;
@@ -95,6 +99,8 @@ export interface RoutingRuleFormData {
 	cel_expression: string;
 	targets: RoutingTargetFormData[];
 	fallbacks: RoutingFallbackFormData[];
+	/** Raw input; empty means no TTFT deadline. */
+	ttft_timeout_ms: string;
 	scope: string;
 	scope_id: string;
 	priority: number;
@@ -140,6 +146,7 @@ export const DEFAULT_ROUTING_RULE_FORM_DATA: RoutingRuleFormData = {
 	cel_expression: "",
 	targets: [DEFAULT_ROUTING_TARGET],
 	fallbacks: [],
+	ttft_timeout_ms: "",
 	scope: RoutingRuleScope.Global,
 	scope_id: "",
 	priority: 0,
