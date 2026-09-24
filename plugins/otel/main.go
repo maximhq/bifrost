@@ -127,6 +127,12 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
+	// ApplyTraceDimensionsToChildSpans controls whether x-bf-dim-* dimensions stored on
+	// the trace (TraceAttrDimensions) are merged onto every exported span. When false
+	// (default), these attributes are only present on the root span via the standard
+	// span-attribute mechanism.
+	ApplyTraceDimensionsToChildSpans bool `json:"apply_trace_dimensions_to_child_spans,omitempty"`
+
 	// ExportRawPayloads attaches raw provider bodies to LLM spans. Off by default;
 	// requires store_raw_request_response and is suppressed by disable_content_logging.
 	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
@@ -299,6 +305,7 @@ type profileForStorage struct {
 	OverheadBreakdownEnabled bool              `json:"overhead_breakdown_enabled,omitempty"`
 	RequestHeaders           []string          `json:"request_headers,omitempty"`
 	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
+	ApplyTraceDimensionsToChildSpans bool              `json:"apply_trace_dimensions_to_child_spans,omitempty"`
 	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
 	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
@@ -343,6 +350,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			OverheadBreakdownEnabled: p.OverheadBreakdownEnabled,
 			RequestHeaders:           p.RequestHeaders,
 			DisableContentLogging:    p.DisableContentLogging,
+			ApplyTraceDimensionsToChildSpans: p.ApplyTraceDimensionsToChildSpans,
 			GroupTracesBySession:     p.GroupTracesBySession,
 			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
@@ -424,7 +432,8 @@ type otelTarget struct {
 	metricsExporter          *MetricsExporter
 	requestHeaders           []string
 	disableContentLogging    bool
-	exportRawPayloads        bool
+	applyTraceDimensionsToChildSpans bool
+	exportRawPayloads                bool
 	groupTracesBySession     bool
 	disableRootSpanContent   bool
 	overheadBreakdownEnabled bool
@@ -626,7 +635,8 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		traceType:                profile.TraceType,
 		requestHeaders:           slices.Clone(profile.RequestHeaders),
 		disableContentLogging:    profile.DisableContentLogging,
-		exportRawPayloads:        profile.ExportRawPayloads,
+		applyTraceDimensionsToChildSpans: profile.ApplyTraceDimensionsToChildSpans,
+		exportRawPayloads:                profile.ExportRawPayloads,
 		groupTracesBySession:     profile.GroupTracesBySession,
 		disableRootSpanContent:   profile.DisableRootSpanContent,
 		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
@@ -915,7 +925,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.applyTraceDimensionsToChildSpans, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)

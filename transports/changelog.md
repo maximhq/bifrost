@@ -19,6 +19,7 @@ description: "v2.2.2 changelog - 2026-09-23"
 <Update label="Bifrost(HTTP)" description="2.2.2">
 ## ✨ Features
 
+- **Optional Dimension Header Propagation to Child Spans** — when an OTEL profile sets `apply_trace_dimensions_to_child_spans`, `x-bf-dim-*` headers stored on the trace are merged onto every exported span (root, LLM call, plugin, retry, fallback, MCP tool), not just the root HTTP span. Reserved suffixes `path` and `method` are skipped, and span-level attributes win on conflict (#3770)
 - **Typesafe Provider and Decisions API** - New typesafe provider, `/v1/decisions` endpoint and `/typesafe` integration. Providers without native decision support now answer decision requests through forced tool-calling on their chat model, whether used as the primary or as a fallback. Probabilities are normalized to sum to exactly 1 and the chosen option must be the most likely one. Decision requests are priced from the datasheet and logged with their answers (#7355, #7361, #7384, #7440)
 - **Provider-Level Session Affinity** - A session (from `x-bf-session-id` or the session header that Claude Code, Codex CLI or OpenCode already send) stays on the provider and key that last served it. Affinity only reorders the chain routing built and never restores a provider routing excluded. The logs UI shows it as a routing engine
 - **Claude Opus 5.5 Support** - Computer use sends `computer_toolset_20260801` on the Anthropic API and Vertex, while Bedrock and Azure keep `computer_20251124`. `toolset_name` is carried on both halves of each call/result pair across typed, raw passthrough and streaming paths. Disabled thinking and forced tool choice are rejected for Opus 5.5+, and the datasheet `supports_reasoning_disable` field can override this (#7433, #7434, #7441)
@@ -118,6 +119,7 @@ description: "v2.2.2 changelog - 2026-09-23"
 
 </Update>
 <Update label="otel" description="1.5.5">
+- feat: optionally merge `x-bf-dim-*` dimensions onto every exported span when `apply_trace_dimensions_to_child_spans` is enabled (#3770)
 - chore: upgraded core to v1.10.0 and framework to v1.7.3
 
 </Update>
