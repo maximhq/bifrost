@@ -85,7 +85,7 @@ func ToVertexGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 
 	content := bifrostReq.Input[0].Content
 	params := bifrostReq.Params
-	gemContent, err := gemini.EmbeddingContentToGeminiContent(content)
+	gemContent, err := gemini.EmbeddingContentToGeminiContent(content, geminiImageURLSchemes...)
 	if err != nil {
 		return nil, err
 	}
