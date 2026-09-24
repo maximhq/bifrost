@@ -168,6 +168,58 @@ func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
 	assert.Equal(t, "m", req.ChatRequest.Fallbacks[0].Model)
 }
 
+// TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly: a matched
+// rule's ttft_timeout_ms lands on BifrostContextKeyStreamFirstTokenTimeout,
+// under the same restricted-write block core installs around PreRequestHook,
+// and only for streaming request types.
+func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T) {
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID:            "ttft-1",
+		Name:          "TTFT Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
+		},
+		ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet-4-5"}}},
+		TTFTTimeoutMs:   new(1500),
+		Enabled:         bifrost.Ptr(true),
+		Scope:           "global",
+	}))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		requestType schemas.RequestType
+		want        time.Duration
+	}{
+		{schemas.ChatCompletionStreamRequest, 1500 * time.Millisecond},
+		{schemas.ResponsesStreamRequest, 1500 * time.Millisecond},
+		{schemas.ChatCompletionRequest, 0},
+	} {
+		t.Run(string(tc.requestType), func(t *testing.T) {
+			req := &schemas.BifrostRequest{RequestType: tc.requestType}
+			if tc.requestType == schemas.ResponsesStreamRequest {
+				req.ResponsesRequest = &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+			} else {
+				req.ChatRequest = &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+			}
+			root := schemas.NewBifrostContext(context.Background(), time.Now())
+			root.BlockRestrictedWrites()
+			pluginName := PluginName
+			scoped := root.WithPluginScope(&pluginName)
+
+			decision, err := plugin.applyRoutingRules(scoped, req, rules.GovernanceScope{})
+			require.NoError(t, err)
+			require.NotNil(t, decision)
+			got, _ := root.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout).(time.Duration)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+}
+
 // TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules pins the ordering this plugin
 // exists to guarantee: a matched rule rewrites the model, and both the provider allowlist and
 // the load balancer must then run against the rewritten model, not the one the caller sent.

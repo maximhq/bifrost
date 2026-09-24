@@ -147,7 +147,8 @@ type CreateRoutingRuleRequest struct {
 	CelExpression string                              `json:"cel_expression"`
 	Targets       []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
 	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
-	Scope         string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
+	TTFTTimeoutMs *int                                `json:"ttft_timeout_ms,omitempty"` // nil or 0 = no TTFT deadline
+	Scope         string                              `json:"scope,omitempty"`           // Defaults to "global" if not provided
 	ScopeID       *string                             `json:"scope_id,omitempty"`
 	Query         map[string]any                      `json:"query,omitempty"`
 	Priority      int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
@@ -162,10 +163,27 @@ type UpdateRoutingRuleRequest struct {
 	CelExpression *string                             `json:"cel_expression,omitempty"`
 	Targets       []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
 	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	TTFTTimeoutMs *int                                `json:"ttft_timeout_ms,omitempty"` // nil = unchanged, 0 = clear
 	Query         map[string]any                      `json:"query,omitempty"`
 	Priority      *int                                `json:"priority,omitempty"`
 	Scope         *string                             `json:"scope,omitempty"`
 	ScopeID       *string                             `json:"scope_id,omitempty"`
+}
+
+// maxRoutingTTFTTimeoutMs caps a rule's TTFT deadline; it mirrors
+// ttft_timeout_ms's maximum in config.schema.json.
+const maxRoutingTTFTTimeoutMs = 300000
+
+// normalizeRoutingTTFTTimeout validates a ttft_timeout_ms value from a request.
+// 0 means "no deadline" and normalizes to nil.
+func normalizeRoutingTTFTTimeout(ms *int) (*int, error) {
+	if ms == nil || *ms == 0 {
+		return nil, nil
+	}
+	if *ms < 0 || *ms > maxRoutingTTFTTimeoutMs {
+		return nil, fmt.Errorf("ttft_timeout_ms must be between 1 and %d (0 disables it)", maxRoutingTTFTTimeoutMs)
+	}
+	return ms, nil
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules
@@ -593,6 +611,11 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	ttftTimeoutMs, err := normalizeRoutingTTFTTimeout(req.TTFTTimeoutMs)
+	if err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
 	if err := rules.ValidateCELExpression(req.CelExpression); err != nil {
 		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
@@ -656,6 +679,7 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		ScopeID:         req.ScopeID,
 		Priority:        req.Priority,
 		ParsedFallbacks: req.Fallbacks,
+		TTFTTimeoutMs:   ttftTimeoutMs,
 		ParsedQuery:     req.Query,
 	}
 
@@ -753,6 +777,14 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		rule.ParsedFallbacks = req.Fallbacks
+	}
+	if req.TTFTTimeoutMs != nil {
+		ttftTimeoutMs, err := normalizeRoutingTTFTTimeout(req.TTFTTimeoutMs)
+		if err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		rule.TTFTTimeoutMs = ttftTimeoutMs
 	}
 	if req.Scope != nil && *req.Scope != "" {
 		// Validate scope value before updating

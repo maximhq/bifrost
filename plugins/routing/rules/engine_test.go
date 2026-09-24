@@ -807,6 +807,69 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 	assert.Equal(t, "chain-b", decision.MatchedRuleID)
 }
 
+// TestEvaluateRoutingRules_TTFTTimeoutFollowsLastMatchedRule: the decision
+// carries the matched rule's ttft_timeout_ms, and in a chain it comes from the
+// last matched rule together with that rule's fallbacks.
+func TestEvaluateRoutingRules_TTFTTimeoutFollowsLastMatchedRule(t *testing.T) {
+	newRule := func(id, expr, model string, priority int, chain bool, ttftMs *int) *configstoreTables.TableRoutingRule {
+		return &configstoreTables.TableRoutingRule{
+			ID:            id,
+			Name:          id,
+			CelExpression: expr,
+			Targets: []configstoreTables.TableRoutingTarget{
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr(model), Weight: 1.0},
+			},
+			ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic"}}},
+			TTFTTimeoutMs:   ttftMs,
+			Enabled:         bifrost.Ptr(true),
+			Scope:           "global",
+			Priority:        priority,
+			ChainRule:       chain,
+		}
+	}
+	evaluate := func(t *testing.T, rules ...*configstoreTables.TableRoutingRule) *Decision {
+		t.Helper()
+		store, err := newTestRuleStore()
+		require.NoError(t, err)
+		for _, rule := range rules {
+			require.NoError(t, store.UpsertRule(context.Background(), rule))
+		}
+		engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+		require.NoError(t, err)
+		decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &EvaluationContext{
+			Provider: schemas.OpenAI, Model: "gpt-4o", Headers: map[string]string{}, QueryParams: map[string]string{},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, decision)
+		return decision
+	}
+
+	t.Run("single rule", func(t *testing.T) {
+		decision := evaluate(t, newRule("ttft", "model == 'gpt-4o'", "gpt-4o", 0, false, new(1500)))
+		assert.Equal(t, 1500*time.Millisecond, decision.TTFTTimeout)
+	})
+	t.Run("unset", func(t *testing.T) {
+		decision := evaluate(t, newRule("no-ttft", "model == 'gpt-4o'", "gpt-4o", 0, false, nil))
+		assert.Zero(t, decision.TTFTTimeout)
+	})
+	t.Run("chain takes the last matched rule", func(t *testing.T) {
+		decision := evaluate(t,
+			newRule("chain-a", "model == 'gpt-4o'", "gpt-4-turbo", 0, true, new(1500)),
+			newRule("chain-b", "model == 'gpt-4-turbo'", "gpt-4", 1, false, new(700)),
+		)
+		assert.Equal(t, "chain-b", decision.MatchedRuleID)
+		assert.Equal(t, 700*time.Millisecond, decision.TTFTTimeout)
+	})
+	t.Run("chain end without a deadline clears it", func(t *testing.T) {
+		decision := evaluate(t,
+			newRule("chain-a", "model == 'gpt-4o'", "gpt-4-turbo", 0, true, new(1500)),
+			newRule("chain-b", "model == 'gpt-4-turbo'", "gpt-4", 1, false, nil),
+		)
+		assert.Equal(t, "chain-b", decision.MatchedRuleID)
+		assert.Zero(t, decision.TTFTTimeout)
+	})
+}
+
 // TestEvaluateRoutingRules_TerminalRuleStopsChain tests that a terminal rule (chain_rule=false)
 // halts the chaining loop immediately without re-evaluation.
 func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {

@@ -36,6 +36,11 @@ type TableRoutingRule struct {
 	// Chaining
 	ChainRule bool `gorm:"not null;default:false" json:"chain_rule"` // If true, re-evaluates routing chain after this rule matches
 
+	// TTFTTimeoutMs is the time-to-first-token deadline for streaming requests
+	// this rule routes. An attempt with no first token in time is cut off and
+	// the next fallback runs; the last attempt is never cut off. nil = off.
+	TTFTTimeoutMs *int `gorm:"column:ttft_timeout_ms" json:"ttft_timeout_ms,omitempty"`
+
 	// Execution
 	Priority int `gorm:"type:int;not null;default:0;index" json:"priority"` // Lower = evaluated first within scope
 

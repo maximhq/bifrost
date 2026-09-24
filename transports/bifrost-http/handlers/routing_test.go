@@ -51,6 +51,10 @@ func (m *mockRoutingManager) ReloadComplexityAnalyzerConfig(_ context.Context, c
 	return m.reloadErr
 }
 
+func (m *mockRoutingManager) ReloadRoutingRule(_ context.Context, _ string) error {
+	return nil
+}
+
 func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
 	t.Helper()
 	body, err := json.Marshal(cfg)
@@ -606,4 +610,64 @@ func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rules, "a rejected create must not store a rule")
 	require.Empty(t, manager.reloaded)
+}
+
+// TestRoutingRuleTTFTTimeoutValidation pins ttft_timeout_ms on create and
+// update: 1..300000 is stored, 0 means "off" (and clears it on update),
+// omitting it on update keeps the stored value, and anything else is a 400.
+func TestRoutingRuleTTFTTimeoutValidation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &RoutingHandler{configStore: store, routingManager: &mockRoutingManager{}}
+
+	create := func(t *testing.T, name, ttft string) (int, string) {
+		t.Helper()
+		body := fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","model":"gpt-4o-mini","weight":1}],"priority":%d%s}`, name, len(name), ttft)
+		ctx := newTestRequestCtx(body)
+		handler.createRoutingRule(ctx)
+		var resp struct {
+			Rule tables.TableRoutingRule `json:"rule"`
+		}
+		_ = json.Unmarshal(ctx.Response.Body(), &resp)
+		return ctx.Response.StatusCode(), resp.Rule.ID
+	}
+	update := func(t *testing.T, id, body string) int {
+		t.Helper()
+		ctx := newTestRequestCtx(body)
+		ctx.SetUserValue("rule_id", id)
+		handler.updateRoutingRule(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T, id string) *int {
+		t.Helper()
+		rule, err := store.GetRoutingRule(context.Background(), id)
+		require.NoError(t, err)
+		return rule.TTFTTimeoutMs
+	}
+
+	status, id := create(t, "ttft-set", `,"ttft_timeout_ms":1500`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.NotNil(t, stored(t, id))
+	require.Equal(t, 1500, *stored(t, id))
+
+	status, offID := create(t, "ttft-zero", `,"ttft_timeout_ms":0`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.Nil(t, stored(t, offID), "0 must mean no TTFT deadline")
+
+	for _, bad := range []string{`,"ttft_timeout_ms":-1`, `,"ttft_timeout_ms":300001`} {
+		status, _ = create(t, "ttft-bad"+bad[len(bad)-2:], bad)
+		require.Equal(t, fasthttp.StatusBadRequest, status, "create with %s", bad)
+	}
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"description":"no ttft field"}`))
+	require.Equal(t, 1500, *stored(t, id), "an update without the field must keep it")
+
+	require.Equal(t, fasthttp.StatusBadRequest, update(t, id, `{"ttft_timeout_ms":999999}`))
+	require.Equal(t, 1500, *stored(t, id), "a rejected update must not change it")
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"ttft_timeout_ms":250}`))
+	require.Equal(t, 250, *stored(t, id))
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"ttft_timeout_ms":0}`))
+	require.Nil(t, stored(t, id), "0 on update must clear the deadline")
 }
