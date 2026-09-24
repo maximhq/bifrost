@@ -424,6 +424,12 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 			if resp.Usage.CompletionTokensDetails.NumSearchQueries != nil && *resp.Usage.CompletionTokensDetails.NumSearchQueries > 0 {
 				attrs[schemas.AttrCompletionTokenDetailsSearch] = *resp.Usage.CompletionTokensDetails.NumSearchQueries
 			}
+			if resp.Usage.CompletionTokensDetails.NumCodeExecutionRequests != nil && *resp.Usage.CompletionTokensDetails.NumCodeExecutionRequests > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsCodeExec] = *resp.Usage.CompletionTokensDetails.NumCodeExecutionRequests
+			}
+			if resp.Usage.CompletionTokensDetails.NumContainerSessions != nil && *resp.Usage.CompletionTokensDetails.NumContainerSessions > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsContainer] = *resp.Usage.CompletionTokensDetails.NumContainerSessions
+			}
 		}
 	}
 }
@@ -976,6 +982,12 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 			}
 			if d.NumSearchQueries != nil && *d.NumSearchQueries > 0 {
 				attrs[schemas.AttrOutputTokenDetailsSearch] = *d.NumSearchQueries
+			}
+			if d.NumCodeExecutionRequests != nil && *d.NumCodeExecutionRequests > 0 {
+				attrs[schemas.AttrOutputTokenDetailsCodeExec] = *d.NumCodeExecutionRequests
+			}
+			if d.NumContainerSessions != nil && *d.NumContainerSessions > 0 {
+				attrs[schemas.AttrOutputTokenDetailsContainer] = *d.NumContainerSessions
 			}
 		}
 	}

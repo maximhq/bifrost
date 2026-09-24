@@ -2175,6 +2175,106 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 	return true
 }
 
+// codeExecutionBillingExemptKey flags a request whose code execution Anthropic
+// runs at no charge. Package-local so it cannot collide with a plugin's keys.
+type codeExecutionBillingExemptKey struct{}
+
+// MarkCodeExecutionBillingExemption inspects the outgoing request body and records
+// on ctx whether Anthropic will run this request's code execution for free.
+//
+// Anthropic bills code execution by container time, except when web_search or
+// web_fetch of a version that auto-injects code execution is in the same request —
+// then the code execution behind dynamic filtering, and any code Claude runs
+// directly, carry no charge beyond tokens.
+//
+// This reads the final wire body rather than the typed request so the decision is
+// made against exactly what Anthropic sees, after tool stripping and version
+// remapping. It is deliberately separate from StripAutoInjectableTools' own scan:
+// that one stops at the first web tool, which is right for conflict-stripping but
+// would misprice a request carrying both an exempting and a non-exempting web tool.
+func MarkCodeExecutionBillingExemption(ctx *schemas.BifrostContext, jsonBody []byte) {
+	if ctx == nil {
+		return
+	}
+	ctx.SetValue(codeExecutionBillingExemptKey{}, requestExemptsCodeExecutionBilling(jsonBody))
+}
+
+// requestExemptsCodeExecutionBilling reports whether any tool in the body auto-injects
+// code execution. Unlike StripAutoInjectableTools it scans every tool and ORs the
+// results, so one qualifying tool exempts the request regardless of ordering.
+func requestExemptsCodeExecutionBilling(jsonBody []byte) bool {
+	toolsResult := providerUtils.GetJSONField(jsonBody, "tools")
+	if !toolsResult.Exists() || !toolsResult.IsArray() {
+		return false
+	}
+	for _, tool := range toolsResult.Array() {
+		toolType := tool.Get("type").String()
+		if !strings.HasPrefix(toolType, "web_search_") && !strings.HasPrefix(toolType, "web_fetch_") {
+			continue
+		}
+		if doesWebSearchOrFetchAutoInjectCodeExecution(toolType) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCodeExecutionBillingExempt reads back the flag set by MarkCodeExecutionBillingExemption.
+// An unset flag means not exempt, which bills rather than silently zeroing a real charge.
+func isCodeExecutionBillingExempt(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	exempt, ok := ctx.Value(codeExecutionBillingExemptKey{}).(bool)
+	return ok && exempt
+}
+
+// billableContainerSessions converts a code-execution call count into the number of
+// sandbox sessions to bill.
+//
+// Anthropic prices execution time with a five minute minimum per container, and
+// reports no duration at all — only a call count. Several calls in one turn share
+// one container and fall inside one minimum, so a turn that ran code owes exactly
+// one session no matter how many calls it made. A longer single execution
+// under-bills; that is a floor imposed by what the API reports, not a choice.
+func billableContainerSessions(ctx *schemas.BifrostContext, codeExecutionRequests int) *int {
+	if codeExecutionRequests <= 0 || isCodeExecutionBillingExempt(ctx) {
+		return nil
+	}
+	return schemas.Ptr(1)
+}
+
+// ApplyCodeExecutionSessionBilling fills in the billable sandbox session count on a
+// responses-shaped usage, from the code execution call count the converter already
+// surfaced. Split out from the converter because the exemption lives on ctx and the
+// usage converter has no access to it.
+func ApplyCodeExecutionSessionBilling(ctx *schemas.BifrostContext, usage *schemas.ResponsesResponseUsage) {
+	if usage == nil || usage.OutputTokensDetails == nil || usage.OutputTokensDetails.NumCodeExecutionRequests == nil {
+		return
+	}
+	usage.OutputTokensDetails.NumContainerSessions = billableContainerSessions(ctx, *usage.OutputTokensDetails.NumCodeExecutionRequests)
+}
+
+// applyCodeExecutionSessionBillingToLLMUsage is ApplyCodeExecutionSessionBilling for
+// the chat-shaped usage handle, used for the billing mirror on the streaming paths.
+func applyCodeExecutionSessionBillingToLLMUsage(ctx *schemas.BifrostContext, usage *schemas.BifrostLLMUsage) {
+	if usage == nil || usage.CompletionTokensDetails == nil || usage.CompletionTokensDetails.NumCodeExecutionRequests == nil {
+		return
+	}
+	usage.CompletionTokensDetails.NumContainerSessions = billableContainerSessions(ctx, *usage.CompletionTokensDetails.NumCodeExecutionRequests)
+}
+
+// ApplyCodeExecutionSessionBillingToPassthrough is ApplyCodeExecutionSessionBilling for
+// the passthrough usage handle. Passthrough forwards a raw body, so the exemption was
+// marked from that body rather than from a built request.
+func ApplyCodeExecutionSessionBillingToPassthrough(ctx *schemas.BifrostContext, usage *schemas.BifrostPassthroughUsage) *schemas.BifrostPassthroughUsage {
+	if usage == nil {
+		return usage
+	}
+	applyCodeExecutionSessionBillingToLLMUsage(ctx, usage.LLMUsage)
+	return usage
+}
+
 // StripEmptyThinkingBlocks removes thinking content blocks that would be
 // rejected by Anthropic: those with an empty "thinking" field, or those
 // with an empty "signature" field. An empty signature means the block came

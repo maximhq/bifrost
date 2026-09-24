@@ -535,3 +535,74 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
 }
+
+func TestAccumulatedResponsesStreamPreservesContainerBeforeUsageOnlyChunk(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	requestID := "responses-container"
+
+	// Anthropic delivers the sandbox container on message_delta, after every content
+	// block has closed, and a usage-only event can still follow it. Without an
+	// explicit cross-chunk scan the container is dropped from the rebuilt response.
+	require.NoError(t, acc.addResponsesStreamChunk(requestID, &ResponsesStreamChunk{
+		ChunkIndex: 1,
+		Timestamp:  time.Now(),
+		Container: &schemas.ResponsesResponseContainer{
+			ID:        "container_abc",
+			ExpiresAt: schemas.Ptr("2026-09-22T12:00:00Z"),
+		},
+	}, false))
+	require.NoError(t, acc.addResponsesStreamChunk(requestID, &ResponsesStreamChunk{
+		ChunkIndex: 2,
+		Timestamp:  time.Now(),
+		TokenUsage: &schemas.BifrostLLMUsage{TotalTokens: 1},
+	}, true))
+
+	data, err := acc.processAccumulatedResponsesStreamingChunks(requestID, nil, true)
+	require.NoError(t, err)
+	require.NotNil(t, data.Container)
+	require.Equal(t, "container_abc", data.Container.ID)
+	require.NotNil(t, data.Container.ExpiresAt)
+}
+
+func TestProcessedResponsesStreamCarriesContainerOntoResponse(t *testing.T) {
+	// The rebuilt response is what logging and tracing see, so the container has to
+	// survive the final whitelist too, not only the intermediate accumulation.
+	processed := &ProcessedStreamResponse{
+		StreamType: StreamTypeResponses,
+		Data: &AccumulatedData{
+			Container: &schemas.ResponsesResponseContainer{ID: "container_xyz"},
+		},
+	}
+
+	resp := processed.ToBifrostResponse()
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.ResponsesResponse)
+	require.NotNil(t, resp.ResponsesResponse.Container)
+	require.Equal(t, "container_xyz", resp.ResponsesResponse.Container.ID)
+}
+
+func TestAccumulatedResponsesStreamCarriesContainerSessionUsage(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	requestID := "responses-container-sessions"
+
+	// The billable session count rides the usage the provider stamped, so it reaches
+	// pricing through the ordinary usage path rather than needing its own carrier.
+	require.NoError(t, acc.addResponsesStreamChunk(requestID, &ResponsesStreamChunk{
+		ChunkIndex: 1,
+		Timestamp:  time.Now(),
+		TokenUsage: &schemas.BifrostLLMUsage{
+			TotalTokens: 42,
+			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+				NumCodeExecutionRequests: schemas.Ptr(3),
+				NumContainerSessions:     schemas.Ptr(1),
+			},
+		},
+	}, true))
+
+	data, err := acc.processAccumulatedResponsesStreamingChunks(requestID, nil, true)
+	require.NoError(t, err)
+	require.NotNil(t, data.TokenUsage)
+	require.NotNil(t, data.TokenUsage.CompletionTokensDetails)
+	require.NotNil(t, data.TokenUsage.CompletionTokensDetails.NumContainerSessions)
+	require.Equal(t, 1, *data.TokenUsage.CompletionTokensDetails.NumContainerSessions)
+}

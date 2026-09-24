@@ -565,3 +565,33 @@ func TestOffPeak_EndToEndFromDatasheetFile(t *testing.T) {
 	assert.InDelta(t, peakCost/2,
 		s.CalculateCost(resp(), &LookupScopes{BilledAt: utc(t, "2026-08-17T05:00:00Z")}), 1e-12)
 }
+
+func TestOffPeak_ContainerSessionFeeIsNotDiscounted(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("deepseek-v4-flash", "deepseek", "chat"): deepSeekPricing(),
+		makeKey("container", "deepseek", "chat"): {
+			Model: "container", Provider: "deepseek", Mode: "chat",
+			CodeInterpreterCostPerSession: bifrost.Ptr(0.03),
+		},
+	})
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumCodeExecutionRequests: bifrost.Ptr(1),
+			NumContainerSessions:     bifrost.Ptr(1),
+		},
+	}
+
+	bd := s.CalculateCostBreakdown(
+		makeChatResponse(schemas.DeepSeek, "deepseek-v4-flash", usage),
+		&LookupScopes{BilledAt: utc(t, "2026-08-17T05:00:00Z")},
+	)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.InputCostDetails)
+
+	// Token charges are halved inside the off-peak window...
+	assert.InDelta(t, 1000*0.00000044*0.5, bd.InputCostDetails.TextCost, 1e-12)
+	// ...while a flat sandbox session fee is not a usage charge and stays whole.
+	assert.InDelta(t, 0.03, bd.InputCostDetails.CodeExecutionCost, 1e-12)
+}
