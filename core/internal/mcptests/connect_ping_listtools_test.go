@@ -3,9 +3,11 @@ package mcptests
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -847,4 +849,67 @@ func TestServerInstructions_DoNotDisturbToolDiscoveryOrExecution(t *testing.T) {
 	require.NotNil(t, result.Content)
 	require.NotNil(t, result.Content.ContentStr)
 	assert.Contains(t, *result.Content.ContentStr, "LOOPCHECK")
+}
+
+// setUpstreamInstructions changes what the fixture's next handshake returns.
+func setUpstreamInstructions(t *testing.T, mcpURL, text string) {
+	t.Helper()
+	controlURL := strings.TrimSuffix(mcpURL, "/mcp") + "/set-instructions"
+	// Bounded so a stalled fixture handler fails this one test instead of hanging the
+	// package until the outer go test timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL, strings.NewReader(text))
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+// The regression test for the bug this path exists to fix: RefreshClientTools is the
+// operator's "pick up what I changed upstream", and for a sticky client it re-lists
+// tools over the live connection — which cannot carry `instructions`. Before the fix
+// it refreshed only half of what it had rediscovered, silently.
+func TestRefreshClientTools_PicksUpChangedInstructions(t *testing.T) {
+	t.Parallel()
+
+	url := startInstructionsServer(t, "sticky", "Original rule: check permissions first.")
+	cfg := GetSampleHTTPClientConfig(url)
+	cfg.ID, cfg.Name = "sticky_id", "sticky"
+	manager := setupMCPManager(t, cfg)
+	ctx := createTestContext()
+
+	require.Contains(t, manager.GetAggregatedServerInstructions(ctx), "Original rule")
+
+	// The upstream edits its instructions in place — no restart, so Bifrost's
+	// connection survives and nothing tells it anything changed.
+	setUpstreamInstructions(t, url, "Revised rule: never echo secrets.")
+
+	// Tools are unchanged, so a tools-only refresh would report success and leave the
+	// stale text in place. That is exactly the failure this pins.
+	_, err := manager.RefreshClientTools(ctx, cfg.ID)
+	require.NoError(t, err)
+
+	got := manager.GetAggregatedServerInstructions(ctx)
+	assert.Contains(t, got, "Revised rule: never echo secrets.")
+	assert.NotContains(t, got, "Original rule")
+}
+
+// The same refresh must leave a client whose upstream did not change untouched, so
+// the persist seam and the hosted /mcp resync are not re-triggered on every press.
+func TestRefreshClientTools_UnchangedInstructionsStayPut(t *testing.T) {
+	t.Parallel()
+
+	url := startInstructionsServer(t, "steady", "Steady rule: nothing changes.")
+	cfg := GetSampleHTTPClientConfig(url)
+	cfg.ID, cfg.Name = "steady_id", "steady"
+	manager := setupMCPManager(t, cfg)
+	ctx := createTestContext()
+
+	before := manager.GetAggregatedServerInstructions(ctx)
+	_, err := manager.RefreshClientTools(ctx, cfg.ID)
+	require.NoError(t, err)
+
+	assert.Equal(t, before, manager.GetAggregatedServerInstructions(ctx))
 }
