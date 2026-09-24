@@ -400,10 +400,11 @@ export default function MCPView() {
 							Forward Server Instructions
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Upstream MCP servers can return an <code className="text-xs">instructions</code> string describing how to use their tools.
-							Off drops it. Gateway forwards it on the <code className="text-xs">/mcp</code> handshake, labeled per source server and scoped
-							to what the caller may see. All also injects it into chat and responses requests as a system message &mdash; this adds tokens
-							to every MCP-bearing request and changes the prompt prefix, which can invalidate provider-side prompt caching.
+							MCP servers can return an <code className="text-xs">instructions</code> string describing how to use their tools.
+							Bifrost drops it by default. Gateway only passes it to clients connecting to{" "}
+							<code className="text-xs">/mcp</code>, labeled by source server and limited to what the caller can see.
+							<code className="text-xs">Gateway and LLM requests</code> also adds it to every chat and responses request,
+							which costs tokens on each one and can invalidate prompt caching.
 						</p>
 					</div>
 					<Select value={localConfig.mcp_server_instructions_mode ?? "off"} onValueChange={handleServerInstructionsModeChange}>

@@ -499,6 +499,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
 	{IDs: []string{"add_mcp_server_instructions_mode_column"}, run: migrationAddMCPServerInstructionsModeColumn},
 	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
+	{IDs: []string{"add_virtual_mcp_instructions_columns"}, run: migrationAddVirtualMCPInstructionsColumns},
 	{IDs: []string{"add_mcp_instruction_cap_columns"}, run: migrationAddMCPInstructionCapColumns},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
@@ -14177,6 +14178,39 @@ func migrationAddMCPInstructionCapColumns(ctx context.Context, db *gorm.DB, logg
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp instruction cap migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualMCPInstructionsColumns adds instructions and instructions_mode to the
+// Virtual MCP table. Both default to inherit-only, so existing rows need no backfill.
+func migrationAddVirtualMCPInstructionsColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_mcp_instructions_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"instructions", "instructions_mode"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualMCP{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"instructions", "instructions_mode"} {
+				if err := dropColumnIfExists(tx, logger, &tables.TableVirtualMCP{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running virtual mcp instructions migration: %s", err.Error())
 	}
 	return nil
 }

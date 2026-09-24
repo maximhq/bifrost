@@ -1620,16 +1620,18 @@ func (s *BifrostHTTPServer) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) 
 // VirtualMCPToolAccess resolves what a /mcp/<slug> request may see, delegating to the governance store
 // (which reads the addressable-vMCP set recorded on ctx during resolution). No governance store → the
 // endpoint is refused.
-func (s *BifrostHTTPServer) VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool) {
+func (s *BifrostHTTPServer) VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, instructions schemas.MCPVirtualInstructions, assigned bool) {
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
-		return nil, false
+		return nil, schemas.MCPVirtualInstructions{}, false
 	}
+	// Second structural assertion, same hazard as mcpSlugResolver: this signature must track
+	// the store's, or every /mcp/<slug> 403s with nothing failing to compile.
 	resolver, ok := governancePlugin.GetGovernanceStore().(interface {
-		VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) ([]string, bool)
+		VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) ([]string, schemas.MCPVirtualInstructions, bool)
 	})
 	if !ok {
-		return nil, false
+		return nil, schemas.MCPVirtualInstructions{}, false
 	}
 	return resolver.VirtualMCPToolAccess(ctx, slug, access)
 }

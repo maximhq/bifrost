@@ -2,6 +2,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import type { VirtualMCPInstructionsMode } from "@/lib/types/virtualMcps";
 
 // Mirrors the backend Slugify: lowercase, keep [a-z0-9], collapse other runs to a single
 // hyphen, trim leading/trailing hyphens. Keep in sync with framework/configstore Slugify.
@@ -27,6 +28,10 @@ interface VirtualMCPGeneralTabProps {
 	setEndpointSlug: (value: string) => void;
 	description: string;
 	setDescription: (value: string) => void;
+	instructions: string;
+	setInstructions: (value: string) => void;
+	instructionsMode: VirtualMCPInstructionsMode;
+	setInstructionsMode: (value: VirtualMCPInstructionsMode) => void;
 	enabled: boolean;
 	setEnabled: (value: boolean) => void;
 	isCreate: boolean;
@@ -39,6 +44,10 @@ export default function VirtualMCPGeneralTab({
 	setEndpointSlug,
 	description,
 	setDescription,
+	instructions,
+	setInstructions,
+	instructionsMode,
+	setInstructionsMode,
 	enabled,
 	setEnabled,
 	isCreate,
@@ -90,6 +99,39 @@ export default function VirtualMCPGeneralTab({
 					placeholder="What this Virtual MCP is for (optional)"
 					rows={3}
 					data-testid="virtual-mcp-description-input"
+				/>
+			</div>
+
+			<div className="flex flex-col gap-2">
+				<Label htmlFor="vmcp-instructions">Server Instructions</Label>
+				<p className="text-muted-foreground text-xs">
+					Sent to the model, unlike the description above. Only forwarded while{" "}
+					<span className="font-medium">Forward Server Instructions</span> is on in Config &rarr; MCP.
+				</p>
+				<Textarea
+					id="vmcp-instructions"
+					value={instructions}
+					onChange={(e) => setInstructions(e.target.value)}
+					placeholder="e.g. Only read-only lookups here. Never modify production data."
+					rows={4}
+					data-testid="virtual-mcp-instructions-input"
+				/>
+			</div>
+
+			<div className="flex items-center justify-between rounded-md border p-3">
+				<div className="flex flex-col gap-0.5">
+					<Label htmlFor="vmcp-inherit-instructions">Use source server instructions</Label>
+					<p className="text-muted-foreground text-xs">
+						When off, only your instructions above are sent. Otherwise, the above instructions would be
+						appended to the existing instructions. With the field empty, source instructions are sent
+						either way.
+					</p>
+				</div>
+				<Switch
+					id="vmcp-inherit-instructions"
+					checked={instructionsMode === "append"}
+					onCheckedChange={(on) => setInstructionsMode(on ? "append" : "replace")}
+					data-testid="virtual-mcp-inherit-instructions-switch"
 				/>
 			</div>
 

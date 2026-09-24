@@ -268,6 +268,9 @@ type VirtualMCPConfig struct {
 	Description *string `json:"description,omitempty"`
 	// Enabled defaults to true when omitted; a disabled Virtual MCP is not served.
 	Enabled *bool `json:"enabled,omitempty"`
+	// Instructions is model-facing, unlike Description; empty inherits only.
+	Instructions     *string                    `json:"instructions,omitempty"`
+	InstructionsMode MCPVirtualInstructionsMode `json:"instructions_mode,omitempty"`
 	// Tools are the per-client tool specs the Virtual MCP exposes (required).
 	Tools []MCPToolSpecConfig `json:"tools"`
 	// VirtualKeyIDs are the virtual keys this Virtual MCP is attached to (reachable through them).
@@ -412,6 +415,21 @@ const (
 type MCPServerInstructions struct {
 	ClientName   string `json:"client_name"`
 	Instructions string `json:"instructions"`
+}
+
+// MCPVirtualInstructionsMode decides how a Virtual MCP's instructions combine with inherited ones.
+type MCPVirtualInstructionsMode string
+
+const (
+	MCPVirtualInstructionsModeAppend  MCPVirtualInstructionsMode = "append"
+	MCPVirtualInstructionsModeReplace MCPVirtualInstructionsMode = "replace"
+)
+
+// MCPVirtualInstructions is a Virtual MCP's own instructions. Empty Text inherits only.
+type MCPVirtualInstructions struct {
+	Name string                     `json:"name"`
+	Text string                     `json:"text"`
+	Mode MCPVirtualInstructionsMode `json:"mode"`
 }
 
 // MCPAuthType defines the authentication type for MCP connections
