@@ -768,6 +768,7 @@ bifrost:
         # agentless: true
         # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
         # site: "datadoghq.com"       # Datadog site/region (e.g. datadoghq.eu)
+        # metric_dimensions: []        # x-bf-dim-* names to add as metric tags; each multiplies series
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]

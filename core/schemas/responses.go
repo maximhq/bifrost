@@ -52,6 +52,10 @@ type BifrostResponsesRequest struct {
 	// target wire does not support namespace tools, and the response path reads it to
 	// restore function_call items. Never serialized; the shared request never has it.
 	NamespaceToolAliases map[string]NamespaceToolAlias `json:"-"`
+
+	// Removed at Messages ingress, before Input is shared. Shallow fallback copies
+	// retain this private metadata; only Anthropic attempts restore it.
+	anthropicBillingHeader *anthropicBillingHeader
 }
 
 func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
@@ -249,11 +253,12 @@ type BifrostResponsesResponse struct {
 	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
 	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
-	Speed                *string                             `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
-	InferenceGeo         *string                             `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
-	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
-	Container            *ResponsesResponseContainer         `json:"container,omitempty"`     // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
-	Status               *string                             `json:"status,omitempty"`        // completed, failed, in_progress, cancelled, queued, or incomplete
+	Speed                *string                             `json:"speed,omitempty"`             // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo         *string                             `json:"inference_geo,omitempty"`     // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"`       // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	SafeguardResults     json.RawMessage                     `json:"safeguard_results,omitempty"` // Claude Code auto-mode classifier verdicts (opaque; forwarded unchanged per the gateway compatibility guide). Not copied by WithDefaults, so OpenAI-shaped surfaces never see it.
+	Container            *ResponsesResponseContainer         `json:"container,omitempty"`         // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
+	Status               *string                             `json:"status,omitempty"`            // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason           *string                             `json:"stop_reason,omitempty"`  // Not in OpenAI's spec, but sent by other providers
 	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"` // Anthropic refusal detail; null unless stop_reason is "refusal"
@@ -1735,20 +1740,40 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 // It determines whether "content" is a string or array and assigns to the appropriate field.
 // It also handles direct string/array content without a wrapper object.
 func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
-	// First, try to unmarshal as a direct string
-	var stringContent string
-	if err := Unmarshal(data, &stringContent); err == nil {
-		rc.ContentStr = &stringContent
-		return nil
+	// Peek the first non-whitespace byte to pick the decode path directly: a
+	// failed whole-value unmarshal attempt still builds and discards a full DOM,
+	// and content is the largest field in a multimodal request.
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '"':
+			var stringContent string
+			if err := Unmarshal(data, &stringContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentStr = &stringContent
+			return nil
+		case '[':
+			var arrayContent []ResponsesMessageContentBlock
+			if err := Unmarshal(data, &arrayContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentBlocks = arrayContent
+			return nil
+		case 'n':
+			// A null content is valid per the OpenAI spec. Decoding null into a
+			// string yields "", matching what the previous try-string-first
+			// implementation produced.
+			var nullContent string
+			if err := Unmarshal(data, &nullContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentStr = &nullContent
+			return nil
+		}
+		break
 	}
-
-	// Try to unmarshal as a direct array of ContentBlock
-	var arrayContent []ResponsesMessageContentBlock
-	if err := Unmarshal(data, &arrayContent); err == nil {
-		rc.ContentBlocks = arrayContent
-		return nil
-	}
-
 	return fmt.Errorf("content field is neither a string nor an array of Content blocks")
 }
 
@@ -1915,6 +1940,10 @@ type ResponsesToolMessage struct {
 	Error     *string                           `json:"error,omitempty"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
+	// ToolsetName is the client toolset a member call belongs to ("computer" for
+	// computer_toolset_20260801). Anthropic requires it on both halves of a
+	// call/result pair or neither, so it rides the call and the output alike.
+	ToolsetName *string `json:"toolset_name,omitempty"`
 
 	// Tool calls and outputs
 	*ResponsesFileSearchToolCall
@@ -2739,6 +2768,7 @@ const (
 	ResponsesToolTypeFunction           ResponsesToolType = "function"
 	ResponsesToolTypeFileSearch         ResponsesToolType = "file_search"
 	ResponsesToolTypeComputerUsePreview ResponsesToolType = "computer_use_preview"
+	ResponsesToolTypeComputer           ResponsesToolType = "computer" // OpenAI computer tool for GPT-6 Astra / GPT-5.6 (no display or environment fields)
 	ResponsesToolTypeWebSearch          ResponsesToolType = "web_search"
 	ResponsesToolTypeWebFetch           ResponsesToolType = "web_fetch"
 	ResponsesToolTypeMCP                ResponsesToolType = "mcp"
@@ -2779,6 +2809,8 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 		return t
 	case strings.HasPrefix(s, "web_fetch"):
 		return ResponsesToolTypeWebFetch
+	case t == ResponsesToolTypeComputer:
+		return t
 	case strings.HasPrefix(s, "computer") && t != ResponsesToolTypeComputerUsePreview:
 		// Covers "computer_20250124", "computer_20251124", etc.
 		return ResponsesToolTypeComputerUsePreview
@@ -3747,6 +3779,12 @@ const (
 	// Ping events are just keepalive (sent by very few providers, Anthropic is one of them)
 	ResponsesStreamResponseTypePing ResponsesStreamResponseType = "response.ping"
 
+	// Deprecated: retained for source compatibility. Providers no longer synthesize
+	// generic raw events; supported provider events have explicit types.
+	ResponsesStreamResponseTypeProviderRawEvent ResponsesStreamResponseType = "response.provider_raw_event"
+	// SafeguardsUpdate carries an Anthropic classifier event, omitted on OpenAI surfaces.
+	ResponsesStreamResponseTypeSafeguardsUpdate ResponsesStreamResponseType = "response.safeguards_update"
+
 	ResponsesStreamResponseTypeCreated    ResponsesStreamResponseType = "response.created"
 	ResponsesStreamResponseTypeInProgress ResponsesStreamResponseType = "response.in_progress"
 	ResponsesStreamResponseTypeCompleted  ResponsesStreamResponseType = "response.completed"
@@ -3867,6 +3905,13 @@ type BifrostResponsesStreamResponse struct {
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 
+	// SafeguardResults carries the Claude Code auto-mode classifier verdicts found
+	// top-level on a provider stream event (opaque; forwarded unchanged per the
+	// gateway compatibility guide), so the provider-native egress can restore them
+	// on the re-rendered frame. Deliberately NOT copied by WithDefaults: OpenAI-shaped
+	// surfaces never see it.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
+
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
@@ -3894,7 +3939,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	}
 
 	// Filter out non-OpenAI response types
-	if resp.Type == ResponsesStreamResponseTypePing {
+	if resp.Type == ResponsesStreamResponseTypePing || resp.Type == ResponsesStreamResponseTypeProviderRawEvent || resp.Type == ResponsesStreamResponseTypeSafeguardsUpdate {
 		return nil
 	}
 

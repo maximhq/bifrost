@@ -146,10 +146,10 @@ export function RoutingRulesView() {
 								onClick={handleCreateNew}
 								disabled={isLoading}
 								className="gap-2"
-								aria-label="New routing rule"
+								aria-label="Add routing rule"
 							>
 								<Plus className="h-4 w-4" />
-								<span className="hidden sm:inline">New Rule</span>
+								<span className="hidden sm:inline">Add Rule</span>
 							</Button>
 						)}
 					</>

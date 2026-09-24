@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -25,6 +26,7 @@ interface FolderSheetProps {
 export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheetProps) {
 	const [createFolder, { isLoading: isCreating }] = useCreateFolderMutation();
 	const [updateFolder, { isLoading: isUpdating }] = useUpdateFolderMutation();
+	const canSave = useRbac(RbacResource.PromptRepository, folder ? RbacOperation.Update : RbacOperation.Create);
 
 	const isLoading = isCreating || isUpdating;
 	const isEditing = !!folder;
@@ -120,7 +122,12 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 						<Button type="button" variant="outline" data-testid="folder-cancel" onClick={() => onOpenChange(false)}>
 							Cancel
 						</Button>
-						<Button type="submit" data-testid="folder-submit" disabled={isLoading}>
+						<Button
+							type="submit"
+							data-testid="folder-submit"
+							disabled={isLoading || !canSave}
+							title={canSave ? undefined : "You do not have permission to change prompt folders"}
+						>
 							{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 						</Button>
 					</SheetFooter>

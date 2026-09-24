@@ -771,11 +771,24 @@ export interface LogEntry {
 	child_count?: number;
 	children_cost?: number;
 	children_tokens?: number;
+	// Aggregates over this log's session (rows sharing its session_id). Present
+	// only on the root of a collapsed session in a grouped list response. The
+	// count excludes this row; the totals include it.
+	session_child_count?: number;
+	session_total_cost?: number;
+	session_total_tokens?: number;
 }
 
-// A log row as rendered by the logs table. __chainChild marks rows injected
-// below an expanded parent in the grouped view; it never comes from the API.
-export type DisplayLogEntry = LogEntry & { __chainChild?: boolean };
+// A log row as rendered by the logs table. These markers are set when a row is
+// injected below an expanded parent in the grouped view; they never come from
+// the API. __chainChild covers any nested row so the table can indent it,
+// __rowKind says which expansion produced it, and __depth separates a session
+// member (1) from a fallback attempt under that member (2).
+export type DisplayLogEntry = LogEntry & {
+	__chainChild?: boolean;
+	__rowKind?: "chain-child" | "session-member";
+	__depth?: 1 | 2;
+};
 
 export interface LogFilters {
 	providers?: string[];
@@ -800,6 +813,8 @@ export interface LogFilters {
 	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
+	min_cost?: number;
+	max_cost?: number;
 	min_tokens?: number;
 	max_tokens?: number;
 	missing_cost_only?: boolean;
@@ -1473,8 +1488,8 @@ export interface MCPTopToolsResponse {
 export interface ModelRankingTrend {
 	has_previous_period: boolean;
 	requests_trend: number;
-	tokens_trend: number;
-	cost_trend: number;
+	tokens_trend: number | null;
+	cost_trend: number | null;
 	latency_trend: number;
 	throughput_trend: number;
 }
@@ -1500,8 +1515,8 @@ export interface ModelRankingsResponse {
 export interface UserRankingTrend {
 	has_previous_period: boolean;
 	requests_trend: number;
-	tokens_trend: number;
-	cost_trend: number;
+	tokens_trend: number | null;
+	cost_trend: number | null;
 }
 
 export interface UserRankingEntry {
@@ -1521,8 +1536,8 @@ export type RankingDimension = "team" | "customer" | "business_unit" | "project"
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;
 	requests_trend: number;
-	tokens_trend: number;
-	cost_trend: number;
+	tokens_trend: number | null;
+	cost_trend: number | null;
 }
 
 export interface DimensionRankingEntry {

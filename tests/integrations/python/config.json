@@ -13,6 +13,9 @@
   },
   "providers": {
     "openai": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -27,6 +30,9 @@
       }
     },
     "elevenlabs": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "ElevenLabs API Key",
@@ -41,6 +47,9 @@
       }
     },
     "typesafe": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Typesafe API Key",
@@ -55,6 +64,9 @@
       }
     },
     "xai": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Xai API Key",
@@ -69,6 +81,9 @@
       }
     },
     "huggingface": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Hugging Face API Key",
@@ -83,7 +98,16 @@
       }
     },
     "anthropic": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
+        {
+          "name": "Anthropic (harness, no models)",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["harness-no-model"]
+        },
         {
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
@@ -100,6 +124,9 @@
       }
     },
     "gemini": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Gemini API Key",
@@ -114,6 +141,9 @@
       }
     },
     "vertex": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Vertex API Key",
@@ -133,7 +163,11 @@
             "gemini-3.6-flash",
             "claude-fable-5-1",
             "gemini-3-pro-image",
-            "gemini-3.7-flash"
+            "gemini-3.7-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview"
           ]
         },
         {
@@ -160,7 +194,15 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["gemini-3.6-flash", "gemini-3-pro-image", "gemini-3.7-flash"]
+          "models": [
+            "gemini-3.6-flash",
+            "gemini-3-pro-image",
+            "gemini-3.7-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview"
+          ]
         }
       ],
       "network_config": {
@@ -172,6 +214,9 @@
       }
     },
     "mistral": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Mistral API Key",
@@ -185,6 +230,9 @@
       }
     },
     "cohere": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Cohere API Key",
@@ -198,6 +246,9 @@
       }
     },
     "parasail": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Parasail API Key",
@@ -211,6 +262,9 @@
       }
     },
     "groq": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Groq API Key",
@@ -224,6 +278,9 @@
       }
     },
     "perplexity": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Perplexity API Key",
@@ -237,6 +294,9 @@
       }
     },
     "cerebras": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Cerebras API Key",
@@ -250,6 +310,9 @@
       }
     },
     "openrouter": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenRouter API Key",
@@ -267,6 +330,9 @@
       }
     },
     "azure": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Azure API Key",
@@ -275,22 +341,39 @@
             "endpoint": "env.AZURE_ENDPOINT",
             "deployments": {
               "gpt-4o": "gpt-4o",
+              "gpt-4o-low-cap": "gpt-4o-low-cap",
+              "gpt-4o-batch": "gpt-4o-2",
               "gpt-4o-mini": "gpt-4o-mini",
               "gpt-4o-mini-tts": "gpt-4o-mini-tts",
-              "o1": "o1",
-              "gpt-4o-batch": "gpt-4o-batch",
+              "gpt-4o-transcribe": "gpt-4o-transcribe",
+              "gpt-4.1": "gpt-4.1",
               "whisper": "whisper",
-              "text-embedding-3-small": "text-embedding-3-small",
-              "gpt-image-1": "gpt-image-1",
+              "text-embedding-ada-002": "text-embedding-ada-002",
+              "gpt-image-2": "gpt-image-2",
+              "gpt-realtime": "gpt-realtime",
+              "gpt-realtime-1.5": "gpt-realtime-1.5",
+              "gpt-5.2": "gpt-5.2",
+              "gpt-5.3-chat": "gpt-5.3-chat",
+              "gpt-5.4": "gpt-5.4",
+              "gpt-5.4-mini": "gpt-5.4-mini",
+              "gpt-5.4-nano": "gpt-5.4-nano",
+              "gpt-5.4-pro": "gpt-5.4-pro",
+              "gpt-5.5": "gpt-5.5",
               "gpt-5.6-sol": "gpt-5.6-sol",
               "gpt-5.6-terra": "gpt-5.6-terra",
               "gpt-5.6-luna": "gpt-5.6-luna",
-              "gpt-5.5": "gpt-5.5",
-              "gpt-5.4": "gpt-5.4",
               "claude-opus-5": "claude-opus-5",
               "claude-sonnet-5": "claude-sonnet-5",
               "claude-opus-4-8": "claude-opus-4-8",
-              "claude-haiku-4-5": "claude-haiku-4-5"
+              "claude-opus-4-7": "claude-opus-4-7-1",
+              "claude-opus-4-6": "claude-opus-4-6",
+              "claude-opus-4-5": "claude-opus-4-5",
+              "claude-sonnet-4-6": "claude-sonnet-4-6",
+              "claude-sonnet-4-5": "claude-sonnet-4-5",
+              "claude-haiku-4-5": "claude-haiku-4-5",
+              "DeepSeek-V3.2": "DeepSeek-V3.2",
+              "DeepSeek-V4-Pro": "DeepSeek-V4-Pro",
+              "DeepSeek-V4-Flash-0731": "DeepSeek-V4-Flash-0731"
             }
           },
           "weight": 1,
@@ -307,6 +390,9 @@
       }
     },
     "bedrock": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -325,6 +411,9 @@
       }
     },
     "bedrock_mantle": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock Mantle API Key",
@@ -343,6 +432,9 @@
       }
     },
     "replicate": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Replicate API Key",
@@ -355,6 +447,9 @@
       }
     },
     "runware": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Runware API Key",
@@ -367,6 +462,9 @@
       }
     },
     "runway": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Runway API Key",
@@ -379,6 +477,9 @@
       }
     },
     "nebius": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Nebius API Key",
@@ -391,6 +492,9 @@
       }
     },
     "deepseek": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "DeepSeek API Key",
@@ -405,6 +509,9 @@
       }
     },
     "anthropic_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -426,6 +533,9 @@
       }
     },
     "gemini_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Gemini API Key",
@@ -447,6 +557,9 @@
       }
     },
     "anthropic_pc_points": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -478,6 +591,9 @@
       }
     },
     "bedrock_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -503,6 +619,9 @@
       }
     },
     "bedrock_pc_points": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -538,6 +657,9 @@
       }
     },
     "bedrock_openai_ep": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Bedrock API Key",
@@ -560,6 +682,9 @@
       }
     },
     "openai_dnsdm": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -579,6 +704,9 @@
       }
     },
     "openai_dnsdm_wait": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -599,6 +727,9 @@
       }
     },
     "openai_pc_auto": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -620,6 +751,9 @@
       }
     },
     "openai_pc_points": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "OpenAI API Key",
@@ -651,6 +785,9 @@
       }
     },
     "anthropic_pc_edge": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -690,6 +827,9 @@
       }
     },
     "anthropic_pc_overflow": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -737,6 +877,9 @@
       }
     },
     "anthropic_pc_absent": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Anthropic API Key",
@@ -776,6 +919,132 @@
     }
   },
   "governance": {
+    "routing_rules": [
+      {
+        "id": "harness-session-pin-bind",
+        "priority": 901,
+        "name": "Harness session pin: bind the session to Anthropic",
+        "description": "Provider harness only (folder 'session-pin'). A request carrying x-harness-session-pin: bind is routed to Anthropic so its session binds there; the paired request then hits the pinned Vertex rule below. Matches nothing without that header.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"bind\"",
+        "targets": [
+          {
+            "provider": "anthropic",
+            "weight": 1
+          }
+        ]
+      },
+      {
+        "id": "harness-session-pin-vertex",
+        "priority": 902,
+        "name": "Harness session pin: Vertex with a pinned key, Anthropic fallback",
+        "description": "Provider harness only (folder 'session-pin'). Mirrors the production rule behind the 'no supported key found with id ... for provider: anthropic' report: a Vertex target with a pinned key and an Anthropic fallback on the incoming model. A session already bound to Anthropic moves the primary there, and the Vertex key pin must not follow it. Matches nothing without x-harness-session-pin: vertex.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"vertex\"",
+        "targets": [
+          {
+            "provider": "vertex",
+            "provider_key_name": "Vertex Global (Claude)",
+            "weight": 1
+          }
+        ],
+        "fallbacks": ["anthropic/"]
+      },
+      {
+        "id": "harness-session-pin-rebind",
+        "priority": 903,
+        "name": "Harness session pin: Vertex fails, Anthropic rescues",
+        "description": "Provider harness only (folder 'session-affinity'). Sends the request to Vertex on a model Vertex rejects so the attempt fails upstream, then falls back to Anthropic on a real model. A served fallback binds the session to Anthropic, which is how the production sessions moved. Matches nothing without x-harness-session-pin: rebind.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"rebind\"",
+        "targets": [
+          {
+            "provider": "vertex",
+            "model": "claude-does-not-exist-harness",
+            "weight": 1
+          }
+        ],
+        "fallbacks": ["anthropic/claude-sonnet-4-6"]
+      },
+      {
+        "id": "harness-session-pin-rescue",
+        "priority": 904,
+        "name": "Harness session pin: pinned Vertex rescues a failing Anthropic primary",
+        "description": "Provider harness only (folder 'session-affinity'). Same Vertex target and pin as the 'vertex' rule, but the Anthropic fallback is pinned to a key whose model list excludes every real model. In a session bound to Anthropic on the same model the promoted Anthropic attempt fails at key selection, and the demoted Vertex entry must serve on the key the rule pinned for it. Matches nothing without x-harness-session-pin: rescue.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"rescue\"",
+        "targets": [
+          {
+            "provider": "vertex",
+            "provider_key_name": "Vertex Global (Claude)",
+            "weight": 1
+          }
+        ],
+        "fallbacks": [
+          {
+            "provider": "anthropic",
+            "provider_key_name": "Anthropic (harness, no models)"
+          }
+        ]
+      },
+      {
+        "id": "harness-session-pin-vertex-only",
+        "priority": 905,
+        "name": "Harness session pin: Vertex only, no fallbacks",
+        "description": "Provider harness only (folder 'session-affinity'). A one-provider chain: a session bound to Anthropic cannot follow its binding here, so the binding is dropped and the next served request rebinds. Matches nothing without x-harness-session-pin: vertex-only.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"vertex-only\"",
+        "targets": [
+          {
+            "provider": "vertex",
+            "provider_key_name": "Vertex Global (Claude)",
+            "weight": 1
+          }
+        ]
+      },
+      {
+        "id": "harness-session-pin-anthropic-first",
+        "priority": 906,
+        "name": "Harness session pin: Anthropic first, Vertex fallback",
+        "description": "Provider harness only (folder 'session-affinity'). The mirror image of the 'vertex' rule: Anthropic is the primary and Vertex the fallback on the incoming model. A session bound to Vertex on that model moves Vertex first; a session whose Vertex binding was dropped follows this decision. Matches nothing without x-harness-session-pin: anthropic-first.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"anthropic-first\"",
+        "targets": [
+          {
+            "provider": "anthropic",
+            "weight": 1
+          }
+        ],
+        "fallbacks": ["vertex/"]
+      },
+      {
+        "id": "harness-session-pin-anthropic-first-other-model",
+        "priority": 907,
+        "name": "Harness session pin: Anthropic first, Vertex fallback on another model",
+        "description": "Provider harness only (folder 'session-affinity'). Anthropic on the incoming model, with Vertex as a fallback on a different model. A session bound to Vertex on the incoming model must not be moved onto that entry: a binding names provider and model together, so the routing decision stands and the session rebinds on Anthropic. Matches nothing without x-harness-session-pin: anthropic-first-other-model.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"anthropic-first-other-model\"",
+        "targets": [
+          {
+            "provider": "anthropic",
+            "weight": 1
+          }
+        ],
+        "fallbacks": [
+          {
+            "provider": "vertex",
+            "model": "claude-opus-4-8"
+          }
+        ]
+      },
+      {
+        "id": "harness-session-pin-vertex-badkey",
+        "priority": 908,
+        "name": "Harness session pin: Vertex pinned to a key that cannot serve the model",
+        "description": "Provider harness only (folder 'session-affinity'). Vertex on the incoming model, pinned to the Gemini-only key and with no fallback, so the request fails at key selection with 'no supported key found'. A session bound to Vertex on that model follows the binding into the failure, and must forget it. Matches nothing without x-harness-session-pin: vertex-badkey.",
+        "cel_expression": "\"x-harness-session-pin\" in headers && headers[\"x-harness-session-pin\"] == \"vertex-badkey\"",
+        "targets": [
+          {
+            "provider": "vertex",
+            "provider_key_name": "Vertex Global (Gemini 3)",
+            "weight": 1
+          }
+        ]
+      }
+    ],
     "virtual_keys": [
       {
         "name": "Test Key",
@@ -912,5 +1181,17 @@
     "enable_logging": true,
     "enforce_auth_on_inference": false,
     "max_request_body_size_mb": 100
+  },
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "http",
+      "host": "localhost:9000",
+      "grpc_config": {
+        "host": "localhost:50051",
+        "secured": false
+      }
+    }
   }
 }

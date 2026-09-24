@@ -19,6 +19,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -526,19 +527,17 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	if len(decision.Fallbacks) > 0 {
 		resolvedFallbacks := make([]schemas.Fallback, 0, len(decision.Fallbacks))
 		for _, fb := range decision.Fallbacks {
-			fbProvider, fbModel := schemas.ParseModelString(fb, "")
-			trimmedFbProvider := strings.TrimSpace(string(fbProvider))
-			trimmedFbModel := strings.TrimSpace(fbModel)
-			if trimmedFbProvider == "" {
+			resolved := fb.Fallback
+			resolved.Provider = schemas.ModelProvider(strings.TrimSpace(string(resolved.Provider)))
+			resolved.Model = strings.TrimSpace(resolved.Model)
+			resolved.KeyID = strings.TrimSpace(resolved.KeyID)
+			if resolved.Provider == "" {
 				continue
 			}
-			if trimmedFbModel == "" && model != "" {
-				trimmedFbModel = model
+			if resolved.Model == "" && model != "" {
+				resolved.Model = model
 			}
-			resolvedFallbacks = append(resolvedFallbacks, schemas.Fallback{
-				Provider: schemas.ModelProvider(trimmedFbProvider),
-				Model:    trimmedFbModel,
-			})
+			resolvedFallbacks = append(resolvedFallbacks, resolved)
 		}
 		req.SetFallbacks(resolvedFallbacks)
 	}
@@ -552,7 +551,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, decision.KeyID)
 	}
 
-	p.logger.Debug("[Routing] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
+	p.logger.Debug("[Routing] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, configstoreTables.RoutingFallbackStrings(decision.Fallbacks))
 	return decision, nil
 }
 

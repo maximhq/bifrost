@@ -31,3 +31,63 @@ func TestEntitySetFromAttrs_MixedAnyKeepsAlignment(t *testing.T) {
 		t.Errorf("got (%q,%q), want (\"a1,c3\",\"Alpha,Gamma\")", ids, names)
 	}
 }
+
+// TestBuildSpanAttrs_TypedMatchesAttributeMap pins the typed dimension reads to
+// the attribute-map reads they replaced: the same span, expressed either way,
+// must produce identical metric dimensions. A field that exists on
+// SpanEnrichment but is never emitted as an attribute (or the reverse) shows up
+// here rather than as a metric silently losing a dimension.
+func TestBuildSpanAttrs_TypedMatchesAttributeMap(t *testing.T) {
+	fallbackIdx := 2
+	enrichment := &schemas.SpanEnrichment{
+		VirtualKeyID: "vk-1", VirtualKeyName: "vk-name",
+		SelectedKeyID: "sk-1", SelectedKeyName: "sk-name",
+		TeamIDs: []string{"t1", "t2"}, TeamNames: []string{"team one", "team two"},
+		CustomerID: "c1", CustomerName: "cust one",
+		BusinessUnitIDs: []string{"bu1"}, BusinessUnitNames: []string{"bu one"},
+		ProjectID: "p1", ProjectName: "proj one",
+		FallbackIndex: &fallbackIdx,
+	}
+
+	// Map-only span: what a span built by a path that does not populate the
+	// typed record still looks like.
+	mapSpan := &schemas.Span{Name: "chat gpt-4o", Attributes: map[string]any{}}
+	enrichment.ApplyToSpan(mapSpan)
+	mapSpan.Enrichment = nil // force the fallback path
+	mapSpan.Attributes[schemas.AttrProviderName] = "openai"
+	mapSpan.Attributes[schemas.AttrRequestModel] = "gpt-4o"
+	mapSpan.Attributes[schemas.AttrLegacyRequestType] = "chat_completion"
+
+	// Typed span: same data, read off the record.
+	typedSpan := &schemas.Span{
+		Name:       "chat gpt-4o",
+		Attributes: map[string]any{},
+		Enrichment: enrichment,
+		LLM: &schemas.LLMSpanData{
+			Provider:     schemas.OpenAI,
+			RequestModel: "gpt-4o",
+			RequestType:  schemas.ChatCompletionRequest,
+		},
+	}
+
+	fromMap := buildSpanAttrs(mapSpan)
+	fromTyped := buildSpanAttrs(typedSpan)
+
+	if len(fromMap) != len(fromTyped) {
+		t.Fatalf("dimension count: map = %d, typed = %d", len(fromMap), len(fromTyped))
+	}
+	mapped := make(map[string]string, len(fromMap))
+	for _, kv := range fromMap {
+		mapped[string(kv.Key)] = kv.Value.Emit()
+	}
+	for _, kv := range fromTyped {
+		want, ok := mapped[string(kv.Key)]
+		if !ok {
+			t.Errorf("%s: present in typed output, absent from map output", kv.Key)
+			continue
+		}
+		if got := kv.Value.Emit(); got != want {
+			t.Errorf("%s: typed = %q, map = %q", kv.Key, got, want)
+		}
+	}
+}

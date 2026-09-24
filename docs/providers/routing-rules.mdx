@@ -793,6 +793,22 @@ If OpenAI fails:
 1. Level 2 load balancing evaluates Azure keys
 2. If all Azure keys fail, tries Groq
 
+A fallback can pin its own provider key, which skips load balancing for that attempt:
+
+```json
+{
+  "provider": "openai",
+  "fallbacks": [
+    "azure/gpt-4o",
+    { "provider": "vertex", "model": "gemini-2.5-pro", "key_id": "8f3c1d2e-..." }
+  ]
+}
+```
+
+Each attempt is pinned independently, so an unpinned fallback later in the chain still load balances normally. If the pinned key is not in that provider's pool, the attempt is skipped and the chain moves to the next entry.
+
+A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
+
 ---
 
 ## Execution & Performance

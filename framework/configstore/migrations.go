@@ -495,6 +495,135 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
+	{IDs: []string{"widen_oauth2_client_controlled_columns"}, run: migrationWidenOAuth2ClientControlledColumns},
+	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
+	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
+	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
+	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
+	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
+	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
+}
+
+// warpLogEmbeddingColumns are the semantic-search configuration columns added
+// so Warp can embed and search stored logs.
+var warpLogEmbeddingColumns = []string{
+	"embedding_provider",
+	"embedding_model",
+	"embedding_api_key_id",
+	"embedding_dimension",
+	"log_vector_store_namespace",
+	"semantic_search_threshold",
+	"semantic_search_limit",
+	"retired_log_vector_store_namespaces",
+}
+
+func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_log_embedding_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// AutoMigrate on the full model re-verifies every column, index and
+			// association TableWarpConfig has ever grown, not just the ones this
+			// migration is meant to add - the wrong blast radius for a step that
+			// applied migration IDs and never re-runs. Adding just the intended
+			// columns is what every other column-only migration in this file does.
+			for _, column := range warpLogEmbeddingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			// Backfilled, not left to the column default. A column added to a
+			// table that already has a row arrives NULL there, and these are
+			// scanned into plain Go strings - where database/sql refuses a NULL
+			// outright on Postgres. The whole configuration read then fails on
+			// exactly the deployments that had Warp set up before this migration.
+			for _, column := range []string{"embedding_provider", "embedding_model", "embedding_api_key_id", "log_vector_store_namespace"} {
+				if !tx.Migrator().HasColumn(&tables.TableWarpConfig{}, column) {
+					continue
+				}
+				statement := fmt.Sprintf("UPDATE %s SET %s = '' WHERE %s IS NULL",
+					quoteSQLiteIdentifier(tables.TableWarpConfig{}.TableName()),
+					quoteSQLiteIdentifier(column), quoteSQLiteIdentifier(column))
+				if err := tx.Exec(statement).Error; err != nil {
+					return fmt.Errorf("backfill warp %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping embedding configuration would lose operator settings", migrationName)
+		},
+	})
+}
+
+// warpTemperatureReasoningColumns are the sampling-override columns added so
+// an operator can override the model's sampling behavior instead of Warp
+// silently running every deployment at whatever default the provider applies.
+var warpTemperatureReasoningColumns = []string{
+	"temperature",
+	"reasoning_effort",
+}
+
+// migrationAddWarpTemperatureReasoningColumns adds the temperature and
+// reasoning_effort columns, so an operator can override the model's sampling
+// behavior instead of Warp silently running every deployment at whatever
+// default the provider happens to apply.
+func migrationAddWarpTemperatureReasoningColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_temperature_reasoning_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Same reasoning as migrationAddWarpLogEmbeddingColumns above: only the
+			// two columns this migration owns, not a full-model AutoMigrate.
+			for _, column := range warpTemperatureReasoningColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping a configured temperature or reasoning effort would lose operator settings", migrationName)
+		},
+	})
+}
+
+// migrationAddWarpHistoryRetentionDaysColumn adds Warp's own retention setting.
+//
+// A separate step rather than an edit to add_warp_config_table, for the reason
+// the api_key_id migration above spells out: applied ids are recorded and never
+// re-run, so a database that already created the table would keep the old
+// column list forever and every write naming the new one would fail.
+//
+// It arrives zero on existing rows, and zero means "not set" - resolved to
+// schemas.WarpDefaultHistoryRetentionDays on read. That indirection is the
+// whole safety property here: read literally, a fresh column would expire every
+// saved chat on the deployment the first time the sweep ran.
+func migrationAddWarpHistoryRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_history_retention_days_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return fmt.Errorf("failed to add warp history_retention_days column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible, unlike the api_key_id migration: this column replaced
+			// nothing and holds a number an operator can set again, so dropping it
+			// costs a preference rather than data.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "history_retention_days")
+		},
+	})
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -699,6 +828,80 @@ func migrationAddBatchJobsAttributionColumns(ctx context.Context, db *gorm.DB, l
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddWarpAPIKeyIDColumn reshapes warp_config from storing a secret to
+// storing a reference to one of the provider's existing keys.
+//
+// This is a separate step rather than an edit to the migration above because
+// applied migration IDs are recorded and never re-run: any database that already
+// created the table keeps the old columns forever, and a write naming the new
+// one fails with a SQL error the API can only report as a 500.
+func migrationAddWarpAPIKeyIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_api_key_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// AutoMigrate adds api_key_id; it never drops, so the retired columns
+			// are handled separately below.
+			if err := tx.AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return fmt.Errorf("failed to add warp api_key_id column: %w", err)
+			}
+			for _, column := range []string{"api_key", "encryption_status"} {
+				if !tx.Migrator().HasColumn(&tables.TableWarpConfig{}, column) {
+					continue
+				}
+				// Blank the value before attempting the drop, and treat this as the
+				// step that actually matters. api_key held a credential, and GORM's
+				// SQLite driver returns nil from DropColumn without dropping
+				// anything - so a drop-only migration would leave the secret at rest
+				// while reporting success. Clearing it works on every dialect.
+				if err := tx.Exec(fmt.Sprintf("UPDATE %s SET %s = NULL",
+					quoteSQLiteIdentifier(tables.TableWarpConfig{}.TableName()),
+					quoteSQLiteIdentifier(column))).Error; err != nil {
+					return fmt.Errorf("failed to clear warp %s column: %w", column, err)
+				}
+				// Then drop it where the dialect can. A failure here is not fatal:
+				// the column is already empty, and an unused nullable column is
+				// cosmetic.
+				if err := dropColumnIfExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					logger.Warn("[configstore] could not drop retired warp column %s (cleared instead): %v", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpAPIKeyIDColumn(ctx, tx, logger)
+		},
+	})
+}
+
+// rollbackWarpAPIKeyIDColumn refuses. The forward migration clears the api_key
+// credential it replaced - deliberately, since GORM's SQLite driver reports a
+// successful DropColumn without dropping anything, so blanking the value is the
+// step that actually removes the secret. That makes the move one-way: dropping
+// api_key_id would leave Warp with neither a usable credential nor the
+// reference that replaced it. Failing preserves the migration record.
+func rollbackWarpAPIKeyIDColumn(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_warp_api_key_id_column is non-rollbackable: the forward migration clears the api_key credential it replaced, so dropping api_key_id would leave Warp with no usable credential and no reference to one; the column is additive and older binaries safely ignore it")
+}
+
+func migrationAddWarpConfigTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_config_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableWarpConfig{})
+		},
+	})
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -11386,6 +11589,58 @@ func migrationAddOAuth2IssuanceTables(ctx context.Context, db *gorm.DB, logger s
 	return nil
 }
 
+// migrationWidenOAuth2ClientControlledColumns widens the OAuth2 authorization
+// server columns whose values come from the client, from varchar to text:
+// oauth2_authorize_requests.state and .scope, oauth2_clients.client_name and
+// .scope, and oauth2_refresh_tokens.scope (the registered scope flows unchanged
+// into the latter two). RFC 6749 §4.1.1 puts no bound on state and §3.3 none on
+// scope; RFC 7591 §2 bounds neither client_name nor scope. Clients do pack
+// connector context into state, and on Postgres the varchar(512) bound turned every such
+// /oauth2/authorize call into an opaque server_error — SQLite never enforced it.
+// The request header block (server.read_buffer_size) remains the effective upper
+// bound. Postgres-only: SQLite has no ALTER COLUMN TYPE and needs none. Fresh
+// installs already create these columns as text from the struct tags, so the
+// ALTERs are harmless no-ops there.
+func migrationWidenOAuth2ClientControlledColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_oauth2_client_controlled_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			targets := []struct {
+				model  any
+				table  string
+				column string
+			}{
+				{&tables.TableOAuth2AuthorizeRequest{}, "oauth2_authorize_requests", "state"},
+				{&tables.TableOAuth2AuthorizeRequest{}, "oauth2_authorize_requests", "scope"},
+				{&tables.TableOAuth2Client{}, "oauth2_clients", "client_name"},
+				{&tables.TableOAuth2Client{}, "oauth2_clients", "scope"},
+				{&tables.TableOAuth2RefreshToken{}, "oauth2_refresh_tokens", "scope"},
+			}
+			for _, target := range targets {
+				if !tx.Migrator().HasColumn(target.model, target.column) {
+					continue
+				}
+				stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE TEXT", target.table, target.column)
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("failed to widen column %s.%s: %w", target.table, target.column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
 func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_tool_execution_timeout_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -13591,13 +13846,13 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 
 			// Find all budgets owned directly by a VK (old config.json flow).
 			type standaloneVKBudget struct {
-				ID           string
-				VirtualKeyID string
-				MaxLimit     float64
+				ID            string
+				VirtualKeyID  string
+				MaxLimit      float64
 				ResetDuration string
-				CurrentUsage float64
-				LastReset    time.Time
-				ConfigHash   string
+				CurrentUsage  float64
+				LastReset     time.Time
+				ConfigHash    string
 			}
 			var standaloneBudgets []standaloneVKBudget
 			if err := tx.Raw(`
@@ -13772,3 +14027,40 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	return nil
 }
 
+// migrationAddVirtualKeyBusinessUnitColumn adds business_unit_id to governance_virtual_keys, the
+// third owner a key can have alongside a team and a customer. A business unit is an enterprise
+// table this module does not model, so the column is a bare indexed varchar with no foreign key:
+// what it points at is resolved by whoever owns business units, and a deployment without them
+// simply never writes it.
+func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_business_unit_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id"); err != nil {
+				return fmt.Errorf("failed to add business_unit_id column: %w", err)
+			}
+			// Every request made with a key owned by a business unit walks this column, and AddColumn
+			// does not create indexes from struct tags.
+			if !mg.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id") {
+				if err := mg.CreateIndex(&tables.TableVirtualKey{}, "BusinessUnitID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_virtual_keys.business_unit_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// The index belongs to the column and goes with it.
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}

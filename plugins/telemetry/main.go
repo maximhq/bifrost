@@ -287,38 +287,27 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
-// userLabelNames are appended to defaultBifrostLabelNames when
-// user_labels_enabled is set.
-var userLabelNames = []string{"user_id", "user_name"}
+// userLabelNames are the unbounded dimensions, added when user_labels_enabled is
+// set. Derived, so promoting a dimension to that tier needs no edit here.
+var userLabelNames = func() []string {
+	safe := map[string]bool{}
+	for _, n := range schemas.MetricSafeEnrichmentDimNames() {
+		safe[n] = true
+	}
+	var out []string
+	for _, n := range schemas.HighCardinalityMetricEnrichmentDimNames() {
+		if !safe[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
 
-// defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
-// bifrost.* metrics. It is a package var (not an Init local) so the connector-
-// parity conformance test can assert it against the shared enrichment registry
-// (core/schemas). Metric-tier dimensions only — no high-cardinality (user, arrays).
-var defaultBifrostLabelNames = []string{
-	"provider",
-	"model",
-	"alias",
-	"method",
-	"virtual_key_id",
-	"virtual_key_name",
-	"routing_engine_used",
-	"routing_rule_id",
-	"routing_rule_name",
-	"complexity_tier",
-	"complexity_mechanism",
-	"selected_key_id",
-	"selected_key_name",
-	"fallback_index",
-	"team_id",
-	"team_name",
-	"customer_id",
-	"customer_name",
-	"business_unit_id",
-	"business_unit_name",
-	"project_id",
-	"project_name",
-}
+// defaultBifrostLabelNames is derived from schemas.EnrichmentDims, not hand-listed
+// — the registry used to be advisory and each connector kept its own copy, which
+// is how Splunk fell 2 dimensions behind. Bounded dimensions only; the unbounded
+// ones are opt-in via user_labels_enabled.
+var defaultBifrostLabelNames = schemas.MetricSafeEnrichmentDimNames()
 
 // defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
 // dimensions available in the hook plus the governance identity. No network_transport
@@ -1198,10 +1187,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A request is scoped to at most one project, so there is no plural form to canonicalize.
 	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
 	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
+	app := schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent))
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
 		"provider":             string(provider),
+		"app":                  app,
 		"model":                model,
 		"alias":                alias,
 		"method":               string(requestType),

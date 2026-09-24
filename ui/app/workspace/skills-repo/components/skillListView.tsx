@@ -407,8 +407,9 @@ export function SkillsListView({
 							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 						</Button>
 						{hasCreateAccess && (
-							<Button aria-label="Create your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
-								Create Skill
+							<Button aria-label="Add your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
+								<Plus className="h-4 w-4" />
+								Add Skill
 							</Button>
 						)}
 					</div>
@@ -543,9 +544,9 @@ export function SkillsListView({
 							<span className="hidden md:inline">{isDownloadingAll ? "Downloading..." : "Download All Skills"}</span>
 						</Button>
 						{hasCreateAccess && (
-							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="New skill" aria-label="New skill">
+							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="Add skill" aria-label="Add skill">
 								<Plus className="h-4 w-4" />
-								<span className="hidden md:inline">New Skill</span>
+								<span className="hidden md:inline">Add Skill</span>
 							</Button>
 						)}
 					</div>
