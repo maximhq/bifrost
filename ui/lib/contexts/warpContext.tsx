@@ -1,5 +1,6 @@
 import type { WarpQuestion, WarpUsage } from "@/components/warp/warpStream.utils";
 import { useFeatureFlag } from "@/hooks/useFeatureFlag";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
@@ -113,14 +114,19 @@ const WarpContext = createContext<WarpContextValue | null>(null);
  * which is the point of the dock, but not a reload. Server-side persistence is a
  * separate feature with its own storage and retention questions.
  *
- * While the "warp" feature flag is off the provider publishes null, which every
- * consumer already treats as "no Warp here": the launcher, the ⌘I shortcut and
- * the dock all stand down. The provider itself stays mounted either way -
- * swapping it for a bare fragment would change the element type above the whole
- * dashboard and remount every page when the flag query resolves.
+ * While the "warp" feature flag is off, or the caller lacks WarpSession View or
+ * Warp View, the provider publishes null, which every consumer already treats
+ * as "no Warp here": the launcher, the ⌘I shortcut and the dock all stand down.
+ * The provider itself stays mounted either way - swapping it for a bare
+ * fragment would change the element type above the whole dashboard and remount
+ * every page when the flag query resolves.
  */
 export function WarpProvider({ children }: { children: React.ReactNode }) {
-	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
+	const isWarpFlagOn = useFeatureFlag(FEATURE_FLAGS.warp);
+	const hasWarpSessionAccess = useRbac(RbacResource.WarpSession, RbacOperation.View);
+	// The panel reads GET /api/warp/config to tell "not set up" from "ready", which is gated on Warp View.
+	const hasWarpConfigReadAccess = useRbac(RbacResource.Warp, RbacOperation.View);
+	const isWarpEnabled = isWarpFlagOn && hasWarpSessionAccess && hasWarpConfigReadAccess;
 	const [isOpen, setIsOpen] = useState(false);
 	const [turns, setTurns] = useState<WarpTurn[]>([]);
 	const [conversationId, setConversationId] = useState("");
