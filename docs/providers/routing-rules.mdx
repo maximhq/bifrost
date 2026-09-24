@@ -282,6 +282,7 @@ Access routing rules from the dashboard:
 - **CEL Expression**: Visual or manual expression builder
 - **Targets** (required): One or more weighted routing targets - each has Provider (optional), Model (optional), API Key (optional, requires Provider to be set), and Weight (%). Weights must sum to 1. When multiple targets are defined, one is selected probabilistically at request time.
 - **Fallbacks** (optional): Array of fallback providers
+- **Time to first token cutoff (ms)** (optional): For streaming requests, cut off an attempt that has not produced its first token in time and move to the next fallback. See [Time to First Token Cutoff](#time-to-first-token-ttft-cutoff).
 - **Scope**: Where rule applies (global, customer, team, virtual_key)
 - **Scope ID**: Required if scope is not global
 - **Priority**: Lower = evaluated first (default: 0)
@@ -808,6 +809,50 @@ A fallback can pin its own provider key, which skips load balancing for that att
 Each attempt is pinned independently, so an unpinned fallback later in the chain still load balances normally. If the pinned key is not in that provider's pool, the attempt is skipped and the chain moves to the next entry.
 
 A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
+
+### Time to First Token (TTFT) Cutoff
+
+A provider can accept a streaming request and then stall before it sends any output. Set `ttft_timeout_ms` on a rule to cap that wait. When the rule matches a streaming request, each attempt that still has a fallback after it gets this deadline. If an attempt has not produced its first token in time, Bifrost closes its connection and moves to the next fallback. The client never sees the slow attempt: nothing is streamed to it until the first token arrives.
+
+```json
+{
+  "governance": {
+    "routing_rules": [
+      {
+        "id": "fast-gpt",
+        "name": "Fast GPT",
+        "cel_expression": "model == 'gpt-4o'",
+        "targets": [{ "provider": "openai", "model": "gpt-4o", "weight": 1 }],
+        "fallbacks": ["azure/gpt-4o", "bedrock/openai.gpt-oss-120b-1:0"],
+        "ttft_timeout_ms": 1500
+      }
+    ]
+  }
+}
+```
+
+Or through the API (`0` clears the value on update):
+
+```bash
+curl -X PUT http://localhost:8080/api/routing/rules/{rule_id} \
+  -H "Content-Type: application/json" \
+  -d '{"ttft_timeout_ms": 1500}'
+```
+
+How the cutoff behaves:
+
+- **Streaming only.** Non-streaming requests ignore it.
+- **The last attempt is never cut off.** In the example, OpenAI and Azure each get 1.5 s. Bedrock, the last fallback, is never cut off by the TTFT deadline and runs under the normal timeouts, so a slow last provider still gets its full request timeout. A rule without fallbacks (and a request that brings none) is never cut off.
+- **No retry on the same provider.** A TTFT miss goes straight to the next fallback. It does not use the provider's `max_retries`, because retrying a slow provider adds more latency.
+- **What counts as the first token.** Real output: text, reasoning, tool call arguments, audio or image data, a finish reason, or usage. Startup events such as `response.created` or an empty assistant role delta do not count. The deadline covers the whole wait, from sending the request to the first token, including the wait for response headers.
+- **Rule chaining.** The value comes from the last matched rule, together with that rule's fallbacks.
+- **Range.** 1 to 300000 ms. Omit it (or send `0` over the API) to turn it off.
+
+A cutoff is recorded in the routing engine logs as `TTFT timeout: <provider>/<model> produced no first token within <duration>`, and in the key attempt trail as `ttft_timeout`.
+
+<Note>
+The provider may still bill the prompt tokens of an attempt that was cut off, because it already received the request.
+</Note>
 
 ---
 
