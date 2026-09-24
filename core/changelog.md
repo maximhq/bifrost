@@ -1,0 +1,1 @@
+- feat: Added defaultSupportsToolSearch which returns true for gpt-5.4, gpt-5.5, gpt-5.6, and gpt-6 models on OpenAI, Azure, Bedrock, and BedrockMantle providers. All other OpenAI-compatible backends continue to have defer_loading stripped.

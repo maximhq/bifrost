@@ -835,6 +835,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Filter out tools that the OpenAI-compatible target doesn't support.
 	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
 	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider))
+	req.keepDeferLoading = toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel))
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
