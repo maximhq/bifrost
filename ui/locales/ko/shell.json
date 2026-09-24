@@ -286,6 +286,7 @@
 			"chatHistory": "채팅 기록",
 			"newChat": "새 채팅",
 			"close": "Warp 닫기",
+			"preview": "미리보기",
 			"loading": "Warp 불러오는 중...",
 			"loadFailed": "Warp 설정을 불러올 수 없습니다. 페이지를 새로고침한 뒤 다시 시도하세요.",
 			"turnedOff": "Warp가 꺼져 있습니다",

@@ -286,6 +286,7 @@
 			"chatHistory": "Chat history",
 			"newChat": "New chat",
 			"close": "Close Warp",
+			"preview": "Preview",
 			"loading": "Loading Warp...",
 			"loadFailed": "Could not load Warp's configuration. Reload the page to try again.",
 			"turnedOff": "Warp is turned off",
