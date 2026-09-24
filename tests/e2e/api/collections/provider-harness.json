@@ -169358,6 +169358,514 @@
           }
         }
       ]
+    },
+    {
+      "name": "115. OpenAI GPT-6 compatibility stack (Astra / Sol / Luna)",
+      "description": "Live regression coverage for the GPT-6 compatibility stack.\n\n115.1/115.2 pin Astra's always-reasoning fallback on both OpenAI request converters: caller effort none becomes low, and sampling/logprob fields that Astra rejects are removed from the outbound body.\n115.3/115.4 pin the inverse for the newly released Sol and Luna models. Both can disable reasoning, so none must survive; the requests include forced function calling because Chat tool use on these models depends on reasoning being disabled.\n115.5 covers the GPT-6 max-effort ladder and the prompt-cache translation added for the family: cache_control becomes prompt_cache_breakpoint and opts the request into explicit cache mode.\n115.6/115.7 are a real async-tool chain. The first response must return async on its function_call; the second replays that pending call without a tool output. Dropping async on replay makes OpenAI reject the request with \"No tool output found for function call\".\n115.8 proves async is retained only on the supported function/custom tool kinds when they are mixed with another tool.\n\nEvery shaping assertion reads extra_fields.raw_request via x-bf-send-back-raw-request, so these rows verify what Bifrost sent rather than inferring it from a 2xx response.",
+      "item": [
+        {
+          "name": "115.1 openai/gpt-6-astra chat: none becomes low and unsupported sampling fields are stripped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('115.1 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.1 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('115.1 Astra normalizes reasoning_effort none to low', function () {",
+                  "  pm.expect(rr.reasoning_effort).to.eql('low');",
+                  "});",
+                  "pm.test('115.1 Astra sampling and logprob fields are absent on the wire', function () {",
+                  "  ['temperature', 'top_p', 'logprobs', 'top_logprobs'].forEach(function (key) {",
+                  "    pm.expect(rr[key], key + ' leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"temperature\": 0.2,\n  \"top_p\": 0.9,\n  \"logprobs\": true,\n  \"top_logprobs\": 2,\n  \"max_completion_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "115.2 openai/gpt-6-astra responses: none becomes low and unsupported sampling fields are stripped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('115.2 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.2 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('115.2 Astra normalizes reasoning effort none to low', function () {",
+                  "  pm.expect(rr.reasoning).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('low');",
+                  "});",
+                  "pm.test('115.2 Astra Responses sampling and logprob fields are absent on the wire', function () {",
+                  "  ['temperature', 'top_p', 'top_logprobs'].forEach(function (key) {",
+                  "    pm.expect(rr[key], key + ' leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+                  "  });",
+                  "  pm.expect(JSON.stringify(rr.include || [])).to.not.include('message.output_text.logprobs');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"input\": \"Reply with only OK.\",\n  \"reasoning\": {\n    \"effort\": \"none\"\n  },\n  \"temperature\": 0.2,\n  \"top_p\": 0.9,\n  \"top_logprobs\": 2,\n  \"include\": [\n    \"message.output_text.logprobs\"\n  ],\n  \"max_output_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "115.3 openai/gpt-6-sol chat: reasoning_effort none survives and enables forced function calling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('115.3 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.3 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('115.3 Sol preserves reasoning_effort none on the wire', function () {",
+                  "  pm.expect(rr.reasoning_effort).to.eql('none');",
+                  "});",
+                  "pm.test('115.3 Sol returns the required function call while reasoning is disabled', function () {",
+                  "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+                  "  pm.expect(msg, 'assistant message missing').to.be.an('object');",
+                  "  pm.expect(msg.tool_calls, 'tool_calls missing: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "115.4 openai/gpt-6-luna responses streaming: effort none survives through a forced function call",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('115.4 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "pm.test('115.4 response is SSE and reaches response.completed', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
+                  "  pm.expect(txt, txt.slice(-800)).to.include('response.completed');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var terminal = null;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev && ev.type === 'response.completed') { terminal = ev; }",
+                  "});",
+                  "var rr = terminal && terminal.extra_fields && terminal.extra_fields.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.4 Luna preserves reasoning effort none on the streaming wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing on response.completed').to.be.an('object');",
+                  "  pm.expect(rr.reasoning).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('none');",
+                  "});",
+                  "pm.test('115.4 stream contains the required function_call', function () {",
+                  "  pm.expect(txt, 'function_call absent: ' + txt.slice(0, 1200)).to.include('function_call');",
+                  "  pm.expect(txt).to.include('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"Call get_weather for Paris. Do not answer directly.\",\n  \"reasoning\": {\n    \"effort\": \"none\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get current weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 64,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "115.5 openai/gpt-6-sol responses: max effort and explicit prompt-cache breakpoint reach OpenAI",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('115.5 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.5 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('115.5 GPT-6 Sol keeps max reasoning effort', function () {",
+                  "  pm.expect(rr.reasoning).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('max');",
+                  "});",
+                  "pm.test('115.5 cache_control becomes an explicit prompt_cache_breakpoint', function () {",
+                  "  var first = (((rr.input || [])[0] || {}).content || [])[0] || {};",
+                  "  pm.expect(first.prompt_cache_breakpoint, 'first input block: ' + JSON.stringify(first)).to.be.an('object');",
+                  "  pm.expect(first.prompt_cache_breakpoint.mode).to.eql('explicit');",
+                  "  pm.expect(JSON.stringify(rr.input || [])).to.not.include('cache_control');",
+                  "  pm.expect(rr.prompt_cache_options, 'prompt_cache_options missing').to.be.an('object');",
+                  "  pm.expect(rr.prompt_cache_options.mode).to.eql('explicit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Stable instructions: answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only OK.\"\n        }\n      ]\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "115.6 openai/gpt-6-astra responses async turn 1: definition and returned call retain async",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('gpt6AsyncReplayInput115');",
+                  "pm.test('115.6 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.6 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('115.6 async definition and output_schema reach OpenAI', function () {",
+                  "  var tool = (rr.tools || [])[0] || {};",
+                  "  pm.expect(tool.type).to.eql('function');",
+                  "  pm.expect(tool.async).to.eql(true);",
+                  "  pm.expect(tool.output_schema, 'output_schema missing').to.be.an('object');",
+                  "  pm.expect(tool.output_schema.type).to.eql('object');",
+                  "});",
+                  "var call = (body.output || []).filter(function (item) { return item && item.type === 'function_call'; })[0];",
+                  "pm.test('115.6 returned function_call retains async true', function () {",
+                  "  pm.expect(call, 'function_call missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(call.async).to.eql(true);",
+                  "  pm.expect(call.call_id).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "if (call && call.async === true) {",
+                  "  pm.collectionVariables.set('gpt6AsyncReplayInput115', JSON.stringify([",
+                  "    { role: 'user', content: 'Start job report-1156 with the start_job function.' },",
+                  "    call,",
+                  "    { role: 'user', content: 'While that job is still running, reply with only the number 4.' }",
+                  "  ]));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"input\": \"Start job report-1156 with the start_job function. Do not answer directly.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"start_job\",\n      \"description\": \"Start a background job\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"job\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"job\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"strict\": true,\n      \"async\": true,\n      \"output_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"job_id\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"job_id\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "115.7 openai/gpt-6-astra responses async turn 2: pending call replay is accepted without output",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var requestRaw = (pm.request.body && pm.request.body.raw) || '';",
+                  "if (requestRaw.indexOf('{{gpt6AsyncReplayInput115}}') !== -1) {",
+                  "  pm.test('115.7 turn 1 produced replay input', function () { pm.expect.fail('gpt6AsyncReplayInput115 is unresolved; run 115.6 first'); });",
+                  "  return;",
+                  "}",
+                  "pm.test('115.7 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'dropping async causes OpenAI to demand a tool output: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.7 replayed pending function_call keeps async true on the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "  var call = (rr.input || []).filter(function (item) { return item && item.type === 'function_call'; })[0];",
+                  "  pm.expect(call, 'replayed function_call missing: ' + JSON.stringify(rr).slice(0, 1000)).to.be.an('object');",
+                  "  pm.expect(call.async).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"input\": {{gpt6AsyncReplayInput115}},\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "115.8 openai/gpt-6-sol responses: mixed async tools retain markers only on function and custom",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('115.8 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('115.8 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var byType = {};",
+                  "(rr.tools || []).forEach(function (tool) { byType[tool.type] = tool; });",
+                  "pm.test('115.8 function and custom tools keep async true', function () {",
+                  "  pm.expect(byType.function, 'function tool missing').to.be.an('object');",
+                  "  pm.expect(byType.function.async).to.eql(true);",
+                  "  pm.expect(byType.custom, 'custom tool missing').to.be.an('object');",
+                  "  pm.expect(byType.custom.async).to.eql(true);",
+                  "});",
+                  "pm.test('115.8 unsupported web_search async marker is stripped', function () {",
+                  "  pm.expect(byType.web_search, 'web_search tool missing').to.be.an('object');",
+                  "  pm.expect(byType.web_search.async, 'async leaked to web_search: ' + JSON.stringify(byType.web_search)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"input\": \"Reply with only OK and do not call any tool.\",\n  \"reasoning\": {\n    \"effort\": \"none\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"start_job\",\n      \"description\": \"Start a background job\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"job\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"job\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"strict\": true,\n      \"async\": true\n    },\n    {\n      \"type\": \"custom\",\n      \"name\": \"format_report\",\n      \"description\": \"Format a report from free-form text\",\n      \"format\": {\n        \"type\": \"text\"\n      },\n      \"async\": true\n    },\n    {\n      \"type\": \"web_search\",\n      \"async\": true\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"max_output_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
