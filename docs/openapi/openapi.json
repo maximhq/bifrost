@@ -1402,6 +1402,9 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
@@ -5662,6 +5665,9 @@
                                 }
                               ]
                             },
+                            "async": {
+                              "type": "boolean"
+                            },
                             "action": {
                               "type": "object"
                             },
@@ -6180,6 +6186,9 @@
                                 }
                               }
                             ]
+                          },
+                          "async": {
+                            "type": "boolean"
                           },
                           "action": {
                             "type": "object"
@@ -6896,6 +6905,9 @@
                               }
                             }
                           ]
+                        },
+                        "async": {
+                          "type": "boolean"
                         },
                         "action": {
                           "type": "object"
@@ -13797,6 +13809,9 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
@@ -14747,6 +14762,9 @@
                               }
                             }
                           ]
+                        },
+                        "async": {
+                          "type": "boolean"
                         },
                         "action": {
                           "type": "object"
@@ -15735,6 +15753,9 @@
                               }
                             }
                           ]
+                        },
+                        "async": {
+                          "type": "boolean"
                         },
                         "action": {
                           "type": "object"
@@ -16839,6 +16860,9 @@
                                 }
                               ]
                             },
+                            "async": {
+                              "type": "boolean"
+                            },
                             "action": {
                               "type": "object"
                             },
@@ -17357,6 +17381,9 @@
                                 }
                               }
                             ]
+                          },
+                          "async": {
+                            "type": "boolean"
                           },
                           "action": {
                             "type": "object"
@@ -30828,6 +30855,9 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
@@ -33922,6 +33952,9 @@
                               }
                             }
                           ]
+                        },
+                        "async": {
+                          "type": "boolean"
                         },
                         "action": {
                           "type": "object"
@@ -37128,6 +37161,9 @@
                               }
                             }
                           ]
+                        },
+                        "async": {
+                          "type": "boolean"
                         },
                         "action": {
                           "type": "object"
@@ -44339,6 +44375,9 @@
                               }
                             }
                           ]
+                        },
+                        "async": {
+                          "type": "boolean"
                         },
                         "action": {
                           "type": "object"
@@ -99480,6 +99519,9 @@
                         }
                       ]
                     },
+                    "async": {
+                      "type": "boolean"
+                    },
                     "action": {
                       "type": "object"
                     },
@@ -99792,6 +99834,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -99827,6 +99872,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -99865,6 +99913,9 @@
                   "type": "string"
                 },
                 "server_url": {
+                  "type": "string"
+                },
+                "tunnel_id": {
                   "type": "string"
                 },
                 "allowed_tools": {
@@ -100414,6 +100465,9 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
@@ -100683,6 +100737,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -100718,6 +100775,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -100756,6 +100816,9 @@
                   "type": "string"
                 },
                 "server_url": {
+                  "type": "string"
+                },
+                "tunnel_id": {
                   "type": "string"
                 },
                 "allowed_tools": {
@@ -101353,6 +101416,9 @@
                       }
                     }
                   ]
+                },
+                "async": {
+                  "type": "boolean"
                 },
                 "action": {
                   "type": "object"
@@ -102615,6 +102681,9 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
@@ -102705,6 +102774,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -102740,6 +102812,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -102778,6 +102853,9 @@
                   "type": "string"
                 },
                 "server_url": {
+                  "type": "string"
+                },
+                "tunnel_id": {
                   "type": "string"
                 },
                 "allowed_tools": {
@@ -104856,6 +104934,9 @@
                         }
                       ]
                     },
+                    "async": {
+                      "type": "boolean"
+                    },
                     "action": {
                       "type": "object"
                     },
@@ -105113,6 +105194,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -105148,6 +105232,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -105186,6 +105273,9 @@
                   "type": "string"
                 },
                 "server_url": {
+                  "type": "string"
+                },
+                "tunnel_id": {
                   "type": "string"
                 },
                 "allowed_tools": {
@@ -116722,6 +116812,9 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
@@ -117189,6 +117282,9 @@
                       }
                     }
                   ]
+                },
+                "async": {
+                  "type": "boolean"
                 },
                 "action": {
                   "type": "object"
