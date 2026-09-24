@@ -340,7 +340,9 @@ func IsOverheadBreakdownSpan(span *Span) bool {
 		}
 		return strings.HasPrefix(span.Name, "middleware.")
 	case SpanKindPlugin:
-		return strings.HasSuffix(span.Name, ".transportprehook") || strings.HasSuffix(span.Name, ".transportposthook")
+		return strings.HasSuffix(span.Name, ".transportprehook") ||
+			strings.HasSuffix(span.Name, ".transportposthook") ||
+			strings.HasSuffix(span.Name, ".transportresponseheadershook")
 	}
 	return false
 }
