@@ -123,7 +123,7 @@ func TestWarpAgentEndsTurnOnQuestion(t *testing.T) {
 			`{"question":"Which period?","kind":"time_range","options":[{"label":"Last 7 days","hint":"-7d"},{"label":"Last 30 days","hint":"-30d"}]}`),
 		TextTurn("should never be reached"),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -151,7 +151,7 @@ func TestWarpAgentRedirectsProseQuestionToAskUser(t *testing.T) {
 		ToolTurn("ask-1", AskUserTool,
 			`{"question":"Whose failures?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -172,7 +172,7 @@ func TestWarpAgentProseQuestionRedirectIsBounded(t *testing.T) {
 		TextTurn("Which team?"),
 		TextTurn("Which team, then?"),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 	require.Equal(t, []eventType{EventStart, EventDelta, EventDone}, eventTypes(events))
 	require.Equal(t, "Which team, then?", events[1].Delta)
 	require.Equal(t, 2, model.calls)
@@ -184,14 +184,14 @@ func TestWarpAgentProseQuestionRedirectIsBounded(t *testing.T) {
 		ToolTurn("q-1", "count_logs", `{"filters":{"start_time":"-7d","status":["error"]}}`),
 		TextTurn(answer),
 	}}
-	events = collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events = collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 	require.Equal(t, 2, model.calls)
 	require.Equal(t, answer, events[len(events)-2].Delta)
 
 	// With one step left there is no tool round in which ask_user could run, so
 	// the prose question is the best available answer.
 	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("Which team?")}}
-	events = collectEvents(t, newTestAgent(model, &fakeLogReader{}, 2), context.Background())
+	events = collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 2), context.Background())
 	require.Equal(t, 1, model.calls)
 	require.Equal(t, "Which team?", events[1].Delta)
 }
@@ -207,7 +207,7 @@ func TestWarpAgentRedirectsUninvestigatedRefusal(t *testing.T) {
 		ToolTurn("q-1", "count_logs", `{"filters":{"start_time":"-7d","status":["error"]}}`),
 		TextTurn("Most of the cluster was overloaded_error from anthropic."),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 	require.Equal(t, 3, model.calls, "the refusal must be sent back to investigate")
 	require.Equal(t, "Most of the cluster was overloaded_error from anthropic.", events[len(events)-2].Delta)
@@ -221,13 +221,13 @@ func TestWarpAgentRedirectsUninvestigatedRefusal(t *testing.T) {
 		ToolTurn("q-1", "count_logs", `{"filters":{"start_time":"-7d"}}`),
 		TextTurn("I can't break this down further - the tools have no per-region split."),
 	}}
-	collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 	require.Equal(t, 2, model.calls)
 
 	// An answer from results already in the conversation is sent back once like
 	// any tool-less reply, and stands when the model gives it again.
 	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("That is roughly EUR 8.30."), TextTurn("That is roughly EUR 8.30.")}}
-	events = collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events = collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 	require.Equal(t, 2, model.calls)
 	require.Equal(t, "That is roughly EUR 8.30.", events[1].Delta)
 }
@@ -244,7 +244,7 @@ func TestWarpAgentRedirectsToolLessTurnWhateverItsWording(t *testing.T) {
 		ToolTurn("ask-1", AskUserTool,
 			`{"question":"Whose traffic?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 	require.Equal(t, []eventType{EventStart, EventQuestion, EventDone}, eventTypes(events))
 	require.Equal(t, 2, model.calls)
@@ -263,7 +263,7 @@ func TestWarpAgentRedirectsReplyBackedOnlyByFilterSpace(t *testing.T) {
 		ToolTurn("ask-1", AskUserTool,
 			`{"question":"Whose traffic?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 	require.Equal(t, 3, model.calls)
 	require.Equal(t, EventQuestion, events[len(events)-2].Type)
@@ -280,7 +280,7 @@ func TestWarpAgentTreatsInvalidQuestionAsAToolError(t *testing.T) {
 		ToolTurn("ask-bad", AskUserTool, `{"question":"Which?","options":[]}`),
 		TextTurn("recovered"),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -290,7 +290,7 @@ func TestWarpAgentTreatsInvalidQuestionAsAToolError(t *testing.T) {
 }
 
 func TestWarpPromptCarriesQuestionRules(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{}, true)
+	content := systemInstructions(&schemas.WarpConfig{})
 
 	require.Contains(t, content, AskUserTool)
 	require.Contains(t, content, "Ask about one thing at a time")
@@ -312,7 +312,7 @@ func TestWarpAgentRefusesToKeepAsking(t *testing.T) {
 
 	// Under the limit the question is still posed.
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{ask()}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 	agent.questionsAsked = MaxConsecutiveQuestions - 1
 	events := collectEvents(t, agent, context.Background())
 	require.Contains(t, eventTypes(events), EventQuestion, "the model may still ask below the limit")
@@ -320,7 +320,7 @@ func TestWarpAgentRefusesToKeepAsking(t *testing.T) {
 	// At the limit it is refused, and the model gets a tool error back rather
 	// than the turn ending on another question.
 	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{ask(), TextTurn("About $412.")}}
-	agent = newTestAgent(model, &fakeLogReader{}, 8)
+	agent = newTestAgent(t, model, &fakeLogReader{}, 8)
 	agent.questionsAsked = MaxConsecutiveQuestions
 	events = collectEvents(t, agent, context.Background())
 

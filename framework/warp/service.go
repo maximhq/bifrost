@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
@@ -68,6 +69,14 @@ type Service struct {
 	cleanupOnce     sync.Once
 	cleanupStopOnce sync.Once
 	stopCleanup     chan struct{}
+	// mcp dispatches Warp's tool calls to Bifrost's MCP server
+	// (framework/mcptools) rather than to a local closure - see MCPExecutor.
+	// Set via WithMCPExecutor; the HTTP handler wires in client.ExecuteChatMCPTool.
+	mcp MCPExecutor
+	// mcpTools lists what that server declares, so the model is offered the
+	// schemas the server actually hosts rather than a copy kept here. Set via
+	// WithMCPToolLister; the HTTP handler wires in client.GetAvailableMCPTools.
+	mcpTools MCPToolLister
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
 	catalog      *modelcatalog.ModelCatalog
@@ -119,6 +128,21 @@ func WithBackfillJobStore(store BackfillJobStore) Option {
 // can then be driven by a scripted model with no provider behind it.
 func WithChatFunc(chat ChatFunc) Option {
 	return func(s *Service) { s.chatOverride = chat }
+}
+
+// WithMCPExecutor supplies the dispatch function Warp's agent calls to run a
+// tool, once Bifrost's MCP server (framework/mcptools) has been reached. In
+// production this wraps client.ExecuteChatMCPTool; tests wire in a scripted
+// double instead.
+func WithMCPExecutor(executor MCPExecutor) Option {
+	return func(s *Service) { s.mcp = executor }
+}
+
+// WithMCPToolLister supplies the discovery function declaredTools uses to
+// fetch the allowed tools' schemas from Bifrost's MCP server each turn. In
+// production this wraps client.GetAvailableMCPTools; tests script the list.
+func WithMCPToolLister(list MCPToolLister) Option {
+	return func(s *Service) { s.mcpTools = list }
 }
 
 // WithConversationStore gives the service somewhere to file chats.
@@ -181,6 +205,50 @@ func (s *Service) HasHistory() bool {
 	return s.conversations != nil
 }
 
+// LogReader exposes the same log-store dependency Warp's own tools read
+// from, so a caller building framework/mcptools.Deps does not need its own
+// path to logging - it reuses whatever this Service was already given via
+// WithLogReader. Nil is a supported deployment state (logging disabled).
+func (s *Service) LogReader() LogReader {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logs
+}
+
+// SemanticSearcher exposes Warp's semantic-search dependency for the same
+// reason LogReader does. Nil when the vector store, embedding executor or
+// config store were not all supplied.
+func (s *Service) SemanticSearcher() *SemanticSearcher {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.semantic
+}
+
+// MCPDeps snapshots what Bifrost's MCP server (framework/mcptools) reads
+// through, for mcptools.NewServer to call once per tool call. Resolved per call
+// because SetLogReader rebinds the reader and rebuilds the searcher when the
+// logging plugin is enabled or removed at runtime; one snapshot under one lock
+// so a call never pairs the old reader with the new searcher.
+func (s *Service) MCPDeps() *mcptools.Deps {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	deps := &mcptools.Deps{LogManager: s.logs, Governance: s.governance}
+	// Assigned only when set: a nil *SemanticSearcher stored in the interface
+	// is not a nil interface, and semantic_search_logs' "not configured" check
+	// would pass and call Search on it.
+	if s.semantic != nil {
+		deps.Semantic = s.semantic
+	}
+	return deps
+}
+
+// GovernanceReader exposes Warp's virtual-key lookup dependency for the same
+// reason LogReader does. Nil when the config store does not implement
+// GovernanceReader and none was supplied via WithGovernanceReader.
+func (s *Service) GovernanceReader() GovernanceReader {
+	return s.governance
+}
+
 // CanChat reports whether the chat endpoint can be served: there is data to
 // read and a way to reach a model. Transports gate the route on it, because a
 // route that is registered but always 503s is worse than absent - it tells the
@@ -189,7 +257,7 @@ func (s *Service) HasHistory() bool {
 func (s *Service) CanChat() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.logs != nil && (s.client != nil || s.chatOverride != nil)
+	return s.logs != nil && (s.client != nil || s.chatOverride != nil) && s.mcp != nil && s.mcpTools != nil
 }
 
 // turnDeps returns the model client and the log reader as one consistent pair.

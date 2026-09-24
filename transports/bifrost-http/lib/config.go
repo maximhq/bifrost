@@ -40,6 +40,7 @@ import (
 	"github.com/maximhq/bifrost/framework/objectstore"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -1824,6 +1825,13 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
 				continue
 			}
+			// Bifrost's own MCP server is registered by the server at boot. A file
+			// declaration of the name would be merged over it, or kept as a
+			// second entry the server then mistakes for its own.
+			if c.Name == warp.BifrostMCPClientName {
+				logger.Warn("skipping MCP client config %q from config file: the name is reserved for Bifrost's built-in MCP server", c.Name)
+				continue
+			}
 			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
 				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
 					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)
@@ -2505,9 +2513,16 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 	// configuration of any existing client whose file declaration was
 	// rejected. A declaration the store refuses must never drive the runtime
 	// (a sub-second interval, for one, would spin the checker).
-	runtimeClients := make([]*schemas.MCPClientConfig, 0, len(fileMCPConfig.ClientConfigs))
+	runtimeClients := make([]*schemas.MCPClientConfig, 0, len(fileMCPConfig.ClientConfigs)+1)
 	updates := make([]configstoreTables.TableMCPClient, 0)
 	adds := make([]*schemas.MCPClientConfig, 0)
+	// Bifrost's own MCP server is registered by the server at boot, never
+	// declared in config.json, so the file's silence about it is not a request
+	// to remove it.
+	if builtin := existingByName[warp.BifrostMCPClientName]; builtin != nil {
+		keepIDs[builtin.ID] = true
+		runtimeClients = append(runtimeClients, builtin)
+	}
 	for _, fileClient := range fileMCPConfig.ClientConfigs {
 		if fileClient == nil {
 			continue

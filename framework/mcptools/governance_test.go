@@ -1,4 +1,4 @@
-package warp
+package mcptools
 
 import (
 	"context"
@@ -34,20 +34,20 @@ func (f *fakeGovernanceReader) GetVirtualKey(ctx context.Context, id string) (*t
 	return vk, nil
 }
 
-func TestWarpDescribeVirtualKeyReportsUnavailableWithoutAGovernanceReader(t *testing.T) {
-	_, err := runTool(t, "describe_virtual_key", &ToolDeps{}, map[string]any{"virtual_key_id": "vk-1"})
+func TestDescribeVirtualKeyReportsUnavailableWithoutAGovernanceReader(t *testing.T) {
+	_, err := runTool(t, "describe_virtual_key", &Deps{}, map[string]any{"virtual_key_id": "vk-1"})
 	require.ErrorContains(t, err, "not available")
 }
 
-func TestWarpDescribeVirtualKeyRequiresAnID(t *testing.T) {
-	deps := &ToolDeps{governance: &fakeGovernanceReader{}}
+func TestDescribeVirtualKeyRequiresAnID(t *testing.T) {
+	deps := &Deps{Governance: &fakeGovernanceReader{}}
 	_, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "  "})
 	require.ErrorContains(t, err, "virtual_key_id")
 }
 
-func TestWarpDescribeVirtualKeyReportsUnknownID(t *testing.T) {
+func TestDescribeVirtualKeyReportsUnknownID(t *testing.T) {
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{}}
-	deps := &ToolDeps{governance: fake}
+	deps := &Deps{Governance: fake}
 	_, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-missing"})
 	require.ErrorContains(t, err, "vk-missing")
 	require.ErrorContains(t, err, "describe_filter_space")
@@ -57,17 +57,14 @@ func TestWarpDescribeVirtualKeyReportsUnknownID(t *testing.T) {
 // store - GetVirtualKey narrows to rows the caller may see the same way every
 // LogReader method does. Losing it here would return any key to anyone who
 // asked, the same failure mode LogReader's own tools guard against.
-func TestWarpDescribeVirtualKeyPassesCallerContextToStore(t *testing.T) {
+func TestDescribeVirtualKeyPassesCallerContextToStore(t *testing.T) {
 	type scopeKey struct{}
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{
 		"vk-1": {ID: "vk-1", Name: "prod"},
 	}}
-	deps := &ToolDeps{governance: fake}
-	tool, ok := toolByName(buildTools(), "describe_virtual_key")
-	require.True(t, ok)
-
+	deps := &Deps{Governance: fake}
 	ctx := context.WithValue(context.Background(), scopeKey{}, "caller-scope")
-	_, err := tool.execute(ctx, deps, map[string]any{"virtual_key_id": "vk-1"})
+	_, err := runToolCtx(t, ctx, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
 	require.NoError(t, err)
 	require.Equal(t, "caller-scope", fake.sawContext.Value(scopeKey{}))
 	require.Equal(t, "vk-1", fake.sawID)
@@ -78,7 +75,7 @@ func TestWarpDescribeVirtualKeyPassesCallerContextToStore(t *testing.T) {
 // provider shape describeVirtualKey hand-picks. This is the regression test
 // for that: a row deliberately carrying secret-shaped data in every field
 // describeVirtualKey does not touch, asserting none of it survives.
-func TestWarpDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
+func TestDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
 	teamID := "team-1"
 	expires := time.Now().Add(24 * time.Hour)
 	vk := &tables.TableVirtualKey{
@@ -104,7 +101,7 @@ func TestWarpDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
 		},
 	}
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}}
-	deps := &ToolDeps{governance: fake}
+	deps := &Deps{Governance: fake}
 
 	result, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
 	require.NoError(t, err)
@@ -146,7 +143,7 @@ func TestWarpDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
 // A budget under an active override must report the effective cap, not the
 // raw one the override has already changed - the same distinction the
 // dashboard itself makes (see TableBudget.EffectiveMaxLimit).
-func TestWarpDescribeVirtualKeyBudgetReportsEffectiveLimitUnderOverride(t *testing.T) {
+func TestDescribeVirtualKeyBudgetReportsEffectiveLimitUnderOverride(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:   "vk-1",
 		Name: "prod",
@@ -158,7 +155,7 @@ func TestWarpDescribeVirtualKeyBudgetReportsEffectiveLimitUnderOverride(t *testi
 		},
 	}
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}}
-	deps := &ToolDeps{governance: fake}
+	deps := &Deps{Governance: fake}
 
 	result, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
 	require.NoError(t, err)

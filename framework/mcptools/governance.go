@@ -1,4 +1,4 @@
-package warp
+package mcptools
 
 import (
 	"context"
@@ -10,30 +10,16 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-// GovernanceReader is the slice of the config store describe_virtual_key is
-// allowed to read.
-//
-// Like LogReader, this is deliberately one method: reviewing what Warp can see
-// about how the deployment is governed means reading this interface, not
-// auditing configstore.ConfigStore's whole surface. GetVirtualKey in
-// particular is scope-aware - a caller's ctx narrows which rows it can return,
-// the same row-level enforcement every logstore query gets - so this tool
-// inherits that for free rather than needing its own access check.
-type GovernanceReader interface {
-	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
-}
-
 // describeVirtualKeyTool looks up one virtual key's budget, rate limit and
 // allowed providers - the natural follow-up to "how much has this key spent"
-// (query_usage_by) that Warp had no way to answer before: whether there is
-// room left, not just how much has gone by.
+// (query_usage_by) that has no way to answer before: whether there is room
+// left, not just how much has gone by.
 //
 // It never returns tables.TableVirtualKey (or any of its relations) directly.
 // That struct carries the key's own secret value and its rotation history -
-// exactly the kind of key material LogReader's own doc comment says a Warp
-// tool must never surface - so describeVirtualKey below hand-picks only the
-// budget/limit/provider fields onto a fresh map instead of ever serializing
-// the row itself.
+// exactly the kind of key material a tool must never surface - so
+// describeVirtualKey below hand-picks only the budget/limit/provider fields
+// onto a fresh map instead of ever serializing the row itself.
 func describeVirtualKeyTool() Tool {
 	return Tool{
 		name: "describe_virtual_key",
@@ -47,8 +33,8 @@ func describeVirtualKeyTool() Tool {
   },
   "required": ["virtual_key_id"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			if deps.governance == nil {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			if deps.Governance == nil {
 				return nil, fmt.Errorf("virtual key detail is not available on this deployment")
 			}
 			id, _ := args["virtual_key_id"].(string)
@@ -56,7 +42,7 @@ func describeVirtualKeyTool() Tool {
 			if id == "" {
 				return nil, fmt.Errorf("virtual_key_id is required")
 			}
-			vk, err := deps.governance.GetVirtualKey(ctx, id)
+			vk, err := deps.Governance.GetVirtualKey(ctx, id)
 			if err != nil {
 				if errors.Is(err, configstore.ErrNotFound) {
 					return nil, fmt.Errorf("no virtual key with id %q - describe_filter_space lists the real ones", id)

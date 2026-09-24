@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/mcptools"
 )
 
 var (
@@ -62,11 +63,10 @@ type Turn struct {
 	messages     []schemas.ResponsesMessage
 	config       *schemas.WarpConfig
 	chat         ChatFunc
-	// logs and semantic are snapshotted with chat so the three cannot drift
-	// mid-turn: the searcher holds its own reference to a reader, and a mismatched
-	// pair searches one backend and hydrates from another.
-	logs             LogReader
-	semantic         *SemanticSearcher
+	// hasSemantic records whether a semantic searcher existed when the turn
+	// was resolved. Without one semantic_search_logs can only refuse, so it
+	// is not offered to the model at all.
+	hasSemantic      bool
 	utcOffsetMinutes int
 	timezone         string
 }
@@ -98,17 +98,18 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	if isNew {
 		conversationID = uuid.NewString()
 	}
-	// One snapshot for both. Read separately, a turn could keep a usable chat
-	// func while the reader went nil underneath it, and the first log tool the
-	// model reached for dereferenced nil inside the agent.
+	// One snapshot for both, so a turn cannot keep a usable chat func while the
+	// reader went nil underneath it.
 	chat, logs, semantic := s.turnDeps(ctx, config, conversationID)
 	if chat == nil {
 		return nil, ErrNoModelClient
 	}
-	// Refused here rather than at the tool call. Every tool this agent has reads
-	// logs, so a turn without a reader cannot answer anything - failing now gives
-	// the caller the same 503 reason the route already reports.
-	if logs == nil {
+	// Refused here rather than mid-turn: CanChat already reports a Warp with no
+	// log reader as unavailable, and failing now gives the caller the same 503
+	// reason the route reports instead of a turn that cannot answer anything.
+	// The same holds for the MCP dispatch and discovery functions: every tool
+	// runs through them, so a turn without them cannot run a single one.
+	if logs == nil || s.mcp == nil || s.mcpTools == nil {
 		return nil, ErrUnavailable
 	}
 	return &Turn{
@@ -122,8 +123,7 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 		messages:       messages,
 		config:         config,
 		chat:           chat,
-		logs:           logs,
-		semantic:       semantic,
+		hasSemantic:    semantic != nil,
 		// Sanitized here, once, since this is the one place a raw client value
 		// exists - everything downstream (NewAgent, systemInstructions) trusts
 		// what it's handed rather than re-validating.
@@ -152,11 +152,11 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// The scope is read off the snapshotted context, same as the row-level
 	// queryscope, so it is a fact about who asked rather than anything the
 	// request body could claim.
-	// All three from the turn, not re-read here: chat, the reader and the
-	// searcher were snapshotted together at NewTurn, so a SetLogReader landing
-	// mid-turn cannot leave the agent searching one backend while it hydrates
-	// details from another - or hand it a nil reader it will dereference.
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
+	tools := s.mcpTools
+	if !turn.hasSemantic {
+		tools = withoutTool(tools, mcptools.SemanticSearchToolName)
+	}
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), s.mcp, tools, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)

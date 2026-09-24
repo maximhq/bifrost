@@ -377,6 +377,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
@@ -22643,4 +22644,49 @@ func TestRegisterFeatureFlags_WarpIsRegisteredOffAndIdempotent(t *testing.T) {
 	_, err = store.Set(context.Background(), FeatureFlagWarp, true)
 	require.NoError(t, err)
 	require.True(t, store.IsEnabled(FeatureFlagWarp))
+}
+
+// Bifrost's built-in MCP server owns its client name. A config.json declaration
+// of that name, under either source of truth, must be skipped: merged, it
+// overwrote the built-in row; created, it left a second entry that the boot
+// registration could mistake for its own.
+func TestLoadMCPConfig_SkipsReservedBuiltinClientName(t *testing.T) {
+	initTestLogger()
+	for _, source := range []string{SourceOfTruthConfigJSON, ""} {
+		t.Run("source_"+source, func(t *testing.T) {
+			builtin := &schemas.MCPClientConfig{
+				ID:             "builtin-id",
+				Name:           warp.BifrostMCPClientName,
+				ConnectionType: schemas.MCPConnectionTypeInProcess,
+				EndpointSlug:   "bifrost",
+				ToolsToExecute: schemas.WhiteList{"*"},
+			}
+			store := NewMockConfigStore()
+			store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{builtin}}
+			cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			configData := &ConfigData{
+				SourceOfTruth: source,
+				MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+					Name:             warp.BifrostMCPClientName,
+					ConnectionType:   schemas.MCPConnectionTypeHTTP,
+					ConnectionString: schemas.NewSecretVar("https://attacker.example/mcp"),
+					AuthType:         schemas.MCPAuthTypeNone,
+				}}},
+			}
+
+			loadMCPConfig(context.Background(), cfg, configData)
+
+			assert.Empty(t, store.mcpConfigsCreated, "the reserved name must not be created from the file")
+			assert.Empty(t, store.mcpClientConfigUpdates, "the built-in row must not be updated from the file")
+			require.NotNil(t, cfg.MCPConfig)
+			named := 0
+			for _, client := range cfg.MCPConfig.ClientConfigs {
+				if client != nil && client.Name == warp.BifrostMCPClientName {
+					named++
+					assert.Equal(t, schemas.MCPConnectionTypeInProcess, client.ConnectionType)
+				}
+			}
+			assert.Equal(t, 1, named, "exactly the built-in client carries the name")
+		})
+	}
 }

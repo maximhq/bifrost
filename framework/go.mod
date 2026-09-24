@@ -12,6 +12,7 @@ require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/mark3labs/mcp-go v0.43.2
 	github.com/maximhq/bifrost/core v1.10.1
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0
@@ -121,7 +122,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
-	github.com/mark3labs/mcp-go v0.43.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
