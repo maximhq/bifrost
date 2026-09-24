@@ -266,6 +266,13 @@ type TableVirtualKey struct {
 
 	AllowAllProviders bool `gorm:"default:false" json:"allow_all_providers"`
 
+	// DisableContentLogging is the key's own say on whether request and response content is
+	// persisted for its traffic. Tri-state on purpose: nil inherits client.disable_content_logging,
+	// true forces content off for every sink, false forces content on for the log store only (each
+	// observability connector keeps its own flag). No gorm default: a default tag would make GORM
+	// write the default for a nil pointer on insert and collapse "inherit" into "false".
+	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`

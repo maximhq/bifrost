@@ -1121,6 +1121,10 @@
                 "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider that also has a config row still has that config's model allow/blacklist, budgets, rate limits, and key selection applied; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
                 "default": false
               },
+              "disable_content_logging": {
+                "type": "boolean",
+                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
+              },
               "team_id": {
                 "type": "string",
                 "description": "Associated team ID (mutually exclusive with customer_id and business_unit_id)"
