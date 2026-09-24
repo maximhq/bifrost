@@ -830,6 +830,73 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	}
 }
 
+// TestToOpenAIResponsesRequest_KeepsDeferLoadingForToolSearchModels pins that
+// defer_loading reaches the wire for models that support tool search. OpenAI
+// documents defer_loading on top-level functions and MCP tools for gpt-5.4 and
+// later (https://developers.openai.com/api/docs/guides/tools-tool-search).
+// Stripping it loads every tool eagerly, so the model never emits
+// tool_search_call. Older models and non-OpenAI wires still get the strip.
+func TestToOpenAIResponsesRequest_KeepsDeferLoadingForToolSearchModels(t *testing.T) {
+	newReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("find the weather tool")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{
+					{
+						Type:                    schemas.ResponsesToolTypeToolSearch,
+						ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: new("client")},
+					},
+					{
+						Type:                  schemas.ResponsesToolTypeFunction,
+						Name:                  new("get_weather"),
+						Description:           new("Get the weather"),
+						DeferLoading:          new(true),
+						ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		keep     bool
+	}{
+		{"openai gpt-6-sol", schemas.OpenAI, "gpt-6-sol", true},
+		{"openai gpt-5.6-sol", schemas.OpenAI, "gpt-5.6-sol", true},
+		{"openai gpt-5.4", schemas.OpenAI, "gpt-5.4", true},
+		{"azure gpt-6-sol", schemas.Azure, "gpt-6-sol-2026-09-22", true},
+		{"bedrock mantle gpt-6-sol", schemas.BedrockMantle, "openai.gpt-6-sol", true},
+		{"bedrock gpt-6-sol on mantle", schemas.Bedrock, "openai.gpt-6-sol", true},
+		{"openai gpt-4o predates tool search", schemas.OpenAI, "gpt-4o", false},
+		{"openai gpt-5.2 predates tool search", schemas.OpenAI, "gpt-5.2", false},
+		{"groq has no tool search", schemas.Groq, "openai/gpt-oss-120b", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := ToOpenAIResponsesRequest(nil, newReq(tt.provider, tt.model))
+			if req == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			jsonBytes, err := req.MarshalJSON()
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			raw := string(jsonBytes)
+			if got := strings.Contains(raw, `"defer_loading":true`); got != tt.keep {
+				t.Errorf("defer_loading on wire = %v, want %v; raw=%s", got, tt.keep, raw)
+			}
+		})
+	}
+}
+
 // TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes verifies
 // that Anthropic-only tool types (web_fetch, memory) are dropped entirely when
 // serializing for OpenAI Responses. Per OpenAI's OpenAPI spec the Responses

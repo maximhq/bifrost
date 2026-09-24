@@ -12,3 +12,4 @@
 - fix: treat Bedrock's cross-account or cross-model encrypted reasoning rejection as recoverable and retry without it
 - fix: decision emulation uses tool_choice auto for gpt-oss on Bedrock Mantle, and recovers leaked parameter tags with surrounding whitespace
 - fix: report Gemini transcription usage even when the transcript is empty
+- feat: adds tool_search capability for non openai providers for gpt-6 models 
