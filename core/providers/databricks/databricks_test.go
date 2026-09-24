@@ -880,6 +880,144 @@ func TestDatabricksChatStripsAnthropicOnlyFields(t *testing.T) {
 	}
 }
 
+// TestDatabricksGeminiSingleSystemPrompt pins the one-system-prompt rule for Gemini-backed
+// endpoints. Databricks maps chat messages onto Gemini's single system_instruction and
+// answers anything more with "Gemini models only support one system prompt" (400). Claude
+// Code sends its system prompt as several blocks, which reach the wire as one system message
+// with several text parts, and that alone trips the rule. Other model families take the
+// parts as sent.
+func TestDatabricksGeminiSingleSystemPrompt(t *testing.T) {
+	t.Parallel()
+
+	text := func(s string) *schemas.ChatMessageContent {
+		return &schemas.ChatMessageContent{ContentStr: schemas.Ptr(s)}
+	}
+	parts := func(texts ...string) *schemas.ChatMessageContent {
+		blocks := make([]schemas.ChatContentBlock, len(texts))
+		for i, s := range texts {
+			blocks[i] = schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(s)}
+		}
+		return &schemas.ChatMessageContent{ContentBlocks: blocks}
+	}
+	user := schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: text("hey")}
+
+	tests := []struct {
+		name  string
+		model string
+		input []schemas.ChatMessage
+		// want is the JSON the messages array must marshal to on the wire.
+		want string
+	}{
+		{
+			name:  "system parts are joined into one string",
+			model: "databricks-gemini-3-8-flash",
+			input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleSystem, Content: parts("rules", "tools")}, user},
+			want:  `[{"role":"system","content":"rules\n\ntools"},{"role":"user","content":"hey"}]`,
+		},
+		{
+			name:  "system and developer messages merge into the first",
+			model: "databricks-gemini-3-8-flash",
+			input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: text("rules")},
+				{Role: schemas.ChatMessageRoleDeveloper, Content: parts("tools", "env")},
+				user,
+				{Role: schemas.ChatMessageRoleSystem, Content: text("reminder")},
+			},
+			want: `[{"role":"system","content":"rules\n\ntools\n\nenv\n\nreminder"},{"role":"user","content":"hey"}]`,
+		},
+		{
+			name:  "AI Gateway model name is matched too",
+			model: "system.ai.gemini-3-8-flash",
+			input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleSystem, Content: parts("rules", "tools")}, user},
+			want:  `[{"role":"system","content":"rules\n\ntools"},{"role":"user","content":"hey"}]`,
+		},
+		{
+			name:  "a single string system prompt is sent unchanged",
+			model: "databricks-gemini-3-8-flash",
+			input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleSystem, Content: text("rules")}, user},
+			want:  `[{"role":"system","content":"rules"},{"role":"user","content":"hey"}]`,
+		},
+		{
+			name:  "non-Gemini models keep the parts",
+			model: "databricks-claude-sonnet-4-5",
+			input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleSystem, Content: parts("rules", "tools")}, user},
+			want:  `[{"role":"system","content":[{"type":"text","text":"rules"},{"type":"text","text":"tools"}]},{"role":"user","content":"hey"}]`,
+		},
+	}
+
+	for _, stream := range []bool{false, true} {
+		for _, tt := range tests {
+			name := tt.name
+			if stream {
+				name += " (stream)"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				bodyCh := make(chan map[string]json.RawMessage, 1)
+				provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+					var body map[string]json.RawMessage
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("decode request body: %v", err)
+					}
+					bodyCh <- body
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = w.Write([]byte("data: [DONE]\n\n"))
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(stubChatResponse))
+				})
+				key := schemas.Key{
+					Models: []string{"*"},
+					Value:  *schemas.NewSecretVar("dapi-test"),
+					DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+						WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+					},
+				}
+				original, err := json.Marshal(tt.input)
+				if err != nil {
+					t.Fatalf("marshal input: %v", err)
+				}
+				request := &schemas.BifrostChatRequest{Provider: schemas.Databricks, Model: tt.model, Input: tt.input}
+
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if stream {
+					postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+						return result, bErr
+					}
+					ch, bErr := provider.ChatCompletionStream(ctx, postHookRunner, nil, key, request)
+					if bErr != nil {
+						t.Fatalf("ChatCompletionStream returned an error: %v", bErr)
+					}
+					for range ch {
+					}
+				} else if _, bErr := provider.ChatCompletion(ctx, key, request); bErr != nil {
+					t.Fatalf("ChatCompletion returned an error: %v", bErr)
+				}
+
+				select {
+				case body := <-bodyCh:
+					if got := string(body["messages"]); got != tt.want {
+						t.Errorf("messages on the wire:\n got %s\nwant %s", got, tt.want)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("mock server did not receive the request")
+				}
+				after, err := json.Marshal(request.Input)
+				if err != nil {
+					t.Fatalf("marshal input: %v", err)
+				}
+				if string(after) != string(original) {
+					t.Errorf("merging system prompts mutated the original request:\n got %s\nwant %s", after, original)
+				}
+			})
+		}
+	}
+}
+
 // TestDatabricksGatewayRequestTags covers forwarding Bifrost governance labels to Databricks
 // for usage attribution. The header is opt-in, carries display names only, and must not
 // displace a header the caller supplied.

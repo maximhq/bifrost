@@ -447,11 +447,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 					model_budgets: config.model_budgets?.map((mb) => ({
 						model_name: mb.model_name,
@@ -463,11 +463,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						})),
 						rate_limit: mb.rate_limit
 							? {
-								token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
-								token_reset_duration: mb.rate_limit.token_reset_duration,
-								request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: mb.rate_limit.request_reset_duration,
-							}
+									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
+									token_reset_duration: mb.rate_limit.token_reset_duration,
+									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
+									request_reset_duration: mb.rate_limit.request_reset_duration,
+								}
 							: undefined,
 					})),
 				})) || [],
@@ -486,18 +486,18 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			isActive: virtualKey?.is_active ?? true,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
-					const d = new Date(virtualKey.expires_at);
-					return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-				})()
+						const d = new Date(virtualKey.expires_at);
+						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+					})()
 				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
-						id: b.id,
-						max_limit: b.max_limit,
-						reset_duration: b.reset_duration ?? "1M",
-						reset_config: b.reset_config,
-					}))
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration ?? "1M",
+							reset_config: b.reset_config,
+						}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -1531,9 +1531,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
-																		}
+																				value: field.value,
+																				label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
+																			}
 																		: null
 																}
 																disabled={isTeamLocked}
@@ -1561,12 +1561,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label:
-																				field.value === virtualKey?.customer_id
-																					? (virtualKey?.customer?.name ?? field.value)
-																					: field.value,
-																		}
+																				value: field.value,
+																				label:
+																					field.value === virtualKey?.customer_id
+																						? (virtualKey?.customer?.name ?? field.value)
+																						: field.value,
+																			}
 																		: null
 																}
 																triggerClassName="h-9"
@@ -1595,9 +1595,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
-																		}
+																				value: field.value,
+																				label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																			}
 																		: null
 																}
 																triggerClassName="h-9"

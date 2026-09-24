@@ -18,6 +18,10 @@ npm install -g @openai/codex
 
 ## Configuring Codex CLI with Bifrost
 
+<Tip>
+Codex CLI sends a `session-id` header on every request, so a session sticks to the provider and key that served it and keeps hitting the same prompt cache, with nothing to configure. See [Session Affinity](/providers/session-affinity).
+</Tip>
+
 <Warning>
 Codex CLI always prefers OAuth over custom API keys. Make sure you run `/logout` before configuring the Bifrost gateway with Codex.
 </Warning>

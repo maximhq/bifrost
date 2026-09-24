@@ -113,6 +113,12 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 					}
 					r.Messages = append(r.Messages, msg)
 				}
+				// The standard path above translates cache_control into cache
+				// points; this one has to as well. A single message whose
+				// content is a bare string diverts the whole request here, so
+				// skipping it dropped cache_control from every other message in
+				// the same request too.
+				r.Messages = applyMessageContentCacheControl(r.Messages, aux.Messages)
 			}
 		}
 	}

@@ -87,12 +87,14 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		CustomLabels             []string            `json:"custom_labels,omitempty"`
 		MetricsEnabled           *bool               `json:"metrics_enabled,omitempty"`
 		OverheadBreakdownEnabled *bool               `json:"overhead_breakdown_enabled,omitempty"`
+		UserLabelsEnabled        *bool               `json:"user_labels_enabled,omitempty"`
 		PushGateway              *pushGatewayStorage `json:"push_gateway,omitempty"`
 	}
 	storage := configStorage{
 		CustomLabels:             c.CustomLabels,
 		MetricsEnabled:           c.MetricsEnabled,
 		OverheadBreakdownEnabled: c.OverheadBreakdownEnabled,
+		UserLabelsEnabled:        c.UserLabelsEnabled,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -1315,10 +1317,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record latency
 		duration := time.Since(startTime).Seconds()
-		latencyLabelValues := make([]string, 0, len(promLabelValues)+1)
-		latencyLabelValues = append(latencyLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-		latencyLabelValues = append(latencyLabelValues, strconv.FormatBool(bifrostErr == nil))            // is_success
-		latencyLabelValues = append(latencyLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+		// Default labels, then is_success, then custom labels.
+		latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
 		p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
 
 		// SDK caller: no transport hooks fire, so this LLM-hook window is all there
@@ -1343,11 +1343,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// cannot disagree. Never empty: bifrostErr is non-nil in this branch.
 			errorType := schemas.ClassifyErrorType(bifrostErr, requestType)
 
-			errorPromLabelValues := make([]string, 0, len(promLabelValues)+2)
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-			errorPromLabelValues = append(errorPromLabelValues, statusCode)                                       // status_code
-			errorPromLabelValues = append(errorPromLabelValues, string(errorType))                                // error_type
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+			// Default labels, then status_code and error_type, then custom labels.
+			errorPromLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), statusCode, string(errorType))
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
 		} else {
@@ -1464,11 +1461,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 					cacheType = *extraFields.CacheDebug.HitType
 				}
 
-				// Add cache_type to label values (create new slice to avoid modifying original)
-				cacheHitLabelValues := make([]string, 0, len(promLabelValues)+1)
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-				cacheHitLabelValues = append(cacheHitLabelValues, cacheType)                                        // cache_type
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+				// Default labels, then cache_type, then custom labels (clone so the original is untouched).
+				cacheHitLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), cacheType)
 
 				p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
 			}

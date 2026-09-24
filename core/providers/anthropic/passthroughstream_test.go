@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -593,5 +595,147 @@ func TestAnthropicWebFetchPassthroughNoResultConsumesHiddenIndex(t *testing.T) {
 	}
 	if got := *events[0].Index; got != 2 {
 		t.Fatalf("expected hidden web_fetch result index to be consumed before next block; got index %d", got)
+	}
+}
+
+// --- Claude Code auto-mode classifier: safeguard_results stream fidelity ---
+
+func safeguardStreamState() *AnthropicResponsesStreamState {
+	return &AnthropicResponsesStreamState{
+		ContentIndexToOutputIndex: make(map[int]int),
+		ContentIndexToBlockType:   make(map[int]AnthropicContentBlockType),
+		ToolArgumentBuffers:       make(map[int]string),
+		MCPCallOutputIndices:      make(map[int]bool),
+		ItemIDs:                   make(map[int]string),
+		OutputItems:               make(map[int]*schemas.ResponsesMessage),
+		ReasoningSignatures:       make(map[int]string),
+		TextContentIndices:        make(map[int]bool),
+		ReasoningContentIndices:   make(map[int]bool),
+		CompactionContentIndices:  make(map[int]*schemas.CacheControl),
+		CreatedAt:                 1234567890,
+	}
+}
+
+// A top-level safeguard_results key on a stream event must survive the typed
+// decode→marshal round trip, or re-rendered frames (mustConvertInPassthrough and
+// the whole non-passthrough path) strip it and Claude Code declares the session
+// ineligible for server-side auto-mode checks.
+func TestAnthropicStreamEventSafeguardResultsRoundTrip(t *testing.T) {
+	frame := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":7},"safeguard_results":[{"id":"sg_1","verdict":"allow"}]}`
+	var event AnthropicStreamEvent
+	if err := sonic.Unmarshal([]byte(frame), &event); err != nil {
+		t.Fatalf("unmarshal stream event: %v", err)
+	}
+	out, err := sonic.Marshal(&event)
+	if err != nil {
+		t.Fatalf("marshal stream event: %v", err)
+	}
+	if got := gjson.GetBytes(out, "safeguard_results").Raw; got != `[{"id":"sg_1","verdict":"allow"}]` {
+		t.Fatalf("safeguard_results lost on stream event round trip: %s", string(out))
+	}
+}
+
+// safeguard_results nested in message_start.message must ride the created chunk
+// through the Bifrost intermediate and back onto the rebuilt message_start.
+func TestAnthropicMessageStartSafeguardResultsRoundTrip(t *testing.T) {
+	frame := `{"type":"message_start","message":{"model":"claude-opus-4-8","id":"msg_1","type":"message","role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":9,"output_tokens":1},"safeguard_results":[{"id":"sg_1","verdict":"allow"}]}}`
+	var event AnthropicStreamEvent
+	if err := sonic.Unmarshal([]byte(frame), &event); err != nil {
+		t.Fatalf("unmarshal message_start: %v", err)
+	}
+
+	chunks, bifrostErr, _ := event.ToBifrostResponsesStream(context.Background(), 0, safeguardStreamState())
+	if bifrostErr != nil {
+		t.Fatalf("ingress conversion: %+v", bifrostErr)
+	}
+	var created *schemas.BifrostResponsesStreamResponse
+	for _, c := range chunks {
+		if c != nil && c.Type == schemas.ResponsesStreamResponseTypeCreated {
+			created = c
+		}
+	}
+	if created == nil {
+		t.Fatalf("no response.created chunk emitted: %#v", chunks)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	events := ToAnthropicResponsesStreamResponse(ctx, created)
+	if len(events) == 0 || events[0] == nil {
+		t.Fatal("no events rebuilt from response.created")
+	}
+	out, err := sonic.Marshal(events[0])
+	if err != nil {
+		t.Fatalf("marshal rebuilt message_start: %v", err)
+	}
+	if got := gjson.GetBytes(out, "message.safeguard_results").Raw; got != `[{"id":"sg_1","verdict":"allow"}]` {
+		t.Fatalf("safeguard_results lost on message_start round trip: %s", string(out))
+	}
+}
+
+// A chunk-level safeguard_results carry (attached by the provider SSE loop) must
+// be restored top-level on the first rebuilt frame.
+func TestAnthropicStreamChunkSafeguardResultsEgressRestore(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	chunk := &schemas.BifrostResponsesStreamResponse{
+		Type:             schemas.ResponsesStreamResponseTypeCompleted,
+		Response:         &schemas.BifrostResponsesResponse{},
+		SafeguardResults: json.RawMessage(`[{"id":"sg_1","verdict":"allow"}]`),
+	}
+	events := ToAnthropicResponsesStreamResponse(ctx, chunk)
+	if len(events) == 0 || events[0] == nil {
+		t.Fatal("no events rebuilt from response.completed")
+	}
+	out, err := sonic.Marshal(events[0])
+	if err != nil {
+		t.Fatalf("marshal rebuilt event: %v", err)
+	}
+	if got := gjson.GetBytes(out, "safeguard_results").Raw; got != `[{"id":"sg_1","verdict":"allow"}]` {
+		t.Fatalf("safeguard_results not restored on rebuilt frame: %s", string(out))
+	}
+}
+
+// Safeguard updates have an explicit typed path, including empty result arrays.
+func TestSafeguardsUpdateStream(t *testing.T) {
+	for _, results := range []string{`[]`, `[{"id":"sg_1"}]`} {
+		var event AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(`{"type":"safeguards_update","safeguard_results":`+results+`}`), &event); err != nil {
+			t.Fatal(err)
+		}
+		chunks, bifrostErr, last := event.ToBifrostResponsesStream(context.Background(), 0, safeguardStreamState())
+		if bifrostErr != nil || last || len(chunks) != 1 {
+			t.Fatalf("chunks=%d err=%v last=%v", len(chunks), bifrostErr, last)
+		}
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		out := ToAnthropicResponsesStreamResponse(ctx, chunks[0])
+		if len(out) != 1 || out[0].Type != "safeguards_update" || string(out[0].SafeguardResults) != results {
+			t.Fatalf("unexpected round trip: %#v", out)
+		}
+		if chunks[0].WithDefaults() != nil {
+			t.Fatal("safeguards update leaked to OpenAI surface")
+		}
+	}
+}
+
+func TestProviderRawEventFilteredOnTypedSurfaces(t *testing.T) {
+	var event AnthropicStreamEvent
+	if err := sonic.Unmarshal([]byte(`{"type":"future_unknown_event","safeguard_results":[{"id":"sg_1"}]}`), &event); err != nil {
+		t.Fatalf("unmarshal unknown event: %v", err)
+	}
+	chunks, bifrostErr, isLast := event.ToBifrostResponsesStream(context.Background(), 0, safeguardStreamState())
+	if bifrostErr != nil || isLast || len(chunks) != 0 {
+		t.Fatalf("unknown event type: chunks=%d err=%v last=%v, want 0/nil/false", len(chunks), bifrostErr, isLast)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	carrier := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeProviderRawEvent}
+	if events := ToAnthropicResponsesStreamResponse(ctx, carrier); len(events) != 0 {
+		t.Errorf("provider_raw_event must not render typed events, got %#v", events)
+	}
+	if carrier.WithDefaults() != nil {
+		t.Error("WithDefaults must filter provider_raw_event from OpenAI-shaped surfaces")
 	}
 }

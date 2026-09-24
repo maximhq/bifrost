@@ -1,0 +1,208 @@
+---
+title: "Session Affinity"
+description: "Keep a conversation on the provider and key that served it before, so multi-turn sessions and agent runs keep hitting the same provider prompt cache and rate-limit bucket, whatever routing engine picked the provider."
+icon: "link"
+---
+
+Session affinity, also called session stickiness, keeps a session on what served it before. A session is a conversation, an agent run, or any group of requests that share a session ID. Routing still decides which providers and keys a request may use; the session only decides which of them is tried first.
+
+It runs for every request that carries a session ID and works with every routing engine: routing rules, virtual key load balancing, the model catalog, and Adaptive Load Balancing. Coding harnesses such as Claude Code, Codex CLI, and OpenCode get it with no configuration, because Bifrost adopts the session header they already send.
+
+## Why it matters
+
+- **Provider prompt caches** are per provider, and usually per API key or organization. A conversation that hops between OpenAI and Azure, or between two OpenAI keys, misses the cache it warmed a turn ago.
+- **Rate-limit buckets** are per key. A session that stays on one key uses one bucket predictably instead of spreading across several.
+- **Consistency** across a run: the same provider serves every turn, so tool behaviour and response style do not drift mid-conversation.
+
+Affinity does not create or manage provider caches. It makes sure a session keeps landing where its cache lives.
+
+## What counts as a session
+
+| Source                              | How the session ID is set                                                                                                                                                                       |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explicit header                     | `x-bf-session-id` on the request. Always wins when present.                                                                                                                                     |
+| Coding harness headers              | When `x-bf-session-id` is absent, the first non-empty harness session header is adopted. See the [header list](/providers/request-options#session-stickiness-session-id) for the full priority order. |
+| Go SDK                              | `BifrostContextKeySessionID` on the request context.                                                                                                                                            |
+
+A session ID may be at most 255 runes. An explicit `x-bf-session-id` that is longer gives the request no session at all rather than falling back to a harness header, because grouping requests under a session the caller did not ask for is worse than leaving them ungrouped.
+
+Bindings are scoped to who the request is attributed to: the virtual key and the user behind it, as resolved by governance, plus the session ID. The same session ID under two different virtual keys is two independent sessions. A request with no virtual key and no user is scoped by its session ID alone.
+
+<Tip>
+Claude Code subagents send the same session ID as their parent, so an agent run with parallel subagents stays on one provider and one key.
+</Tip>
+
+## Two levels of affinity
+
+### Provider level
+
+When the caller asks for a bare model (`gpt-4o`) and routing offers more than one provider for it, the route that last served the session, provider and model together, is tried first, as long as routing still offers that exact route. A chain that offers the same provider on a different model does not offer it: the binding is dropped and the routing decision stands. Routing engines build the chain of providers; affinity reorders that chain, and nothing else. A provider that routing excluded, for budget, rate limits, model allowance, or health, is never brought back by a session.
+
+The binding is keyed by what the caller asked for, so a session that asks for `gpt-4o` and later for `gpt-4o-mini` holds one binding per model.
+
+<Note>
+A request that names its provider (`openai/gpt-4o`) is never reordered and writes no provider binding. The caller asked for that provider, so only the key level applies, even when a fallback served an earlier turn of the same session.
+</Note>
+
+### Key level
+
+Within the provider that serves the request, the key that last served the session for that provider and model is used again while it stays in the eligible pool. The pool is what key selection would otherwise choose from: the keys enabled for the provider that allow the model. A provider with a single key has nothing to choose, so the key level is skipped.
+
+A key that leaves the pool, because it was disabled, removed, or stopped allowing the model, loses its binding and a key is picked normally.
+
+## Lifecycle of a binding
+
+Bindings are written only when a request is served. A failed request writes nothing, so a session is never bound to a provider or key that did not deliver.
+
+| Event                                                  | Provider binding                                                       | Key binding                                                          |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| First served request of the session                    | Written to the provider that served                                    | Written to the key that served                                       |
+| Served request that followed the binding               | TTL refreshed                                                          | TTL refreshed                                                        |
+| Served by a fallback provider                          | Moved to the fallback provider                                         | The key the primary followed is deleted; moved to the key the fallback used |
+| Failed after following the binding                     | Deleted, the next request follows the routing decision                 | Deleted, a key is picked normally on the next request                |
+| Cancelled by the caller after following the binding    | Unchanged, the failure is not the provider's                           | Unchanged                                                            |
+| Request failed on every attempt                        | Untouched                                                              | Untouched                                                            |
+| Request refused by governance before routing           | Untouched                                                              | Untouched                                                            |
+| Bound route not in the chain routing built (provider and model) | Deleted, the routing decision stands, the next served request rebinds  | Unchanged                                                            |
+| Bound key not in the eligible pool                     | Unchanged                                                              | Deleted, a key is picked normally, the next served request rebinds   |
+| TTL expires with no served request                     | Gone                                                                   | Gone                                                                 |
+| Request sent with `x-bf-session-affinity: off`         | Neither read nor written                                               | Neither read nor written                                             |
+
+A request refused by governance outright, because its credential is inactive or expired, or because the provider or model it asked for is not allowed, is refused before any routing engine builds a chain. Affinity never sees it, so the session keeps whatever binding it had. Revoking a session's access to the provider it is bound to therefore leaves that binding in the trail until it expires, even though no request can follow it. Narrowing access instead, so routing still offers some other provider, deletes the binding on the next request and rebinds the session to whatever serves it.
+
+The TTL defaults to one hour and can be set per request with `x-bf-session-ttl` (a duration string such as `30m`, or a number of seconds). Every served request that follows a binding refreshes it, so an active session does not expire mid-conversation.
+
+When several requests of a brand-new session arrive in parallel, they can land on different providers or keys before any of them is served. The first one to be served writes the binding, the rest of that burst is already in flight, and every request after it follows the winner.
+
+## How it fits with routing
+
+Affinity runs after every routing engine has had its say, and again inside each provider attempt when a key is chosen:
+
+1. Governance evaluates routing rules and, for virtual keys with provider configs, load balances across the weighted providers.
+2. Adaptive Load Balancing (Enterprise) ranks the eligible providers by measured performance.
+3. The model catalog resolver fills in a provider for a bare model that nothing above resolved, with the other catalog providers as fallbacks.
+4. **Session affinity, provider level**: the bound provider moves to the front of the chain if it is in it.
+5. For each attempt, the key pool is built for the provider and filtered, then **session affinity, key level** reuses the bound key if it is in the pool.
+6. Fallbacks run in the resulting order when an attempt fails.
+
+| Routing engine                        | What it decides                                                                  | What the session changes                                                                                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Routing rules                         | A target and optional fallbacks per matching request                             | If the rule lists fallbacks, the session's provider is moved first among them. A rule that picks one weighted target and lists no fallbacks leaves a one-provider chain, so there is nothing to reorder and the weights are rolled on every request. |
+| Virtual key load balancing            | A weighted random provider, with the other weighted providers as fallbacks       | After the first served request the session skips the dice and goes to its provider, for as long as budgets, rate limits, and model allowances keep that provider in the chain. |
+| Adaptive Load Balancing (Enterprise)  | The best-scoring healthy provider, with the healthy rest as fallbacks            | The session's provider comes first while the load balancer still offers it. A provider the load balancer marks as failed is dropped, see [Health-aware invalidation](#health-aware-invalidation-enterprise). |
+| Model catalog                         | Any provider whose catalog lists the model, when nothing else picked one         | The session's provider comes first among the catalog candidates.                                                                                                          |
+| Circuit breaker (Enterprise)          | Which keys are held back from the pool                                           | A bound key that the circuit breaker removes from the pool loses its binding; a key is picked normally.                                                                    |
+| Complexity Router                     | The complexity tier a routing rule can match on                                  | Independent. The router keeps the tier stable per session; affinity keeps the provider and key stable. Both use the same session identity and neither reads the other's state. |
+| Fallbacks and retries                 | Which provider to try next, and how often to retry                               | Fallback attempts pick their keys freely unless the rule pinned a key for that entry. A pin belongs to the provider it was decided for, so when the session moves that provider elsewhere in the chain the pin moves with it. Retries of one attempt reuse the bound key. Whatever finally serves becomes the session's new binding at both levels.            |
+
+## Health-aware invalidation (Enterprise)
+
+<Info>
+  **Enterprise Feature**: Health-aware invalidation is part of Bifrost
+  Enterprise. [Contact us](https://www.getmaxim.ai/bifrost/enterprise) to enable
+  it.
+</Info>
+
+Without health signals, a session follows its binding until the request actually fails. Bifrost Enterprise checks the binding against what this node's Adaptive Load Balancer and circuit breaker know before following it:
+
+- **Provider level**: if the load balancer marks the bound provider as failed for the requested model on this node (every key in that direction has failed), the binding is dropped and the routing decision stands. The next served request rebinds the session.
+- **Key level**: if the load balancer marks the bound key's route as failed on this node, or the circuit breaker holds the key back, the binding is dropped and a key is picked normally. The next served request rebinds the session to the key that served it.
+
+Bindings live in the shared KV store and replicate across the cluster, while health is measured per node. A node that sees a provider failing drops the binding for every node. A node that has not observed the failure yet still follows the binding until its own load balancer marks the route as failed or the request fails there.
+
+## Controls
+
+| Control                  | Header                    | Go SDK context key                  | Values                                                                             |
+| ------------------------ | ------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------- |
+| Session ID               | `x-bf-session-id`         | `BifrostContextKeySessionID`        | Any string up to 255 runes. Falls back to coding-harness headers in the gateway.  |
+| Binding TTL              | `x-bf-session-ttl`        | `BifrostContextKeySessionTTL`       | Duration string (`30m`, `2h`) or seconds. Default one hour.                        |
+| Affinity switch          | `x-bf-session-affinity`   | `BifrostContextKeySessionAffinity`  | `on`, `true`, `1` (default) or `off`, `false`, `0`. Applies to both levels.        |
+
+A request sent with the switch off is routed as if it had no session: it neither follows nor updates any binding. Any other value is ignored with a warning and the default applies. There is no stored default; the switch is per request.
+
+<Note>
+Bindings live in Bifrost's KV store. The gateway always creates one, so nothing needs to be configured there. Go SDK users must set `KVStore` on `BifrostConfig`, otherwise affinity has nowhere to keep a binding and every request is routed as if it had no session. In an Enterprise cluster the KV store replicates, so a session can land on any node and still find its binding.
+</Note>
+
+```bash Gateway
+curl -X POST http://localhost:8080/v1/chat/completions \
+  --header 'Content-Type: application/json' \
+  --header 'x-bf-session-id: user-123-session-abc' \
+  --header 'x-bf-session-ttl: 30m' \
+  --data '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+```go Go SDK
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-session-abc")
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minute)
+```
+
+## Seeing what the session did
+
+Every decision affinity makes is written to the request's routing trail under the `session-affinity` engine, and every decision also lists that engine among the routing engines used for the request, whether the session followed a binding or refused a stale one. A request that took no part, because it carries no session or asked not to follow one, lists no engine. In the logs explorer, filter by session ID to see one session's requests together, and by routing engine to find requests a session had a say in. The UI labels this engine **Session**; `session-affinity` is the identifier used in the API and in exported logs.
+
+| Trail entry                                                                                                                          | Meaning                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `Session stays on azure/gpt-4o for gpt-4o; routing proposed openai/gpt-4o`                                                          | The bound route was moved ahead of the one routing put first.                                        |
+| `Session stays on azure/gpt-4o for gpt-4o, which routing also proposed`                                                              | The bound route was already first, so the chain was left as it is.                                   |
+| `Session reused key prod-eu-2 for azure/gpt-4o`                                                                                      | The bound key was used instead of running key selection.                                             |
+| `Session was last served by azure/gpt-4o for gpt-4o, which this request cannot use, so the routing decision stands and the session rebinds on its next served request` | Routing no longer offers the bound route, provider and model together, so the binding was deleted. |
+| `Session moved the request from vertex to anthropic, so a key is picked normally there; the key pinned for vertex applies if vertex is tried as a fallback` | The session promoted another provider; the routing rule's pin stayed with the provider it was set for, now a fallback entry. |
+| `The key this session followed for azure/gpt-4o failed, so the session forgets it and a key is picked normally next time`            | The request followed the key binding and did not serve on it, so the binding was deleted.            |
+| `The provider this session followed for gpt-4o failed, so the session forgets it and the next request follows the routing decision`  | The request followed the route binding and failed outright, so the binding was deleted.              |
+| `The key this session last used for azure/gpt-4o is no longer eligible, so one is being picked`                                      | The bound key left the pool, so the binding was deleted.                                             |
+| `Request carries a session but asked not to follow it, so the routing decision stands for gpt-4o`                                    | The request sent `x-bf-session-affinity: off`, so no binding was read or written.                    |
+| `Session was last served by azure for gpt-4o, which is failing on this node, so the routing decision stands`                         | Enterprise only: the load balancer marks the provider as failed here, so the binding was dropped.    |
+| `The key this session last used for azure/gpt-4o is held back by the circuit breaker on this node, so one is being picked`           | Enterprise only: the circuit breaker removed the bound key from the pool, so the binding was dropped. |
+
+The last two entries are emitted only by Bifrost Enterprise; an open-source deployment never writes them, because it follows a binding until the request itself fails, and only then forgets it, which the two entries before them record.
+
+Both levels record every binding they follow, whether or not it changed the outcome, so a session that agrees with routing is distinguishable in the trail from one that was never consulted.
+
+In OpenTelemetry, the trace's root span carries the session ID as the `session.id` attribute, and the `group_traces_by_session` setting puts a whole session into one trace. See [OpenTelemetry](/features/observability/otel#grouping-traces-by-session).
+
+## Walk-throughs
+
+### A virtual key that load balances
+
+A virtual key allows `gpt-4o` on OpenAI with weight 70 and Azure with weight 30. Azure has two keys. A Claude Code session sends its session header on every request.
+
+1. **Turn 1**: governance rolls the weights and picks Azure, with OpenAI as the fallback. Key selection picks Azure key `prod-eu-2`. The request is served, and the session is bound to Azure for `gpt-4o` and to `prod-eu-2` on Azure.
+2. **Turn 2**: governance rolls OpenAI this time and builds the chain `[openai, azure]`. Affinity moves Azure to the front and the trail says `Session stays on azure for gpt-4o; routing proposed openai`. Key selection reuses `prod-eu-2`. The Azure prompt cache warmed by turn 1 is hit.
+3. **Turn 3**: the virtual key's Azure budget is exhausted, so governance excludes Azure and offers only OpenAI. The bound provider is not in the chain, so the binding is deleted with `…which this request cannot use…` in the trail. OpenAI serves and the session rebinds to OpenAI and to the OpenAI key that served.
+
+### A fallback that serves
+
+The same session is bound to Azure and `prod-eu-2`.
+
+1. Azure returns a server error on every retry. Retries reuse `prod-eu-2`, because the session is bound to it.
+2. The fallback attempt on OpenAI selects a key freely, say `openai-main`, and serves.
+3. The session moves: the provider binding now points at OpenAI, and a key binding for OpenAI and `gpt-4o` points at `openai-main`. The stale Azure key binding is left to expire; it is only consulted if Azure serves this session again.
+4. The next turn's chain, whatever governance rolls, is reordered to put OpenAI first.
+
+### A provider that fails on one node (Enterprise)
+
+A three-node cluster. The session is bound to Azure and `prod-eu-2`.
+
+1. Azure starts timing out. Node B's Adaptive Load Balancer marks the Azure direction for `gpt-4o` as failed after every key in it has failed.
+2. The next request lands on node B. Before following the binding, affinity asks the load balancer and learns the direction is failed. The binding is dropped, replicated to nodes A and C, and the trail says `…which is failing on this node, so the routing decision stands`. The load balancer's own choice, OpenAI, serves, and the session rebinds to OpenAI.
+3. Had the request landed on node A before A observed the failure, A would have followed the Azure binding. The request would then fail on Azure, the fallback would serve, and the session would move exactly as in the fallback walk-through.
+
+## Limits to know
+
+- **Explicit providers get no provider stickiness.** `openai/gpt-4o` is honoured as written. Use a bare model name and let routing offer several providers if you want the session to choose among them.
+- **Weighted routing-rule targets with no fallbacks** are rolled on every request. Add fallbacks to the rule if the session should stick to the target that served it.
+- **A bound key is used for every retry.** A session with a key binding does not rotate keys on a rate limit; the retry policy runs on the bound key, and only a fallback provider moves the session. A session with no key binding yet rotates like any other request.
+- **A new session's first parallel burst scatters once.** Requests already in flight when the first one is served keep the provider and key they were given.
+- **Health checks are node-local (Enterprise).** A binding is refused where a node has seen the failure. A node that has not seen it follows the binding until the request fails or its own load balancer catches up.
+- **A node that joins the cluster starts with an empty binding store.** It receives bindings written after it joined. A session that lands on it before then is treated as new, rebinds there, and that binding replicates to the other nodes.
+- **Realtime and WebSocket Responses key selection reads but never writes.** These connection paths reuse a key bound by earlier requests of the session, but they do not create or refresh a binding themselves.
+- **The switch is per request.** There is no configuration that turns affinity off for a deployment; send `x-bf-session-affinity: off` on the requests that should not take part.
+
+## Next Steps
+
+- **[Request Options](/providers/request-options#session-stickiness-session-id)** - Every session header, the coding-harness header list, and the Go SDK context keys
+- **[Provider Routing](/providers/provider-routing)** - How governance, Adaptive Load Balancing, and the model catalog build the chain affinity reorders
+- **[Adaptive Load Balancing](/enterprise/adaptive-load-balancing)** - The health signals Enterprise affinity checks before following a binding
+- **[Circuit Breaker](/enterprise/circuit-breaker)** - Key-level sub-circuits that take a bound key out of the pool
+- **[Complexity Router](/features/governance/complexity-router#session-aware-routing)** - Session-stable complexity tiers that compose with affinity

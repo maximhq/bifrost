@@ -463,6 +463,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "typesafe": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -3700,6 +3703,39 @@
       },
       "additionalProperties": false
     },
+    "routing_fallback": {
+      "description": "A fallback in a routing rule's chain. Either the 'provider/model' string ('provider/' keeps the incoming model), or an object that additionally pins a provider key.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Fallback provider name (e.g., 'openai', 'azure')"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Fallback model name. Omit to use the incoming request model"
+            },
+            "provider_key_name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional provider key name. Resolved to internal key_id at config load time. Requires provider."
+            }
+          },
+          "required": [
+            "provider"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "routing_target": {
       "type": "object",
       "description": "A single weighted routing target within a rule. All fields except weight are optional; omitting provider or model means use the incoming request value. Weights across all targets in a rule must sum to 1.",
@@ -3773,7 +3809,7 @@
           "type": "array",
           "description": "Fallback provider chain in order",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/routing_fallback"
           }
         },
         "scope": {
@@ -8707,6 +8743,7 @@
         "responses",
         "embedding",
         "rerank",
+        "decisions",
         "speech",
         "transcription",
         "image_generation",
@@ -8767,7 +8804,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "typesafe"
           ],
           "description": "Base provider type to extend"
         },
@@ -8829,6 +8867,9 @@
               "type": "boolean"
             },
             "rerank": {
+              "type": "boolean"
+            },
+            "decisions": {
               "type": "boolean"
             },
             "ocr": {

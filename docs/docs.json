@@ -79,6 +79,7 @@
                   "quickstart/gateway/tool-calling",
                   "quickstart/gateway/multimodal",
                   "quickstart/gateway/reranking",
+                  "quickstart/gateway/decisions",
                   "quickstart/gateway/integrations"
                 ]
               },
@@ -94,6 +95,7 @@
                   "quickstart/go-sdk/tool-calling",
                   "quickstart/go-sdk/multimodal",
                   "quickstart/go-sdk/reranking",
+                  "quickstart/go-sdk/decisions",
                   "quickstart/go-sdk/logger"
                 ]
               }
@@ -165,6 +167,7 @@
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
                   "providers/supported-providers/wafer",
@@ -173,6 +176,7 @@
               },
               "providers/routing-rules",
               "providers/provider-routing",
+              "providers/session-affinity",
               "providers/aliasing-models",
               "providers/reasoning",
               "providers/performance",
@@ -328,6 +332,7 @@
               "enterprise/data-access-control",
               "enterprise/virtual-mcps",
               "enterprise/projects",
+              "enterprise/prompt-deployments",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -511,6 +516,7 @@
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk",
+              "integrations/typesafe-sdk",
               "integrations/passthrough"
             ]
           },
@@ -791,6 +797,13 @@
                 ]
               },
               {
+                "group": "Decisions",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/decisions"
+                ]
+              },
+              {
                 "group": "Embeddings",
                 "expanded": false,
                 "pages": [
@@ -1052,6 +1065,14 @@
                   "POST /cohere/v2/embed",
                   "POST /cohere/v2/rerank",
                   "POST /cohere/v1/tokenize"
+                ]
+              },
+              {
+                "group": "Typesafe Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /typesafe/v1/systemone",
+                  "GET /typesafe/v1/models"
                 ]
               },
               {
@@ -1835,6 +1856,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.2",
               "changelogs/v2.2.1",
               "changelogs/v2.2.0",
               "changelogs/v2.1.1",
@@ -2056,6 +2078,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.2",
               "changelogs/ent-v2.2.1",
               "changelogs/ent-v2.2.0",
               "changelogs/ent-v2.1.1",

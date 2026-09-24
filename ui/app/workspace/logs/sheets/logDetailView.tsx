@@ -860,6 +860,15 @@ const messageRoleLabel: Record<MessageRole, string> = {
 	tool: "Tool Result",
 };
 
+// Decision logs store the state as the user message and the answers as the
+// assistant message; label them by what they actually are.
+const decisionRoleLabel = (requestType: string | undefined, role: MessageRole): string | undefined => {
+	if (requestType !== "decisions") return undefined;
+	if (role === "user") return "State";
+	if (role === "assistant") return "Decision";
+	return undefined;
+};
+
 // deriveComplexityRouting returns the complexity tier / classification mechanism /
 // raw score behind a routing decision. Rows written since the structured columns
 // exist carry them directly; older rows fall back to parsing the prose routing
@@ -976,7 +985,9 @@ function EncryptedReveal({ text, label }: { text: string; label: string }) {
 
 function CollapsibleCode({ text, preview = 3, lang, mono = true }: { text: string; preview?: number; lang?: string; mono?: boolean }) {
 	const [open, setOpen] = useState(false);
-	const lines = text.split("\n");
+	// Trailing blank lines would otherwise count as hidden content and render a
+	// "Show more" that expands to nothing visible.
+	const lines = text.replace(/\s+$/, "").split("\n");
 	const shown = open ? lines : lines.slice(0, preview);
 	const hasMore = lines.length > preview;
 	const moreCount = lines.length - preview;
@@ -1006,7 +1017,39 @@ function CollapsibleCode({ text, preview = 3, lang, mono = true }: { text: strin
 	);
 }
 
-function MessageRow({ role, meta, children, last = false }: { role: MessageRole; meta?: string; children: ReactNode; last?: boolean }) {
+// Generated tool identifiers (e.g. Codex-style names with embedded signatures)
+// can run to hundreds of characters; truncate the middle and keep the full name
+// one hover away.
+const TOOL_NAME_MAX = 48;
+
+function ToolNameLabel({ name }: { name: string }) {
+	if (name.length <= TOOL_NAME_MAX) return <>{name}</>;
+	const truncated = `${name.slice(0, 32)}…${name.slice(-12)}`;
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<span className="cursor-default" data-testid="log-tool-name-truncated">
+					{truncated}
+				</span>
+			</TooltipTrigger>
+			<TooltipContent className="max-w-[480px] font-mono text-[11px] break-all">{name}</TooltipContent>
+		</Tooltip>
+	);
+}
+
+function MessageRow({
+	role,
+	meta,
+	children,
+	last = false,
+	label,
+}: {
+	role: MessageRole;
+	meta?: ReactNode;
+	children: ReactNode;
+	last?: boolean;
+	label?: string;
+}) {
 	return (
 		<div className="flex gap-3">
 			<div className="flex flex-col items-center pt-1.5">
@@ -1015,12 +1058,33 @@ function MessageRow({ role, meta, children, last = false }: { role: MessageRole;
 			</div>
 			<div className="min-w-0 flex-1 pb-4">
 				<div className="mb-1 flex items-center gap-2">
-					<span className="text-foreground text-[11.5px] font-semibold">{messageRoleLabel[role]}</span>
+					<span className="text-foreground text-[11.5px] font-semibold">{label ?? messageRoleLabel[role]}</span>
 					{meta ? <span className="text-muted-foreground text-[11px]">{meta}</span> : null}
 				</div>
 				<div className={cn("rounded-sm border p-3 text-[13px] leading-relaxed", messageToneClass[role])}>{children}</div>
 			</div>
 		</div>
+	);
+}
+
+// Collapses all but the last two messages of a long input history. The earlier
+// turns stay in the DOM order they occurred in; expanding reveals them in place.
+function MessageHistoryCollapse({ count, children }: { count: number; children: ReactNode }) {
+	const [open, setOpen] = useState(false);
+	return (
+		<>
+			<button
+				type="button"
+				data-testid="log-messages-history-toggle"
+				onClick={() => setOpen((v) => !v)}
+				className="text-muted-foreground hover:text-foreground mb-3 flex w-full items-center gap-2 text-[11.5px] font-medium"
+			>
+				<ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
+				{open ? "Hide earlier history" : `Show ${count} earlier message${count === 1 ? "" : "s"}`}
+				<span className="bg-border h-px flex-1" />
+			</button>
+			{open ? children : null}
+		</>
 	);
 }
 
@@ -1628,7 +1692,15 @@ export function LogDetailView({
 					/>
 					<HeroStat
 						label="Cost"
-						value={log.cost != null ? formatCost(log.cost) : "—"}
+						// Decisions bill fractions of a cent per call (jev: $42 per 1B input
+						// tokens), so the shared 4-dp rounding floors every value to $0.0000.
+						value={
+							log.cost != null
+								? log.object === "decisions" || (log.status === "cancelled" && log.stream && log.provider === "anthropic")
+									? formatCostPrecise(log.cost)
+									: formatCost(log.cost)
+								: "—"
+						}
 						sub={
 							log.cost != null && audioSeconds
 								? `≈ ${(log.cost / audioSeconds).toFixed(6)}＄ per second`
@@ -3095,112 +3167,130 @@ export function LogDetailView({
 							log.stop_reason === "content_filter" ||
 							log.stop_reason === "safety") && (
 							<div className="bg-card rounded-sm border p-5">
-								{(visibleRoles.size < allRoles.length
-									? log.input_history?.filter((m) => {
-											if (!m) return false;
-											const mainRole = ((m.role as string) || "user") as MessageRole;
-											const hasReasoning = !!extractChatReasoning(m);
-											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-										})
-									: log.input_history?.filter(Boolean)
-								)?.flatMap((message, index) => {
-									const role = ((message.role as string) || "user") as MessageRole;
-									const text = extractMessageText(message, activeInputRevealMapping);
-									const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
-									const showAll = visibleRoles.size === allRoles.length;
-									const showMain = showAll || visibleRoles.has(role);
-									const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
-									const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-									const isOverallLast =
-										index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
-									const lineCount = text ? text.split("\n").length : 0;
-									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
-									const meta = text
-										? role === "system" || role === "tool"
-											? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-											: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-										: hasToolCalls
-											? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
-											: undefined;
-									const usePlainText = role === "user" || role === "assistant";
-									const rows: ReactNode[] = [];
-									if (showReasoning) {
-										rows.push(
-											<MessageRow
-												key={`${index}-reasoning`}
-												role="reasoning"
-												meta={`~${reasoningTokens} tokens`}
-												last={isOverallLast && !showMain}
-											>
-												<CollapsibleCode text={reasoningText} preview={3} mono={false} />
-											</MessageRow>,
-										);
-									}
-									if (showMain) {
-										rows.push(
-											<MessageRow key={index} role={role} meta={meta} last={isOverallLast}>
-												{text ? (
-													usePlainText && isJson(text) ? (
-														<CodeEditor
-															wrap
-															code={(() => {
-																try {
-																	return JSON.stringify(JSON.parse(text), null, 2);
-																} catch {
-																	return text;
-																}
-															})()}
-															lang="json"
-															readonly
-															autoResize
-															options={{
-																collapsibleBlocks: true,
-																showIndentLines: false,
-																disableHover: true,
-															}}
-														/>
-													) : usePlainText ? (
-														<CollapsibleCode text={text} preview={3} mono={false} />
-													) : (
-														<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
-													)
-												) : (
-													<LogChatMessageView message={message} audioFormat={audioFormat} />
-												)}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "image_url")
-														.map((b, i) => {
-															const src = b.image_url?.url;
-															if (!src) return null;
-															return <img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />;
-														})}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "file" && b.file)
-														.map((b, i) => (
-															<LogChatFileBlockView
-																key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
-																block={b}
-																className="mt-2"
+								{(() => {
+									const historyMessages =
+										(visibleRoles.size < allRoles.length
+											? log.input_history?.filter((m) => {
+													if (!m) return false;
+													const mainRole = ((m.role as string) || "user") as MessageRole;
+													const hasReasoning = !!extractChatReasoning(m);
+													return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+												})
+											: log.input_history?.filter(Boolean)) ?? [];
+									const messageRows = historyMessages.map((message, index) => {
+										const role = ((message.role as string) || "user") as MessageRole;
+										const text = extractMessageText(message, activeInputRevealMapping);
+										const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
+										const showAll = visibleRoles.size === allRoles.length;
+										const showMain = showAll || visibleRoles.has(role);
+										const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
+										const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+										const isOverallLast =
+											index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
+										const lineCount = text ? text.split("\n").length : 0;
+										const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
+										const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
+										const meta = text
+											? role === "system" || role === "tool"
+												? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
+											: hasToolCalls
+												? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
+												: undefined;
+										const usePlainText = role === "user" || role === "assistant";
+										const rows: ReactNode[] = [];
+										if (showReasoning) {
+											rows.push(
+												<MessageRow
+													key={`${index}-reasoning`}
+													role="reasoning"
+													meta={`~${reasoningTokens} tokens`}
+													last={isOverallLast && !showMain}
+												>
+													<CollapsibleCode text={reasoningText} preview={3} mono={false} />
+												</MessageRow>,
+											);
+										}
+										if (showMain) {
+											rows.push(
+												<MessageRow key={index} role={role} meta={meta} last={isOverallLast} label={decisionRoleLabel(log.object, role)}>
+													{text ? (
+														usePlainText && isJson(text) ? (
+															<CodeEditor
+																wrap
+																code={(() => {
+																	try {
+																		return JSON.stringify(JSON.parse(text), null, 2);
+																	} catch {
+																		return text;
+																	}
+																})()}
+																lang="json"
+																readonly
+																autoResize
+																options={{
+																	collapsibleBlocks: true,
+																	showIndentLines: false,
+																	disableHover: true,
+																}}
 															/>
-														))}
-												{hasToolCalls && text ? (
-													<div className="text-muted-foreground mt-2 text-[11px]">
-														{message
-															.tool_calls!.map((tc) => tc.function?.name)
-															.filter(Boolean)
-															.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
-													</div>
-												) : null}
-											</MessageRow>,
-										);
-									}
-									return rows;
-								})}
+														) : usePlainText ? (
+															<CollapsibleCode text={text} preview={3} mono={false} />
+														) : (
+															<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
+														)
+													) : (
+														<LogChatMessageView message={message} audioFormat={audioFormat} />
+													)}
+													{text &&
+														Array.isArray(message.content) &&
+														(message.content as ContentBlock[])
+															.filter((b) => b.type === "image_url")
+															.map((b, i) => {
+																const src = b.image_url?.url;
+																if (!src) return null;
+																return (
+																	<img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />
+																);
+															})}
+													{text &&
+														Array.isArray(message.content) &&
+														(message.content as ContentBlock[])
+															.filter((b) => b.type === "file" && b.file)
+															.map((b, i) => (
+																<LogChatFileBlockView
+																	key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
+																	block={b}
+																	className="mt-2"
+																/>
+															))}
+													{hasToolCalls && text ? (
+														<div className="text-muted-foreground mt-2 text-[11px]">
+															{message
+																.tool_calls!.map((tc) => tc.function?.name)
+																.filter(Boolean)
+																.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+														</div>
+													) : null}
+												</MessageRow>,
+											);
+										}
+										return rows;
+									});
+									// Show only the last two turns; everything earlier collapses
+									// behind an expandable history toggle.
+									const visibleTail = 2;
+									const splitAt = Math.max(0, messageRows.length - visibleTail);
+									const earlier = messageRows.slice(0, splitAt);
+									const tail = messageRows.slice(splitAt);
+									const earlierCount = earlier.filter((r) => r.length > 0).length;
+									return (
+										<>
+											{earlierCount > 0 && <MessageHistoryCollapse count={earlierCount}>{earlier}</MessageHistoryCollapse>}
+											{tail}
+										</>
+									);
+								})()}
 								{log.output_message &&
 									!log.error_details?.error.message &&
 									(() => {
@@ -3233,7 +3323,7 @@ export function LogDetailView({
 													</MessageRow>
 												) : null}
 												{showAssistant ? (
-													<MessageRow role="assistant" meta={meta} last>
+													<MessageRow role="assistant" meta={meta} last label={decisionRoleLabel(log.object, "assistant")}>
 														{showRefusal ? (
 															<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
 																<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
@@ -3322,7 +3412,7 @@ export function LogDetailView({
 									const itemPayload = extractResponsesItemPayload(msg);
 									const lineCount = text ? text.split("\n").length : 0;
 									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									let meta: string | undefined;
+									let meta: ReactNode | undefined;
 									if (role === "reasoning" && reasoningParts) {
 										const totalLen =
 											reasoningParts.summaries.reduce((acc, s) => acc + s.length, 0) +
@@ -3339,24 +3429,33 @@ export function LogDetailView({
 												? "encrypted"
 												: undefined;
 									} else {
-										meta = text
-											? role === "system" || role === "tool"
-												? msg.name
-													? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-													: `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-											: msg.name
-												? msg.name
-												: msg.type === "function_call_output" && msg.call_id
-													? msg.call_id
-													: Array.isArray(msg.tools)
-														? (() => {
-																const callable = flattenDeclaredTools(msg.tools).length;
-																return callable !== msg.tools.length
-																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-															})()
-														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
+										meta = text ? (
+											role === "system" || role === "tool" ? (
+												msg.name ? (
+													<>
+														<ToolNameLabel name={msg.name} />
+														{` · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`}
+													</>
+												) : (
+													`${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+												)
+											) : (
+												`${lineCount} line${lineCount === 1 ? "" : "s"}`
+											)
+										) : msg.name ? (
+											<ToolNameLabel name={msg.name} />
+										) : msg.type === "function_call_output" && msg.call_id ? (
+											<ToolNameLabel name={msg.call_id} />
+										) : Array.isArray(msg.tools) ? (
+											(() => {
+												const callable = flattenDeclaredTools(msg.tools).length;
+												return callable !== msg.tools.length
+													? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
+													: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
+											})()
+										) : (
+											[msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined
+										);
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
@@ -3378,10 +3477,9 @@ export function LogDetailView({
 															</div>
 														))}
 														{reasoningParts.encrypted ? (
-															<div className="space-y-1">
-																<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">Encrypted</div>
-																<CollapsibleCode text={reasoningParts.encrypted} preview={2} />
-															</div>
+															// Ciphertext is noise even at two preview lines; fold it
+															// entirely until the reader asks for it.
+															<EncryptedReveal text={reasoningParts.encrypted} label="Encrypted" />
 														) : null}
 														{reasoningParts.signatures.length > 0 ? (
 															<EncryptedReveal

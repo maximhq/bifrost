@@ -441,3 +441,94 @@ func TestPrivateNetworkDialContextFallsBackAcrossResolvedAddresses(t *testing.T)
 	}
 	conn.Close()
 }
+
+// TestResolvePrivateNetworkTargetPolicy locks in the destination policy that
+// PrivateNetworkDialContext and the MCP proxy selector share: link-local and
+// unspecified are refused, loopback is permitted, an IP literal resolves to
+// itself, and an empty host (a request with no authority) is refused rather
+// than passed through.
+func TestResolvePrivateNetworkTargetPolicy(t *testing.T) {
+	ctx := context.Background()
+	if _, err := ResolvePrivateNetworkTarget(ctx, "169.254.169.254"); err == nil || !strings.Contains(err.Error(), "blocked connection to link-local address") {
+		t.Fatalf("expected blocked link-local error, got %v", err)
+	}
+	if _, err := ResolvePrivateNetworkTarget(ctx, "0.0.0.0"); err == nil || !strings.Contains(err.Error(), "blocked connection to unspecified address") {
+		t.Fatalf("expected blocked unspecified error, got %v", err)
+	}
+	ips, err := ResolvePrivateNetworkTarget(ctx, "127.0.0.1")
+	if err != nil || len(ips) != 1 || !ips[0].Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Fatalf("expected loopback literal to resolve to itself, got %v, %v", ips, err)
+	}
+	if _, err := ResolvePrivateNetworkTarget(ctx, ""); err == nil {
+		t.Fatal("expected an empty host to be refused")
+	}
+	// Cloud metadata endpoints outside link-local: Alibaba sits in CGNAT and
+	// the AWS IPv6 IMDS in unique-local, both ranges this policy otherwise
+	// permits, so they need their own block. The transition-wrapped forms
+	// must be caught too, as they are for link-local in IsPublicIP.
+	for _, host := range []string{
+		"100.100.100.200",
+		"fd00:ec2::254",
+		"::ffff:100.100.100.200", // IPv4-mapped
+		"2002:6464:64c8::",       // 6to4 wrapping 100.100.100.200
+		"64:ff9b::6464:64c8",     // NAT64 wrapping 100.100.100.200
+	} {
+		if _, err := ResolvePrivateNetworkTarget(ctx, host); err == nil || !strings.Contains(err.Error(), "blocked connection to cloud metadata endpoint") {
+			t.Fatalf("%s: expected blocked metadata endpoint error, got %v", host, err)
+		}
+	}
+	if _, err := ResolvePrivateNetworkTarget(ctx, "2002:a9fe:a9fe::"); err == nil || !strings.Contains(err.Error(), "blocked connection to link-local address") {
+		t.Fatalf("expected 6to4-wrapped link-local to be blocked, got %v", err)
+	}
+	// Neighbours of the blocked endpoints stay permitted: the block is on the
+	// endpoints themselves, not on the CGNAT or unique-local ranges.
+	for _, host := range []string{"100.100.100.201", "fd00:ec2::255", "10.0.0.5"} {
+		if _, err := ResolvePrivateNetworkTarget(ctx, host); err != nil {
+			t.Fatalf("%s: expected permitted private target, got %v", host, err)
+		}
+	}
+}
+
+// TestCheckPrivateNetworkLiteral locks in the DNS-free variant used on the
+// proxied path: literals are judged by the same policy, bracketed IPv6 is
+// accepted, and a hostname is passed through untouched with no lookup.
+func TestCheckPrivateNetworkLiteral(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want string
+	}{
+		{"169.254.169.254", "blocked connection to link-local address"},
+		{"[fe80::1]", "blocked connection to link-local address"},
+		{"0.0.0.0", "blocked connection to unspecified address"},
+		{"100.100.100.200", "blocked connection to cloud metadata endpoint"},
+		{"[fd00:ec2::254]", "blocked connection to cloud metadata endpoint"},
+		{"fd00:ec2::254", "blocked connection to cloud metadata endpoint"},
+	} {
+		if err := CheckPrivateNetworkLiteral(tc.host); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: expected %q, got %v", tc.host, tc.want, err)
+		}
+	}
+	for _, host := range []string{"127.0.0.1", "[::1]", "10.0.0.5", "100.100.100.201"} {
+		if err := CheckPrivateNetworkLiteral(host); err != nil {
+			t.Fatalf("%s: expected permitted literal, got %v", host, err)
+		}
+	}
+	// A hostname is not resolved: .invalid never resolves (RFC 6761), and a
+	// name that would resolve to a blocked address is the proxy's concern.
+	for _, host := range []string{"mcp.invalid", "metadata.google.internal", ""} {
+		if err := CheckPrivateNetworkLiteral(host); err != nil {
+			t.Fatalf("%q: expected hostname to pass through without lookup, got %v", host, err)
+		}
+	}
+}
+
+// TestPrivateNetworkDialContextBlocksMetadataEndpoints proves the direct
+// dialer refuses the non-link-local metadata endpoints before any dial.
+func TestPrivateNetworkDialContextBlocksMetadataEndpoints(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	for _, addr := range []string{"100.100.100.200:80", "[fd00:ec2::254]:80"} {
+		if _, err := dial(context.Background(), "tcp", addr); err == nil || !strings.Contains(err.Error(), "blocked connection to cloud metadata endpoint") {
+			t.Fatalf("%s: expected blocked metadata endpoint error, got %v", addr, err)
+		}
+	}
+}

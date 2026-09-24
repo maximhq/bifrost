@@ -86,6 +86,8 @@ tags:
     description: Optical character recognition for documents and images
   - name: Rerank
     description: Document reranking by relevance to a query
+  - name: Decisions
+    description: Structured decisions evaluated against annotated function-tool definitions
   - name: Embeddings
     description: Text embedding generation
   - name: Images
@@ -119,6 +121,8 @@ tags:
     description: AWS Bedrock compatible API endpoints (/bedrock/*)
   - name: Cohere Integration
     description: Cohere compatible API endpoints (/cohere/*)
+  - name: Typesafe Integration
+    description: Typesafe compatible API endpoints (/typesafe/*)
   - name: LiteLLM Integration
     description: LiteLLM proxy endpoints with multi-provider support (/litellm/*)
   - name: LangChain Integration
@@ -173,6 +177,8 @@ paths:
     $ref: "./paths/inference/ocr.yaml#/ocr"
   /v1/rerank:
     $ref: "./paths/inference/rerank.yaml#/rerank"
+  /v1/decisions:
+    $ref: "./paths/inference/decisions.yaml#/decisions"
   /v1/embeddings:
     $ref: "./paths/inference/embeddings.yaml#/embeddings"
   /v1/audio/speech:
@@ -520,6 +526,12 @@ paths:
   # Rerank (v2)
   /cohere/v2/rerank:
     $ref: "./paths/integrations/cohere/rerank.yaml#/rerank"
+
+  # Typesafe Integration
+  /typesafe/v1/systemone:
+    $ref: "./paths/integrations/typesafe/systemone.yaml#/systemone"
+  /typesafe/v1/models:
+    $ref: "./paths/integrations/typesafe/systemone.yaml#/models"
 
   # Tokenize (v1)
   /cohere/v1/tokenize:
@@ -1529,6 +1541,16 @@ components:
       $ref: "./schemas/inference/rerank.yaml#/RerankDocument"
     RerankResult:
       $ref: "./schemas/inference/rerank.yaml#/RerankResult"
+
+    # ==================== Decisions ====================
+    DecisionRequest:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionRequest"
+    DecisionResponse:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionResponse"
+    DecisionQuestion:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionQuestion"
+    DecisionAnswer:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionAnswer"
 
     # ==================== Embeddings ====================
     EmbeddingRequest:

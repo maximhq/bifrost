@@ -1,1 +1,4 @@
-- fix: replace streaming gate replay-buffer size accounting with cached zero-marshal estimates (eliminates per-chunk MarshalJSON on the full-hold path)
+- feat: RoutingFallback type accepting the legacy provider/model string or an object with a pinned key_id or provider_key_name (#7470)
+- fix: keep a routing rule's stored enabled value when an update or config sync omits it
+- fix: deep copy the async flag and union tool error in streaming Responses messages (#7241, #7242)
+- chore: upgraded core to v1.10.2

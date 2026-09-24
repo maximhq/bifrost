@@ -28,9 +28,9 @@ describe("latestGraceDeadline", () => {
 	});
 
 	it("ignores keys without a grace window when picking the latest", () => {
-		expect(
-			latestGraceDeadline([{}, { previous_value_expires_at: "2026-08-28T10:00:00.500Z" }, { previous_value_expires_at: null }]),
-		).toBe("2026-08-28T10:00:00.500Z");
+		expect(latestGraceDeadline([{}, { previous_value_expires_at: "2026-08-28T10:00:00.500Z" }, { previous_value_expires_at: null }])).toBe(
+			"2026-08-28T10:00:00.500Z",
+		);
 	});
 });
 

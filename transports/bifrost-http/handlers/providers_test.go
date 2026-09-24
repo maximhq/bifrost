@@ -1436,6 +1436,63 @@ func accessForProviderPermits(permits ...schemas.ProviderPermit) schemas.Access 
 	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
 }
 
+// accessAllowingAllProviders builds the access a caller permitted every provider carries, the way
+// the governance store builds it: the providers its configs do not name are materialised onto the
+// permit, so the permit carries its whole grant and every consumer reads one list.
+func accessAllowingAllProviders(configured []string, permits ...schemas.ProviderPermit) schemas.Access {
+	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false,
+		governanceplugin.AppendAllProviderPermits(permits, configured), nil,
+		grant.WithAllowAllProviders(true))
+	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+}
+
+// A caller permitted every provider is listed every provider, including ones it holds no provider
+// permit for. Narrowing to the permits it happens to hold would make the listing refuse what the
+// request path admits.
+func TestListModels_VKFilterListsProviderAllowedOnlyByAllowAll(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
+				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI:    {"gpt-4o"},
+				schemas.Anthropic: {"claude-haiku-4-5"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		Access: accessAllowingAllProviders(
+			[]string{string(schemas.OpenAI), string(schemas.Anthropic)},
+			schemas.ProviderPermit{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+		),
+	}
+	if !query.Access.IsProviderAllowed(string(schemas.Anthropic)) {
+		t.Fatal("control failed: allow-all must permit a provider it holds no permit for")
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := map[string]bool{}
+	for _, m := range models {
+		names[m.Name] = true
+	}
+	if total != 2 || !names["gpt-4o"] || !names["claude-haiku-4-5"] {
+		t.Fatalf("expected both providers listed, got total=%d models=%#v", total, models)
+	}
+}
+
 // A blacklisted model is not listed. The listing answers the same question a request does, so a
 // model the caller would be refused is not advertised to them as available.
 func TestListModels_VKFilterHidesBlacklistedModel(t *testing.T) {

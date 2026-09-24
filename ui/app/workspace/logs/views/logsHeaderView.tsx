@@ -367,7 +367,7 @@ export function LogsHeaderView({
 			</Tooltip>
 			{/* Full width while the row wraps, so the search field owns its own line
 			    instead of squeezing to its 12rem minimum beside the date picker. */}
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center rounded-sm border lg:basis-auto overflow-hidden">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center overflow-hidden rounded-sm border lg:basis-auto">
 				<Search className="mr-2 ml-2 size-4" />
 				<Input
 					type="text"

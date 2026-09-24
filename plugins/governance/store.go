@@ -1451,6 +1451,9 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 			Weight:            config.Weight,
 		})
 	}
+	if vk.AllowAllProviders && gs.inMemoryStore != nil {
+		providerPermits = AppendAllProviderPermits(providerPermits, gs.inMemoryStore.GetConfiguredProviderNames())
+	}
 
 	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
 	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.

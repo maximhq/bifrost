@@ -1642,6 +1642,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Params = req.EmbeddingRequest.Params
 		case schemas.RerankRequest:
 			initialData.Params = req.RerankRequest.Params
+		case schemas.DecisionRequest:
+			initialData.Params = req.DecisionRequest.Questions
 		case schemas.OCRRequest:
 			initialData.Params = req.OCRRequest.Params
 			initialData.OCRInput = &req.OCRRequest.Document

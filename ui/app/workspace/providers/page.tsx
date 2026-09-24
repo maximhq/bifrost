@@ -84,14 +84,14 @@ export default function Providers() {
 	// Hidden (unreleased) providers are excluded too, since the user cannot add them yet.
 	const activeCollision = collisionsHydrated
 		? findCustomProviderCollisions(configuredProviders).find((c) => {
-			const key = normalizeProviderName(c.customName);
-			return (
-				c.knownProvider !== DATABRICKS_PROVIDER &&
-				!HiddenProviders.has(c.knownProvider) &&
-				!dismissedCollisions.has(key) &&
-				!handledCollisions.has(key)
-			);
-		})
+				const key = normalizeProviderName(c.customName);
+				return (
+					c.knownProvider !== DATABRICKS_PROVIDER &&
+					!HiddenProviders.has(c.knownProvider) &&
+					!dismissedCollisions.has(key) &&
+					!handledCollisions.has(key)
+				);
+			})
 		: undefined;
 
 	// Open the migration dialog when the selected provider is a custom provider named exactly
@@ -335,10 +335,7 @@ export default function Providers() {
 									);
 								})
 							) : (
-								<div
-									data-testid="providers-lane-empty"
-									className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center"
-								>
+								<div data-testid="providers-lane-empty" className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center">
 									<Server className="text-muted-foreground h-8 w-8" strokeWidth={1} />
 									<div className="text-muted-foreground text-xs">No providers configured yet</div>
 								</div>

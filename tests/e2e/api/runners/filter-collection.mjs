@@ -152,6 +152,7 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  typesafe: ["typesafe", "/typesafe", "jev-"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -437,8 +438,22 @@ const filterTree = (items, keep) => {
 // --provider/--feature slicing whenever the two ends of a chain match differently. So after the
 // user's predicates decide the initial set, pull in each selected item's producers transitively.
 // Collection order is untouched, and producers already precede consumers there.
+//
+// Earlier consumers of the same variable are pulled in too. A chain's middle step can change
+// server state (a session binding, say) without setting any variable, so it is never anybody's
+// producer, and cost slicing would otherwise run the final step in a shard without it - against
+// state the middle step never touched. Consumer counts stay small (at most a handful per variable
+// in this collection), so this never balloons a shard.
 const expandWithProducers = (selected, entries) => {
   const producerIndex = buildProducerIndex(entries);
+  const position = new Map(entries.map(({ item }, i) => [item, i]));
+  const consumersOf = new Map();
+  for (const { item } of entries) {
+    for (const { variable } of chainedDependencies(item, producerIndex)) {
+      if (!consumersOf.has(variable)) consumersOf.set(variable, []);
+      consumersOf.get(variable).push(item);
+    }
+  }
 
   const keep = new Set(selected);
   const queue = [...selected];
@@ -451,6 +466,12 @@ const expandWithProducers = (selected, entries) => {
     // leaving the consumer to fail on an unsubstituted {{var}}, which is the
     // failure this whole function exists to prevent.
     for (const { producer, producerItem: dep, variable } of chainedDependencies(item, producerIndex)) {
+      for (const step of consumersOf.get(variable) || []) {
+        if (keep.has(step) || position.get(step) >= position.get(item)) continue;
+        keep.add(step);
+        queue.push(step);
+        pulled.push(`${item.name} <- ${variable} <- ${step.name} (earlier chain step)`);
+      }
       if (!dep || keep.has(dep)) continue;
       keep.add(dep);
       queue.push(dep);

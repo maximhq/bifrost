@@ -61,6 +61,10 @@ Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the v
 
 ## Configuring Claude Code to work with Bifrost
 
+<Tip>
+Claude Code sends `x-claude-code-session-id` on every request, so a session sticks to the provider and key that served it and keeps hitting the same prompt cache, with nothing to configure. See [Session Affinity](/providers/session-affinity).
+</Tip>
+
 <Note>
 	**To avoid caching issues in Claude Code**, follow these steps:
 

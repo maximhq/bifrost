@@ -3784,6 +3784,271 @@
       ]
     },
     {
+      "name": "Governance - VK Allow All Providers",
+      "description": "A virtual key with allow_all_providers grants every provider, including ones it holds no provider_config for; the configs it does hold are overrides rather than the whole grant. The listing routes used to answer from the provider_config rows alone, so such a key saw only the providers it happened to override and every other provider vanished from /api/models*, /v1/models and the VK model pickers, while inference on them kept working.",
+      "item": [
+        {
+          "name": "Baseline - catalog sizes with no VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Baseline listing returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var counts = {};",
+                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
+                  "pm.collectionVariables.set('vkall_base_anthropic', String(counts.anthropic || 0));",
+                  "pm.collectionVariables.set('vkall_base_openai', String(counts.openai || 0));",
+                  "// The scenario needs a provider to leave unnamed and one to override; without both",
+                  "// configured there is nothing to tell apart and the assertions below would pass vacuously.",
+                  "pm.test('anthropic is configured on this server', function () { pm.expect(counts.anthropic || 0).to.be.above(0); });",
+                  "pm.test('openai is configured on this server', function () { pm.expect(counts.openai || 0).to.be.above(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK (allow_all_providers, openai overridden)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "var body = {",
+                  "  name: 'VK AllowAllProviders ' + ts,",
+                  "  is_active: true,",
+                  "  allow_all_providers: true,",
+                  "  // The only provider_config: openai is narrowed to one model. Every other provider is",
+                  "  // granted by the flag alone and names no config at all.",
+                  "  provider_configs: [",
+                  "    { provider: 'openai', weight: 1, allowed_models: ['gpt-4o-mini'], key_ids: ['*'] }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = null;",
+                  "  try { json = pm.response.json(); } catch (e) { json = null; }",
+                  "  var vk = (json && (json.virtual_key || json)) || {};",
+                  "  if (vk && vk.id) pm.collectionVariables.set('vkall_id', vk.id);",
+                  "  if (vk && vk.value) pm.collectionVariables.set('vkall_value', vk.value);",
+                  "  pm.test('allow_all_providers round-trips', function () { pm.expect(vk.allow_all_providers).to.eql(true); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/api/models/details - unnamed provider is granted in full, overridden one stays narrowed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /api/models/details with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var counts = {};",
+                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
+                  "var baseAnthropic = Number(pm.collectionVariables.get('vkall_base_anthropic'));",
+                  "var baseOpenai = Number(pm.collectionVariables.get('vkall_base_openai'));",
+                  "// The regression: anthropic has no provider_config, so it is granted by the flag alone.",
+                  "// Answering from the configs alone dropped it entirely.",
+                  "pm.test('anthropic is listed though the VK names no config for it', function () {",
+                  "  pm.expect(counts.anthropic || 0).to.be.above(0);",
+                  "});",
+                  "pm.test('anthropic is granted in full, not narrowed', function () {",
+                  "  pm.expect(counts.anthropic).to.eql(baseAnthropic);",
+                  "});",
+                  "// And the other half: a config the VK does hold still narrows its provider, so the fix",
+                  "// widens nothing it should not.",
+                  "pm.test('openai stays narrowed by its own config', function () {",
+                  "  pm.expect(counts.openai || 0).to.be.below(baseOpenai);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkall_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/models - fan-out reaches the unnamed provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /v1/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var data = (body && body.data) || [];",
+                  "var seen = {};",
+                  "data.forEach(function (m) {",
+                  "  var id = (m && m.id) || '';",
+                  "  var idx = id.indexOf('/');",
+                  "  if (idx > 0) seen[id.substring(0, idx)] = true;",
+                  "});",
+                  "// The fan-out narrows to the same answer, so an allow-all key must not be pinned to the",
+                  "// providers it happens to override.",
+                  "pm.test('/v1/models includes the unnamed provider', function () {",
+                  "  pm.expect(Object.keys(seen)).to.include('anthropic');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkall_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkall_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkall_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "Governance - VK Regex Entries",
       "description": "regex: entries in the existing model lists (allowed_models / blacklisted_models on a VK provider config, models / blacklisted_models on a provider key): the text after the prefix is an RE2 pattern matched case-insensitively as a full match against the model name, next to exact names in the same list. Sections: write-time validation (400 on an unparsable pattern or regex:* on VK and provider-key endpoints), a base VK exercised on /v1/models plus real completions (family allowed, preview blocked, other family denied), a PUT that mixes an exact name with a regex entry, and a provider-key round-trip.",
       "item": [

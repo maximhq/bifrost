@@ -104,9 +104,10 @@ Conventions (match the existing collection exactly):
   pins the same invariant independently (e.g. native `/v1/responses` alongside the
   converted `/v1/chat/completions` path).
 - **Test scripts** (Postman `event[].script.exec`, plain ES5 JavaScript):
-  - Start with an infra guard so auth/rate/server noise skips instead of false-failing:
-    `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }`
-    Do NOT guard on 400 when a 400 IS the regression signature - that must fail loudly.
+  - Never skip any error status code. Do NOT open the script with an early-return
+    guard like `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }`
+    - every unexpected status (auth failure, rate limit, 5xx) must fail the case
+    loudly instead of silently passing it. Assert the exact status the case expects.
   - Assert the specific failure signature is absent (error substring, param name) AND
     that the happy path succeeded (status below 400, expected fields present).
   - Include the response text in failure messages:

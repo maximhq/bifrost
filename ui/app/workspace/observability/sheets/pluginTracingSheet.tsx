@@ -169,11 +169,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 												Internal timing spans (setup, key selection, pipeline phases). Off by default.
 											</span>
 										</div>
-										<Switch
-											checked={exportOverheadSpans}
-											onCheckedChange={setExportOverheadSpans}
-											data-testid="tracing-overhead-toggle"
-										/>
+										<Switch checked={exportOverheadSpans} onCheckedChange={setExportOverheadSpans} data-testid="tracing-overhead-toggle" />
 									</div>
 								</div>
 							</>

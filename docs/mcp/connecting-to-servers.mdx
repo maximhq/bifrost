@@ -578,6 +578,14 @@ Environment variables are:
 - Redacted in API responses and UI for security
 - Validated at startup to ensure all required variables are set
 
+## Egress Proxies
+
+HTTP and SSE MCP connections honor the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` variables from the Bifrost process environment, the same way every other outbound HTTP client in the process does. This is how a deployment with no direct internet route (a locked-down VPC, or a pod behind a corporate egress proxy) reaches a public MCP server. Set the variables on the container or task definition; a `NO_PROXY` entry keeps an internal MCP server on the direct path.
+
+The `network_config.proxy_config` block in `config.json` does not apply to MCP connections. Its `enable_for_*` flags cover inference, SCIM, and API clients only.
+
+The link-local and cloud-metadata block still applies when a proxy is in use: a connection string whose host is a link-local or metadata IP literal is refused before the proxy is contacted. A hostname on the proxied path is handed to the proxy unresolved, so Bifrost itself does not need to resolve public DNS in a proxy-only deployment.
+
 ---
 
 ## Forwarding Request Headers to MCP Servers

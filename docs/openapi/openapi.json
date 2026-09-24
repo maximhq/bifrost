@@ -62,6 +62,10 @@
       "description": "Document reranking by relevance to a query"
     },
     {
+      "name": "Decisions",
+      "description": "Structured decisions evaluated against annotated function-tool definitions"
+    },
+    {
       "name": "Embeddings",
       "description": "Text embedding generation"
     },
@@ -124,6 +128,10 @@
     {
       "name": "Cohere Integration",
       "description": "Cohere compatible API endpoints (/cohere/*)"
+    },
+    {
+      "name": "Typesafe Integration",
+      "description": "Typesafe compatible API endpoints (/typesafe/*)"
     },
     {
       "name": "LiteLLM Integration",
@@ -1398,11 +1406,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -1901,6 +1919,69 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RerankResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/decisions": {
+      "post": {
+        "operationId": "createDecision",
+        "summary": "Evaluate a decision",
+        "description": "Evaluates state against a map of named questions and returns one typed\nanswer per question, with per-answer confidence, probabilities, and\nlegend metadata. Served by decision providers such as Typesafe's jev models.\n",
+        "tags": [
+          "Decisions"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
                 }
               }
             }
@@ -5588,11 +5669,21 @@
                                 }
                               ]
                             },
+                            "async": {
+                              "type": "boolean"
+                            },
                             "action": {
                               "type": "object"
                             },
                             "error": {
-                              "type": "string"
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
                             },
                             "queries": {
                               "type": "array",
@@ -6100,11 +6191,21 @@
                               }
                             ]
                           },
+                          "async": {
+                            "type": "boolean"
+                          },
                           "action": {
                             "type": "object"
                           },
                           "error": {
-                            "type": "string"
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object"
+                              }
+                            ]
                           },
                           "queries": {
                             "type": "array",
@@ -6809,11 +6910,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -13702,11 +13813,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -14646,11 +14767,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -15627,11 +15758,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -16723,11 +16864,21 @@
                                 }
                               ]
                             },
+                            "async": {
+                              "type": "boolean"
+                            },
                             "action": {
                               "type": "object"
                             },
                             "error": {
-                              "type": "string"
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
                             },
                             "queries": {
                               "type": "array",
@@ -17235,11 +17386,21 @@
                               }
                             ]
                           },
+                          "async": {
+                            "type": "boolean"
+                          },
                           "action": {
                             "type": "object"
                           },
                           "error": {
-                            "type": "string"
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object"
+                              }
+                            ]
                           },
                           "queries": {
                             "type": "array",
@@ -27640,6 +27801,300 @@
         ]
       }
     },
+    "/typesafe/v1/systemone": {
+      "post": {
+        "operationId": "typesafeSystemOne",
+        "summary": "Evaluate state (Typesafe format)",
+        "description": "Evaluates state against a map of named questions using Typesafe's native\nSystem One API. The request body matches Typesafe's native format; question\nidentifiers become result field names.\n",
+        "tags": [
+          "Typesafe Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "state",
+                  "model",
+                  "questions"
+                ],
+                "properties": {
+                  "state": {
+                    "description": "A plain string, or structured data (object or array) to evaluate.",
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "array",
+                        "items": {}
+                      }
+                    ]
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Typesafe model identifier (e.g. `jev-1.13.0`, `jev-latest`)."
+                  },
+                  "questions": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "description": "Map of named questions.",
+                    "additionalProperties": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "instructions"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "noul",
+                            "choice",
+                            "score"
+                          ],
+                          "description": "Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value."
+                        },
+                        "instructions": {
+                          "description": "Question instructions. A string, or structured data.",
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "array",
+                              "items": {}
+                            }
+                          ]
+                        },
+                        "criteria": {
+                          "description": "Optional `true`/`false` descriptions for `noul`; a map of option\nto description for `choice` (at most 255 options); an ordered\narray of 2-10 level descriptions for `score`.\n",
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response in Typesafe's native shape",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "model",
+                    "answers"
+                  ],
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "description": "Model version that performed the evaluation"
+                    },
+                    "answers": {
+                      "type": "object",
+                      "description": "Map matching question identifiers to answers",
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "type"
+                        ],
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "noul",
+                              "choice",
+                              "score"
+                            ]
+                          },
+                          "noul": {
+                            "type": "number",
+                            "description": "Probability from 0 to 1 (noul answers)"
+                          },
+                          "choice": {
+                            "type": "string",
+                            "description": "Selected option (choice answers)"
+                          },
+                          "score": {
+                            "type": "number",
+                            "description": "Probability-weighted value (score answers)"
+                          },
+                          "probabilities": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "number"
+                            }
+                          },
+                          "legend": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          },
+                          "confidence": {
+                            "type": "number"
+                          }
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/typesafe/v1/models": {
+      "get": {
+        "operationId": "typesafeListModels",
+        "summary": "List models (Typesafe format)",
+        "description": "Lists available Typesafe models in the native shape. Typesafe documents no\nupstream listing endpoint, so the catalog is served from Bifrost's model\ndatasheet.\n",
+        "tags": [
+          "Typesafe Integration"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "models"
+                  ],
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "example": "jev-latest"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "release_date": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/cohere/v1/tokenize": {
       "post": {
         "operationId": "cohereTokenize",
@@ -30404,11 +30859,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -33492,11 +33957,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -36691,11 +37166,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -43994,11 +44479,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -100037,11 +100532,21 @@
                         }
                       ]
                     },
+                    "async": {
+                      "type": "boolean"
+                    },
                     "action": {
                       "type": "object"
                     },
                     "error": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
                     },
                     "queries": {
                       "type": "array",
@@ -100098,7 +100603,19 @@
             "type": "boolean"
           },
           "conversation": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
           },
           "context_management": {
             "$ref": "#/components/schemas/ContextManagement"
@@ -100330,6 +100847,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -100365,6 +100885,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -100405,8 +100928,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -100942,11 +101478,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -101204,6 +101750,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -101239,6 +101788,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -101279,8 +101831,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -101865,11 +102430,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -102048,6 +102623,180 @@
           },
           "document": {
             "$ref": "#/components/schemas/RerankDocument"
+          }
+        }
+      },
+      "DecisionRequest": {
+        "type": "object",
+        "required": [
+          "model",
+          "state",
+          "questions"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model in provider/model format",
+            "example": "typesafe/jev-1.13.0"
+          },
+          "state": {
+            "description": "State to evaluate. A plain string, or structured data (object or array).",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ]
+          },
+          "questions": {
+            "type": "object",
+            "minProperties": 1,
+            "description": "Map of named questions. Question identifiers become answer field names.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionQuestion"
+            }
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback models in provider/model format"
+          }
+        }
+      },
+      "DecisionResponse": {
+        "type": "object",
+        "required": [
+          "model",
+          "answers"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the decision response"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model that performed the decision"
+          },
+          "answers": {
+            "type": "object",
+            "description": "Map matching question identifiers to answers. Every requested question produces an answer.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionAnswer"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/BifrostLLMUsage"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "DecisionQuestion": {
+        "type": "object",
+        "required": [
+          "kind",
+          "instructions"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "noul",
+              "choice",
+              "score"
+            ],
+            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions."
+          },
+          "instructions": {
+            "description": "Instructions for this question. A string, or structured data preserved losslessly.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ]
+          },
+          "criteria": {
+            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`.\n",
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "DecisionAnswer": {
+        "type": "object",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "noul",
+              "choice",
+              "score"
+            ],
+            "description": "The question's decision kind"
+          },
+          "value": {
+            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Model confidence for this answer, when supplied"
+          },
+          "probabilities": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Probability distribution over options or levels, when supplied"
+          },
+          "legend": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Legend mapping levels to descriptions, when supplied"
           }
         }
       },
@@ -102945,11 +103694,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -103028,6 +103787,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -103063,6 +103825,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -103103,8 +103868,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -105169,11 +105947,21 @@
                         }
                       ]
                     },
+                    "async": {
+                      "type": "boolean"
+                    },
                     "action": {
                       "type": "object"
                     },
                     "error": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
                     },
                     "queries": {
                       "type": "array",
@@ -105419,6 +106207,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -105454,6 +106245,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -105494,8 +106288,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -113973,9 +114780,43 @@
           "fallbacks": {
             "type": "array",
             "items": {
-              "type": "string"
+              "description": "A fallback in a routing rule's chain. Either the \"provider/model\" string (\"provider/\" keeps the incoming model), or an object that additionally pins a provider key.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "provider"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Fallback provider"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Fallback model (omit or empty to use the incoming request model)"
+                    },
+                    "key_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             },
-            "description": "Fallback providers in format \"provider/model\""
+            "description": "Ordered fallback chain, tried after the selected target fails"
           },
           "scope": {
             "type": "string",
@@ -114158,9 +114999,43 @@
           "fallbacks": {
             "type": "array",
             "items": {
-              "type": "string"
+              "description": "A fallback in a routing rule's chain. Either the \"provider/model\" string (\"provider/\" keeps the incoming model), or an object that additionally pins a provider key.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "provider"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Fallback provider"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Fallback model (omit or empty to use the incoming request model)"
+                    },
+                    "key_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             },
-            "description": "Fallback providers in format \"provider/model\""
+            "description": "Ordered fallback chain, tried after the selected target fails"
           },
           "scope": {
             "type": "string",
@@ -114296,8 +115171,43 @@
           "fallbacks": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
+              "description": "A fallback in a routing rule's chain. Either the \"provider/model\" string (\"provider/\" keeps the incoming model), or an object that additionally pins a provider key.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "provider"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Fallback provider"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Fallback model (omit or empty to use the incoming request model)"
+                    },
+                    "key_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "description": "Ordered fallback chain, tried after the selected target fails"
           },
           "priority": {
             "type": "integer"
@@ -116915,11 +117825,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -117376,11 +118296,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
