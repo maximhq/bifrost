@@ -27,15 +27,15 @@ const (
 // non-empty, letting AWS fall back to the account's default project when it is empty. It never
 // mutates base (which may be the shared networkConfig.ExtraHeaders map). The project header is a
 // plain (non x-amz-*) header, so it does not need to be part of the SigV4 SignedHeaders.
-func WithMantleProject(base map[string]string, headerName, projectID string) map[string]string {
+func WithMantleProject(base map[string]schemas.SecretVar, headerName, projectID string) map[string]schemas.SecretVar {
 	if projectID == "" {
 		return base
 	}
 	out := maps.Clone(base)
 	if out == nil {
-		out = make(map[string]string, 1)
+		out = make(map[string]schemas.SecretVar, 1)
 	}
-	out[headerName] = projectID
+	out[headerName] = schemas.SecretVar{Val: projectID}
 	return out
 }
 
@@ -74,7 +74,7 @@ func SignMantleV4Headers(
 	requestURL, accept string,
 	key schemas.Key,
 	region string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 ) (map[string]string, *schemas.BifrostError) {
 	return signOpenAIV4Headers(ctx, jsonData, requestURL, accept, key, region, extraHeaders, bedrockMantleSigningService)
 }
@@ -91,7 +91,7 @@ func signOpenAIV4Headers(
 	requestURL, accept string,
 	key schemas.Key,
 	region string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	signingService string,
 ) (map[string]string, *schemas.BifrostError) {
 	method := http.MethodPost
@@ -110,7 +110,7 @@ func signOpenAIV4Headers(
 	req.Header.Set("Accept", accept)
 	for k, v := range extraHeaders {
 		if strings.HasPrefix(strings.ToLower(k), "x-amz-") {
-			req.Header.Set(k, v)
+			req.Header.Set(k, v.GetValue())
 		}
 	}
 

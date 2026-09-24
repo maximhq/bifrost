@@ -29,7 +29,7 @@ func (provider *OpenAIProvider) WebSocketHeaders(key schemas.Key) map[string]str
 		if strings.EqualFold(k, "Authorization") {
 			continue
 		}
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers
 }

@@ -706,11 +706,23 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		}
 	}
 
+	// With the vault enabled, keep each provider's stored extra headers so secrets owned
+	// by headers the sync drops can be removed after the upsert.
+	previousHeaders := make(map[string]map[string]schemas.SecretVar)
+	if schemas.VaultStoreWriteEnabled() {
+		var stored []tables.TableProvider
+		if err := txDB.WithContext(ctx).Select("name", "network_config_json").Find(&stored).Error; err != nil {
+			return fmt.Errorf("failed to prefetch provider extra headers: %w", err)
+		}
+		for _, p := range stored {
+			previousHeaders[p.Name] = p.ExtraHeaders
+		}
+	}
+
 	for _, providerName := range sortedProviderNames(providers) {
 		providerConfig := providers[providerName]
 		dbProvider := tables.TableProvider{
 			Name:                     string(providerName),
-			NetworkConfig:            providerConfig.NetworkConfig,
 			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
 			ProxyConfig:              providerConfig.ProxyConfig,
 			SendBackRawRequest:       providerConfig.SendBackRawRequest,
@@ -723,6 +735,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
 		}
+		dbProvider.SetNetworkConfig(providerConfig.NetworkConfig)
 
 		// Carry over governance FKs from the existing row so UpdateAll never
 		// overwrites them with NULL. New providers (not in governanceFKs) correctly
@@ -742,6 +755,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		).Create(&dbProvider).Error; err != nil {
 			return s.parseGormError(err)
 		}
+		s.removeReplacedProviderHeaderSecrets(ctx, &dbProvider, previousHeaders[dbProvider.Name])
 
 		// Create keys for this provider
 		dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
@@ -927,6 +941,33 @@ func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx 
 	return nil
 }
 
+// removeReplacedProviderHeaderSecrets best-effort removes the vault secrets a provider
+// owned for headers in previous that the saved row no longer references: a removed or
+// renamed header, or one switched to a literal or another reference. The delete callback
+// only sees headers still on the row, so without this those secrets are never removed.
+// Call it after the row is saved, when saved.ExtraHeaders holds the refs the vault store
+// callback wrote. Failures are logged, not returned, as the row is already saved.
+func (s *RDBConfigStore) removeReplacedProviderHeaderSecrets(ctx context.Context, saved *tables.TableProvider, previous map[string]schemas.SecretVar) {
+	if !schemas.VaultStoreWriteEnabled() || len(previous) == 0 {
+		return
+	}
+	stillReferenced := make(map[string]bool, len(saved.ExtraHeaders))
+	for _, value := range saved.ExtraHeaders {
+		if value.IsFromVault() {
+			stillReferenced[value.GetRawRef()] = true
+		}
+	}
+	base := schemas.VaultBasePath(saved.TableName(), saved.VaultPathKey())
+	for name, value := range previous {
+		if !value.IsFromVault() || stillReferenced[value.GetRawRef()] {
+			continue
+		}
+		if err := schemas.RemoveOwnedVaultSecretVar(ctx, base, &value); err != nil && s.logger != nil {
+			s.logger.Warn("vault: failed to remove secret for extra header %s of provider %s: %v", name, saved.Name, err)
+		}
+	}
+}
+
 // UpdateProvider updates a single provider configuration in the database without deleting/recreating.
 func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
@@ -954,7 +995,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	// Preserve ConfigHash (it has json:"-" tag so deepCopy via JSON doesn't copy it)
 	configCopy.ConfigHash = config.ConfigHash
 	// Update provider fields
-	dbProvider.NetworkConfig = configCopy.NetworkConfig
+	previousHeaders := dbProvider.ExtraHeaders
+	dbProvider.SetNetworkConfig(configCopy.NetworkConfig)
 	dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
 	dbProvider.ProxyConfig = configCopy.ProxyConfig
 	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
@@ -969,6 +1011,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	if err := txDB.WithContext(ctx).Save(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.removeReplacedProviderHeaderSecrets(ctx, &dbProvider, previousHeaders)
 
 	// Lock VKPC rows for this provider BEFORE locking config_keys so that the
 	// resource order matches DeleteProvider and concurrent UpdateVirtualKeyProviderConfig
@@ -1141,7 +1184,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create new provider
 	dbProvider := tables.TableProvider{
 		Name:                     string(provider),
-		NetworkConfig:            configCopy.NetworkConfig,
 		ConcurrencyAndBufferSize: configCopy.ConcurrencyAndBufferSize,
 		ProxyConfig:              configCopy.ProxyConfig,
 		SendBackRawRequest:       configCopy.SendBackRawRequest,
@@ -1152,6 +1194,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		PromptCache:              configCopy.PromptCache,
 		ConfigHash:               configCopy.ConfigHash,
 	}
+	dbProvider.SetNetworkConfig(configCopy.NetworkConfig)
 	// Create the provider
 	if err := txDB.WithContext(ctx).Create(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)
