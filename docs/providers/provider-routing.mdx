@@ -1104,8 +1104,9 @@ flowchart TB
 3. **Performance scoring**: Score each provider on its recent, realized performance for the model:
    - **Error rate** — the primary, time-decayed signal
    - **Token-aware latency** — secondary, comparing the provider both to its peers for the model and to its own recent baseline
-4. **Smooth selection**: Concentrate traffic on the best-scoring providers while keeping a small exploration share for the rest, so a recovered provider keeps getting re-probed
-5. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are appended as fallbacks after any the request already carries, deduplicated. With the prune toggle on, circuit-broken configured fallbacks are removed first and never re-added
+4. **Smooth selection**: Concentrate traffic on the best-scoring providers while keeping a small exploration share for the rest, so a recovered provider keeps getting re-probed. A provider counts as failed for a model only when every configured key that can serve the model is failed; a key that has not been tried yet keeps it in rotation
+5. **Checking a held provider**: When the provider refused every key and one of them is due a check, one request is sent to that provider first with the healthy providers behind it as fallbacks (see [Held Keys](/enterprise/adaptive-load-balancing#held-keys))
+6. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are appended as fallbacks after any the request already carries, deduplicated. With the prune toggle on, circuit-broken configured fallbacks are removed first and never re-added
 
 ### Level 2: Route (Key Selection)
 
@@ -1122,6 +1123,7 @@ flowchart TB
    - Current state (Healthy, Degraded, Failed, Recovering)
 4. **Smooth weighted selection**: Concentrate traffic on higher-weight keys, with a small dedicated probe budget reserved for recovering keys so they can prove recovery
 5. **Circuit breaker**: Skip keys with zero weight (TPM hits, repeated failures)
+6. **Held keys**: Skip keys the provider refused (rejected credential, exhausted quota, no model access, retired model, blocked region, rate limit) until their wait is over, then let one request through to check each. When every key is held the request is sent anyway. See [Held Keys](/enterprise/adaptive-load-balancing#held-keys)
 
 ### Scoring
 
@@ -1177,6 +1179,7 @@ Which signals apply depends on the route's health: healthy routes are scored mai
 | **Automatic Optimization** | No manual weight tuning required                                    |
 | **Real-time Adaptation**   | Weights recomputed every 5 seconds based on live metrics            |
 | **Circuit Breakers**       | Failing routes automatically removed from rotation                  |
+| **Held Keys**              | Keys a provider refused are held on every node and checked again by one request |
 | **Fast Recovery**          | 90% penalty reduction in 30 seconds after issues resolve            |
 | **Health States**          | Routes transition between Healthy, Degraded, Failed, and Recovering |
 | **Smart Exploration**      | Keeps a small, dedicated share of traffic on recovering routes so they can prove recovery |
@@ -1187,7 +1190,7 @@ Monitor load balancing performance in real-time:
 
 <Frame>
   <img
-    src="/media/ui-load-balancing.png"
+    src="/media/adaptive-load-balancing/ui-load-balancing-dashboard.png"
     alt="Adaptive Load Balancing Dashboard"
   />
 </Frame>
@@ -1200,7 +1203,7 @@ The dashboard shows:
 - Actual vs expected traffic distribution
 
 <Note>
-  **Scope & tuning**: Adaptive load balancing operates **per node** (each node routes on its own observed metrics; only rate-limit/TPM backoffs are shared across nodes, and only within a region) and adapts on a **~5-second cycle** — distinct from per-request fallback, which is immediate. Both levels can be toggled independently, and the scoring parameters ship pre-tuned. See [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) for configuration and limitations.
+  **Scope & tuning**: Adaptive load balancing operates **per node** (each node routes on its own observed metrics; of the metric signals, only rate-limit/TPM backoffs are shared across nodes, and only within a region, while [held keys](/enterprise/adaptive-load-balancing#held-keys) are shared with every node) and adapts on a **~5-second cycle** — distinct from per-request fallback, which is immediate. Both levels can be toggled independently, and the scoring parameters ship pre-tuned. See [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) for configuration and limitations.
 </Note>
 
 ---
