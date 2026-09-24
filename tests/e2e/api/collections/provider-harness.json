@@ -167117,7 +167117,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('108.02: upload succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "pm.collectionVariables.set('issue7345GeminiFileId', pm.response.json().id);"
+                  "pm.collectionVariables.set('issue7345GeminiFileId', pm.response.json().id);",
+                  "pm.collectionVariables.set('issue7345GeminiFileURI', pm.response.json().storage_uri);"
                 ]
               }
             }
@@ -167175,7 +167176,7 @@
                   "  if (rr && typeof rr === 'object') {",
                   "    var parts = []; (rr.contents || []).forEach(function (c) { (c.parts || []).forEach(function (p) { if (p && p.fileData) { parts.push(p); } }); });",
                   "    pm.test('108.03: fileData part was not dropped', function () { pm.expect(parts.length, 'contents: ' + JSON.stringify(rr.contents || rr)).to.eql(1); });",
-                  "    if (parts.length === 1) { pm.test('108.03: managed file id reached Gemini', function () { pm.expect(parts[0].fileData.fileUri).to.eql(pm.collectionVariables.get('issue7345GeminiFileId')); }); }",
+                  "    if (parts.length === 1) { pm.test('108.03: managed file id reached Gemini', function () { pm.expect(parts[0].fileData.fileUri).to.eql(pm.collectionVariables.get('issue7345GeminiFileURI')); }); }",
                   "  }",
                   "}"
                 ]
