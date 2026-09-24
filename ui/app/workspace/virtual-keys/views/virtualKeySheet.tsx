@@ -172,6 +172,8 @@ const formSchema = z
 		userId: z.string().optional(),
 		isActive: z.boolean(),
 		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
+		// Content logging for this key's traffic: inherit the client setting, force it off, or force it on.
+		contentLogging: z.enum(["inherit", "disabled", "enabled"]),
 		// Budget
 		budgetCalendarAligned: z.boolean(),
 		budgets: z
@@ -303,6 +305,27 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 		</FormItem>
 	);
 }
+
+type ContentLoggingChoice = "inherit" | "disabled" | "enabled";
+
+// The wire field is tri-state (absent, true, false); the form shows it as three named choices.
+function contentLoggingChoice(disableContentLogging: boolean | null | undefined): ContentLoggingChoice {
+	if (disableContentLogging === true) return "disabled";
+	if (disableContentLogging === false) return "enabled";
+	return "inherit";
+}
+
+function contentLoggingValue(choice: ContentLoggingChoice): boolean | null {
+	if (choice === "disabled") return true;
+	if (choice === "enabled") return false;
+	return null;
+}
+
+const contentLoggingOptions: { value: ContentLoggingChoice; label: string }[] = [
+	{ value: "inherit", label: "Inherit gateway setting" },
+	{ value: "disabled", label: "Off for this key" },
+	{ value: "enabled", label: "On for this key" },
+];
 
 // A key owned by a profile-holding team, customer or business unit is governed by that profile: the
 // server discards the key's own providers, budgets, rate limits and MCP access. The editors for
@@ -524,6 +547,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			// The attached user arrives from a separate request; synced in below once it loads.
 			userId: "",
 			isActive: virtualKey?.is_active ?? true,
+			contentLogging: contentLoggingChoice(virtualKey?.disable_content_logging),
 			expiresAt: virtualKey?.expires_at
 				? (() => {
 						const d = new Date(virtualKey.expires_at);
@@ -632,10 +656,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		isFetching: isOwnerProfileFetching,
 		error: ownerProfileError,
 		refetch: refetchOwnerProfile,
-	} = useGetEntityAccessProfileQuery(
-		{ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" },
-		{ skip: !owner },
-	);
+	} = useGetEntityAccessProfileQuery({ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" }, { skip: !owner });
 	// While a newly selected owner's lookup is in flight, data still holds the previous owner's
 	// response; matching the entity keeps that stale profile from locking the form.
 	const ownerProfile =
@@ -997,6 +1018,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					data: {
 						name: data.name,
 						description: data.description,
+						// Content logging is the key's own privacy setting, not profile-governed access, so a
+						// managed key keeps it editable and the save must carry it (null clears to inherit).
+						disable_content_logging: contentLoggingValue(data.contentLogging),
 					},
 				}).unwrap();
 				toast.success("Virtual key updated");
@@ -1048,6 +1072,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					calendar_aligned: data.budgetCalendarAligned,
 					allow_all_providers: data.allowAllProviders,
 					reset_budget_usage: resetBudgetUsage,
+					// null clears the key back to inheriting the client setting; the server keeps omitted and
+					// null apart, so this is always sent.
+					disable_content_logging: contentLoggingValue(data.contentLogging),
 					...expiryPayload,
 				};
 
@@ -1139,6 +1166,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					allow_all_providers: data.allowAllProviders,
 					// Optional expiry: send as UTC ISO string, or omit for no expiry
 					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
+					// Omitted means inherit on create.
+					...(data.contentLogging !== "inherit" ? { disable_content_logging: data.contentLogging === "disabled" } : {}),
 				};
 
 				// Add budgets if enabled
@@ -1333,6 +1362,36 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 										</FormItem>
 									)}
 								/>
+								{/* Content logging is a privacy setting on the key itself, not access governance, so it
+								stays editable for a profile-managed key too. */}
+								<FormField
+									control={form.control}
+									name="contentLogging"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Content logging</FormLabel>
+											{/* FormControl hands the trigger the label's id and aria attributes; hideClear because the
+											choice is an enum with no empty state. */}
+											<FormControl>
+												<ComboboxSelect
+													options={contentLoggingOptions}
+													value={field.value}
+													onValueChange={field.onChange}
+													disableSearch
+													hideClear
+													data-testid="vk-content-logging-select"
+													optionTestId={(value) => `vk-content-logging-option-${value}`}
+												/>
+											</FormControl>
+											<p className="text-muted-foreground text-xs">
+												Whether request and response content is stored in logs for this key&apos;s traffic. &quot;Off&quot; also strips
+												content from OpenTelemetry export. &quot;On&quot; overrides a gateway-wide off for the log store only. The
+												per-request header still applies when per-request overrides are allowed.
+											</p>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
 							</div>
 							{!isManagedByProfile && (
 								<div className="space-y-4">
@@ -1441,7 +1500,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 																		</p>
 																		<p className="text-muted-foreground text-xs">
 																			Base {formatCurrency(budget.max_limit)}
-																			{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
+																			{hasActiveBudgetOverride(budget)
+																				? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}`
+																				: ""}
 																		</p>
 																	</div>
 																	<BudgetOverrideDialog
@@ -1456,7 +1517,6 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 														</div>
 													</div>
 												) : null}
-
 											</div>
 											{/* Rate Limiting Configuration */}
 											<div className="space-y-4">
@@ -1557,9 +1617,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 														<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
 														<AlertDialogDescription>
 															Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
-															token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
-															reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
-															undone, but calendar alignment can be turned off later. This will take effect when you save.
+															token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap
+															each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset
+															cannot be undone, but calendar alignment can be turned off later. This will take effect when you save.
 														</AlertDialogDescription>
 													</AlertDialogHeader>
 													<AlertDialogFooter>
