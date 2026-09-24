@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	// instructionTagPrefix names the block tag. Tag-shaped occurrences of it in upstream text
-	// are neutralized so a server cannot draw a boundary and speak as another; bare mentions
-	// in prose are left alone. See instructionTagPattern.
 	instructionTagPrefix = "mcp_server"
+
+	// instructionsOmittedNotice stands in when the budget cannot hold a Virtual MCP's text.
+	instructionsOmittedNotice = "[virtual mcp instructions omitted: instruction size limit reached]"
 )
 
 // GetServerInstructions returns the initialize `instructions` of every MCP client this
@@ -134,6 +134,22 @@ func AggregateServerInstructions(parts []schemas.MCPServerInstructions, caps Ins
 	return b.String()
 }
 
+// fitLimit reserves room for the truncation notice, but only when the body will be cut.
+func fitLimit(bodyLen, limit int) int {
+	if bodyLen <= limit {
+		return limit
+	}
+	return limit - len(truncationNotice(bodyLen))
+}
+
+// truncationNotice marks bytes dropped by a cap, or is empty when nothing was.
+func truncationNotice(omitted int) string {
+	if omitted <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n[truncated: %d bytes omitted]", omitted)
+}
+
 // instructionBlock wraps one upstream's text in its tagged block. The client name is attribute
 // escaped for the same reason the body is sanitized: it is operator-supplied, and a quote in it
 // would otherwise break out of the attribute.
@@ -143,16 +159,14 @@ func instructionBlock(clientName, text string, omitted int) string {
 	b.WriteString(escapeInstructionAttr(clientName))
 	b.WriteString("\">\n")
 	b.WriteString(text)
-	if omitted > 0 {
-		b.WriteString(fmt.Sprintf("\n[truncated: %d bytes omitted]", omitted))
-	}
+	b.WriteString(truncationNotice(omitted))
 	b.WriteString("\n</mcp_server>")
 	return b.String()
 }
 
 // blockOverhead is the byte cost of the tags plus a worst-case truncation notice.
 func blockOverhead(clientName string, bodyLen int) int {
-	return len(instructionBlock(clientName, "", 0)) + len(fmt.Sprintf("\n[truncated: %d bytes omitted]", bodyLen))
+	return len(instructionBlock(clientName, "", 0)) + len(truncationNotice(bodyLen))
 }
 
 // instructionTagPattern matches a literal block tag, open or close, in any case. Bare mentions of
@@ -175,6 +189,34 @@ func sanitizeInstructionBody(s string) string {
 func escapeInstructionAttr(s string) string {
 	r := strings.NewReplacer(`&`, "&amp;", `"`, "&quot;", `<`, "&lt;", `>`, "&gt;")
 	return r.Replace(s)
+}
+
+// ApplyVirtualMCPInstructions combines a Virtual MCP's own text with the blocks it inherits.
+// Empty text returns base unchanged.
+func ApplyVirtualMCPInstructions(base string, v schemas.MCPVirtualInstructions, caps InstructionCaps) string {
+	if v.Text == "" {
+		return base
+	}
+	caps = caps.orDefaults()
+	body := sanitizeInstructionBody(v.Text)
+
+	// Unwrapped and last: a Virtual MCP is Bifrost's concept, so its text is the endpoint
+	// speaking rather than another quoted source, and trailing gives the operator the last word.
+	if v.Mode == schemas.MCPVirtualInstructionsModeReplace || base == "" {
+		limit := min(caps.PerClient, fitLimit(len(body), caps.Total))
+		if limit <= 0 {
+			// Replace must not fall back to the inherited blocks it was asked to drop.
+			return instructionsOmittedNotice
+		}
+		text, omitted := truncateInstructions(body, limit)
+		return text + truncationNotice(omitted)
+	}
+	limit := min(caps.PerClient, fitLimit(len(body), caps.Total-len(base)-2)) // "\n\n" joins the two
+	if limit <= 0 {
+		return base + "\n" + instructionsOmittedNotice
+	}
+	text, omitted := truncateInstructions(body, limit)
+	return base + "\n\n" + text + truncationNotice(omitted)
 }
 
 // truncateInstructions cuts s to at most limit bytes on a rune boundary, returning the kept

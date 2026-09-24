@@ -22,7 +22,7 @@ import {
 	useGetVirtualMCPQuery,
 	useUpdateVirtualMCPMutation,
 } from "@/lib/store";
-import { VirtualMCPRequest, VirtualMCPToolSpec } from "@/lib/types/virtualMcps";
+import { type VirtualMCPInstructionsMode, VirtualMCPRequest, VirtualMCPToolSpec } from "@/lib/types/virtualMcps";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -68,6 +68,8 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 	const [name, setName] = useState("");
 	const [endpointSlug, setEndpointSlug] = useState("");
 	const [description, setDescription] = useState("");
+	const [instructions, setInstructions] = useState("");
+	const [instructionsMode, setInstructionsMode] = useState<VirtualMCPInstructionsMode>("append");
 	const [enabled, setEnabled] = useState(true);
 	const [tools, setTools] = useState<VirtualMCPToolSpec[]>([]);
 	const [assignedVkIds, setAssignedVkIds] = useState<string[]>([]);
@@ -98,6 +100,8 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 			setName(existing.name);
 			setEndpointSlug(existing.endpoint_slug);
 			setDescription(existing.description ?? "");
+			setInstructions(existing.instructions ?? "");
+			setInstructionsMode(existing.instructions_mode ?? "append");
 			setEnabled(existing.enabled);
 			setTools(existing.tools ?? []);
 			setAssignedVkIds(existing.virtual_key_ids ?? []);
@@ -116,11 +120,13 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 		return (
 			name.trim() !== existing.name ||
 			(description.trim() || "") !== (existing.description ?? "") ||
+			(instructions.trim() || "") !== (existing.instructions ?? "") ||
+			instructionsMode !== (existing.instructions_mode ?? "append") ||
 			enabled !== existing.enabled ||
 			JSON.stringify(normalizeTools(tools)) !== JSON.stringify(normalizeTools(existing.tools ?? [])) ||
 			JSON.stringify([...assignedVkIds].sort()) !== JSON.stringify([...(existing.virtual_key_ids ?? [])].sort())
 		);
-	}, [isCreate, existing, name, description, enabled, tools, assignedVkIds]);
+	}, [isCreate, existing, name, description, instructions, instructionsMode, enabled, tools, assignedVkIds]);
 
 	const canSave = name.trim().length > 0 && !saving && isDirty && hasSavePermission;
 
@@ -129,6 +135,11 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 		const body: VirtualMCPRequest = {
 			name: name.trim(),
 			description: description.trim() || undefined,
+			// On edit an empty string clears the stored text: the handler only skips a field
+			// that is absent, so omitting it would make "clear the box and save" a no-op. The
+			// mode always rides along, or flipping the switch alone would be dropped.
+			instructions: isCreate ? instructions.trim() || undefined : instructions.trim(),
+			instructions_mode: instructionsMode,
 			enabled,
 			tools,
 		};
@@ -215,6 +226,10 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 									endpointSlug={endpointSlug}
 									setEndpointSlug={setEndpointSlug}
 									description={description}
+									instructions={instructions}
+									setInstructions={setInstructions}
+									instructionsMode={instructionsMode}
+									setInstructionsMode={setInstructionsMode}
 									setDescription={setDescription}
 									enabled={enabled}
 									setEnabled={setEnabled}
