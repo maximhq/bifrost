@@ -185,14 +185,17 @@ type contentPolicy struct {
 func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 
 // resolveContentPolicy resolves content handling for this request. Three
-// layers decide whether content logging is disabled, each overriding the one
+// sources decide whether content logging is disabled, each overriding the one
 // before it in both directions:
 //  1. the static disable_content_logging client config;
-//  2. governance's decision for the request, stamped as
-//     BifrostContextKeyGovernanceDisableContentLogging: the resolved virtual
-//     key's own disable_content_logging, or that of a project the request is
-//     scoped to, which overrides the key's (absent when both inherit). Admin
-//     configuration, so it needs no gate;
+//  2. the admin-configured content-logging layers stamped on the context
+//     (business unit, team, user, then the credential tier of provider key,
+//     virtual key and access profile), resolved top down by
+//     schemas.ResolveAdminContentLogging. The virtual key's layer carries a
+//     project's decision when the request is scoped to one, which overrides
+//     the key's. A layer that inherits is absent, and when every layer
+//     inherits the client config stands. Admin configuration, so it needs no
+//     gate;
 //  3. the x-bf-disable-content-logging header, honored only when
 //     BifrostContextKeyAllowPerRequestStorageOverride is true in context (set
 //     by ConvertToBifrostContext from allow_per_request_content_storage_override
@@ -207,8 +210,8 @@ func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) contentPolicy {
 	disabled := p.disableContentLogging != nil && *p.disableContentLogging
 	if ctx != nil {
-		if virtualKeyDecision, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
-			disabled = virtualKeyDecision
+		if adminDisabled, decided := schemas.ResolveAdminContentLogging(ctx); decided {
+			disabled = adminDisabled
 		}
 		if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
 			if override, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {

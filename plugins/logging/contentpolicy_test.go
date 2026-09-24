@@ -129,6 +129,67 @@ func TestResolveContentPolicyVirtualKeyOverridesClientFlag(t *testing.T) {
 	})
 }
 
+// The log store resolves every content-logging layer through the shared tiers, not the virtual key
+// alone: a higher org layer outranks the key in both directions, and peers in the credential tier
+// resolve with any "off" winning.
+func TestResolveContentPolicyFollowsLayerTiers(t *testing.T) {
+	type stamp struct {
+		layer    schemas.BifrostContextKey
+		disabled bool
+	}
+	for _, tc := range []struct {
+		name       string
+		clientOff  bool
+		stamps     []stamp
+		wantStored bool
+	}{
+		{
+			name:      "team off outranks a key that turns content on",
+			clientOff: false,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyTeamDisableContentLogging, true},
+				{schemas.BifrostContextKeyGovernanceDisableContentLogging, false},
+			},
+			wantStored: false,
+		},
+		{
+			name:      "business unit on outranks a key that turns content off",
+			clientOff: false,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyBusinessUnitDisableContentLogging, false},
+				{schemas.BifrostContextKeyGovernanceDisableContentLogging, true},
+			},
+			wantStored: true,
+		},
+		{
+			name:      "a provider key off beats a virtual key on in the same tier",
+			clientOff: false,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyGovernanceDisableContentLogging, false},
+				{schemas.BifrostContextKeyProviderKeyDisableContentLogging, true},
+			},
+			wantStored: false,
+		},
+		{
+			name:      "a user on overrides a client flag that is off",
+			clientOff: true,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyUserDisableContentLogging, false},
+			},
+			wantStored: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := policyTestPlugin(boolPtr(tc.clientOff), nil, true)
+			ctx := policyCtx(false, nil)
+			for _, s := range tc.stamps {
+				schemas.StampContentLoggingDecision(ctx, s.layer, s.disabled)
+			}
+			assert.Equal(t, tc.wantStored, p.resolveContentPolicy(ctx).storeContent)
+		})
+	}
+}
+
 func TestResolveContentPolicyHeaderDisableWithoutGateIgnored(t *testing.T) {
 	p := policyTestPlugin(nil, nil, true)
 
