@@ -2800,7 +2800,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageStop:
-		// Message stop - emit response.completed (OpenAI-style)
+		// Message stop - emit the terminal Responses event (OpenAI-style).
 		response := &schemas.BifrostResponsesResponse{
 			CreatedAt: state.CreatedAt,
 		}
@@ -2862,8 +2862,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 		}
 
+		terminalType := schemas.ResponsesStreamResponseTypeCompleted
+		if state.GuardrailIntervened {
+			terminalType = schemas.ResponsesStreamResponseTypeIncomplete
+		}
+
 		return []*schemas.BifrostResponsesStreamResponse{{
-			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			Type:           terminalType,
 			SequenceNumber: sequenceNumber,
 			Response:       response,
 		}}, nil, true // Indicate stream is complete
