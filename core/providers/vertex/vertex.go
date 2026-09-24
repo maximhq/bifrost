@@ -274,8 +274,16 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 // Returns the response and latency, or an error if the request fails.
 //
 // The logic is:
-// 1. If deployments or allowedModels are configured, return those (no API call needed)
-// 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
+//  1. If an explicit (restricted) allowedModels list is configured, return the
+//     configured models/deployments directly (no API call needed) — the user has
+//     enumerated exactly which models this key serves.
+//  2. Otherwise (wildcard allowlist), fetch the full catalog from the
+//     publishers.models.list API endpoint (Model Garden). Configured deployments
+//     are merged into the catalog by the list-models pipeline (matching aliases
+//     are surfaced and unmatched ones are backfilled), mirroring how providers
+//     like OpenAI combine aliases with the live model list. If Model Garden
+//     auth is unavailable (e.g. API-key-only keys), fall back to the configured
+//     deployments so the key still lists something useful.
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	region := resolveVertexRegion(ctx, key)
 	if region == "" {
@@ -289,13 +297,16 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
-	// If deployments or allowedModels are configured, return those directly without API call
+	// If an explicit allowlist is configured, it fully determines the model set —
+	// return it directly without an API call.
+	// A wildcard allowlist with deployments falls through to the Model Garden
+	// fetch so deployments ADD to the catalog instead of replacing it.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
+	if !request.Unfiltered && allowedModels.IsRestricted() {
 		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
 	}
 
-	// No deployments configured - fetch from Model Garden API
+	// Wildcard allowlist - fetch the full catalog from the Model Garden API
 	host := getVertexModelListingAPIHost(region)
 
 	// Accumulate all publisher models from paginated requests
@@ -307,10 +318,18 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	// Getting oauth2 token
 	tokenSource, err := getAuthTokenSource(key)
 	if err != nil {
+		// Keys without Model Garden credentials (e.g. api-key auth) can still
+		// surface their configured deployments instead of failing outright.
+		if !request.Unfiltered && len(deployments) > 0 {
+			return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
+		}
 		return nil, providerUtils.NewBifrostOperationError("error creating auth token source (api key auth not supported for list models)", err)
 	}
 	token, err := tokenSource.Token()
 	if err != nil {
+		if !request.Unfiltered && len(deployments) > 0 {
+			return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
+		}
 		return nil, providerUtils.NewBifrostOperationError("error getting token (api key auth not supported for list models)", err)
 	}
 
