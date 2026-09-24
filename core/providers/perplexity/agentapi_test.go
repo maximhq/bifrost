@@ -3,9 +3,11 @@ package perplexity
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -256,6 +258,114 @@ func TestResponses_AgentAPIRewritesBareSonarModel(t *testing.T) {
 
 	if got, want := capturedBody["model"], "perplexity/sonar"; got != want {
 		t.Fatalf("expected model=%q on the wire, got %v", want, got)
+	}
+	// The caller's own request object must not be mutated.
+	if req.Model != "sonar" {
+		t.Fatalf("caller's request.Model was mutated: got %q, want \"sonar\"", req.Model)
+	}
+}
+
+var noopPostHookRunner schemas.PostHookRunner = func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return result, err
+}
+
+// drainStreamWithTimeout collects every chunk from stream until it closes,
+// failing fast if the channel never closes instead of hanging until the test
+// binary's own timeout.
+func drainStreamWithTimeout(t *testing.T, stream chan *schemas.BifrostStreamChunk, timeout time.Duration) []*schemas.BifrostStreamChunk {
+	t.Helper()
+
+	var chunks []*schemas.BifrostStreamChunk
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for chunk := range stream {
+			chunks = append(chunks, chunk)
+		}
+	}()
+
+	select {
+	case <-done:
+		return chunks
+	case <-time.After(timeout):
+		t.Fatal("stream did not close within timeout")
+		return nil
+	}
+}
+
+const minimalResponsesAPIStreamCompletedEvent = `data: {"type":"response.completed","sequence_number":0,"response":` +
+	`{"id":"resp_1","object":"response","created_at":1,"model":"openai/gpt-5.6-sol","status":"completed",` +
+	`"output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[]}]}],` +
+	`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"
+
+// TestResponsesStream_AgentAPIForwardsExtraParamsAndRewritesBareSonarModel is the
+// streaming counterpart of TestResponses_AgentAPIForwardsExtraParamsAutomatically and
+// TestResponses_AgentAPIRewritesBareSonarModel: ResponsesStream must apply the same
+// automatic BifrostContextKeyPassthroughExtraParams and withWireModelForAgentAPI(request)
+// handling as the unary Responses path, since streaming requests reach Perplexity's
+// Agent API through the same /v1/responses endpoint (see openai.HandleOpenAIResponsesStreaming
+// in ResponsesStream above).
+func TestResponsesStream_AgentAPIForwardsExtraParamsAndRewritesBareSonarModel(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			http.Error(w, "json error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, minimalResponsesAPIStreamCompletedEvent)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestPerplexityProvider(t, server.URL)
+	key := schemas.Key{ID: "test-key", Value: schemas.SecretVar{Val: "test-api-key"}}
+
+	hello := "hi"
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Perplexity,
+		Model:    "sonar",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: &hello},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{
+				"preset":    "fast",
+				"max_steps": float64(3),
+			},
+		},
+	}
+
+	// Intentionally do NOT set BifrostContextKeyPassthroughExtraParams — the
+	// provider must set it automatically for the Agent API path.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	stream, bifrostErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error synchronously: %v", bifrostErr.Error.Message)
+	}
+	drainStreamWithTimeout(t, stream, 5*time.Second)
+
+	if capturedBody == nil {
+		t.Fatal("mock server did not receive a request body")
+	}
+	if got, want := capturedBody["model"], "perplexity/sonar"; got != want {
+		t.Fatalf("expected model=%q on the wire, got %v", want, got)
+	}
+	if got, want := capturedBody["preset"], "fast"; got != want {
+		t.Fatalf("expected preset=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
+	}
+	if got, want := capturedBody["max_steps"], float64(3); got != want {
+		t.Fatalf("expected max_steps=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
 	}
 	// The caller's own request object must not be mutated.
 	if req.Model != "sonar" {
