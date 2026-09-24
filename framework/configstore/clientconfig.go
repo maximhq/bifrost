@@ -1040,6 +1040,17 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	} else {
 		hash.Write([]byte("allowAllProviders:false"))
 	}
+	// Hash DisableContentLogging only when the key says something. Nil is inherit, and writing
+	// nothing for it keeps every key that predates the column on the hash it already has, so
+	// config sync sees no drift on upgrade (the unconditional AllowAllProviders write above is
+	// what forced a backfill migration).
+	if vk.DisableContentLogging != nil {
+		if *vk.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
@@ -1051,6 +1062,11 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash CustomerID
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
+	}
+	// Hash BusinessUnitID. Written only when set, like the owners above, so every key that
+	// predates business-unit ownership keeps the hash it already has and config sync sees no drift.
+	if vk.BusinessUnitID != nil {
+		hash.Write([]byte("businessUnitID:" + *vk.BusinessUnitID))
 	}
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {

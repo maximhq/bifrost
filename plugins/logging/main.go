@@ -181,12 +181,19 @@ type contentPolicy struct {
 // visible reports whether logged content is served back through the API/UI.
 func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 
-// resolveContentPolicy resolves content handling for this request. Content
-// logging is disabled either by the static disable_content_logging config or
-// by the x-bf-disable-content-logging header (honored only when
-// BifrostContextKeyAllowPerRequestStorageOverride is true in context, set by
-// ConvertToBifrostContext from allow_per_request_content_storage_override
-// config). What "disabled" means depends on retain_content_in_object_storage:
+// resolveContentPolicy resolves content handling for this request. Three
+// layers decide whether content logging is disabled, each overriding the one
+// before it in both directions:
+//  1. the static disable_content_logging client config;
+//  2. the resolved virtual key's own disable_content_logging, stamped by
+//     governance as BifrostContextKeyGovernanceDisableContentLogging (absent
+//     when the key inherits). Admin configuration, so it needs no gate;
+//  3. the x-bf-disable-content-logging header, honored only when
+//     BifrostContextKeyAllowPerRequestStorageOverride is true in context (set
+//     by ConvertToBifrostContext from allow_per_request_content_storage_override
+//     config).
+//
+// What "disabled" means depends on retain_content_in_object_storage:
 //   - off (default) → content is not persisted anywhere.
 //   - on → content is offloaded to object storage as hidden: the DB row stays
 //     content-free and reads never hydrate the payload back, but the object
@@ -195,6 +202,9 @@ func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) contentPolicy {
 	disabled := p.disableContentLogging != nil && *p.disableContentLogging
 	if ctx != nil {
+		if virtualKeyDecision, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
+			disabled = virtualKeyDecision
+		}
 		if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
 			if override, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
 				disabled = override
@@ -219,6 +229,49 @@ func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) content
 // recorded on the log entry for this request.
 func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
 	return p.resolveContentPolicy(ctx).storeContent
+}
+
+// dropCapturedInput removes everything PreLLMHook captured from the request. PreLLMHook decides
+// with the policy as the context stood then; on the passthrough path governance stamps the virtual
+// key's decision only in its own PreLLMHook, after ours, so the final policy in PostLLMHook can be
+// stricter than the one the inputs were captured under.
+func dropCapturedInput(entry *logstore.Log) {
+	if entry == nil {
+		return
+	}
+	entry.InputHistoryParsed = nil
+	entry.ResponsesInputHistoryParsed = nil
+	entry.ParamsParsed = nil
+	entry.ToolsParsed = nil
+	entry.SpeechInputParsed = nil
+	entry.TranscriptionInputParsed = nil
+	entry.OCRInputParsed = nil
+	entry.ImageGenerationInputParsed = nil
+	entry.ImageEditInputParsed = nil
+	entry.ImageVariationInputParsed = nil
+	entry.VideoGenerationInputParsed = nil
+	entry.VideoEditInputParsed = nil
+	entry.PassthroughRequestBody = ""
+}
+
+// virtualKeyStampPending reports whether the request presented a virtual key that governance has
+// not resolved onto the context yet, so the key's own content-logging decision is still unknown.
+// The presented key is read the way governance reads it: off the settled identity first, then off
+// the transport's context key.
+func virtualKeyStampPending(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if stamped, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); stamped != "" {
+		return false
+	}
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil && identity.Credential().Kind == string(schemas.EntityVirtualKey) {
+			return true
+		}
+	}
+	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	return presented != ""
 }
 
 // applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context. Every dimension,
@@ -585,8 +638,15 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 		}
 	}
 
-	// Cost + usage — the point of the bridge.
-	tracer.SetAttribute(handle, schemas.AttrUsageCost, *entry.Cost)
+	// Cost + usage — the point of the bridge. The breakdown rides along when the
+	// row has one, so a settlement span carries the same split as a live call.
+	if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost != nil {
+		for k, v := range schemas.CostAttributes(entry.TokenUsageParsed.Cost) {
+			tracer.SetAttribute(handle, k, v)
+		}
+	} else {
+		tracer.SetAttribute(handle, schemas.AttrUsageCost, *entry.Cost)
+	}
 	if entry.PromptTokens > 0 {
 		tracer.SetAttribute(handle, schemas.AttrInputTokens, entry.PromptTokens)
 	}
@@ -1138,6 +1198,8 @@ type LoggerPlugin struct {
 	wg                           sync.WaitGroup
 	logger                       schemas.Logger
 	logCallback                  LogCallback
+	logSubscribers               map[uint64]LogCallback
+	nextLogSubscriberID          uint64
 	batchUsageReporter           jobaccounting.UsageReporter
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
@@ -1148,6 +1210,7 @@ type LoggerPlugin struct {
 	pendingLogsEntries           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	pendingLogsToInject          sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	pendingMCPLogsToInject       sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
+	provisionalMCPArguments      sync.Map              // Maps mcpLogID -> tool arguments captured before governance stamped the presented key; attached in PostMCPHook only if content ends up visible
 	writerConfig                 logstore.WriterConfig // Resolved async writer queue and batch settings
 	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                       atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
@@ -1346,6 +1409,58 @@ func (p *LoggerPlugin) SetLogCallback(callback LogCallback) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.logCallback = callback
+}
+
+// SubscribeLogCallback adds an observer without replacing the transport's
+// primary callback. It returns an idempotent unsubscribe function for reloads.
+func (p *LoggerPlugin) SubscribeLogCallback(callback LogCallback) func() {
+	if callback == nil {
+		return func() {}
+	}
+	p.mu.Lock()
+	p.nextLogSubscriberID++
+	id := p.nextLogSubscriberID
+	if p.logSubscribers == nil {
+		p.logSubscribers = make(map[uint64]LogCallback)
+	}
+	p.logSubscribers[id] = callback
+	p.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			p.mu.Lock()
+			delete(p.logSubscribers, id)
+			p.mu.Unlock()
+		})
+	}
+}
+
+func (p *LoggerPlugin) notifyLogCallbacks(ctx context.Context, entry *logstore.Log) {
+	if entry == nil {
+		return
+	}
+	p.mu.Lock()
+	callbacks := make([]LogCallback, 0, len(p.logSubscribers)+1)
+	if p.logCallback != nil {
+		callbacks = append(callbacks, p.logCallback)
+	}
+	for _, callback := range p.logSubscribers {
+		callbacks = append(callbacks, callback)
+	}
+	p.mu.Unlock()
+	for _, callback := range callbacks {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil && p.logger != nil {
+					// The value alone, not its contents: a callback can panic with
+					// something derived from the request or response, and that would
+					// put prompt text or credentials into the application log.
+					p.logger.Warn("log callback panicked and was recovered (value withheld: it can carry request content)")
+				}
+			}()
+			callback(ctx, entry)
+		}()
+	}
 }
 
 func (p *LoggerPlugin) SetBatchUsageReporter(reporter jobaccounting.UsageReporter) {
@@ -1608,7 +1723,12 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
-	if p.contentLoggingEnabled(ctx) {
+	// Capture while content is on, and also while the presented virtual key is still unresolved:
+	// governance may stamp a decision that turns content on after ours runs (the passthrough path).
+	// PostLLMHook applies the final policy and drops whatever it does not allow, and the processing
+	// notification below never carries input captured this way.
+	captureProvisional := virtualKeyStampPending(ctx)
+	if p.contentLoggingEnabled(ctx) || captureProvisional {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
 		initialData.InputHistory = inputHistory
 		initialData.ResponsesInputHistory = responsesInputHistory
@@ -1822,12 +1942,13 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	p.pendingLogsEntries.Store(effectiveRequestID, pending)
 	// Call callback synchronously for immediate UI feedback (WebSocket "processing" notification).
 	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
-	p.mu.Lock()
-	callback := p.logCallback
-	p.mu.Unlock()
-	if callback != nil {
-		callback(p.ctx, buildInitialLogEntry(pending))
+	initialEntry := buildInitialLogEntry(pending)
+	if captureProvisional || !p.contentLoggingEnabled(ctx) {
+		// Subscribers see this entry before governance has decided for the key, so it carries
+		// no input until the final policy in PostLLMHook says it may.
+		dropCapturedInput(initialEntry)
 	}
+	p.notifyLogCallbacks(p.ctx, initialEntry)
 	return req, nil, nil
 }
 
@@ -2038,6 +2159,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	if !contentLoggingEnabled {
+		// The final policy is stricter than the one the inputs were captured under (a virtual key
+		// stamped after our PreLLMHook, as on the passthrough path): take them back out.
+		dropCapturedInput(entry)
+	}
 	entry.GuardrailDebugParsed = guardrailMetadata
 	entry.RoutingMetadataParsed = routingMetadata
 	// Apply common output fields. For cache hits, prefer the cache-serve
@@ -2781,8 +2907,16 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
-	// Set arguments if content logging is enabled
-	if p.contentLoggingEnabled(ctx) {
+	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
+	// request that presents a virtual key governance has not stamped yet has no final content
+	// decision: hold the arguments aside instead of putting them on the pending entry, where the
+	// pre-hook callback and the stale-entry reaper would expose them. PostMCPHook attaches them once
+	// the policy is final; a stale entry never gets them.
+	// The hold does not depend on the current policy: a key that turns content on over a disabled
+	// client flag is entitled to its arguments once PostMCPHook sees the final decision.
+	if virtualKeyStampPending(ctx) {
+		p.provisionalMCPArguments.Store(mcpLogID, arguments)
+	} else if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
 	}
 
@@ -2865,6 +2999,17 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	}
 
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
+	// Resolved once here, after every pre-hook has run. PreMCPHook captured the arguments with
+	// whatever the context said at the time, and governance's PreMCPHook, which stamps the virtual
+	// key's content decision, runs after ours; a key that turns content off must take the
+	// arguments back out along with the result.
+	contentVisible := p.resolveContentPolicy(ctx).visible()
+	if held, ok := p.provisionalMCPArguments.LoadAndDelete(mcpLogID); ok && contentVisible {
+		entry.ArgumentsParsed = held
+	}
+	if !contentVisible {
+		entry.ArgumentsParsed = nil
+	}
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency
@@ -2882,12 +3027,12 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if bifrostErr != nil {
 		entry.Status = "error"
 		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
-		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, p.resolveContentPolicy(ctx).visible(), shouldStoreRaw)
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentVisible, shouldStoreRaw)
 	} else if resp != nil {
 		entry.Status = "success"
 		// MCP tool logs have no hidden-content mode, so content is only
 		// stored when it is also visible.
-		if p.resolveContentPolicy(ctx).visible() {
+		if contentVisible {
 			var result interface{}
 			if resp.ChatMessage != nil {
 				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
@@ -2921,7 +3066,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
 	p.mu.Unlock()
-	attachMCPLogRedactionData(ctx, entry, p.contentLoggingEnabled(ctx))
+	attachMCPLogRedactionData(ctx, entry, contentVisible)
 	entry.PluginLogs = serializePluginLogs(ctx.GetPluginLogs())
 	p.enqueueMCPToolLogEntry(entry, callback)
 

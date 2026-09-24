@@ -105,11 +105,35 @@ func (c ModelCaps) SupportsFastMode(fallback bool) bool {
 	return fallback
 }
 
+// SupportsSafeguards returns true if the model supports the Claude Code
+// auto-mode server-side classifier (`safeguards` request field /
+// `safeguard_results` response field) on surfaces where the feature is
+// model-gated. Auto mode on Amazon Bedrock, Google Cloud's Agent Platform,
+// Microsoft Foundry, and Claude apps gateway sessions is supported only on
+// Sonnet 5, Opus 4.7 or later, and the Fable models. Anthropic direct uses the
+// same model gate. Payloads are forwarded opaquely after capability filtering.
+//
+// Sources:
+//   - https://code.claude.com/docs/en/auto-mode-classifier-billing
+//   - https://code.claude.com/docs/en/permission-modes#enable-auto-mode-on-bedrock-agent-platform-or-foundry
+//
+// Prefers the datasheet's supports_safeguards boolean when set, falling back to
+// name detection when no record is registered.
+func (c ModelCaps) SupportsSafeguards(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSafeguards != nil {
+		return *c.record.SupportsSafeguards
+	}
+	return fallback
+}
+
 // Wire field names used as UnsupportedFields and ConditionallyUnsupportedFields
 // keys. Call sites pass these rather than string literals so a typo fails to
 // compile instead of silently reading as "supported".
 const (
 	FieldTopP                 = "top_p"
+	FieldTemperature          = "temperature"
+	FieldTopLogprobs          = "top_logprobs"
+	FieldLogprobs             = "logprobs"
 	FieldPresencePenalty      = "presence_penalty"
 	FieldFrequencyPenalty     = "frequency_penalty"
 	FieldStop                 = "stop"
@@ -250,6 +274,24 @@ func (c ModelCaps) SupportsAssistantPrefill(fallback bool) bool {
 func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	if c.record != nil && c.record.SupportsCachePoint != nil {
 		return *c.record.SupportsCachePoint
+	}
+	return fallback
+}
+
+// SupportsPromptCacheBreakpoint reports whether the model accepts OpenAI's
+// per-block prompt_cache_breakpoint and request-level prompt_cache_options.
+func (c ModelCaps) SupportsPromptCacheBreakpoint(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoint != nil {
+		return *c.record.SupportsPromptCacheBreakpoint
+	}
+	return fallback
+}
+
+// SupportsAsyncTools reports whether the model accepts OpenAI's async flag on tool
+// definitions and on replayed function/custom call items.
+func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsAsyncTools != nil {
+		return *c.record.SupportsAsyncTools
 	}
 	return fallback
 }
@@ -605,6 +647,17 @@ func (c ModelCaps) SupportsInterleavedThinking(fallback bool) bool {
 func (c ModelCaps) SupportsFilesAPI(fallback bool) bool {
 	if c.record != nil && c.record.SupportsFilesAPI != nil {
 		return *c.record.SupportsFilesAPI
+	}
+	return fallback
+}
+
+// SupportsComputerToolset reports whether the model accepts the
+// computer_toolset_20260801 client toolset. Distinct from the dated computer_*
+// tools: most models that take the toolset still accept the dated form too, and
+// Opus 5.5 on the Claude API and Google Cloud takes only the toolset.
+func (c ModelCaps) SupportsComputerToolset(fallback bool) bool {
+	if c.record != nil && c.record.SupportsComputerToolset != nil {
+		return *c.record.SupportsComputerToolset
 	}
 	return fallback
 }

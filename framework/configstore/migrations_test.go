@@ -1239,6 +1239,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableNotification{},
+		&tables.TableWarpConfig{},
 	}
 
 	migrator := db.Migrator()
@@ -3934,4 +3935,436 @@ func TestMigrationAddGithubCopilotConfigColumns_NonRollbackable(t *testing.T) {
 	require.NotNil(t, got.GithubCopilotKeyConfig)
 	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotKeyConfig.PrivateKey.GetValue(),
 		"the private key must survive the refused rollback")
+}
+
+// oauth2PreWidenDDL returns the three OAuth2 AS tables as
+// migrationAddOAuth2IssuanceTables created them before the client-controlled
+// columns were widened to text: state varchar(512), client_name and every scope
+// column varchar(255). Those bounds are the upgrade path the widen migration
+// exists for; everything else matches the structs of that time.
+func oauth2PreWidenDDL(dialect string) []string {
+	ts := "DATETIME"
+	if dialect == "postgres" {
+		ts = "TIMESTAMPTZ"
+	}
+	return []string{
+		`CREATE TABLE oauth2_clients (
+			id VARCHAR(255) PRIMARY KEY,
+			client_id VARCHAR(255) NOT NULL UNIQUE,
+			client_name VARCHAR(255),
+			redirect_uris_json TEXT NOT NULL,
+			grant_types_json TEXT NOT NULL,
+			scope VARCHAR(255),
+			created_at ` + ts + ` NOT NULL
+		)`,
+		`CREATE TABLE oauth2_authorize_requests (
+			id VARCHAR(255) PRIMARY KEY,
+			client_id VARCHAR(255) NOT NULL,
+			redirect_uri TEXT NOT NULL,
+			state VARCHAR(512) NOT NULL,
+			scope VARCHAR(255),
+			resource TEXT NOT NULL,
+			code_challenge VARCHAR(512) NOT NULL,
+			code_challenge_method VARCHAR(10) NOT NULL,
+			status VARCHAR(20) NOT NULL,
+			bf_mode VARCHAR(20),
+			bf_sub VARCHAR(255),
+			code_hash VARCHAR(255) UNIQUE,
+			expires_at ` + ts + ` NOT NULL,
+			created_at ` + ts + ` NOT NULL,
+			updated_at ` + ts + ` NOT NULL
+		)`,
+		`CREATE TABLE oauth2_refresh_tokens (
+			id VARCHAR(255) PRIMARY KEY,
+			token_hash VARCHAR(255) NOT NULL UNIQUE,
+			family_id VARCHAR(255) NOT NULL,
+			client_id VARCHAR(255) NOT NULL,
+			bf_mode VARCHAR(20) NOT NULL,
+			bf_sub VARCHAR(255) NOT NULL,
+			scope VARCHAR(255),
+			resource TEXT NOT NULL,
+			revoked_at ` + ts + `,
+			last_used_at ` + ts + `,
+			created_at ` + ts + ` NOT NULL
+		)`,
+	}
+}
+
+// oauth2WidenedColumns lists every (table, column) the widen migration targets.
+var oauth2WidenedColumns = []struct{ table, column string }{
+	{"oauth2_authorize_requests", "state"},
+	{"oauth2_authorize_requests", "scope"},
+	{"oauth2_clients", "client_name"},
+	{"oauth2_clients", "scope"},
+	{"oauth2_refresh_tokens", "scope"},
+}
+
+// forEachOAuth2PreWidenDB returns the pre-widen tables on every available
+// backend. Postgres is the one that matters: it enforces varchar(n), SQLite does
+// not, so only Postgres can show the bounds and their removal.
+func forEachOAuth2PreWidenDB(t *testing.T) []namedDB {
+	t.Helper()
+	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err, "Failed to create test database")
+	for _, stmt := range oauth2PreWidenDDL("sqlite") {
+		require.NoError(t, sqliteDB.Exec(stmt).Error)
+	}
+	dbs := []namedDB{{"sqlite", sqliteDB}}
+
+	pgDB, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return dbs
+	}
+	sqlDB, err := pgDB.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		return dbs
+	}
+	if pgDB.Exec("CREATE SCHEMA IF NOT EXISTS "+pgTestSchema).Error != nil {
+		return dbs
+	}
+	dropAll := func() {
+		pgDB.Exec("DROP TABLE IF EXISTS oauth2_refresh_tokens CASCADE")
+		pgDB.Exec("DROP TABLE IF EXISTS oauth2_authorize_requests CASCADE")
+		pgDB.Exec("DROP TABLE IF EXISTS oauth2_clients CASCADE")
+	}
+	dropAll()
+	pgDB.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`)
+	pgDB.Exec("DELETE FROM migrations")
+	for _, stmt := range oauth2PreWidenDDL("postgres") {
+		if err := pgDB.Exec(stmt).Error; err != nil {
+			return dbs
+		}
+	}
+	t.Cleanup(func() {
+		pgDB.Exec("DELETE FROM migrations")
+		dropAll()
+	})
+	return append(dbs, namedDB{"postgres", pgDB})
+}
+
+// TestMigrationWidenOAuth2ClientControlledColumns verifies the upgrade path: an
+// existing deployment whose client-controlled OAuth2 columns are still varchar
+// accepts arbitrarily long values in each once the migration has run. On
+// Postgres every pre-migration insert is required to fail first, so the
+// post-migration success is proof of the widening rather than of a bound that
+// was never enforced.
+func TestMigrationWidenOAuth2ClientControlledColumns(t *testing.T) {
+	ctx := context.Background()
+	logr := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	long := strings.Repeat("s", 4096)
+	insertClient := func(db *gorm.DB, id string) error {
+		return db.Exec(`
+			INSERT INTO oauth2_clients (id, client_id, client_name, redirect_uris_json, grant_types_json, scope, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			id, id, long, `["https://client.example/cb"]`, `["authorization_code"]`, long, time.Now()).Error
+	}
+	insertRequest := func(db *gorm.DB, id string) error {
+		now := time.Now()
+		return db.Exec(`
+			INSERT INTO oauth2_authorize_requests (id, client_id, redirect_uri, state, scope, resource, code_challenge, code_challenge_method, status, expires_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, "client-1", "https://client.example/cb", long, long, "https://bifrost.test/mcp",
+			"challenge", "S256", "pending", now.Add(time.Minute), now, now).Error
+	}
+	insertRefreshToken := func(db *gorm.DB, id string) error {
+		return db.Exec(`
+			INSERT INTO oauth2_refresh_tokens (id, token_hash, family_id, client_id, bf_mode, bf_sub, scope, resource, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, "hash-"+id, "req-1", "client-1", "vk", "vk-1", long, "https://bifrost.test/mcp", time.Now()).Error
+	}
+
+	for _, backend := range forEachOAuth2PreWidenDB(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			if backend.name == "postgres" {
+				require.Error(t, insertClient(db, "pre-widen"), "varchar(255) must reject the long client_name/scope before migration")
+				require.Error(t, insertRequest(db, "pre-widen"), "varchar(512) must reject the long state before migration")
+				require.Error(t, insertRefreshToken(db, "pre-widen"), "varchar(255) must reject the long scope before migration")
+			}
+
+			require.NoError(t, migrationWidenOAuth2ClientControlledColumns(ctx, db, logr))
+
+			require.NoError(t, insertClient(db, "post-widen"))
+			require.NoError(t, insertRequest(db, "post-widen"))
+			require.NoError(t, insertRefreshToken(db, "post-widen"))
+			var got string
+			require.NoError(t, db.Raw("SELECT state FROM oauth2_authorize_requests WHERE id = ?", "post-widen").Scan(&got).Error)
+			assert.Equal(t, long, got)
+			require.NoError(t, db.Raw("SELECT client_name FROM oauth2_clients WHERE id = ?", "post-widen").Scan(&got).Error)
+			assert.Equal(t, long, got)
+			require.NoError(t, db.Raw("SELECT scope FROM oauth2_refresh_tokens WHERE id = ?", "post-widen").Scan(&got).Error)
+			assert.Equal(t, long, got)
+
+			if backend.name == "postgres" {
+				for _, c := range oauth2WidenedColumns {
+					var dataType string
+					require.NoError(t, db.Raw(`SELECT data_type FROM information_schema.columns
+						WHERE table_schema = ? AND table_name = ? AND column_name = ?`, pgTestSchema, c.table, c.column).Scan(&dataType).Error)
+					assert.Equalf(t, "text", dataType, "%s.%s", c.table, c.column)
+				}
+			}
+
+			// Re-running is a no-op: the migrator has recorded the ID.
+			require.NoError(t, migrationWidenOAuth2ClientControlledColumns(ctx, db, logr))
+		})
+	}
+}
+
+// TestMigrationAddVirtualKeyBusinessUnitColumn covers the upgrade path for business-unit key
+// ownership: an installation whose governance_virtual_keys predates the column gets it and its
+// index, and a re-run over an already-migrated table is a no-op rather than an error.
+func TestMigrationAddVirtualKeyBusinessUnitColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "business_unit_id"),
+		"business_unit_id must not exist before the migration")
+
+	require.NoError(t, migrationAddVirtualKeyBusinessUnitColumn(ctx, db, testMigrationLogger))
+
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "business_unit_id"),
+		"business_unit_id column should exist after migration")
+	assert.True(t, mg.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id"),
+		"business_unit_id must be indexed: it is walked per request to find the key's owner")
+
+	// Idempotent: the column and index already being there is the normal case on every pod that
+	// is not the one that ran the migration first.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id IN (?, ?)",
+		"add_virtual_key_business_unit_column", "add_virtual_key_business_unit_column_index").Error)
+	require.NoError(t, migrationAddVirtualKeyBusinessUnitColumn(ctx, db, testMigrationLogger))
+
+	// A key owned by a business unit hashes that owner, and config synchronization compares the hash
+	// it stores against the one it computes. Seeded here so the two cannot drift apart and report a
+	// business-unit-owned key as changed on every sync.
+	// This fixture's table is the pre-migration skeleton; fill in the rest of the columns the
+	// struct declares so a row can be written through it.
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	buID := "bu-1"
+	vk := tables.TableVirtualKey{
+		ID: "vk-bu-hash", Name: "vk-bu-hash", Value: *schemas.NewSecretVar("sk-bf-vk-bu-hash"), BusinessUnitID: &buID,
+	}
+	hash, err := GenerateVirtualKeyHash(vk)
+	require.NoError(t, err)
+	vk.ConfigHash = hash
+	require.NoError(t, db.Create(&vk).Error)
+
+	var stored tables.TableVirtualKey
+	require.NoError(t, db.First(&stored, "id = ?", vk.ID).Error)
+	require.NotNil(t, stored.BusinessUnitID)
+	assert.Equal(t, buID, *stored.BusinessUnitID)
+	recomputed, err := GenerateVirtualKeyHash(stored)
+	require.NoError(t, err)
+	assert.Equal(t, stored.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+}
+
+// TestMigrationAddVirtualKeyDisableContentLoggingColumn pins the tri-state column: the migration
+// adds it and is idempotent, NULL survives a write and a read (it means "inherit"), and the config
+// hash only moves when the key actually says something, so every pre-existing key keeps the hash
+// synchronization already stored for it.
+func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"),
+		"disable_content_logging column must not exist before migration")
+
+	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_disable_content_logging_column").Error)
+	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+
+	// This fixture's table is the pre-migration skeleton; fill in the rest of the columns the
+	// struct declares so rows can be written through it.
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+
+	inherit := tables.TableVirtualKey{ID: "vk-dcl-inherit", Name: "vk-dcl-inherit", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-inherit")}
+	off := tables.TableVirtualKey{ID: "vk-dcl-off", Name: "vk-dcl-off", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-off"), DisableContentLogging: new(true)}
+	on := tables.TableVirtualKey{ID: "vk-dcl-on", Name: "vk-dcl-on", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-on"), DisableContentLogging: new(false)}
+	for _, vk := range []*tables.TableVirtualKey{&inherit, &off, &on} {
+		hash, err := GenerateVirtualKeyHash(*vk)
+		require.NoError(t, err)
+		vk.ConfigHash = hash
+		require.NoError(t, db.Create(vk).Error)
+	}
+
+	// Fresh destination per read: GORM folds a populated primary key into the WHERE clause.
+	read := func(id string) tables.TableVirtualKey {
+		var stored tables.TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(inherit.ID).DisableContentLogging, "a key that never said anything must read back as inherit, not false")
+	storedOff := read(off.ID)
+	require.NotNil(t, storedOff.DisableContentLogging)
+	assert.True(t, *storedOff.DisableContentLogging)
+	storedOn := read(on.ID)
+	require.NotNil(t, storedOn.DisableContentLogging)
+	assert.False(t, *storedOn.DisableContentLogging, "an explicit false is a decision, not an absence")
+
+	// Hash: one key, hashed with each decision and with none, so the only thing that can move the
+	// hash is the field itself. nil contributes nothing, so a key from before the column keeps its
+	// hash; true and false are each a real config change, distinct from inherit and from each other.
+	// Built with a fresh secret: Create encrypts a SecretVar in place, so reusing inherit.Value
+	// here would hash ciphertext against the plaintext hash stored on inherit.
+	same := tables.TableVirtualKey{ID: inherit.ID, Name: inherit.Name, Value: *schemas.NewSecretVar("sk-bf-vk-dcl-inherit")}
+	hashWith := func(decision *bool) string {
+		same.DisableContentLogging = decision
+		hash, err := GenerateVirtualKeyHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	inheritHash, offHash, onHash := hashWith(nil), hashWith(new(true)), hashWith(new(false))
+	assert.Equal(t, inheritHash, inherit.ConfigHash, "inherit must hash exactly like a key from before the column existed")
+	assert.NotEqual(t, inheritHash, offHash, "forcing content off must change the hash")
+	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
+	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
+	recomputed, err := GenerateVirtualKeyHash(storedOff)
+	require.NoError(t, err)
+	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+}
+
+// TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
+// column back is refused rather than performed. The column is the only home for a key's own
+// content-logging decision, and a nil reads as "inherit": dropping it would not merely lose
+// data, it would silently start logging content for every key that had turned it off.
+func TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	require.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"))
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+
+	// A key that turned content off is exactly the state a rollback would strand.
+	seed := tables.TableVirtualKey{ID: "vk-dcl-rollback", Name: "vk-dcl-rollback", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-rollback"), DisableContentLogging: new(true)}
+	require.NoError(t, db.Create(&seed).Error)
+
+	err := rollbackVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: dropping the column would revert every content-off key to logging content")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"), "a refused rollback must leave the column intact")
+
+	var got tables.TableVirtualKey
+	require.NoError(t, db.First(&got, "id = ?", seed.ID).Error)
+	require.NotNil(t, got.DisableContentLogging)
+	assert.True(t, *got.DisableContentLogging, "the surviving decision must be untouched")
+}
+
+// TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable pins that rolling Warp's
+// move to a key reference back is refused rather than performed. The forward
+// migration deliberately NULLs api_key - clearing the credential is the step
+// that matters, since GORM's SQLite driver reports a successful DropColumn
+// without dropping anything. A rollback therefore cannot reconstruct api_key,
+// so dropping api_key_id would leave Warp with neither a usable credential nor
+// the reference that replaced it. The rollback must fail loudly and leave the
+// column in place.
+func TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, "api_key_id"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "api_key_id"),
+		"precondition: the column must be absent to reproduce the upgrade path")
+
+	require.NoError(t, migrationAddWarpAPIKeyIDColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "api_key_id"),
+		"migration should have added api_key_id")
+
+	// A configured Warp row is exactly the state a rollback would strand: its
+	// api_key is already gone, so losing api_key_id too leaves no credential.
+	seed := &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	err := rollbackWarpAPIKeyIDColumn(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: the forward migration destroyed the api_key it replaced")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "api_key_id"),
+		"a refused rollback must leave the column intact")
+
+	var got tables.TableWarpConfig
+	require.NoError(t, db.Where("id = ?", seed.ID).First(&got).Error)
+	assert.Equal(t, "key-abc", got.APIKeyID, "the surviving key reference must be untouched")
+}
+
+// TestMigrationAddWarpHistoryRetentionDaysColumn pins the upgrade path for a
+// deployment whose warp_config row predates the setting.
+//
+// The column has to arrive with a zero, and zero has to keep meaning "not set"
+// all the way through to schemas.WarpConfig.EffectiveHistoryRetentionDays. If
+// it were ever read literally, the first sweep after an upgrade would delete
+// every saved chat on the deployment.
+func TestMigrationAddWarpHistoryRetentionDaysColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, "history_retention_days"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "history_retention_days"),
+		"precondition: the column must be absent to reproduce the upgrade path")
+	// Raw SQL, not Create: the model now carries the column this test just
+	// dropped, so GORM would name it in the INSERT and fail before the migration
+	// gets a chance to add it.
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(
+		"INSERT INTO warp_config (id, enabled, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		tables.WarpConfigRowID, true, "openai", "gpt-4o", now, now).Error)
+
+	require.NoError(t, migrationAddWarpHistoryRetentionDaysColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "history_retention_days"),
+		"migration should have added history_retention_days")
+
+	var got tables.TableWarpConfig
+	require.NoError(t, db.Where("id = ?", tables.WarpConfigRowID).First(&got).Error)
+	assert.Zero(t, got.HistoryRetentionDays, "an existing row must come back unset, not expired")
+
+	config := schemas.WarpConfig{HistoryRetentionDays: got.HistoryRetentionDays}
+	assert.Equal(t, schemas.WarpDefaultHistoryRetentionDays, config.EffectiveHistoryRetentionDays(),
+		"unset must resolve to the default rather than deleting everything")
+}
+
+// The embedding columns must not arrive NULL on an existing row.
+//
+// migrationAddWarpLogEmbeddingColumns adds them with AutoMigrate, and without a
+// default the existing warp_config row gets NULL. GetWarpConfig scans them into
+// plain Go strings, where database/sql reports "converting NULL to string is
+// unsupported" - so reading the configuration fails outright on any deployment
+// that had Warp set up before this migration.
+func TestMigrationAddWarpLogEmbeddingColumnsBackfillsExistingRows(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	for _, column := range []string{"embedding_provider", "embedding_model", "embedding_api_key_id", "log_vector_store_namespace"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, column))
+	}
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(
+		"INSERT INTO warp_config (id, enabled, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		tables.WarpConfigRowID, true, "openai", "gpt-4o", now, now).Error)
+
+	require.NoError(t, migrationAddWarpLogEmbeddingColumns(ctx, db, testMigrationLogger))
+
+	// The read that used to fail: scanning into non-pointer strings.
+	var got tables.TableWarpConfig
+	require.NoError(t, db.Where("id = ?", tables.WarpConfigRowID).First(&got).Error,
+		"reading the configuration must not fail on a row that predates these columns")
+	require.Empty(t, got.EmbeddingProvider)
+	require.Empty(t, got.LogVectorStoreNamespace)
+
+	// And the columns must hold '' rather than NULL. SQLite will scan a NULL
+	// into a string without complaint, so the assertion above passes either way;
+	// Postgres is where database/sql refuses, and this is the check that would
+	// have caught it.
+	var nulls int64
+	require.NoError(t, db.Raw(`SELECT count(*) FROM warp_config WHERE embedding_provider IS NULL
+		OR embedding_model IS NULL OR embedding_api_key_id IS NULL OR log_vector_store_namespace IS NULL`).Scan(&nulls).Error)
+	require.Zero(t, nulls, "these columns are scanned into plain strings, so NULL breaks the read on Postgres")
 }

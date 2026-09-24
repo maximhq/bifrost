@@ -80,6 +80,7 @@ Datadog officially supports agentless submission for [LLM Observability](https:/
 | `group_traces_by_session` | `bool` | No | `false` | Group requests sharing the same `x-bf-session-id` into one APM trace (agent mode only). See [Grouping APM Traces by Session](#grouping-apm-traces-by-session) |
 | `disable_content_logging` | `bool` | No | `false` | Drop message content from APM spans and LLM Observability payloads. See [Controlling Exported Content](#controlling-exported-content) |
 | `request_headers` | `string[]` | No | - | Request-header name patterns to capture and attach to spans. Supports exact names and wildcards (`x-custom-*`, `*`) |
+| `metric_dimensions` | `string[]` | No | - | `x-bf-dim-*` dimension names to add as metric tags. See [Dimensions in Metrics](#dimensions-in-metrics) |
 | `agentless` | `bool` | No | `false` | Use agentless mode (direct API) |
 | `api_key` | `string` | Agentless only | - | Datadog API key (supports `env.VAR_NAME`) |
 | `site` | `string` | No | `datadoghq.com` | Datadog site/region |
@@ -405,6 +406,28 @@ For each LLM operation, the plugin sends to LLM Observability:
 - **Tool Calls** - Function/tool call details for agentic workflows
 
 ---
+
+## Dimensions in Metrics
+
+Per-request dimensions sent as `x-bf-dim-*` headers reach Datadog **APM spans automatically** — every span attribute becomes a tag, so `x-bf-dim-team: platform` appears as `team:platform` on the request span with no configuration.
+
+**Metrics are opt-in.** DogStatsD tags are not added unless the dimension is named in `metric_dimensions`:
+
+```json
+{
+  "metric_dimensions": ["team", "environment"]
+}
+```
+
+With that config, `x-bf-dim-team: platform` adds `team:platform` to every `bifrost.*` metric. A dimension not listed is ignored for metrics (it still reaches spans).
+
+<Warning>
+Dimension names and values are operator-defined and unbounded. Each name added here multiplies metric series by that dimension's distinct values, and every new tag key counts toward Datadog's custom-metric cardinality. List only low-cardinality dimensions — `environment` or `region`, not `user_id` or `request_id`.
+</Warning>
+
+<Note>
+Prometheus has the same opt-in model via its `custom_labels` setting. Per-user attribution without the cardinality cost is available from BigQuery columns or Splunk event fields.
+</Note>
 
 ## Metrics Reference
 

@@ -1,0 +1,566 @@
+# Warp Agent Configuration Schemas
+
+WarpConfig:
+  type: object
+  description: |
+    Warp's deployment-wide settings, as returned by the read API.
+
+    The stored provider credential is never included. `api_key_id` names which
+    of the provider's configured keys Warp uses - a reference, not a secret, so
+    the settings form can render "configured" without the key itself ever
+    leaving the server: a dashboard session is a weaker credential than the
+    provider key it would otherwise reveal.
+  properties:
+    configured:
+      type: boolean
+      description: |
+        Whether Warp has everything it needs to answer a question: enabled, with
+        a provider and a model, and an embedding space - embedding provider,
+        embedding model, a positive embedding dimension and a namespace - since
+        semantic search over the logs is part of answering. A credential is
+        deliberately not part of this test, since a provider reached over a
+        trusted network through `base_url` legitimately needs none.
+    enabled:
+      type: boolean
+      description: Whether the operator has switched Warp on.
+    provider:
+      type: string
+      description: The model provider that runs the agent loop, e.g. `openai`.
+      example: openai
+    model:
+      type: string
+      example: gpt-4o
+    base_url:
+      type: string
+      description: |
+        Where Warp reaches its model. Overrides the provider's default endpoint,
+        which is what an empty value means. Required for self-hosted and proxied
+        deployments, empty otherwise.
+
+        Must not contain URL userinfo. This value is stored and returned
+        unredacted, so a credential embedded in it would be readable by anyone
+        who can read the configuration; a URL carrying one is rejected with
+        `400`. Name a configured provider key with `api_key_id` instead.
+      example: https://bifrost.internal.example.com
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys Warp uses. A reference, not a
+        credential, so it round-trips in the clear - there is nothing here worth
+        redacting. Empty when the provider needs no key.
+    max_iterations:
+      type: integer
+      description: |
+        How many times Warp may call tools and feed the results back before it
+        must answer with what it has. Resolved value, so a row that never set
+        one reports the default rather than zero.
+      minimum: 1
+      maximum: 20
+      default: 8
+    request_timeout_seconds:
+      type: integer
+      description: Bound on a single upstream call. Resolved value.
+      default: 120
+    history_retention_days:
+      type: integer
+      description: |
+        How long a saved chat is kept after its last turn. Resolved value, so a
+        row that never set one reports the default rather than zero.
+
+        Deliberately separate from `logs_store.retention_days`: how long request
+        telemetry is worth storing and how long someone's conversations stay
+        theirs to reopen are different questions, and one number cannot answer
+        both without either discarding transcripts early or keeping logs late.
+      minimum: 1
+      default: 30
+    system_prompt_suffix:
+      type: string
+      description: |
+        Appended to Warp's built-in system prompt. Additive only: an operator
+        can teach Warp local naming conventions, but cannot remove the tool-use
+        and scoping instructions the built-in prompt establishes.
+    embedding_provider:
+      type: string
+      description: Provider used to embed gateway conversations for semantic search.
+      example: openai
+    embedding_model:
+      type: string
+      description: Embedding model used for both indexing and queries.
+      example: text-embedding-3-small
+    embedding_api_key_id:
+      type: string
+      description: Optional reference to one of the embedding provider's configured keys.
+    embedding_dimension:
+      type: integer
+      # No positive minimum. A deployment that has never configured Warp gets a
+      # 200 with configured:false and zeroes, deliberately, so the settings page
+      # can render its empty form - and a minimum of 1 made that documented
+      # empty state fail its own schema on every fresh install. The positive
+      # requirement lives on the write side, where WarpConfigInput enforces it
+      # for an enabled config.
+      minimum: 0
+      example: 1536
+    log_vector_store_namespace:
+      type: string
+      default: BifrostWarpLogs
+    semantic_search_threshold:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 1
+      default: 0.8
+    semantic_search_limit:
+      type: integer
+      minimum: 1
+      maximum: 25
+      default: 10
+    vector_store_connected:
+      type: boolean
+      readOnly: true
+      description: Whether the shared runtime vector store is connected.
+  required:
+    - configured
+    - enabled
+    - provider
+    - model
+    - max_iterations
+    - request_timeout_seconds
+    - history_retention_days
+    - embedding_provider
+    - embedding_model
+    - embedding_dimension
+    - log_vector_store_namespace
+    - semantic_search_threshold
+    - semantic_search_limit
+    - vector_store_connected
+
+WarpConfigInput:
+  type: object
+  description: |
+    The write body. Only a config that claims to be usable has to be complete:
+    when `enabled` is false, `provider` and `model` may be empty, so an operator
+    can fill the form in over more than one sitting.
+
+    Switching `enabled` on is what makes the rest required - see the conditional
+    below, which mirrors what the server enforces so a generated client learns
+    the rule from the schema rather than from a rejected request.
+  # Nothing is required unconditionally: a disabled draft is a valid write.
+  if:
+    properties:
+      enabled:
+        const: true
+    required:
+      - enabled
+  then:
+    required:
+      - provider
+      - model
+      - embedding_provider
+      - embedding_model
+      - embedding_dimension
+    properties:
+      # minLength and a non-whitespace pattern on the four identifiers:
+      # `required` alone accepts "", and minLength alone still accepts "   ",
+      # which ValidateConfigInput trims and rejects.
+      # The server rejects a blank provider or model for an enabled config, so a
+      # generated client that accepted one would be sending a payload it had
+      # already validated into a 400. Conditional, so a disabled draft can still
+      # be saved incomplete.
+      provider:
+        minLength: 1
+        pattern: '\S'
+      model:
+        minLength: 1
+        pattern: '\S'
+      embedding_provider:
+        minLength: 1
+        pattern: '\S'
+      embedding_model:
+        minLength: 1
+        pattern: '\S'
+      embedding_dimension:
+        # Any positive size is accepted; the value has to match the embedding
+        # model's own output dimension, which is why no maximum is imposed.
+        minimum: 1
+  properties:
+    enabled:
+      type: boolean
+      default: false
+    provider:
+      type: string
+      description: |
+        Required when `enabled` is true, and must name a provider registered in
+        this Bifrost deployment - the built-in providers plus any custom ones it
+        has registered. There is deliberately no fixed enum: the registry is
+        per-deployment, so an enum would reject valid custom provider names.
+        An unregistered name is rejected with `400`.
+      example: openai
+    model:
+      type: string
+      description: Required when `enabled` is true.
+      example: gpt-4o
+    base_url:
+      type: string
+      # Empty is valid and means "the provider's default endpoint". A non-empty
+      # value must be an absolute http(s) URL whose authority carries no
+      # userinfo, which is what ValidateConfigInput enforces - so a client can
+      # check the payload here instead of learning it from a 400.
+      # No whitespace anywhere: url.Parse rejects a space in the authority, so a
+      # character class that allowed it described something the server refuses.
+      pattern: '^$|^https?://[^/?#@\s]+([/?#]\S*)?$'
+      # A pattern cannot express "parses as a URI" - url.Parse also rejects a
+      # malformed percent escape such as "https://%", which the character class
+      # happily admits. format carries that half of the rule.
+      format: uri-reference
+      description: |
+        Must not contain URL userinfo: this value is stored and returned
+        unredacted, so a URL carrying a credential is rejected with `400`. Use
+        `api_key_id` to name a configured provider key.
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys Warp should use. Empty is valid
+        and common: a provider on a trusted network, or one using ambient IAM
+        credentials, needs no key at all.
+    max_iterations:
+      type: integer
+      minimum: 0
+      maximum: 20
+      description: Zero means "use the default".
+    request_timeout_seconds:
+      type: integer
+      minimum: 0
+      description: Zero means "use the default".
+    history_retention_days:
+      type: integer
+      minimum: 0
+      description: |
+        How long a saved chat is kept after its last turn. Zero means "use the
+        default"; there is no maximum, because the per-owner conversation cap
+        already bounds the table and how long a transcript stays readable is a
+        policy question with no technically correct ceiling.
+    system_prompt_suffix:
+      type: string
+    embedding_provider:
+      type: string
+      description: Required when `enabled` is true.
+    embedding_model:
+      type: string
+      description: Required when `enabled` is true.
+    embedding_api_key_id:
+      type: string
+    embedding_dimension:
+      type: integer
+      minimum: 0
+      description: Must be positive when `enabled` is true.
+    log_vector_store_namespace:
+      type: string
+      default: BifrostWarpLogs
+    semantic_search_threshold:
+      type: number
+      minimum: 0
+      maximum: 1
+      default: 0.8
+      description: |
+        Zero means "use the default". ValidateConfigInput resolves an explicit
+        zero before validating, so the write is accepted; the resolved value on
+        WarpConfig keeps the positive bound.
+    semantic_search_limit:
+      type: integer
+      minimum: 0
+      maximum: 25
+      default: 10
+      description: Zero means "use the default", resolved before validation.
+
+WarpUnavailable:
+  type: object
+  description: |
+    The 503 body. `reason` exists because the causes need different treatment in
+    the dashboard, and a client would otherwise have to pattern-match the
+    message, which breaks silently the first time it is reworded.
+
+    - `not_configured`: fixable by the operator. Stay visible and link to Warp's
+      settings page.
+    - `no_log_store`: the deployment persists no logs, so Warp has nothing to
+      read and there is no in-panel remedy. Hide the launcher.
+    - `no_vector_store`: logs exist but no vector store is connected, so
+      semantic search specifically is unavailable. Everything else Warp does
+      still works, so this is a degraded state rather than an absent one - do
+      not hide the launcher for it.
+  properties:
+    reason:
+      type: string
+      enum:
+        - not_configured
+        - no_log_store
+        - no_vector_store
+    message:
+      type: string
+  required:
+    - reason
+    - message
+
+WarpBackfillRequest:
+  type: object
+  properties:
+    start_time:
+      type: string
+      format: date-time
+    end_time:
+      type: string
+      format: date-time
+  required: [start_time, end_time]
+
+WarpBackfillStatus:
+  type: object
+  properties:
+    id: { type: string }
+    status:
+      type: string
+      enum: [idle, pending, running, completed, failed, cancelled]
+    start_time: { type: string, format: date-time }
+    end_time: { type: string, format: date-time }
+    total: { type: integer, format: int64 }
+    scanned: { type: integer, format: int64 }
+    indexed: { type: integer, format: int64 }
+    skipped: { type: integer, format: int64 }
+    failed: { type: integer, format: int64 }
+    last_error: { type: string }
+    message: { type: string }
+    created_at: { type: string, format: date-time }
+    started_at: { type: string, format: date-time }
+    completed_at: { type: string, format: date-time }
+  required: [status, total, scanned, indexed, skipped, failed]
+
+WarpSessionRequest:
+  type: object
+  properties:
+    messages:
+      type: array
+      minItems: 1
+      description: |
+        The full conversation so far, oldest first. Roles must be `user` or
+        `assistant`; a client-supplied `system` turn is rejected, since it would
+        let a caller displace the instructions that keep Warp from inventing
+        numbers.
+
+        Long threads are trimmed server-side, always keeping the opening turn -
+        it usually carries the framing everything after it depends on.
+      items:
+        type: object
+        properties:
+          role:
+            type: string
+            enum: [user, assistant]
+          content:
+            type: string
+        required: [role, content]
+    conversation_id:
+      type: string
+      maxLength: 36
+      description: |
+        Continues an existing thread in the caller's history. Omit it to start a
+        new one; the new thread's id comes back on the `done` event or in the
+        JSON body.
+    stream:
+      type: boolean
+      default: true
+      description: |
+        Selects the transport, not the behaviour. `true` streams SSE frames;
+        `false` returns one JSON body. Both run the same loop.
+  required:
+    - messages
+
+WarpSessionResponse:
+  type: object
+  description: The non-streaming body - the same events, assembled.
+  properties:
+    answer:
+      type: string
+    tool_calls:
+      type: array
+      description: |
+        What Warp queried, in order. The result payloads are deliberately
+        absent: the model consumed them, and echoing them would multiply the
+        response size for no reader benefit.
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          arguments:
+            type: string
+          duration_ms:
+            type: integer
+          failed:
+            type: boolean
+        # ChatToolCall tags name and duration_ms without omitempty, so both are
+        # on the wire for every call, including a zero duration.
+        required:
+          - name
+          - duration_ms
+    iterations:
+      type: integer
+      description: How many model round trips the answer took.
+    conversation_id:
+      type: string
+      description: The thread this turn was filed under. Absent when Warp history is unavailable.
+    finish_reason:
+      type: string
+    usage:
+      # Referenced rather than restated: clients need the token fields typed, and
+      # a bare object publishes none of them.
+      allOf:
+        - $ref: '../../schemas/inference/usage.yaml#/BifrostLLMUsage'
+      description: |
+        Token usage summed across every model round trip in the request. Warp
+        runs on its own Bifrost instance with no logging plugin - deliberately,
+        so its calls do not pollute the log table it reads - which means this is
+        the only place its spend is reported.
+    error:
+      type: object
+      description: |
+        Present when the request failed. The codes are the closed set the agent
+        emits; both fields are always populated when the object is present.
+      properties:
+        code:
+          type: string
+          enum:
+            - upstream_error
+            - max_iterations
+            - timeout
+            - cancelled
+        message:
+          type: string
+      required:
+        - code
+        - message
+  # Both RunTurn return paths go through fold.result(), which always sets answer
+  # and initialises tool_calls to an empty slice, and none of these three carry
+  # omitempty - so a client can rely on all three being present.
+  required:
+    - answer
+    - tool_calls
+    - iterations
+
+WarpLogIndexStatus:
+  type: object
+  properties:
+    state:
+      type: string
+      description: |
+        `unavailable`: no vector store is connected. `not_configured`: no
+        embedding model is set. `indexing`: a backfill is in flight. `failed`:
+        the last backfill failed. `ready`: semantic search is usable.
+      enum: [unavailable, not_configured, indexing, failed, ready]
+    vector_store_connected:
+      type: boolean
+    embedding_configured:
+      type: boolean
+    backfill:
+      allOf:
+        - $ref: '#/WarpBackfillStatus'
+      description: The in-flight or latest backfill for the current namespace, when one exists.
+  required: [state, vector_store_connected, embedding_configured]
+
+WarpConversation:
+  type: object
+  description: One thread, without its messages.
+  properties:
+    id: { type: string }
+    title:
+      type: string
+      description: The opening question, trimmed.
+    message_count:
+      type: integer
+    total_tokens:
+      type: integer
+      description: Tokens spent on the thread's answers so far.
+    total_cost:
+      type: number
+      description: Cost of the thread's answers so far.
+    created_at: { type: string, format: date-time }
+    updated_at: { type: string, format: date-time }
+  required: [id, title, message_count, total_tokens, total_cost, created_at, updated_at]
+
+WarpConversationList:
+  type: object
+  properties:
+    conversations:
+      type: array
+      items:
+        $ref: '#/WarpConversation'
+  required: [conversations]
+
+WarpConversationDetail:
+  allOf:
+    - $ref: '#/WarpConversation'
+    - type: object
+      properties:
+        messages:
+          type: array
+          description: The newest messages, oldest first.
+          items:
+            $ref: '#/WarpStoredMessage'
+        truncated:
+          type: boolean
+          description: |
+            True when older messages were cut to the transcript bound.
+            `message_count` still reports the thread's real size.
+      required: [messages]
+
+WarpStoredMessage:
+  type: object
+  description: One persisted turn.
+  properties:
+    role:
+      type: string
+      enum: [user, assistant]
+    content: { type: string }
+    tool_calls:
+      type: array
+      items:
+        $ref: '#/WarpStoredToolCall'
+    error: { type: string }
+    finish_reason:
+      type: string
+      description: '`partial` when the answer was given on the last research step without settling.'
+    total_tokens:
+      type: integer
+      description: Tokens spent producing this answer. Absent on user turns.
+    cost:
+      type: number
+      description: Cost of producing this answer. Absent on user turns.
+    created_at: { type: string, format: date-time }
+    question:
+      $ref: '#/WarpStoredQuestion'
+  required: [role, content, created_at]
+
+WarpStoredToolCall:
+  type: object
+  properties:
+    name: { type: string }
+    duration_ms: { type: integer, format: int64 }
+    failed: { type: boolean }
+    text_offset:
+      type: integer
+      description: Unicode code points of the answer that preceded this call.
+  required: [name]
+
+WarpStoredQuestion:
+  type: object
+  description: The clarifying question a turn ended with, when it ended by asking.
+  properties:
+    question: { type: string }
+    options:
+      type: array
+      items:
+        type: object
+        properties:
+          label: { type: string }
+          hint:
+            type: string
+            description: The shorter form sent back to Warp when this option is picked.
+        required: [label]
+    allow_other: { type: boolean }
+    kind: { type: string }
+  required: [question, options, allow_other]

@@ -283,6 +283,32 @@ func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.Bif
 	return openAIWireCostResponse(resp.WithDefaults()), nil
 }
 
+// openAIChatStreamWireConverter frames raw upstream payloads at the HTTP boundary.
+// The provider buffers non-forwarding frames (such as finish and usage) in one
+// RawResponse separated by blank lines. SendEvent adds only one data prefix, so
+// a bundle must be emitted as preformatted SSE with a prefix on every frame.
+// Keep the raw capture itself unchanged for logging and plugins.
+func openAIChatStreamWireConverter(_ *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+	if resp.ExtraFields.Provider == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+		raw := resp.ExtraFields.RawResponse
+		if frames, ok := raw.(string); ok && strings.Contains(frames, "\n\n") {
+			var framed strings.Builder
+			framed.Grow(len(frames) + 8*(strings.Count(frames, "\n\n")+1))
+			for frame := range strings.SplitSeq(frames, "\n\n") {
+				if frame == "" {
+					continue
+				}
+				framed.WriteString("data: ")
+				framed.WriteString(frame)
+				framed.WriteString("\n\n")
+			}
+			return "", framed.String(), nil
+		}
+		return "", raw, nil
+	}
+	return "", openAIWireCostResponse(resp), nil
+}
+
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
 func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -478,14 +504,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		},
 		ResponsesResponseConverter: openAIResponsesWireConverter,
 		StreamConfig: &StreamConfig{
-			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return "", resp.ExtraFields.RawResponse, nil
-					}
-				}
-				return "", openAIWireCostResponse(resp), nil
-			},
+			ChatStreamResponseConverter: openAIChatStreamWireConverter,
 			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
@@ -621,14 +640,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return "", resp.ExtraFields.RawResponse, nil
-						}
-					}
-					return "", openAIWireCostResponse(resp), nil
-				},
+				ChatStreamResponseConverter: openAIChatStreamWireConverter,
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},

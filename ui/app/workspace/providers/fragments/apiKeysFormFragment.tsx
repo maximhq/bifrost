@@ -273,7 +273,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
-			<div className="flex items-start gap-4">
+			<div className="flex items-start gap-4 px-0.5">
 				<div className="flex-1">
 					<FormField
 						control={control}
@@ -347,7 +347,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					control={control}
 					name={`key.value`}
 					render={({ field }) => (
-						<FormItem>
+						<FormItem className="px-0.5">
 							<FormLabel>
 								{isGithubCopilot ? "Copilot API Token" : "API Key"} {isVLLM || isGithubCopilot ? "(Optional)" : ""}
 							</FormLabel>
@@ -375,7 +375,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					control={control}
 					name={`key.models`}
 					render={({ field }) => (
-						<FormItem>
+						<FormItem className="px-0.5">
 							<FormControl>
 								<ModelAccessSelector
 									mode="allow"
@@ -415,7 +415,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					control={control}
 					name={`key.blacklisted_models`}
 					render={({ field }) => (
-						<FormItem data-testid="apikey-blacklisted-models-field">
+						<FormItem data-testid="apikey-blacklisted-models-field" className="px-0.5">
 							<FormControl>
 								<ModelAccessSelector
 									mode="block"
@@ -455,7 +455,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					control={control}
 					name={`key.aliases`}
 					render={({ field }) => (
-						<FormItem data-testid="apikey-deployments-field">
+						<FormItem data-testid="apikey-deployments-field" className="px-0.5">
 							<FormLabel>Deployments (Optional)</FormLabel>
 							<FormDescription>
 								Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, etc.). Expand a row for
@@ -487,7 +487,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			</>
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
-				<div className="space-y-4">
+				<div className="space-y-4 px-0.5">
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>

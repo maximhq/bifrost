@@ -243,3 +243,40 @@ func TestEmulateDecisionRejectsAnswerOutsideStructuredOptions(t *testing.T) {
 		t.Fatalf("expected out-of-options rejection, got %+v", bifrostErr)
 	}
 }
+
+// Bedrock Mantle's OpenAI-compatible surface rejects tool_choice "required" for
+// gpt-oss ("Supported options: [auto]"), so emulation there must send "auto";
+// every other surface, Claude on Mantle included, keeps the forced call.
+func TestEmulateDecisionToolChoicePerSurface(t *testing.T) {
+	args := `{
+		"approve":  {"value": 0.9, "confidence": 0.8},
+		"category": {"choice": "billing", "confidence": 0.7, "probabilities": {"billing": 0.7, "bug": 0.1, "support": 0.1, "other": 0.1}},
+		"urgency":  {"value": 2, "confidence": 0.6, "probabilities": {"0": 0.1, "1": 0.1, "2": 0.8}}
+	}`
+	cases := []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     schemas.ResponsesToolChoiceType
+	}{
+		{schemas.BedrockMantle, "openai.gpt-oss-120b", schemas.ResponsesToolChoiceTypeAuto},
+		{schemas.BedrockMantle, "openai.gpt-oss-20b", schemas.ResponsesToolChoiceTypeAuto},
+		{schemas.BedrockMantle, "anthropic.claude-opus-4-8", schemas.ResponsesToolChoiceTypeRequired},
+		{schemas.OpenAI, "gpt-4o-mini", schemas.ResponsesToolChoiceTypeRequired},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(args)}
+			req := structuredDecisionRequest()
+			req.Provider, req.Model = tc.provider, tc.model
+
+			var b Bifrost
+			if _, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req); bifrostErr != nil {
+				t.Fatalf("unexpected error: %v", bifrostErr)
+			}
+			choice := provider.lastRequest.Params.ToolChoice
+			if choice == nil || choice.ResponsesToolChoiceStr == nil || *choice.ResponsesToolChoiceStr != string(tc.want) {
+				t.Errorf("tool_choice = %+v, want %q", choice, tc.want)
+			}
+		})
+	}
+}

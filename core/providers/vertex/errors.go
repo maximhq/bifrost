@@ -5,12 +5,23 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
+// parseVertexError converts a Vertex error response into a BifrostError, with the retry
+// hint from a google.rpc.RetryInfo error detail or the response headers.
 func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
+	bifrostErr := parseVertexErrorBody(resp)
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
+}
+
+// parseVertexErrorBody builds the error from the response body, with the retry hint when the
+// body carries a google.rpc.RetryInfo detail.
+func parseVertexErrorBody(resp *fasthttp.Response) *schemas.BifrostError {
 	var openAIErr schemas.BifrostError
 	var vertexErr []VertexError
 
@@ -82,10 +93,14 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 				}
 				return createError("Unknown error", "")
 			}
-			return createError(vertexErr.Error.Message, vertexErr.Error.Status)
+			bifrostErr := createError(vertexErr.Error.Message, vertexErr.Error.Status)
+			gemini.ApplyRetryInfo(bifrostErr, vertexErr.Error.Details)
+			return bifrostErr
 		}
 		if len(vertexErr) > 0 {
-			return createError(vertexErr[0].Error.Message, vertexErr[0].Error.Status)
+			bifrostErr := createError(vertexErr[0].Error.Message, vertexErr[0].Error.Status)
+			gemini.ApplyRetryInfo(bifrostErr, vertexErr[0].Error.Details)
+			return bifrostErr
 		}
 		return createError("Unknown error", "")
 	}
@@ -94,11 +109,13 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 	if openAIErr.Error.Type != nil {
 		openAIStatus = *openAIErr.Error.Type
 	}
+	var single VertexError
 	if openAIStatus == "" {
-		var single VertexError
 		if err := sonic.Unmarshal(decodedBody, &single); err == nil {
 			openAIStatus = single.Error.Status
 		}
 	}
-	return createError(openAIErr.Error.Message, openAIStatus)
+	bifrostErr := createError(openAIErr.Error.Message, openAIStatus)
+	gemini.ApplyRetryInfo(bifrostErr, single.Error.Details)
+	return bifrostErr
 }

@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2031,4 +2032,50 @@ func TestModelConfigScopesForIgnoresExtraScopedIDsResolvers(t *testing.T) {
 		assert.NotEqual(t, "batch_only", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
 		assert.NotEqual(t, "with_kind", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
 	}
+}
+
+// With no guard registered - every OSS build - nothing is governed and nothing is refused, whatever
+// is asked about.
+func TestLegacyLimitsGovernedByAnswersNothingWhenUnregistered(t *testing.T) {
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-1")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+}
+
+// A registered guard is asked about the entity in hand, and its answer - a name, nothing, or a
+// failure - is what callers act on.
+func TestLegacyLimitsGovernedByUsesTheRegisteredGuard(t *testing.T) {
+	t.Cleanup(func() { RegisterLegacyLimitGuard(nil) })
+
+	var askedKind, askedID string
+	RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		askedKind, askedID = holderKind, holderID
+		if holderID == "customer-governed" {
+			return "platform-access", nil
+		}
+		if holderID == "customer-unknowable" {
+			return "", errors.New("database unavailable")
+		}
+		return "", nil
+	})
+
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-governed")
+	require.NoError(t, err)
+	assert.Equal(t, "platform-access", governedBy)
+	assert.Equal(t, LegacyLimitHolderCustomer, askedKind)
+	assert.Equal(t, "customer-governed", askedID)
+
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-free")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy, "an entity nothing governs keeps its own budgets")
+
+	_, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-unknowable")
+	require.Error(t, err, "an unanswerable question is an error, not a silent yes")
+
+	// An empty id is nobody: the guard is not asked, so a caller with no owner in hand writes as usual.
+	askedID = ""
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+	assert.Empty(t, askedID, "the guard must not be asked about an entity with no id")
 }

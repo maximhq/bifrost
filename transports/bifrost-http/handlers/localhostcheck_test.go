@@ -96,9 +96,9 @@ func TestPrivateUseRedirectSchemes(t *testing.T) {
 		{"javascript://alert(1)", false},
 		{"data:text/html,<script>alert(1)</script>", false},
 		{"file:///etc/passwd", false},
-		{"http://example.com/cb", false},  // http on non-loopback
-		{"cursor:oauth/callback", false},  // allowlisted scheme but no authority
-		{"cursor:", false},                // scheme only
+		{"http://example.com/cb", false}, // http on non-loopback
+		{"cursor:oauth/callback", false}, // allowlisted scheme but no authority
+		{"cursor:", false},               // scheme only
 		{"", false},
 	}
 	for _, tt := range tests {

@@ -89,6 +89,7 @@ type APIResponse struct {
 	StatusCode int
 	Body       map[string]interface{}
 	RawBody    []byte
+	Headers    http.Header // response headers, e.g. x-request-id for follow-up log lookups
 }
 
 // MakeRequest makes an HTTP request to the Bifrost API
@@ -154,6 +155,7 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 		StatusCode: resp.StatusCode,
 		Body:       responseBody,
 		RawBody:    rawBody,
+		Headers:    resp.Header,
 	}
 }
 
@@ -234,6 +236,8 @@ type CreateVirtualKeyRequest struct {
 	ProviderConfigs   []ProviderConfigRequest `json:"provider_configs,omitempty"`
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"`
+	// DisableContentLogging is tri-state: nil inherits the client setting, true forces content off.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // ProviderConfigRequest represents a provider configuration for a virtual key

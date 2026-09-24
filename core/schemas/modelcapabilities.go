@@ -33,6 +33,7 @@ type ModelCapabilities struct {
 	SupportsCodeExecution           *bool `json:"supports_code_execution,omitempty"`
 	SupportsBashTool                *bool `json:"supports_bash_tool,omitempty"`
 	SupportsTextEditorTool          *bool `json:"supports_text_editor_tool,omitempty"`
+	SupportsComputerToolset         *bool `json:"supports_computer_toolset,omitempty"` // accepts the computer_toolset_20260801 client toolset; absent ⇒ name detection
 	SupportsMemoryTool              *bool `json:"supports_memory_tool,omitempty"`
 	SupportsToolSearch              *bool `json:"supports_tool_search,omitempty"`
 	ToolNameMaxLength               *int  `json:"tool_name_max_length,omitempty"`     // longest tool name the wire accepts; absent falls back to the per-provider default in core/providers/utils (64 for OpenAI-compatible wires and Bedrock, 128 for Anthropic and Gemini)
@@ -53,13 +54,16 @@ type ModelCapabilities struct {
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`
 	SupportsAdvisorTool             *bool `json:"supports_advisor_tool,omitempty"`
 	SupportsInferenceGeo            *bool `json:"supports_inference_geo,omitempty"`
+	SupportsSafeguards              *bool `json:"supports_safeguards,omitempty"` // Claude Code auto-mode classifier (safeguards/safeguard_results), model-gated on Anthropic and cloud surfaces (Sonnet 5, Opus 4.7+, Fable).
 	SupportsPromptCachingScope      *bool `json:"supports_prompt_caching_scope,omitempty"`
 	SupportsExtendedCacheTTL        *bool `json:"supports_extended_cache_ttl,omitempty"`
+	SupportsPromptCacheBreakpoint   *bool `json:"supports_prompt_cache_breakpoint,omitempty"` // accepts OpenAI prompt_cache_breakpoint + prompt_cache_options
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
 	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
+	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are

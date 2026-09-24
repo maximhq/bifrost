@@ -137,6 +137,85 @@ test("a {{var}} in an exploded path or query is found without url.raw", () => {
   }
 });
 
+// Headers resolve templates as well. The session-affinity rows carry the session id their bind
+// request computed in x-bf-session-id, and nothing else on the follow-up names it, so a scan that
+// ignored headers left those pairs unchained: under sub-sharding the follow-up could run without
+// its bind and send the literal template as its session id.
+test("a {{var}} in a header links to its producer", () => {
+  const withHeader = {
+    item: [
+      req("bind", "{}", 'pm.collectionVariables.set("sessionId", "s_1");'),
+      {
+        name: "follow-up",
+        request: {
+          method: "POST",
+          header: [{ key: "x-bf-session-id", value: "{{sessionId}}" }],
+          body: { mode: "raw", raw: "{}" },
+          url: { raw: "http://x/y" },
+        },
+      },
+    ],
+  };
+  const entries = walkRequests(withHeader.item);
+  const byName = Object.fromEntries(entries.map(({ item }) => [item.name, item]));
+  assert.deepStrictEqual(
+    chainedDependencies(byName["follow-up"], buildProducerIndex(entries)).map((d) => d.variable),
+    ["sessionId"]
+  );
+  injectChainedVarGuards(withHeader);
+  assert.match(guardOf(byName["follow-up"]), /sessionId/);
+  assert.strictEqual(guardOf(byName.bind), "");
+});
+
+// The collection format also allows request.header as one raw string. It resolves templates like
+// any other request string, so it is one source, and it must not crash the scan.
+test("a {{var}} in a string-form header links to its producer", () => {
+  const stringHeader = {
+    item: [
+      req("bind", "{}", 'pm.collectionVariables.set("sessionId", "s_1");'),
+      {
+        name: "follow-up",
+        request: {
+          method: "POST",
+          header: "x-bf-session-id: {{sessionId}}\nContent-Type: application/json",
+          body: { mode: "raw", raw: "{}" },
+          url: { raw: "http://x/y" },
+        },
+      },
+    ],
+  };
+  const entries = walkRequests(stringHeader.item);
+  const byName = Object.fromEntries(entries.map(({ item }) => [item.name, item]));
+  assert.deepStrictEqual(
+    chainedDependencies(byName["follow-up"], buildProducerIndex(entries)).map((d) => d.variable),
+    ["sessionId"]
+  );
+});
+
+// A disabled header is never sent, so a template in it must not chain the request: the guard
+// would otherwise skip a request that needs nothing from the producer.
+test("a {{var}} in a disabled header is not a dependency", () => {
+  const disabled = {
+    item: [
+      req("bind", "{}", 'pm.collectionVariables.set("sessionId", "s_1");'),
+      {
+        name: "independent",
+        request: {
+          method: "POST",
+          header: [{ key: "x-bf-session-id", value: "{{sessionId}}", disabled: true }],
+          body: { mode: "raw", raw: "{}" },
+          url: { raw: "http://x/y" },
+        },
+      },
+    ],
+  };
+  const entries = walkRequests(disabled.item);
+  const byName = Object.fromEntries(entries.map(({ item }) => [item.name, item]));
+  assert.deepStrictEqual(chainedDependencies(byName.independent, buildProducerIndex(entries)), []);
+  injectChainedVarGuards(disabled);
+  assert.strictEqual(guardOf(byName.independent), "");
+});
+
 test("each URL consumer is guarded, and the producer is not", () => {
   const c = lifecycle();
   assert.strictEqual(injectChainedVarGuards(c), 3);

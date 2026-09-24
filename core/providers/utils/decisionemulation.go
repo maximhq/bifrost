@@ -1,7 +1,10 @@
 package utils
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -70,7 +73,9 @@ func normalizeProbabilities(name string, probs map[string]float64, allowed map[s
 			return nil, fmt.Errorf("probabilities for %q are missing key %q; every option or level requires a probability", name, k)
 		}
 	}
-	if math.Abs(sum-1) > 0.05 {
+	// Decimal probabilities can land just outside the boundary in binary
+	// floating point (for example, 0.95 differs from 1 by slightly over 0.05).
+	if math.Abs(sum-1) > 0.05+1e-12 {
 		return nil, fmt.Errorf("probabilities for %q sum to %v, expected about 1", name, sum)
 	}
 	normalized := make(map[string]float64, len(probs))
@@ -425,6 +430,131 @@ type emulatedAnswer struct {
 	Probabilities map[string]float64 `json:"probabilities"`
 }
 
+// emulatedAnswerFields are the keys an emulatedAnswer object may carry.
+var emulatedAnswerFields = map[string]bool{"value": true, "choice": true, "confidence": true, "probabilities": true}
+
+// leakedParameterTagPrefix opens Anthropic's XML tool-call parameter syntax.
+const leakedParameterTagPrefix = `<parameter name="`
+
+// recoverFlattenedDecisionArguments rebuilds per-question answer objects from
+// arguments a model flattened into the top level. Claude models on large nested
+// schemas (seen on openrouter/anthropic/claude-opus-4.1) emit
+//
+//	{"category": "<parameter name=\"choice\">billing", "confidence": 1.0, "probabilities": {...}, "urgency": ...}
+//
+// leaking the XML parameter syntax into the first field and repeating the rest
+// as duplicate top-level keys. Keys are read in order with a streaming decoder
+// because a map decode would keep only the last duplicate. Each answer field
+// attaches to the question that precedes it; anything else (a field before any
+// question, a repeated field, an unknown key, a string answer without the tag)
+// fails recovery. The result still goes through the full answer validation, so
+// recovery can only restore answers the model gave, never invent one.
+func recoverFlattenedDecisionArguments(argumentsJSON []byte, questions map[string]schemas.DecisionQuestion) (map[string]emulatedAnswer, bool) {
+	dec := json.NewDecoder(bytes.NewReader(argumentsJSON))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, false
+	}
+	fieldsByQuestion := make(map[string]map[string]json.RawMessage, len(questions))
+	var current map[string]json.RawMessage
+	for dec.More() {
+		tok, err := dec.Token()
+		key, isKey := tok.(string)
+		if err != nil || !isKey {
+			return nil, false
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, false
+		}
+		if _, isQuestion := questions[key]; isQuestion {
+			if _, seen := fieldsByQuestion[key]; seen {
+				return nil, false
+			}
+			if len(value) > 0 && value[0] == '{' {
+				// A well-formed answer object among flattened ones is complete
+				// on its own; no sibling field may attach to it.
+				var fields map[string]json.RawMessage
+				if err := sonic.Unmarshal(value, &fields); err != nil {
+					return nil, false
+				}
+				fieldsByQuestion[key] = fields
+				current = nil
+				continue
+			}
+			field, fieldValue, ok := parseLeakedParameterTag(value)
+			if !ok {
+				return nil, false
+			}
+			current = map[string]json.RawMessage{field: fieldValue}
+			fieldsByQuestion[key] = current
+			continue
+		}
+		if current == nil || !emulatedAnswerFields[key] {
+			return nil, false
+		}
+		if _, repeated := current[key]; repeated {
+			return nil, false
+		}
+		current[key] = value
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+
+	recovered := make(map[string]emulatedAnswer, len(fieldsByQuestion))
+	for name, fields := range fieldsByQuestion {
+		encoded, err := MarshalSorted(fields)
+		if err != nil {
+			return nil, false
+		}
+		var answer emulatedAnswer
+		if err := sonic.Unmarshal(encoded, &answer); err != nil {
+			return nil, false
+		}
+		recovered[name] = answer
+	}
+	return recovered, true
+}
+
+// parseLeakedParameterTag reads a `<parameter name="field">value` string (the
+// closing tag is optional, and surrounding whitespace is ignored) into the
+// answer field it names and that field's JSON value. A choice stays a string;
+// any other value must itself be valid JSON.
+func parseLeakedParameterTag(value json.RawMessage) (string, json.RawMessage, bool) {
+	var s string
+	if err := sonic.Unmarshal(value, &s); err != nil {
+		return "", nil, false
+	}
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, leakedParameterTagPrefix) {
+		return "", nil, false
+	}
+	rest := s[len(leakedParameterTagPrefix):]
+	end := strings.Index(rest, `">`)
+	if end < 0 {
+		return "", nil, false
+	}
+	field := rest[:end]
+	if !emulatedAnswerFields[field] {
+		return "", nil, false
+	}
+	text := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest[end+2:]), "</parameter>"))
+	if field == "choice" {
+		encoded, err := sonic.Marshal(text)
+		if err != nil {
+			return "", nil, false
+		}
+		return field, encoded, true
+	}
+	if !json.Valid([]byte(text)) {
+		return "", nil, false
+	}
+	return field, json.RawMessage(text), true
+}
+
 // ParseDecisionAnswers decodes the tool-call arguments and validates each answer
 // against its question kind, producing the neutral DecisionAnswer map. Every
 // requested question must be answered; a missing, wrong-typed, or out-of-range
@@ -433,7 +563,11 @@ type emulatedAnswer struct {
 func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.DecisionQuestion) (map[string]schemas.DecisionAnswer, error) {
 	var raw map[string]emulatedAnswer
 	if err := sonic.Unmarshal(argumentsJSON, &raw); err != nil {
-		return nil, fmt.Errorf("decision tool-call arguments are not a JSON object: %w", err)
+		recovered, ok := recoverFlattenedDecisionArguments(argumentsJSON, questions)
+		if !ok {
+			return nil, fmt.Errorf("decision tool-call arguments are not a JSON object: %w", err)
+		}
+		raw = recovered
 	}
 
 	answers := make(map[string]schemas.DecisionAnswer, len(questions))
