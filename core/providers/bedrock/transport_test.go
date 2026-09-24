@@ -490,6 +490,50 @@ func TestResponsesStream_MessageStopWithoutMetadataIsError(t *testing.T) {
 	}
 }
 
+func TestResponsesStream_CompleteConverseSucceeds(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		encoder := eventstream.NewEncoder()
+		for _, event := range []struct{ name, payload string }{
+			{"messageStart", `{"role":"assistant"}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"hello"}}`},
+			{"messageStop", `{"stopReason":"end_turn"}`},
+			{"metadata", `{"usage":{"inputTokens":5,"outputTokens":2,"totalTokens":7}}`},
+		} {
+			headers := eventstream.Headers{
+				{Name: ":message-type", Value: eventstream.StringValue("event")},
+				{Name: ":event-type", Value: eventstream.StringValue(event.name)},
+				{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+			}
+			if err := encoder.Encode(w, eventstream.Message{Headers: headers, Payload: []byte(event.payload)}); err != nil {
+				t.Errorf("encode %s: %v", event.name, err)
+				return
+			}
+		}
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	request := testResponsesRequest()
+	request.Model = "eu.anthropic.claude-opus-4-8"
+	stream, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), request)
+	require.Nil(t, bifrostErr)
+
+	var completed *schemas.BifrostResponsesStreamResponse
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		if response := chunk.BifrostResponsesStreamResponse; response != nil && response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completed = response
+		}
+	}
+	require.NotNil(t, completed)
+	require.NotNil(t, completed.Response)
+	require.NotNil(t, completed.Response.Usage)
+	assert.Equal(t, 5, completed.Response.Usage.InputTokens)
+	assert.Equal(t, 2, completed.Response.Usage.OutputTokens)
+}
+
 // assertRetryableExceptionChunk is the shared assertion helper for all three
 // streaming-method retryable-exception tests.
 func assertRetryableExceptionChunk(t *testing.T, streamChan chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError, excType string, expectedStatus int) {
