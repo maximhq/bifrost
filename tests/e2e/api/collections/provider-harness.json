@@ -170073,6 +170073,188 @@
           }
         }
       ]
+    },
+    {
+      "name": "115. Bedrock encrypted reasoning model switch",
+      "description": "Regression for Codex switching from Luna to Terra in one conversation: Bedrock runtime rejects replayed encrypted reasoning with HTTP 400 / validation_error / \"encrypted reasoning was created for a different account or model\". Bifrost must recognize that refusal and retry once without the incompatible encrypted state. The producer captures real Luna output; both consumers independently replay that same history to Terra and require completed responses. A missing encrypted payload fails the producer, and the harness chained-variable guard fails dependent requests. Requires the existing bedrock_openai_ep provider (use_openai_endpoints: true) and access to both models; the default bedrock provider can route through Converse and would miss the reported endpoint.",
+      "item": [
+        {
+          "name": "bedrock_openai_ep/us.openai.gpt-5.6-luna capture encrypted reasoning - Bedrock encrypted reasoning model switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('bedrockModelSwitchHistory');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Luna produces real encrypted reasoning for cross-model replay', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('bedrockModelSwitchHistory', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_openai_ep/us.openai.gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_openai_ep/us.openai.gpt-5.6-terra unary replay - Bedrock encrypted reasoning model switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Terra completes after replaying Luna encrypted reasoning', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'model-switch replay failed: ' + body).to.equal(200);",
+                  "  pm.expect(body.toLowerCase()).to.not.include('encrypted reasoning was created for a different account or model');",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_openai_ep/us.openai.gpt-5.6-terra\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{bedrockModelSwitchHistory}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_openai_ep/us.openai.gpt-5.6-terra streaming replay - Bedrock encrypted reasoning model switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Terra stream completes without replay errors', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming model-switch replay failed: ' + body).to.equal(200);",
+                  "  pm.expect(body.toLowerCase()).to.not.include('encrypted reasoning was created for a different account or model');",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_openai_ep/us.openai.gpt-5.6-terra\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{bedrockModelSwitchHistory}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
