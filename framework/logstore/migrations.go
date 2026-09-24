@@ -2789,6 +2789,22 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_cost",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cost ON logs(cost)",
 	},
+	// The logs list sorts cost and latency DESC NULLS LAST so requests with no
+	// value trail the ones that have it. A plain btree only yields ASC NULLS LAST
+	// or DESC NULLS FIRST, so without these the DESC sort seq-scans every row
+	// that survives the WHERE clause. ASC NULLS LAST is served by idx_logs_cost
+	// and idx_logs_latency. id DESC covers the tiebreak in searchLogs' ORDER BY.
+	// Not partial: the query keeps NULL rows, so a partial index is unusable.
+	{
+		table: "logs",
+		name:  "idx_logs_cost_desc_nulls_last",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cost_desc_nulls_last ON logs(cost DESC NULLS LAST, id DESC)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_latency_desc_nulls_last",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_latency_desc_nulls_last ON logs(latency DESC NULLS LAST, id DESC)",
+	},
 	{
 		table: "logs",
 		name:  "idx_logs_status_timestamp",

@@ -1004,31 +1004,42 @@ func stripNonBillingPayloadBytes(l *Log) {
 	l.ImageGenerationOutput = ""
 }
 
-// searchLogs runs scoped log searches with the requested projection.
-func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions, selectColumns string) (*SearchResult, error) {
-	// Build order clause up front (needed by the data goroutine).
+// logsOrderClause is the ORDER BY searchLogs applies for a sort field and
+// direction. The cost and latency DESC clauses are matched by the
+// idx_logs_*_desc_nulls_last performance indexes on Postgres; change them
+// together or the sort falls back to a full scan.
+func logsOrderClause(sortBy, order string) string {
 	direction := "DESC"
-	if pagination.Order == "asc" {
+	if order == "asc" {
 		direction = "ASC"
 	}
 
-	var orderClause string
-	switch pagination.SortBy {
+	switch sortBy {
 	case "timestamp":
 		// id breaks ties. Timestamps collide readily under load, and callers that
 		// page by (timestamp, offset) - Warp's backfill cursor among them - skip or
 		// repeat rows whenever equal-timestamp rows come back in a different order
-		// between calls. The session query below already orders this way.
-		orderClause = "timestamp " + direction + ", id " + direction
+		// between calls. The session query in searchLogs already orders this way.
+		return "timestamp " + direction + ", id " + direction
+	// cost and latency are NULL on requests that never produced them - a
+	// failure has no cost - and a missing value is not the largest or the
+	// smallest one. Postgres sorts NULLs first under DESC and SQLite under
+	// ASC, so without NULLS LAST "most expensive" led with failed requests.
 	case "latency":
-		orderClause = "latency " + direction + ", id " + direction
+		return "latency " + direction + " NULLS LAST, id " + direction
 	case "tokens":
-		orderClause = "total_tokens " + direction + ", id " + direction
+		return "total_tokens " + direction + ", id " + direction
 	case "cost":
-		orderClause = "cost " + direction + ", id " + direction
+		return "cost " + direction + " NULLS LAST, id " + direction
 	default:
-		orderClause = "timestamp " + direction + ", id " + direction
+		return "timestamp " + direction + ", id " + direction
 	}
+}
+
+// searchLogs runs scoped log searches with the requested projection.
+func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions, selectColumns string) (*SearchResult, error) {
+	// Build order clause up front (needed by the data goroutine).
+	orderClause := logsOrderClause(pagination.SortBy, pagination.Order)
 
 	limit := pagination.Limit
 	if limit <= 0 || limit > defaultMaxSearchLimit {
@@ -4959,10 +4970,12 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 	switch pagination.SortBy {
 	case "timestamp":
 		orderClause = "timestamp " + direction
+	// NULLS LAST for the same reason as searchLogs: a tool call with no
+	// latency or cost recorded is not the extreme of either.
 	case "latency":
-		orderClause = "latency " + direction
+		orderClause = "latency " + direction + " NULLS LAST"
 	case "cost":
-		orderClause = "cost " + direction
+		orderClause = "cost " + direction + " NULLS LAST"
 	default:
 		orderClause = "timestamp " + direction
 	}
