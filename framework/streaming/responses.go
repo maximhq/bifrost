@@ -358,6 +358,10 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
 			}
+
+			// Bare-string actions (e.g. image_generation_call's "generate") live in a
+			// field the Framework's pinned Core release may predate; copy it by name.
+			copyOptionalStringFieldByName(copy.ResponsesToolMessage.Action, original.ResponsesToolMessage.Action, "ResponsesToolCallActionStr")
 		}
 
 		if original.ResponsesToolMessage.Caller != nil {
@@ -502,7 +506,7 @@ func copyRawMessageFieldByName(dst *schemas.ResponsesMessage, src schemas.Respon
 	}
 }
 
-func copyOptionalStringFieldByName(dst *schemas.ResponsesToolMessage, src *schemas.ResponsesToolMessage, fieldName string) {
+func copyOptionalStringFieldByName(dst, src any, fieldName string) {
 	srcField := reflect.ValueOf(src).Elem().FieldByName(fieldName)
 	if !srcField.IsValid() || srcField.IsNil() {
 		return
