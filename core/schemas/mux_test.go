@@ -1797,3 +1797,193 @@ func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
 		})
 	}
 }
+
+func TestToChatRequest_PreservesToolTurnReasoning(t *testing.T) {
+	call := `{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}`
+	tests := []struct {
+		name, input  string
+		wantReason   *string
+		wantMessages int
+		wantDetails  int
+	}{
+		{"summary_blocks", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"alpha"},{"type":"summary_text","text":"beta"}]},` + call + `]`, Ptr("alpha\nbeta"), 1, 2},
+		{"content_preferred_to_summary", `[{"type":"reasoning","content":[{"type":"reasoning_text","text":"full text"}],"summary":[{"type":"summary_text","text":"short summary"}]},` + call + `]`, Ptr("full text"), 1, 2},
+		{"full_text_then_separate_summary", `[{"type":"reasoning","content":[{"type":"reasoning_text","text":"full text"}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"short summary"}]},` + call + `]`, Ptr("full text"), 1, 2},
+		{"separate_summary_then_full_text", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"short summary"}]},{"type":"reasoning","content":[{"type":"reasoning_text","text":"full text"}]},` + call + `]`, Ptr("full text"), 1, 2},
+		{"full_text_across_narration", `[{"type":"reasoning","content":[{"type":"reasoning_text","text":"full text"}]},{"role":"assistant","content":"First."},{"type":"reasoning","summary":[{"type":"summary_text","text":"short summary"}]},{"role":"assistant","content":"Second."},` + call + `]`, Ptr("full text"), 3, 0},
+		{"two_narrations_after_summary", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"alpha"}]},{"role":"assistant","content":"First."},{"role":"assistant","content":"Second."},` + call + `]`, Ptr("alpha"), 3, 0},
+		{"new_tool_turn_uses_its_summary", `[{"type":"reasoning","content":[{"type":"reasoning_text","text":"old full text"}]},{"type":"function_call","call_id":"old_call","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"old_call","output":"done"},{"type":"reasoning","summary":[{"type":"summary_text","text":"new summary"}]},` + call + `]`, Ptr("new summary"), 3, 1},
+		{"encrypted_only_not_plaintext", `[{"type":"reasoning","summary":[],"encrypted_content":"opaque-state"},` + call + `]`, nil, 1, 1},
+		{"encrypted_with_summary_not_full_reasoning", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"short summary"}],"encrypted_content":"opaque-state"},` + call + `]`, nil, 1, 2},
+		{"empty_summary_does_not_invent_reasoning", `[{"type":"reasoning","summary":[]},` + call + `]`, nil, 1, 0},
+		{"reasoning_text_with_narration", `[{"type":"reasoning","content":[{"type":"reasoning_text","text":"alpha"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working."}]},` + call + `]`, Ptr("alpha"), 2, 0},
+		{"more_reasoning_after_narration", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"alpha"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working."}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"beta"}]},` + call + `]`, Ptr("alpha\nbeta"), 2, 1},
+		{"narration_then_terminal_call", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"alpha"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working."}]},` + call + `]`, Ptr("alpha"), 2, 0},
+		{"user_boundary_does_not_borrow_reasoning", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"old reasoning"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Old answer."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"New turn."}]},` + call + `]`, nil, 3, 0},
+		{"tool_result_boundary_does_not_borrow_reasoning", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"old reasoning"}]},{"type":"function_call","call_id":"old_call","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"old_call","output":"old result"},` + call + `]`, nil, 3, 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var input []ResponsesMessage
+			if err := json.Unmarshal([]byte(test.input), &input); err != nil {
+				t.Fatal(err)
+			}
+			original, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := (&BifrostResponsesRequest{Input: input}).ToChatRequest().Input
+			after, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(original) != string(after) {
+				t.Fatal("conversion mutated input")
+			}
+			if len(messages) != test.wantMessages {
+				t.Errorf("messages=%d want=%d", len(messages), test.wantMessages)
+			}
+			found := false
+			for _, message := range messages {
+				if message.ChatAssistantMessage == nil {
+					continue
+				}
+				for _, tool := range message.ToolCalls {
+					if tool.ID == nil || *tool.ID != "call_1" {
+						continue
+					}
+					found = true
+					if !reflect.DeepEqual(message.Reasoning, test.wantReason) {
+						t.Errorf("canonical reasoning=%v want=%v", message.Reasoning, test.wantReason)
+					}
+					if len(message.ReasoningDetails) != test.wantDetails {
+						t.Errorf("details=%d want=%d", len(message.ReasoningDetails), test.wantDetails)
+					}
+					if test.name == "narration_then_terminal_call" && (messages[0].Content == nil || messages[0].Content.ContentStr == nil || *messages[0].Content.ContentStr != "Working.") {
+						t.Error("assistant narration changed")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("tool call disappeared")
+			}
+		})
+	}
+}
+
+func TestToChatRequest_PreservesToolReasoningAcrossTurns(t *testing.T) {
+	const history = `[
+		{"role":"user","content":"Inspect the files, then count them."},
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"Inspect two directories."}]},
+		{"role":"assistant","content":"Inspecting."},
+		{"type":"function_call","call_id":"call_a","name":"list_files","arguments":"{}"},
+		{"type":"function_call","call_id":"call_b","name":"list_files","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_a","output":"a.txt"},
+		{"type":"function_call_output","call_id":"call_b","output":"b.txt"},
+		{"type":"reasoning","content":[{"type":"reasoning_text","text":"Now count the files."}]},
+		{"role":"assistant","content":"Counting."},
+		{"type":"function_call","call_id":"call_c","name":"count_files","arguments":"{}"}
+	]`
+	var input []ResponsesMessage
+	if err := json.Unmarshal([]byte(history), &input); err != nil {
+		t.Fatal(err)
+	}
+	messages := (&BifrostResponsesRequest{Input: input}).ToChatRequest().Input
+	if len(messages) != 7 {
+		t.Fatalf("messages = %d, want original user, narration, calls, tool results and second turn boundaries", len(messages))
+	}
+	for _, test := range []struct {
+		index     int
+		reasoning string
+		calls     []string
+	}{
+		{2, "Inspect two directories.", []string{"call_a", "call_b"}},
+		{6, "Now count the files.", []string{"call_c"}},
+	} {
+		message := messages[test.index]
+		if message.ChatAssistantMessage == nil || message.Reasoning == nil || *message.Reasoning != test.reasoning {
+			t.Fatalf("assistant %d lost or borrowed another turn's reasoning: %+v", test.index, message)
+		}
+		if len(message.ToolCalls) != len(test.calls) {
+			t.Fatalf("assistant %d calls = %d, want %d", test.index, len(message.ToolCalls), len(test.calls))
+		}
+		for index, id := range test.calls {
+			if message.ToolCalls[index].ID == nil || *message.ToolCalls[index].ID != id || message.ToolCalls[index].Function.Arguments != "{}" {
+				t.Fatalf("assistant %d tool %d changed: %+v", test.index, index, message.ToolCalls[index])
+			}
+		}
+	}
+	for index, want := range []string{"call_a", "call_b"} {
+		message := messages[index+3]
+		if message.Role != ChatMessageRoleTool || message.ToolCallID == nil || *message.ToolCallID != want {
+			t.Fatalf("tool result %d changed: %+v", index, message)
+		}
+	}
+}
+
+func TestToChatRequest_LeavesUnrelatedConversionsUnchanged(t *testing.T) {
+	tests := []struct {
+		name, input  string
+		wantMessages int
+	}{
+		{"plain_tool_turn", `[{"role":"assistant","content":"Working."},{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}]`, 2},
+		{"summary_without_tools", `[{"type":"reasoning","summary":[{"type":"summary_text","text":"summary"}]},{"role":"assistant","content":"Answer."}]`, 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var input []ResponsesMessage
+			if err := json.Unmarshal([]byte(test.input), &input); err != nil {
+				t.Fatal(err)
+			}
+			response := (&BifrostResponsesResponse{Output: input}).ToBifrostChatResponse()
+			responseMessages := make([]ChatMessage, 0, len(response.Choices))
+			for _, choice := range response.Choices {
+				if choice.ChatNonStreamResponseChoice == nil || choice.Message == nil {
+					t.Fatal("missing response message")
+				}
+				responseMessages = append(responseMessages, *choice.Message)
+			}
+			for _, path := range []struct {
+				name     string
+				messages []ChatMessage
+			}{
+				{"request", (&BifrostResponsesRequest{Input: input}).ToChatRequest().Input},
+				{"shared converter", ToChatMessages(input)},
+				{"response", responseMessages},
+			} {
+				if len(path.messages) != test.wantMessages {
+					t.Errorf("%s messages=%d want=%d", path.name, len(path.messages), test.wantMessages)
+				}
+				for _, message := range path.messages {
+					if message.ChatAssistantMessage != nil && message.Reasoning != nil {
+						t.Errorf("%s added unrelated reasoning_content=%q", path.name, *message.Reasoning)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestToChatRequest_FullReasoningWinsAcrossAssistantMessages(t *testing.T) {
+	const history = `[
+        {"type":"reasoning","summary":[{"type":"summary_text","text":"short summary"}]},
+        {"type":"function_call","call_id":"call_a","name":"shell","arguments":"{}"},
+        {"role":"assistant","content":"Working."},
+        {"type":"reasoning","content":[{"type":"reasoning_text","text":"complete reasoning"}]},
+        {"type":"function_call","call_id":"call_b","name":"shell","arguments":"{}"}
+    ]`
+	var input []ResponsesMessage
+	if err := json.Unmarshal([]byte(history), &input); err != nil {
+		t.Fatal(err)
+	}
+	messages := (&BifrostResponsesRequest{Input: input}).ToChatRequest().Input
+	if len(messages) != 3 {
+		t.Fatalf("messages=%d want unchanged 3 messages", len(messages))
+	}
+	for _, index := range []int{0, 2} {
+		message := messages[index]
+		if message.ChatAssistantMessage == nil || message.Reasoning == nil || *message.Reasoning != "complete reasoning" {
+			t.Errorf("tool assistant %d did not use the turn's full reasoning", index)
+		}
+	}
+}

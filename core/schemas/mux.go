@@ -1291,6 +1291,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
+	preserveChatToolTurnReasoning(bcr.Input)
 
 	// The Responses API carries its system prompt in the top-level `instructions` field rather than
 	// as a message, and the Chat API has no equivalent - so without this it was dropped outright and
@@ -1364,6 +1365,53 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	bcr.RawRequestBody = brr.RawRequestBody
 
 	return bcr
+}
+
+// preserveChatToolTurnReasoning copies a replayed assistant turn's reasoning onto
+// its tool-call messages without changing message boundaries or response conversion.
+func preserveChatToolTurnReasoning(messages []ChatMessage) {
+	for start := 0; start < len(messages); {
+		if messages[start].Role != ChatMessageRoleAssistant {
+			start++
+			continue
+		}
+		end := start
+		var reasoning, summaries []string
+		hasEncrypted := false
+		for end < len(messages) && messages[end].Role == ChatMessageRoleAssistant {
+			assistant := messages[end].ChatAssistantMessage
+			end++
+			if assistant == nil {
+				continue
+			}
+			if assistant.Reasoning != nil && *assistant.Reasoning != "" {
+				reasoning = append(reasoning, *assistant.Reasoning)
+			}
+			for _, detail := range assistant.ReasoningDetails {
+				switch detail.Type {
+				case BifrostReasoningDetailsTypeSummary:
+					if detail.Summary != nil && *detail.Summary != "" {
+						summaries = append(summaries, *detail.Summary)
+					}
+				case BifrostReasoningDetailsTypeEncrypted:
+					hasEncrypted = hasEncrypted || (detail.Data != nil && *detail.Data != "")
+				}
+			}
+		}
+		// Full reasoning wins across the whole turn. A summary cannot replace encrypted state.
+		if len(reasoning) == 0 && !hasEncrypted {
+			reasoning = summaries
+		}
+		if len(reasoning) > 0 {
+			text := strings.Join(reasoning, "\n")
+			for i := start; i < end; i++ {
+				if assistant := messages[i].ChatAssistantMessage; assistant != nil && len(assistant.ToolCalls) > 0 {
+					assistant.Reasoning = Ptr(text)
+				}
+			}
+		}
+		start = end
+	}
 }
 
 func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {
