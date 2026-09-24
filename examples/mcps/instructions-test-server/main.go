@@ -17,6 +17,10 @@
 // that advertises nothing must contribute no heading at all to the aggregate,
 // rather than an empty section.
 //
+// POST /set-instructions changes what the next handshake returns, without
+// restarting. That is what lets a test cover an upstream editing its
+// instructions in place — the case tools/list cannot observe.
+//
 // Deliberately plain otherwise - no auth, no OAuth, no rejected methods - so
 // nothing but the instructions field distinguishes it from a boring server.
 package main
@@ -25,8 +29,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -36,7 +43,8 @@ const (
 	defaultHTTPPort = "3021"
 	defaultName     = "instructions-test-server"
 
-	httpEndpointPath = "/mcp"
+	httpEndpointPath    = "/mcp"
+	controlEndpointPath = "/set-instructions"
 
 	// The default text is long enough to be recognizable in an aggregate but
 	// short enough not to trip the gateway's per-client cap.
@@ -53,28 +61,78 @@ func main() {
 		instructions = defaultInstructions
 	}
 
+	live := &liveInstructions{}
+	live.set(instructions)
+
 	srv := server.NewStreamableHTTPServer(
-		newMCPServer(name, instructions),
+		newMCPServer(name, live),
 		server.WithEndpointPath(httpEndpointPath),
 	)
 
+	// The MCP endpoint and the control endpoint share one listener so a caller
+	// needs only one port.
+	mux := http.NewServeMux()
+	mux.Handle(httpEndpointPath, srv)
+	mux.HandleFunc(controlEndpointPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		live.set(string(body))
+		log.Printf("instructions changed to %q", string(body))
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	addr := "localhost:" + httpPort
-	log.Printf("MCP server %q listening on http://%s%s", name, addr, httpEndpointPath)
+	log.Printf("MCP server %q listening on http://%s%s (control: %s)", name, addr, httpEndpointPath, controlEndpointPath)
 	if instructions == "" {
 		log.Printf("advertising no instructions")
 	} else {
 		log.Printf("advertising instructions: %q", instructions)
 	}
-	log.Fatal(srv.Start(addr))
+	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// liveInstructions holds the text the next handshake returns. Guarded because the
+// control endpoint and the MCP handler run on different goroutines.
+type liveInstructions struct {
+	mu   sync.RWMutex
+	text string
+}
+
+func (l *liveInstructions) set(s string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.text = s
+}
+
+func (l *liveInstructions) get() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.text
 }
 
 // newMCPServer builds the tool set. describe_policy exists so a caller can see
 // through the tool layer whether the instructions actually reached it: the
 // text it returns is the same text the handshake advertises.
-func newMCPServer(name, instructions string) *server.MCPServer {
+func newMCPServer(name string, live *liveInstructions) *server.MCPServer {
+	// An AfterInitialize hook rather than WithInstructions: that option is fixed at
+	// construction, and this fixture has to be able to change the text at runtime.
+	hooks := &server.Hooks{}
+	hooks.AddAfterInitialize(func(_ context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+		if result != nil {
+			result.Instructions = live.get()
+		}
+	})
+
 	s := server.NewMCPServer(name, "1.0.0",
 		server.WithToolCapabilities(true),
-		server.WithInstructions(instructions),
+		server.WithHooks(hooks),
 	)
 
 	s.AddTool(mcp.NewTool(
@@ -86,7 +144,7 @@ func newMCPServer(name, instructions string) *server.MCPServer {
 	s.AddTool(mcp.NewTool(
 		"describe_policy",
 		mcp.WithDescription("Return this server's own usage policy"),
-	), policyHandler(name, instructions))
+	), policyHandler(name, live))
 
 	return s
 }
@@ -99,9 +157,9 @@ func echoHandler(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolR
 	return jsonResult(map[string]any{"echo": message})
 }
 
-func policyHandler(name, instructions string) server.ToolHandlerFunc {
+func policyHandler(name string, live *liveInstructions) server.ToolHandlerFunc {
 	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return jsonResult(map[string]any{"server": name, "policy": instructions})
+		return jsonResult(map[string]any{"server": name, "policy": live.get()})
 	}
 }
 
