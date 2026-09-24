@@ -160,7 +160,7 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance Governanc
 		chat:             chat,
 		cost:             cost,
 		tools:            buildToolsFor(searcher),
-		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance},
+		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry()},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,
@@ -534,6 +534,9 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// turn, so the redirect does not send the model back to a call it would have
 	// refused as a repeat.
 	calledTool, describedFilterSpace, redirected := false, false, false
+	// chartRedirected is whether a dropped chart block has been reported back
+	// yet. Separate from redirected: a turn can need both, and each is sent once.
+	chartRedirected := false
 	// finalNudged and emptyRetried each bound a one-time message below.
 	finalNudged, emptyRetried := false, false
 	// issued is every Logs link a tool has returned, which is what the links in
@@ -671,7 +674,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		// links, the raw delta reached the dashboard, and its markdown renderer
 		// showed every such link as "[blocked]" until a reload served the saved,
 		// repaired copy. What streams must be what is saved.
-		text := sanitizeAnswerLinks(responsesText(response.Output), issued)
+		// Chart blocks are expanded here for the same reason: the dashboard
+		// draws from the spec render_chart stored, and a block no tool issued
+		// is dropped before anyone sees it.
+		text, droppedCharts := expandChartBlocksCounted(sanitizeAnswerLinks(responsesText(response.Output), issued), a.deps.charts)
 		toolCalls := responsesToolCalls(response.Output)
 
 		// On the final step any text is the answer, tool calls or not: nothing
@@ -688,12 +694,28 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// After a tool has run, a question in prose is still caught by shape.
 			// Held back and sent back once, while a later step can still offer
 			// tools; the text has not been emitted, so the client never sees it.
+			// A chart block render_chart did not produce this turn was dropped -
+			// a chart the model typed itself, numbers and all. Dropped silently,
+			// the answer showed a gap where the chart should be and no reason.
+			// Sent back once, so the model draws it properly or says why not.
+			if droppedCharts > 0 && !finalStep && !chartRedirected && iteration+1 < a.maxIterations {
+				chartRedirected = true
+				nudge := userNudge(droppedChartRedirect)
+				conversation = append(conversation, nudge)
+				conversationTokens += estimateMessageTokens(nudge)
+				continue
+			}
 			if !finalStep && !redirected && iteration+1 < a.maxIterations && (!calledTool || endsWithProseQuestion(text)) {
 				redirected = true
 				redirect := unsupportedReplyRedirect(calledTool, describedFilterSpace)
 				conversation = append(conversation, redirect)
 				conversationTokens += estimateMessageTokens(redirect)
 				continue
+			}
+			// The dropped chart was all the reply said and nothing is left to
+			// redirect it: say so rather than end on an empty answer.
+			if droppedCharts > 0 && strings.TrimSpace(text) == "" {
+				text = droppedChartAnswer
 			}
 			if !emitText(text) {
 				return
@@ -1113,10 +1135,15 @@ func unsupportedReplyRedirect(calledTool, describedFilterSpace bool) schemas.Res
 		if describedFilterSpace {
 			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified. "
 		}
+		// Declining comes first. Listed after ask_user, it read as the last resort,
+		// and correct refusals came back as scope questions.
 		content = "That reply rests on no data: no tool has returned any this turn. " +
+			"If it declines a message outside what you cover - not about this deployment's traffic, nor a virtual key's budget, rate limit or allowed providers and models - give the same reply again, without calling a tool or asking anything. " +
+			"If it declines a question about a virtual key's budget, rate limit or allowed providers and models, call describe_virtual_key instead: those are in scope. " +
+			"If it answers from results already in this conversation, give the same reply again. " +
+			"If it answers a greeting, a thank-you or a question about what you are or can do, give the same reply again. " +
 			"If it asks the person something, call " + AskUserTool + " with options instead - " + options +
-			"If it says the question cannot be answered, investigate with your tools first - query_usage_by with dimension error_type and status error counts every failure by kind, query_logs returns failed rows with error_type, provider and model, and get_request_trace explains one request. " +
-			"If it answers from results already in this conversation, or declines a question outside what your tools cover, give the same reply again."
+			"If it says a question about this deployment cannot be answered, investigate with your tools first - query_usage_by with dimension error_type and status error counts every failure by kind, query_logs returns failed rows with error_type, provider and model, and get_request_trace explains one request."
 	}
 	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
 }
