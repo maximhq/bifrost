@@ -274,9 +274,36 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 }
 
 // withWireModelForAgentAPI returns request unchanged, or a shallow copy with Model
-// rewritten to wireModelForAgentAPI(request.Model) when that differs, so the caller's
+// rewritten to wireModelForAgentAPI(request.Model) or cleared, so the caller's
 // request is never mutated.
+//
+// A `preset` (fast/low/medium/high/xhigh/wide-research — see
+// docs.perplexity.ai/docs/agent-api/presets) can supply its own default model,
+// but only when the wire request carries no `model` field at all: an explicit
+// model, even an empty string, always wins over the preset's default.
+// Live-verified against api.perplexity.ai on 2026-09-24:
+//   - {"model":"perplexity/sonar","preset":"fast",...}        -> model=perplexity/sonar
+//   - {"preset":"fast",...} (no model key)                    -> preset's own default model
+//   - {"model":"","preset":"fast",...}                        -> same as above (empty == absent)
+//
+// Bifrost requires a non-empty Model for internal routing, and bare "sonar" is
+// already the documented generic entry point into the Agent API (see
+// wireModelForAgentAPI). Treat "bare sonar + preset set" as "no explicit model
+// requested" and clear Model so the preset controls it on the wire. A caller who
+// wants a specific model together with a preset still gets it by naming that
+// model explicitly (e.g. "perplexity/sonar-pro", "openai/gpt-5.6-sol", or even
+// the fully-qualified "perplexity/sonar") instead of the bare "sonar" alias.
 func withWireModelForAgentAPI(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request.Model == perplexityAgentSonarModel && request.Params != nil {
+		if presetVal, ok := request.Params.ExtraParams["preset"]; ok {
+			if preset, ok := presetVal.(string); ok && preset != "" {
+				reqCopy := *request
+				reqCopy.Model = ""
+				return &reqCopy
+			}
+		}
+	}
+
 	wireModel := wireModelForAgentAPI(request.Model)
 	if wireModel == request.Model {
 		return request

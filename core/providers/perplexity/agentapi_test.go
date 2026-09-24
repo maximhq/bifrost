@@ -216,6 +216,48 @@ func TestWireModelForAgentAPI(t *testing.T) {
 	}
 }
 
+// TestWithWireModelForAgentAPI covers withWireModelForAgentAPI directly: the bare
+// "sonar" rewrite from TestWireModelForAgentAPI, plus the preset/model precedence
+// added on top of it. Live-verified against api.perplexity.ai on 2026-09-24:
+// sending any `model` value, even an empty string, always wins over a `preset`'s
+// own default model — only a wire request with no `model` field at all lets the
+// preset choose. Bare "sonar" is the documented generic Agent API entry point, so
+// "bare sonar + preset set" is treated as "no explicit model requested" and the
+// wire Model is cleared; any other model string (including a preset combined with
+// an explicit model) is left for the preset/model interplay Perplexity itself
+// already resolves correctly (model wins).
+func TestWithWireModelForAgentAPI(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		hasPreset bool
+		preset    string
+		want      string
+	}{
+		{name: "bare sonar, no preset param at all: rewritten as usual", model: "sonar", want: "perplexity/sonar"},
+		{name: "bare sonar + non-empty preset: model cleared for preset to control", model: "sonar", hasPreset: true, preset: "fast", want: ""},
+		{name: "bare sonar + preset key present but empty value: rewritten as usual", model: "sonar", hasPreset: true, preset: "", want: "perplexity/sonar"},
+		{name: "already-prefixed sonar + preset: explicit model wins", model: "perplexity/sonar", hasPreset: true, preset: "fast", want: "perplexity/sonar"},
+		{name: "third-party model + preset: explicit model wins", model: "openai/gpt-5.6-sol", hasPreset: true, preset: "fast", want: "openai/gpt-5.6-sol"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: tt.model}
+			if tt.hasPreset {
+				req.Params = &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"preset": tt.preset}}
+			}
+			got := withWireModelForAgentAPI(req)
+			if got.Model != tt.want {
+				t.Fatalf("withWireModelForAgentAPI(model=%q, preset=%q).Model = %q, want %q", tt.model, tt.preset, got.Model, tt.want)
+			}
+			// The caller's own request object must not be mutated.
+			if req.Model != tt.model {
+				t.Fatalf("caller's request.Model was mutated: got %q, want %q", req.Model, tt.model)
+			}
+		})
+	}
+}
+
 // TestResponses_AgentAPIRewritesBareSonarModel verifies the fix end to end: a Responses
 // call for the bare "sonar" model reaches Perplexity's /v1/responses (the Agent API
 // alias) as "perplexity/sonar" on the wire. Before this fix, Bifrost forwarded "sonar"
@@ -265,6 +307,72 @@ func TestResponses_AgentAPIRewritesBareSonarModel(t *testing.T) {
 	}
 }
 
+// TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt verifies the fix end to end at
+// the wire level: a Responses call combining the bare "sonar" model with a `preset`
+// reaches Perplexity's /v1/responses with no `model` field at all, so the preset's
+// own default model is used server-side instead of Bifrost's required routing model
+// always winning (live-verified against api.perplexity.ai on 2026-09-24). preset and
+// max_steps still reach the wire via ExtraParams passthrough.
+func TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			http.Error(w, "json error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(minimalResponsesAPIPayload))
+	}))
+	defer server.Close()
+
+	provider := newTestPerplexityProvider(t, server.URL)
+	key := schemas.Key{ID: "test-key", Value: schemas.SecretVar{Val: "test-api-key"}}
+
+	hello := "hi"
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Perplexity,
+		Model:    "sonar",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: &hello},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{
+				"preset":    "fast",
+				"max_steps": float64(3),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.Responses(ctx, key, req); bifrostErr != nil {
+		t.Fatalf("Responses returned error: %v", bifrostErr.Error.Message)
+	}
+
+	// Model has no `omitempty` tag, so it still reaches the wire as an empty
+	// string rather than being dropped from the JSON entirely — live-verified
+	// against api.perplexity.ai that Perplexity treats {"model":""} the same as
+	// no model key at all, so this still lets the preset's own default apply.
+	if got, want := capturedBody["model"], ""; got != want {
+		t.Fatalf("expected model=%q on the wire, got %#v", want, capturedBody["model"])
+	}
+	if got, want := capturedBody["preset"], "fast"; got != want {
+		t.Fatalf("expected preset=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
+	}
+	if got, want := capturedBody["max_steps"], float64(3); got != want {
+		t.Fatalf("expected max_steps=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
+	}
+	// The caller's own request object must not be mutated.
+	if req.Model != "sonar" {
+		t.Fatalf("caller's request.Model was mutated: got %q, want \"sonar\"", req.Model)
+	}
+}
+
 var noopPostHookRunner schemas.PostHookRunner = func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return result, err
 }
@@ -298,14 +406,68 @@ const minimalResponsesAPIStreamCompletedEvent = `data: {"type":"response.complet
 	`"output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[]}]}],` +
 	`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"
 
-// TestResponsesStream_AgentAPIForwardsExtraParamsAndRewritesBareSonarModel is the
+// TestResponsesStream_AgentAPIRewritesBareSonarModel is the streaming counterpart of
+// TestResponses_AgentAPIRewritesBareSonarModel: without a preset, bare "sonar" is
+// still rewritten to "perplexity/sonar" on the wire for the streaming path.
+func TestResponsesStream_AgentAPIRewritesBareSonarModel(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			http.Error(w, "json error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, minimalResponsesAPIStreamCompletedEvent)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestPerplexityProvider(t, server.URL)
+	key := schemas.Key{ID: "test-key", Value: schemas.SecretVar{Val: "test-api-key"}}
+
+	hello := "hi"
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Perplexity,
+		Model:    "sonar",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: &hello},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error synchronously: %v", bifrostErr.Error.Message)
+	}
+	drainStreamWithTimeout(t, stream, 5*time.Second)
+
+	if got, want := capturedBody["model"], "perplexity/sonar"; got != want {
+		t.Fatalf("expected model=%q on the wire, got %v", want, got)
+	}
+	// The caller's own request object must not be mutated.
+	if req.Model != "sonar" {
+		t.Fatalf("caller's request.Model was mutated: got %q, want \"sonar\"", req.Model)
+	}
+}
+
+// TestResponsesStream_AgentAPIOmitsModelForPresetAndForwardsExtraParams is the
 // streaming counterpart of TestResponses_AgentAPIForwardsExtraParamsAutomatically and
-// TestResponses_AgentAPIRewritesBareSonarModel: ResponsesStream must apply the same
-// automatic BifrostContextKeyPassthroughExtraParams and withWireModelForAgentAPI(request)
-// handling as the unary Responses path, since streaming requests reach Perplexity's
-// Agent API through the same /v1/responses endpoint (see openai.HandleOpenAIResponsesStreaming
-// in ResponsesStream above).
-func TestResponsesStream_AgentAPIForwardsExtraParamsAndRewritesBareSonarModel(t *testing.T) {
+// TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt: ResponsesStream must apply the
+// same automatic BifrostContextKeyPassthroughExtraParams and
+// withWireModelForAgentAPI(request) handling (including clearing model when a preset
+// is set on the documented generic "sonar" entry point) as the unary Responses path,
+// since streaming requests reach Perplexity's Agent API through the same /v1/responses
+// endpoint (see openai.HandleOpenAIResponsesStreaming in ResponsesStream above).
+func TestResponsesStream_AgentAPIOmitsModelForPresetAndForwardsExtraParams(t *testing.T) {
 	t.Parallel()
 
 	var capturedBody map[string]interface{}
@@ -358,8 +520,11 @@ func TestResponsesStream_AgentAPIForwardsExtraParamsAndRewritesBareSonarModel(t 
 	if capturedBody == nil {
 		t.Fatal("mock server did not receive a request body")
 	}
-	if got, want := capturedBody["model"], "perplexity/sonar"; got != want {
-		t.Fatalf("expected model=%q on the wire, got %v", want, got)
+	// Model has no `omitempty` tag, so it still reaches the wire as an empty
+	// string rather than being dropped from the JSON entirely — see the comment
+	// on TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt.
+	if got, want := capturedBody["model"], ""; got != want {
+		t.Fatalf("expected model=%q on the wire, got %#v", want, capturedBody["model"])
 	}
 	if got, want := capturedBody["preset"], "fast"; got != want {
 		t.Fatalf("expected preset=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
