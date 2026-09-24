@@ -87,12 +87,14 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		CustomLabels             []string            `json:"custom_labels,omitempty"`
 		MetricsEnabled           *bool               `json:"metrics_enabled,omitempty"`
 		OverheadBreakdownEnabled *bool               `json:"overhead_breakdown_enabled,omitempty"`
+		UserLabelsEnabled        *bool               `json:"user_labels_enabled,omitempty"`
 		PushGateway              *pushGatewayStorage `json:"push_gateway,omitempty"`
 	}
 	storage := configStorage{
 		CustomLabels:             c.CustomLabels,
 		MetricsEnabled:           c.MetricsEnabled,
 		OverheadBreakdownEnabled: c.OverheadBreakdownEnabled,
+		UserLabelsEnabled:        c.UserLabelsEnabled,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
