@@ -818,6 +818,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.GuardrailIntervened = false
 	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
@@ -2762,6 +2763,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			if stopReason != nil {
 				response.StopReason = stopReason
 			}
+			if state.GuardrailIntervened {
+				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+				response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+					Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+				}
+			}
 			response.StopDetails = state.StopDetails
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
@@ -2805,6 +2812,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		if state.StopReason != nil {
 			response.StopReason = state.StopReason
+		}
+		if state.GuardrailIntervened {
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+			}
 		}
 		response.StopDetails = state.StopDetails
 

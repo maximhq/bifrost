@@ -44,3 +44,58 @@ func TestAnthropicChatStreamLatchesBedrockGuardrailIntervention(t *testing.T) {
 		t.Fatalf("finish reason = %q, want %q after a later end_turn delta", got, anthropicBedrockGuardrailIntervenedStopReason)
 	}
 }
+
+func TestAnthropicResponsesStreamMarksBedrockGuardrailInterventionIncomplete(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	start := &AnthropicStreamEvent{
+		Type: AnthropicStreamEventTypeMessageStart,
+		Message: &AnthropicMessageResponse{
+			ID:                           "msg_guardrail_responses",
+			Model:                        "claude-repro",
+			AmazonBedrockGuardrailAction: "INTERVENED",
+		},
+	}
+	if _, bErr, _ := start.ToBifrostResponsesStream(ctx, 0, state); bErr != nil {
+		t.Fatalf("message_start conversion failed: %v", bErr)
+	}
+
+	delta := &AnthropicStreamEvent{
+		Type: AnthropicStreamEventTypeMessageDelta,
+		Delta: &AnthropicStreamDelta{
+			StopReason: schemas.Ptr(AnthropicStopReasonEndTurn),
+		},
+	}
+	deltaResponses, bErr, _ := delta.ToBifrostResponsesStream(ctx, 1, state)
+	if bErr != nil || len(deltaResponses) != 1 || deltaResponses[0].Response == nil {
+		t.Fatalf("message_delta conversion failed: responses=%+v error=%v", deltaResponses, bErr)
+	}
+	assertGuardrailIncompleteResponse(t, deltaResponses[0].Response)
+
+	stopResponses, bErr, _ := (&AnthropicStreamEvent{Type: AnthropicStreamEventTypeMessageStop}).ToBifrostResponsesStream(ctx, 2, state)
+	if bErr != nil || len(stopResponses) != 1 || stopResponses[0].Response == nil {
+		t.Fatalf("message_stop conversion failed: responses=%+v error=%v", stopResponses, bErr)
+	}
+	assertGuardrailIncompleteResponse(t, stopResponses[0].Response)
+
+	state.flush()
+	if state.GuardrailIntervened {
+		t.Fatal("flush left GuardrailIntervened set")
+	}
+}
+
+func assertGuardrailIncompleteResponse(t *testing.T, response *schemas.BifrostResponsesResponse) {
+	t.Helper()
+	if response.StopReason == nil || *response.StopReason != anthropicBedrockGuardrailIntervenedStopReason {
+		t.Fatalf("stop reason = %v, want %q", response.StopReason, anthropicBedrockGuardrailIntervenedStopReason)
+	}
+	if response.Status == nil || *response.Status != schemas.ResponsesResponseStatusIncomplete {
+		t.Fatalf("status = %v, want %q", response.Status, schemas.ResponsesResponseStatusIncomplete)
+	}
+	if response.IncompleteDetails == nil || response.IncompleteDetails.Reason != schemas.ResponsesResponseIncompleteReasonContentFilter {
+		t.Fatalf("incomplete details = %+v, want content_filter", response.IncompleteDetails)
+	}
+}
