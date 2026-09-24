@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,22 +377,36 @@ func TestMetricsEnabledGating(t *testing.T) {
 
 // TestMarshalConfigForStorageKeepsToggles guards the hand-maintained storage whitelist
 // (Config.MarshalForStorage's configStorage struct): a toggle added to Config must be
-// added there too, or it is silently dropped on save and the UI reverts it. Regression
-// test for overhead_breakdown_enabled, which was initially dropped this way.
+// added there too, or it is silently dropped on save and the UI reverts it. Every *bool
+// field on Config is enumerated by reflection so a new toggle cannot escape this test,
+// which is how overhead_breakdown_enabled and later user_labels_enabled both regressed.
 func TestMarshalConfigForStorageKeepsToggles(t *testing.T) {
 	p := newTestPlugin(t)
-	out, err := p.MarshalConfigForStorage(map[string]any{
-		"overhead_breakdown_enabled": true,
-		"metrics_enabled":            false,
-	})
-	if err != nil {
-		t.Fatalf("MarshalConfigForStorage: %v", err)
-	}
-	if v, ok := out["overhead_breakdown_enabled"].(bool); !ok || !v {
-		t.Errorf("overhead_breakdown_enabled dropped by storage: got %v (%T), want true", out["overhead_breakdown_enabled"], out["overhead_breakdown_enabled"])
-	}
-	if v, ok := out["metrics_enabled"].(bool); !ok || v {
-		t.Errorf("metrics_enabled = %v, want false to survive storage round-trip", out["metrics_enabled"])
+	ct := reflect.TypeOf(Config{})
+	for i := 0; i < ct.NumField(); i++ {
+		f := ct.Field(i)
+		if f.Type.Kind() != reflect.Ptr || f.Type.Elem().Kind() != reflect.Bool {
+			continue
+		}
+		key := strings.Split(f.Tag.Get("json"), ",")[0]
+		if key == "" || key == "-" {
+			t.Fatalf("Config.%s is a toggle with no json tag", f.Name)
+		}
+		// Both values: omitempty would hide a dropped field if only false were sent.
+		for _, want := range []bool{true, false} {
+			out, err := p.MarshalConfigForStorage(map[string]any{key: want})
+			if err != nil {
+				t.Fatalf("MarshalConfigForStorage(%s=%v): %v", key, want, err)
+			}
+			got, ok := out[key].(bool)
+			if !ok {
+				t.Errorf("%s dropped by storage whitelist (Config.%s): got %v (%T), want %v", key, f.Name, out[key], out[key], want)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %v after storage round-trip, want %v", key, got, want)
+			}
+		}
 	}
 }
 
