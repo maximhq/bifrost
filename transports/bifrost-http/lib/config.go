@@ -2777,6 +2777,15 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 				break
 			}
 		}
+		if !usesNameRefs {
+			for j := range governanceConfig.RoutingRules[i].ParsedFallbacks {
+				fallback := &governanceConfig.RoutingRules[i].ParsedFallbacks[j]
+				if fallback.ProviderKeyName != nil && strings.TrimSpace(*fallback.ProviderKeyName) != "" {
+					usesNameRefs = true
+					break
+				}
+			}
+		}
 		if usesNameRefs {
 			break
 		}
@@ -2854,6 +2863,31 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 				}
 				target.KeyID = bifrost.Ptr(keyID)
 				target.ProviderKeyName = nil
+			}
+
+			for j := range governanceConfig.RoutingRules[i].ParsedFallbacks {
+				fallback := &governanceConfig.RoutingRules[i].ParsedFallbacks[j]
+				keyName := ""
+				if fallback.ProviderKeyName != nil {
+					keyName = strings.TrimSpace(*fallback.ProviderKeyName)
+				}
+				if keyName == "" {
+					fallback.ProviderKeyName = nil
+					continue
+				}
+				if strings.TrimSpace(fallback.KeyID) != "" {
+					return fmt.Errorf("routing rule %q fallback cannot set key_id together with provider_key_name", governanceConfig.RoutingRules[i].ID)
+				}
+				if strings.TrimSpace(string(fallback.Provider)) == "" {
+					return fmt.Errorf("routing rule %q fallback provider_key_name requires provider to be set", governanceConfig.RoutingRules[i].ID)
+				}
+
+				keyID, err := resolveProviderKeyIDByProviderAndName(string(fallback.Provider), keyName)
+				if err != nil {
+					return fmt.Errorf("routing rule %q fallback provider_key_name resolution failed: %w", governanceConfig.RoutingRules[i].ID, err)
+				}
+				fallback.KeyID = keyID
+				fallback.ProviderKeyName = nil
 			}
 		}
 

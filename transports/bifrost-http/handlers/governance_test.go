@@ -3334,23 +3334,33 @@ func TestUpdateProviderGovernance_BudgetMutualExclusion(t *testing.T) {
 
 func TestValidateRoutingFallbacks(t *testing.T) {
 
+	// Inputs are raw JSON so each case also covers RoutingFallback decoding, which is where the
+	// legacy "provider/model" string is split and an unknown prefix collapses to an empty provider.
 	tests := []struct {
 		name    string
-		fbs     []string
+		fbsJSON string
 		wantErr bool
 	}{
-		{name: "nil", fbs: nil, wantErr: false},
-		{name: "empty", fbs: []string{}, wantErr: false},
-		{name: "provider model", fbs: []string{"openai/gpt-4o"}, wantErr: false},
-		{name: "provider slash incoming model", fbs: []string{"azure/"}, wantErr: false},
-		{name: "bare known provider name rejected", fbs: []string{"openrouter"}, wantErr: true},
-		{name: "bare model rejected", fbs: []string{"gpt-4o"}, wantErr: true},
-		{name: "empty element", fbs: []string{"openai/gpt-4o", ""}, wantErr: true},
-		{name: "huggingface namespace not a provider prefix", fbs: []string{"meta-llama/Llama-3.1-8B"}, wantErr: true},
+		{name: "nil", fbsJSON: `null`, wantErr: false},
+		{name: "empty", fbsJSON: `[]`, wantErr: false},
+		{name: "provider model", fbsJSON: `["openai/gpt-4o"]`, wantErr: false},
+		{name: "provider slash incoming model", fbsJSON: `["azure/"]`, wantErr: false},
+		{name: "bare known provider name rejected", fbsJSON: `["openrouter"]`, wantErr: true},
+		{name: "bare model rejected", fbsJSON: `["gpt-4o"]`, wantErr: true},
+		{name: "empty element", fbsJSON: `["openai/gpt-4o",""]`, wantErr: true},
+		{name: "huggingface namespace not a provider prefix", fbsJSON: `["meta-llama/Llama-3.1-8B"]`, wantErr: true},
+		{name: "object with pinned key", fbsJSON: `[{"provider":"azure","model":"gpt-4o","key_id":"k1"}]`, wantErr: false},
+		{name: "object pinning a key for the incoming model", fbsJSON: `[{"provider":"azure","key_id":"k1"}]`, wantErr: false},
+		{name: "key_id without provider rejected", fbsJSON: `[{"key_id":"k1"}]`, wantErr: true},
+		{name: "provider_key_name rejected over the API", fbsJSON: `[{"provider":"azure","provider_key_name":"prod"}]`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateRoutingFallbacks(tt.fbs)
+			var fbs []configstoreTables.RoutingFallback
+			if err := json.Unmarshal([]byte(tt.fbsJSON), &fbs); err != nil {
+				t.Fatalf("failed to decode fallbacks: %v", err)
+			}
+			err := validateRoutingFallbacks(fbs)
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
 			}

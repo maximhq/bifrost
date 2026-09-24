@@ -259,7 +259,7 @@ Routing rules dynamically select the provider and model for each request based o
 | `scope` | No | `"global"` (default), `"team"`, `"customer"`, `"virtual_key"` |
 | `scope_id` | Conditional | Required when `scope` is not `"global"` |
 | `chain_rule` | No | If `true`, re-evaluates the chain after this rule matches |
-| `fallbacks` | No | Ordered fallback provider list if primary target fails |
+| `fallbacks` | No | Ordered fallback list if the primary target fails. See [Fallback Fields](#fallback-fields) |
 
 ### Target Fields
 
@@ -268,7 +268,26 @@ Routing rules dynamically select the provider and model for each request based o
 | `weight` | Yes | Fraction of traffic (all weights in a rule must sum to `1.0`) |
 | `provider` | No | Target provider. Omit to keep the incoming request's provider |
 | `model` | No | Target model. Omit to keep the incoming request's model |
-| `key_id` | No | Pin a specific API key by name |
+| `provider_key_name` | No | Pin a specific provider key by name. Requires `provider`, and is resolved to an internal key ID at load time |
+
+### Fallback Fields
+
+Each entry is either the string `"provider/model"` (use `"provider/"` to keep the incoming model), or an object when it needs to pin a key:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `provider` | Yes | Fallback provider |
+| `model` | No | Fallback model. Omit to keep the incoming request's model |
+| `provider_key_name` | No | Pin a specific provider key by name, resolved to an internal key ID at load time. Omit for load-balanced key selection |
+
+```json
+"fallbacks": [
+  "anthropic/claude-sonnet-4-5",
+  { "provider": "vertex", "provider_key_name": "vertex-prod" }
+]
+```
+
+A fallback whose pinned key is missing from that provider's pool is skipped, and the chain moves to the next entry.
 
 ---
 
@@ -461,7 +480,7 @@ Budgets and rate limits inside a project are declared without ids.
         "name": "Fallback on error",
         "cel_expression": "true",
         "targets": [{ "provider": "openai", "weight": 1.0 }],
-        "fallbacks": ["anthropic"]
+        "fallbacks": ["anthropic/"]
       }
     ]
   },
