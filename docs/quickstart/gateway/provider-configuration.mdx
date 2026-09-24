@@ -680,7 +680,8 @@ curl --location 'http://localhost:8080/api/providers' \
     "network_config": {
         "extra_headers": {
             "x-custom-org": "my-organization",
-            "x-environment": "production"
+            "x-environment": "production",
+            "x-client-secret": "env.UPSTREAM_CLIENT_SECRET"
         }
     }
 }'
@@ -705,7 +706,8 @@ curl --location 'http://localhost:8080/api/providers' \
       "network_config": {
         "extra_headers": {
           "x-custom-org": "my-organization",
-          "x-environment": "production"
+          "x-environment": "production",
+          "x-client-secret": "env.UPSTREAM_CLIENT_SECRET"
         }
       }
     }
@@ -716,6 +718,8 @@ curl --location 'http://localhost:8080/api/providers' \
 </Tab>
 
 </Tabs>
+
+Header values can reference a secret instead of holding it: use `env.VAR_NAME` for an environment variable or `vault.path/to/secret` for a configured vault. Every literal header value, whatever the header name, is returned as `<REDACTED>` in API responses and the Web UI once saved; secret references are shown as written. To keep a stored value when updating the provider, send the header back under the same name with the masked value you received. Changing the value, or removing the header, replaces or clears it. A masked value sent under a new or renamed header name is rejected with `400`, since there is no stored value to restore, so re-enter the value when renaming a header.
 
 #### Dynamic Headers (Per Request)
 

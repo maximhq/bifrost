@@ -5743,7 +5743,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. Values may be env.VAR_NAME or vault.path references, and are masked in API responses."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -5824,7 +5824,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. Values may be env.VAR_NAME or vault.path references, and are masked in API responses."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
