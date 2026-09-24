@@ -49,10 +49,10 @@ func GetBoolAttr(attrs map[string]any, key string) bool {
 	return v
 }
 
-// ContentLoggingDisabledForTrace reports whether the request behind this trace was made with a
-// virtual key that turned content logging off (AttrBifrostContentLoggingDisabled on the root
-// span). Every connector ORs this into its own disable_content_logging: the key can only tighten
-// what a connector exports, never loosen it. Nil-safe, so a connector can call it on any trace.
+// ContentLoggingDisabledForTrace reports whether the content-logging layers of the request behind
+// this trace resolved to off (AttrBifrostContentLoggingDisabled true on the root span). Every
+// connector ORs this into its own disable_content_logging: the layers can only tighten what a
+// connector exports, never loosen it. Nil-safe, so a connector can call it on any trace.
 func ContentLoggingDisabledForTrace(t *Trace) bool {
 	if t == nil || t.RootSpan == nil {
 		return false
@@ -1148,10 +1148,12 @@ const (
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
 
-	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's virtual
-	// key turned content logging off. Connectors read it through ContentLoggingDisabledForTrace and
-	// strip content the way their own disable_content_logging would; it is never set to false, so a
-	// key that keeps content on cannot loosen a connector's own setting.
+	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's
+	// content-logging layers resolve to off (see StampContentLoggingDecision). Connectors read it
+	// through ContentLoggingDisabledForTrace and strip content the way their own
+	// disable_content_logging would. Only true acts: it is written false solely to undo an earlier
+	// true when a higher layer turns content back on, so it can never loosen a connector's own
+	// setting.
 	AttrBifrostContentLoggingDisabled = "bifrost.content_logging.disabled"
 
 	AttrBifrostProviderName        = "bifrost.provider.name"

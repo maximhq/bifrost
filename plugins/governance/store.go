@@ -1340,18 +1340,14 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 // Only a decision is stamped: a key that inherits leaves the context alone, so the plugin falls
 // through to the client setting instead of reading a false it would have to treat as a choice.
 //
-// A key that turns content off is also marked on the request's root span. Observability
-// connectors are handed the finished trace without the request context, so the span is the only
-// place they can read the decision from. The mark is one-directional: a key that keeps content on
-// says nothing to a connector, whose own disable_content_logging stays in charge.
+// The stamp goes through schemas.StampContentLoggingDecision, which also keeps the request's root
+// span marked when the layers resolve to off: observability connectors are handed the finished
+// trace without the request context, so the span is the only place they can read the decision from.
 func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
 	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
 		return
 	}
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *virtualKey.DisableContentLogging)
-	if *virtualKey.DisableContentLogging {
-		ctx.SetTraceAttribute(schemas.AttrBifrostContentLoggingDisabled, true)
-	}
+	schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyGovernanceDisableContentLogging, *virtualKey.DisableContentLogging)
 }
 
 // recordVirtualKeyIdentity completes the request's identity with what the presented key resolved to:
