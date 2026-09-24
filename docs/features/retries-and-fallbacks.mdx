@@ -95,6 +95,10 @@ The same hint is recorded per attempt on the `attempt_trail` as `retry_after_ms`
 
 The hint is informational: Bifrost's own retries still wait according to the [backoff formula](#backoff-formula) below.
 
+<Note>
+In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing#how-long-a-key-is-held) uses the hint as how long to hold the refused key out of rotation for later requests, never less than 10 seconds.
+</Note>
+
 ### Backoff formula
 
 Backoff applies to **same-key retries** (transient server 5xx / network errors) and to **`429` rate-limit rotations** (since account-level quotas can be shared across keys). It is skipped only when rotating away from a **permanent per-key failure** (`credential`, `quota`, `model_access`, `model_gone`) to a genuinely different key: a dead key gains nothing from waiting.
@@ -488,7 +492,7 @@ Primary: a premium model for quality. Fallback: a cost-effective alternative. Go
 
 **Scenario 5: Revoked credential**
 
-OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff, and no `max_retries` needed), which succeeds. Future requests will retry key 1 again: the dead-key set is per-request, not persistent. If every configured key was revoked and the retry budget outlasted the pool, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the *caller's* Bifrost API key is the problem).
+OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff, and no `max_retries` needed), which succeeds. Future requests will retry key 1 again: the dead-key set is per-request, not persistent. In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing#held-keys) remembers the refusal instead: key 1 is held out of rotation on every node, and one request checks it again after a wait. If every configured key was revoked and the retry budget outlasted the pool, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the *caller's* Bifrost API key is the problem).
 
 **Scenario 6: Deployment missing on one key**
 

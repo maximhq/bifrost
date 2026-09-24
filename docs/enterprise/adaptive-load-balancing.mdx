@@ -15,7 +15,7 @@ This page focuses on the technical implementation and performance characteristic
 ## Overview
 
 <Frame>
-  <img src="/media/ui-load-balancing-dashboard.png" alt="Adaptive Load Balancing Dashboard" />
+  <img src="/media/adaptive-load-balancing/ui-load-balancing-dashboard.png" alt="Adaptive Load Balancing Dashboard" />
 </Frame>
 
 **Adaptive Load Balancing** in Bifrost Enterprise automatically optimizes traffic distribution across providers and keys based on real-time performance metrics. The system operates at **two levels** - provider selection (direction) and key selection (route) - continuously monitoring error rates, latency, and throughput to dynamically adjust weights, ensuring optimal performance and reliability.
@@ -25,6 +25,7 @@ This page focuses on the technical implementation and performance characteristic
 | **Dynamic Weight Adjustment** | Automatically adjusts key weights based on performance metrics |
 | **Real-time Performance Monitoring** | Tracks error rates, latency, and success rates per model-key combination |
 | **Cross-Node Coordination** | Nodes share rate-limit (TPM) signals so an overloaded key is backed off fleet-wide within a region |
+| **Held Keys** | A key the provider refuses (rejected credential, exhausted quota, no model access, retired model, blocked region, rate limit) is held out of rotation on every node, then checked again by a single request. See [Held Keys](#held-keys) |
 | **Circuit Breaker Integration** | Temporarily removes poorly performing keys from rotation |
 | **Fast Recovery** | Recovering routes are favored so they climb back quickly after transient failures |
 
@@ -43,40 +44,9 @@ The load balancing system operates at two levels:
 
 This two-tier approach enables both macro-level provider selection and micro-level key optimization.
 
-```mermaid
-graph TB
-    Request["Incoming Request<br/>model: gpt-4"]
-
-    subgraph DirectionSelection["Direction Selection"]
-        DS["Provider Selector<br/>Score-based selection"]
-        DP1["OpenAI<br/>score: 0.92"]
-        DP2["Azure<br/>score: 0.85"]
-        DP3["Anthropic<br/>score: 0.78"]
-    end
-
-    subgraph RouteSelection["Route Selection"]
-        RS["Key Selector<br/>Weighted random"]
-        K1["Key 1<br/>weight: 850"]
-        K2["Key 2<br/>weight: 620"]
-        K3["Key 3<br/>weight: 45"]
-    end
-
-    subgraph Tracker["Metrics Tracker"]
-        T["Real-time Metrics<br/>5-second recomputation"]
-        M1["Error Rate"]
-        M2["Latency Score"]
-        M3["Utilization"]
-    end
-
-    Request --> DS
-    DS --> DP1 & DP2 & DP3
-    DP1 --> RS
-    RS --> K1 & K2 & K3
-    K1 --> Response["API Response"]
-    Response --> T
-    T --> M1 & M2 & M3
-    M1 & M2 & M3 -.->|"Update Weights"| DS & RS
-```
+<Frame>
+  <img src="/media/adaptive-load-balancing/diagram-load-balancing-architecture.png" alt="A request picks a provider by score, then a key by weighted random choice; the response feeds the metrics tracker, which updates both sets of weights every 5 seconds" />
+</Frame>
 
 ---
 
@@ -98,51 +68,29 @@ score maps to a weight on a fixed scale - lower penalties mean higher weight, wh
 means more traffic - with a floor so no route is ever fully starved while it has a
 chance to recover.
 
-```mermaid
-flowchart LR
-    subgraph Inputs["Raw Metrics"]
-        E["Error Rate"]
-        L["Latency"]
-        U["Utilization"]
-    end
-
-    subgraph Scoring["Health-aware Scoring"]
-        EP["Error Penalty<br/>primary"]
-        LP["Latency Score<br/>peer + baseline"]
-        US["Utilization<br/>balancing"]
-    end
-
-    subgraph Output["Final Weight"]
-        NS["Combined Score"]
-        FW["Route Weight"]
-    end
-
-    E --> EP
-    L --> LP
-    U --> US
-    EP & LP & US --> NS
-    NS --> FW
-```
+<Frame>
+  <img src="/media/adaptive-load-balancing/diagram-load-balancing-weight-calculation.png" alt="Error rate, latency and utilization become an error penalty, a latency score and a utilization term, which combine into one score that sets the route weight" />
+</Frame>
 
 ---
 
 ## Key Capabilities
 
-1. **Automatic Route Health Management**: Routes automatically transition between 4 states (Healthy, Degraded, Failed, Recovering) based on error rates and latency. No manual intervention required when a route fails or recovers.
+1. **Automatic Route Health Management**: Routes automatically transition between 4 states (Healthy, Degraded, Failed, Recovering) based on error rates and latency. A provider refusal that names the key fails its route at once, without waiting for the error rate to build (see [Held Keys](#held-keys)). No manual intervention required when a route fails or recovers.
 
 2. **Fair Traffic Distribution**: The system prevents any single route from being overloaded while still favoring better performers. Low-weight routes always get minimum traffic to prove recovery.
 
 3. **Real-time Dashboard**: Provides visibility into weight distribution, performance metrics (error rates, latency), state transitions, and actual vs expected traffic per route.
 
 <Frame>
-  <img src="/media/ui-load-balancing-metrics.png" alt="Adaptive Load Balancing Dashboard" />
+  <img src="/media/adaptive-load-balancing/ui-load-balancing-metrics.png" alt="Adaptive Load Balancing Dashboard" />
 </Frame>
 
 4. **Multi-Factor Scoring**: Routes are scored from error rate (the primary, time-decayed signal), a token-aware latency score (comparing a route both to its peers and to its own recent baseline), and fair-share utilization. Recovering routes are scored to favor quick, safe recovery.
 
 5. **Smart Key Selection**: Traffic is distributed probabilistically - higher-weight keys get proportionally more requests, but lower-weight keys keep a small share so potentially-recovered routes are continually re-probed instead of always picking the single best route.
 
-6. **Performance Thresholds**: Pre-tuned error-rate and latency triggers drive state transitions - a route is marked Degraded at the first signs of trouble, Failed on sustained errors or a rate-limit hit, and promoted back to Healthy only after it has proven itself on live traffic.
+6. **Performance Thresholds**: Pre-tuned error-rate and latency triggers drive state transitions - a route is marked Degraded at the first signs of trouble, Failed on sustained errors, a rate-limit hit, or a provider refusal of the key, and promoted back to Healthy only after it has proven itself on live traffic.
 
 <Tip>
 The system is designed to be self-healing: it penalizes failing routes quickly, but also decays those penalties rapidly once issues are fixed, so a recovered route returns to full traffic within seconds.
@@ -150,14 +98,161 @@ The system is designed to be self-healing: it penalizes failing routes quickly, 
 
 ---
 
+## Held Keys
+
+Error rates describe how a key is doing. Some provider answers say more than that: the key is rejected, its account is out of credit, it cannot reach the model, the model was retired, the provider refuses the region, or it is rate limited. These answers repeat on every request until something changes, so waiting for an error rate to climb only costs requests.
+
+When a provider gives one of these answers, the load balancer **holds** the key. A held key is out of rotation, and its route reads **Failed** on the dashboard with the provider's reason. After a wait, one request is let through to check whether the key serves again. The failure classes come from [how Bifrost classifies failures](/features/retries-and-fallbacks#how-failures-are-classified).
+
+### What holds a key
+
+| Reason (dashboard) | `failure_class` | What is held | Longest wait without a provider hint |
+|--------------------|-----------------|--------------|--------------------------------------|
+| key rejected | `credential` | The whole key, for every model | 15 minutes |
+| out of quota | `quota` | The model. The whole key when the provider states the quota at the account level (a `402`, OpenAI `insufficient_quota`, Anthropic "credit balance") | 5 minutes |
+| no model access | `model_access` | The model | 5 minutes |
+| model retired | `model_gone` | The model | 30 minutes |
+| region blocked | `region_blocked` | The model | 15 minutes |
+| rate limited | `rate_limit` | The model | 2 minutes |
+
+Transient failures (network errors, `5xx`), request errors (`caller_fault`) and unrecognised failures (`unknown`) never hold a key: none of them says anything about the key.
+
+A hold on one model leaves the key serving its other models. A key that cannot reach `gpt-4o` on one Azure resource keeps serving `gpt-4o-mini` there.
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/diagram-held-key-scope.png" alt="A rejected credential holds every model of the key, while a missing deployment holds only the one model" />
+</Frame>
+
+### How long a key is held
+
+- **When the provider says how long to wait**, that wait is used, whatever the reason. It is read from the same headers and error details as [provider retry hints](/features/retries-and-fallbacks#provider-retry-hints), and never shorter than 10 seconds, so a provider that answers with a sub-second wait does not get a refused call every second.
+- **Otherwise the wait climbs a ladder.** It starts at 30 seconds and doubles after each failed check, up to the cap for the reason in the table above.
+- Every wait varies by 10 percent either way, so the nodes of a cluster do not all check the same key in the same second.
+- Refusals from requests that were already in flight when the key was held do not lengthen the wait. Only a failed check moves the key up the ladder.
+- A key that is held again for the same reason within 10 minutes of being released resumes the rung it was on, so a key that keeps flapping does not restart at 30 seconds each time.
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/diagram-held-key-wait-ladder.png" alt="The wait doubles from 30 seconds after each failed check up to the cap for its reason, while a provider-stated wait is used as given with a 10 second floor" />
+</Frame>
+
+### Checking a held key again
+
+When the wait is over, the key is **due**. The next request that could use the key is let through to it, and only that one request per node: every other request keeps skipping the key until the answer comes back.
+
+| The check's answer | What happens |
+|--------------------|--------------|
+| The key serves | The hold is released and the route goes to **Recovering**, so the key earns its traffic back through the normal ramp instead of returning at full weight |
+| The same refusal | The key is held again on the next rung of the ladder, or for the provider's new wait |
+| An answer that can only come after the question was settled in the key's favour, such as a `429` from a key that was held for a rejected credential | The hold is released. The new answer is recorded on its own if it is itself a refusal |
+| A network error or a `5xx` | The key is held again on the same rung: the answer says nothing about the key |
+
+A check that never reports back, such as a cancelled request, frees the slot after 5 minutes. Any other request that reaches the key, for example one pinned to it, settles the hold the same way a check does.
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/diagram-held-key-lifecycle.png" alt="A refused key is held, becomes due when the wait ends, is checked by one request, and is either released to Recovering or held again for longer" />
+</Frame>
+
+### When every key is held
+
+- **Key selection** skips held keys. When every key of the provider that could serve the request is held, the request is sent anyway rather than refused inside Bifrost, and its answer counts as a check.
+- **Provider selection** treats a provider as **Failed** for a model only when every configured key that can serve that model is failed. A key that has never been sent a request keeps the provider in rotation, since it is exactly the key selection would try next.
+- A provider held on every key is left out of selection. When one of its keys is due, one request is sent to that provider first, with the healthy providers as its fallbacks, so a key that is still refused costs one attempt and the request is served by the fallback. A request pinned to a provider is used as the check only when **Re-route failed providers** is on.
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/diagram-held-key-direction-recheck.png" alt="A provider held on every key receives one checking request first, with the healthy providers behind it as fallbacks" />
+</Frame>
+
+The route circuit breaker still moves a Failed route to Recovering after its own short timer. A held key is not released by that timer: it stays out until a check, an operator, or a key change releases it.
+
+### Releasing held keys
+
+Besides a check that succeeds, a hold is released when:
+
+- **An operator releases it**, from the dashboard or the API below. The key goes to **Recovering** and starts again from the bottom of the ladder if the provider refuses it again.
+- **The key is edited**, or the vault rotates it. Every hold on the key is released on every node, for every model, since the provider's answers applied to the key as it was. A request that was already in flight with the old key cannot hold the edited one.
+- **The key or its provider is deleted.** Its holds and its load balancing metrics are removed on every node.
+
+The **Held Keys** card on the adaptive routing page lists every hold with the provider's reason, its own words, when it started, and when the next check is due. **Release** returns one key, or one model of a key; **Release all** returns every held key.
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/ui-load-balancing-held-keys.png" alt="Held Keys card listing each held key with its provider, model, reason, the provider's message, when it was held, the next check and its status" />
+</Frame>
+
+The status badge of a held route names the reason when you hover it:
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/ui-load-balancing-held-key-reason.png" alt="A Failed route status badge with a tooltip naming the provider's reason for the hold" />
+</Frame>
+
+Releasing requires the **AdaptiveRouter** resource with the **Update** operation (see [RBAC](/enterprise/rbac)). To release through the API:
+
+```bash
+# Release one model of a key
+curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "azure", "key_id": "key-uuid", "model": "gpt-4o"}'
+
+# Release every model of a key
+curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "openai", "key_id": "key-uuid"}'
+
+# Release every held key
+curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear
+```
+
+| Field | Effect |
+|-------|--------|
+| `provider` | Limits the release to one provider. Omit to match any provider |
+| `key_id` | Limits the release to one key. Omit, with the other fields, to release everything |
+| `model` | Limits the release to one model of the key. Requires `key_id`. A hold on the whole key, such as a rejected credential, is released only by naming the key without a model |
+
+The response lists the routes that were put back and how many:
+
+```json
+{ "cleared": ["openai:lb-identifier:gpt-4o:lb-identifier:key-uuid"], "count": 1 }
+```
+
+A `count` of `0` means nothing matched on the node that took the request. When the request names a key, the release is still sent to every other node, which release anything they hold for it.
+
+### Across the cluster
+
+- **Every node holds a key another node saw refused**, in every region, before it sends that key a request of its own. A provider almost always refuses a key the same way from every region, so unlike metrics, holds are not kept per region.
+- **A region block can differ between regions.** When the provider blocks the gateway's own address (OpenAI checks only that), nodes in different regions can get different answers, but the hold is still shared: the key is held on every node until its next check. A check from a node the provider accepts releases it everywhere, and the next refusal from a blocked region holds it again.
+- **Each node lets its own one request through** when a key is due. A failed check on one node moves the key up the ladder on every node, and a release on any node, by a check or an operator, releases it everywhere.
+- **Holds survive restarts.** Each regional leader writes the cluster's held keys to the config store every 30 seconds, and a node that starts restores them, so a restarted fleet does not send every refused key a new request to find out again.
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/diagram-held-key-cluster.png" alt="A refusal on one node is held on every node in every region, the regional leader writes the held keys to the config store, and a restarting node restores them" />
+</Frame>
+
+### In the request logs
+
+Every hold, check and release is written to the request's routing engine logs, so a request that skipped a key says why:
+
+```text
+[loadbalancing] [warn] - azure refused key 3f2a9c1e-... for gpt-4o: the key cannot reach this model. Holding that key back for 30s, then checking whether it can serve again
+[loadbalancing] [info] - Skipping 1 of 2 keys for azure/gpt-4o that the provider refused
+[loadbalancing] [info] - Checking whether key 3f2a9c1e-... can serve azure/gpt-4o again after the provider refused it
+[loadbalancing] [info] - Key 3f2a9c1e-... is serving azure/gpt-4o again
+```
+
+When the provider named a wait shorter than 10 seconds, the first line says so: `It asked for 1s; holding that key back for 10s, which is the shortest hold the load balancer applies`.
+
+<Frame>
+  <img src="/media/adaptive-load-balancing/ui-load-balancing-held-key-logs.png" alt="Routing engine logs in a request's log detail showing a held key being skipped and then checked" />
+</Frame>
+
+---
+
 ## Configuration
 
-Adaptive load balancing ships **pre-tuned** - the scoring weights, thresholds, and recovery timings are not user-configurable by design. The operator controls are five switches:
+Adaptive load balancing ships **pre-tuned** - the scoring weights, thresholds, recovery timings, and the waits for [held keys](#held-keys) are not user-configurable by design. The operator controls are five switches, plus [releasing held keys](#releasing-held-keys):
 
 | Setting | Default | Effect |
 |---------|---------|--------|
 | **Provider selection** (`direction_selection_enabled`) | On | Whether the system picks the provider (Level 1). A request that already carries a provider keeps it as the primary. Off ⇒ Level 1 leaves the request's provider and fallback list untouched (key selection is toggled separately). |
-| **Key selection** (`route_selection_enabled`) | On | Whether per-key (Level 2) selection is adaptive. Off ⇒ keys are chosen by static weighted-random (metrics are still tracked). |
+| **Key selection** (`route_selection_enabled`) | On | Whether per-key (Level 2) selection is adaptive. Off ⇒ keys are chosen by static weighted-random (metrics are still tracked, and [held keys](#held-keys) are still skipped). |
 | **Append fallbacks to pinned requests** (`append_fallbacks_to_pinned`) | Off | A request that already carries a provider still gets the healthy providers eligible for its model appended as fallbacks behind any it configured (with pruning and model normalization applied). Off ⇒ a pinned request passes through untouched, apart from re-routing below. |
 | **Re-route failed providers** (`reroute_failed_directions`) | Off | If a pinned provider's direction is circuit-broken, re-route the request to a healthy provider for the same model. When no healthier provider exists, the pinned provider is kept. |
 | **Prune failed fallbacks** (`prune_failed_fallbacks`) | Off | Drop circuit-broken providers from a request's configured fallback list. |
@@ -172,7 +267,7 @@ All five switches can be changed from the dashboard, via the API, or in `config.
 The load balancer settings page exposes the five switches; changes apply immediately across the cluster.
 
 <Frame>
-  <img src="/media/ui-load-balancing-settings.png" alt="Load Balancer Settings" />
+  <img src="/media/adaptive-load-balancing/ui-load-balancing-settings.png" alt="Load Balancer Settings" />
 </Frame>
 
 </Tab>
@@ -227,7 +322,7 @@ Unlike the API, this block is presence-aware: omitted fields keep their current 
 ## Scope & Limitations
 
 - **Pinned requests can still get fallbacks**: With provider selection on and the append-fallbacks-to-pinned switch enabled, a request that pins a provider — even one that configures no fallbacks of its own — receives the healthy providers eligible for its model as a fallback chain, so a failing primary fails over instead of failing fast. With the switch off (its default), a pinned request's provider and fallback list are left untouched.
-- **Per-node weights**: Each node load-balances on its own observed metrics. The only signal shared across nodes is a rate-limit (TPM) backoff, and only within the same region - there is no global weight consensus or cross-region coordination. This is deliberate: latency and error profiles differ per region, so importing another region's metrics would pollute a node's view of route health.
+- **Per-node weights**: Each node load-balances on its own observed metrics. The metric signal shared across nodes is a rate-limit (TPM) backoff, and only within the same region - there is no global weight consensus or cross-region coordination. This is deliberate: latency and error profiles differ per region, so importing another region's metrics would pollute a node's view of route health. [Held keys](#held-keys) are the exception: a provider refuses a key the same way from every region, so a hold is shared with every node.
 - **~5-second adaptation**: Weight and state changes lag live traffic by up to one recompute cycle. Immediate per-request resilience (key rotation and fallback failover) is handled separately and is not subject to this delay.
 - **Optimistic cold start**: A brand-new key or provider enters at full weight and competes at roughly fair share before it has been measured, then self-corrects within a cycle or two.
 - **Relative, not absolute**: Routes are ranked against their peers, not against a fixed latency or cost target. The system is not cost- or org-aware, and does not accept manual per-key weights for the adaptive path - those concerns are handled by [governance routing](/providers/provider-routing). It is not session-aware either: [Session Affinity](/providers/session-affinity) runs after it and keeps a session on its provider and key only while the load balancer still offers them and has not marked them as failed, and the circuit breaker is not holding that key back.
@@ -238,4 +333,5 @@ Unlike the API, this block is presence-aware: omitted fields keep their current 
 
 - **[Provider Routing](/providers/provider-routing)** - How adaptive load balancing composes with governance rules and the Model Catalog
 - **[Circuit Breaker](./circuit-breaker)** - Header-signal-driven failover to a backup provider when a primary endpoint degrades
+- **[Retries and Fallbacks](/features/retries-and-fallbacks#how-failures-are-classified)** - How each failure is classified, which decides whether it holds a key
 - **[Clustering](./clustering)** - Multi-node deployments and the gossip layer behind cross-node load balancer signals

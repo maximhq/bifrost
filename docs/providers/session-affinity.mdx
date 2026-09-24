@@ -106,9 +106,9 @@ Affinity runs after every routing engine has had its say, and again inside each 
 Without health signals, a session follows its binding until the request actually fails. Bifrost Enterprise checks the binding against what this node's Adaptive Load Balancer and circuit breaker know before following it:
 
 - **Provider level**: if the load balancer marks the bound provider as failed for the requested model on this node (every key in that direction has failed), the binding is dropped and the routing decision stands. The next served request rebinds the session.
-- **Key level**: if the load balancer marks the bound key's route as failed on this node, or the circuit breaker holds the key back, the binding is dropped and a key is picked normally. The next served request rebinds the session to the key that served it.
+- **Key level**: if the load balancer marks the bound key's route as failed on this node, holds the key because the provider refused it (see [Held Keys](/enterprise/adaptive-load-balancing#held-keys)), or the circuit breaker holds the key back, the binding is dropped and a key is picked normally. The next served request rebinds the session to the key that served it.
 
-Bindings live in the shared KV store and replicate across the cluster, while health is measured per node. A node that sees a provider failing drops the binding for every node. A node that has not observed the failure yet still follows the binding until its own load balancer marks the route as failed or the request fails there.
+Bindings live in the shared KV store and replicate across the cluster, while health is measured per node. A node that sees a provider failing drops the binding for every node. A node that has not observed the failure yet still follows the binding until its own load balancer marks the route as failed or the request fails there. A key held because the provider refused it is the exception: the hold reaches every node, so each one drops the binding before sending the key another request.
 
 ## Controls
 
@@ -194,7 +194,7 @@ A three-node cluster. The session is bound to Azure and `prod-eu-2`.
 - **Weighted routing-rule targets with no fallbacks** are rolled on every request. Add fallbacks to the rule if the session should stick to the target that served it.
 - **A bound key is used for every retry.** A session with a key binding does not rotate keys on a rate limit; the retry policy runs on the bound key, and only a fallback provider moves the session. A session with no key binding yet rotates like any other request.
 - **A new session's first parallel burst scatters once.** Requests already in flight when the first one is served keep the provider and key they were given.
-- **Health checks are node-local (Enterprise).** A binding is refused where a node has seen the failure. A node that has not seen it follows the binding until the request fails or its own load balancer catches up.
+- **Health checks are node-local (Enterprise).** A binding is refused where a node has seen the failure. A node that has not seen it follows the binding until the request fails or its own load balancer catches up. Keys held because the provider refused them are shared with every node, so this lag applies to error rates, not to refusals.
 - **A node that joins the cluster starts with an empty binding store.** It receives bindings written after it joined. A session that lands on it before then is treated as new, rebinds there, and that binding replicates to the other nodes.
 - **Realtime and WebSocket Responses key selection reads but never writes.** These connection paths reuse a key bound by earlier requests of the session, but they do not create or refresh a binding themselves.
 - **The switch is per request.** There is no configuration that turns affinity off for a deployment; send `x-bf-session-affinity: off` on the requests that should not take part.
