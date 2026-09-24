@@ -52,11 +52,14 @@ func IsOpenAIReasoningModel(model string) bool {
 	return strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "gpt-6")
 }
 
-// defaultCanDisableReasoning: reasoning.effort "none" exists from GPT-5.1 on. The
-// o-series, the original GPT-5 trio, the -pro variants and GPT-6 always reason.
+// defaultCanDisableReasoning: reasoning.effort "none" exists from GPT-5.1 on.
+// GPT-6 Sol and Luna support it, while GPT-6 Astra and unknown GPT-6 variants
+// conservatively remain always-reasoning.
 func defaultCanDisableReasoning(model string) bool {
 	m := bareModelLower(model)
 	switch {
+	case strings.Contains(m, "gpt-6-sol"), strings.Contains(m, "gpt-6-luna"):
+		return true
 	case strings.Contains(m, "gpt-6"), acceptsMinimalEffort(m):
 		return false
 	case strings.Contains(m, "gpt-5"):
