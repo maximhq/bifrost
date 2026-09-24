@@ -1111,6 +1111,11 @@
                 "format": "date-time",
                 "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
               },
+              "delete_after_expire": {
+                "type": "boolean",
+                "description": "Delete this virtual key automatically once expires_at has passed. A daily cleanup job removes it and posts a notification. Requires expires_at.",
+                "default": false
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",

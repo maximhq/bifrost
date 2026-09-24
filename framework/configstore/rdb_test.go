@@ -4767,3 +4767,41 @@ func TestRDBConfigStore_CreatedAtSurvivesConfigSync(t *testing.T) {
 		})
 	}
 }
+
+func TestListExpiredVirtualKeysForDeletion(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	keys := []*tables.TableVirtualKey{
+		{ID: "vk-expired-flagged", Name: "expired flagged", Value: *schemas.NewSecretVar("v1"), ExpiresAt: &past, DeleteAfterExpire: true},
+		{ID: "vk-expired-inactive-flagged", Name: "expired inactive flagged", Value: *schemas.NewSecretVar("v2"), ExpiresAt: &past, DeleteAfterExpire: true, IsActive: schemas.Ptr(false)},
+		{ID: "vk-expired-unflagged", Name: "expired unflagged", Value: *schemas.NewSecretVar("v3"), ExpiresAt: &past},
+		{ID: "vk-future-flagged", Name: "future flagged", Value: *schemas.NewSecretVar("v4"), ExpiresAt: &future, DeleteAfterExpire: true},
+		{ID: "vk-never-flagged", Name: "never flagged", Value: *schemas.NewSecretVar("v5"), DeleteAfterExpire: true},
+	}
+	for _, vk := range keys {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	got, err := store.ListExpiredVirtualKeysForDeletion(ctx, now)
+	require.NoError(t, err)
+
+	var ids []string
+	for _, vk := range got {
+		ids = append(ids, vk.ID)
+		assert.True(t, vk.DeleteAfterExpire)
+		assert.NotEmpty(t, vk.Name)
+	}
+	sort.Strings(ids)
+	assert.Equal(t, []string{"vk-expired-flagged", "vk-expired-inactive-flagged"}, ids)
+
+	// A key whose expiry is exactly now counts as expired, matching IsExpiredAt.
+	boundary := &tables.TableVirtualKey{ID: "vk-boundary", Name: "boundary", Value: *schemas.NewSecretVar("v6"), ExpiresAt: &now, DeleteAfterExpire: true}
+	require.NoError(t, store.CreateVirtualKey(ctx, boundary))
+	got, err = store.ListExpiredVirtualKeysForDeletion(ctx, now)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+}

@@ -1055,6 +1055,10 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
 	}
+	// Hash DeleteAfterExpire only when true, for the same reason
+	if vk.DeleteAfterExpire {
+		hash.Write([]byte("deleteAfterExpire:true"))
+	}
 	// Hash TeamID
 	if vk.TeamID != nil {
 		hash.Write([]byte("teamID:" + *vk.TeamID))

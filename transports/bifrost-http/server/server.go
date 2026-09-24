@@ -277,7 +277,9 @@ type BifrostHTTPServer struct {
 	// so the VK read paths report no assignee (OSS has no user directory).
 	VirtualKeyAssigneeResolver handlers.VirtualKeyAssigneeResolver
 
-	SidekiqRunner         *sidekiq.Runner
+	SidekiqRunner *sidekiq.Runner
+	// GovernanceHandler is kept so the expired-key cleanup scheduler can be started and stopped.
+	GovernanceHandler     *handlers.GovernanceHandler
 	SidekiqDispatcherStop func()
 
 	// Background live model catalog refresher. Guarded because the framework
@@ -2440,6 +2442,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
+		// Register the expired-key cleanup job before the dispatcher starts, since
+		// any node may claim it.
+		if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
+			governanceHandler.SetExpiryCleanupBackend(s.SidekiqRunner, s.Config.NotificationPublisher)
+		}
+		s.GovernanceHandler = governanceHandler
 	}
 	// Routing rules and the complexity analyzer config live in the config store, so these
 	// endpoints have nothing to serve when persistence is disabled (initStores leaves
@@ -2488,7 +2496,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool { return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp) })
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
+		return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp)
+	})
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -3149,6 +3159,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if s.SidekiqRunner != nil {
 		s.SidekiqDispatcherStop = s.SidekiqRunner.StartDispatcher(sidekiq.DispatchInterval, sidekiq.StaleAfter)
 	}
+	if s.GovernanceHandler != nil {
+		s.GovernanceHandler.StartExpiryCleanupScheduler(s.Ctx)
+	}
 
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
@@ -3253,6 +3266,9 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping oauth2 sweep worker...")
 				s.OAuth2SweepWorker.stop()
 				s.OAuth2SweepWorker = nil
+			}
+			if s.GovernanceHandler != nil {
+				s.GovernanceHandler.StopExpiryCleanupScheduler()
 			}
 			if s.SidekiqDispatcherStop != nil {
 				logger.Info("stopping sidekiq dispatcher...")
