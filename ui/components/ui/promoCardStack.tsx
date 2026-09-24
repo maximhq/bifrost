@@ -107,7 +107,9 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty, onDismiss 
 							className={cn(
 								"flex h-full w-full flex-col gap-0 rounded-lg px-2.5 py-2",
 								visibleCards.length < 2 ? "shadow-none" : "shadow-md",
-								card.variant === "warning" && "border-amber-500/50 bg-amber-50 dark:border-amber-500/70 dark:bg-amber-950/20",
+								// Keep warning cards opaque so layered promo cards do not bleed
+								// through the checklist surface in the sidebar.
+								card.variant === "warning" && "border-amber-500/50 bg-amber-50 dark:border-amber-500/70 dark:bg-amber-950/80",
 							)}
 						>
 							<CardHeader
