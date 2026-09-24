@@ -1973,6 +1973,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 		// Process AWS Event Stream format
 		usage := &schemas.ResponsesResponseUsage{}
+		sawUsageMetadata := false
 		billedUsage := &schemas.BifrostLLMUsage{}
 		// Register the accumulating usage handle so a mid-stream cancel/timeout
 		// can bill for Bedrock Responses usage already reported by stream events
@@ -2027,13 +2028,13 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					return
 				}
 				if err == io.EOF {
-					if streamState.StopReason == nil {
+					if streamState.StopReason == nil || !sawUsageMetadata {
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
 							IsBifrostError: false,
 							Error: &schemas.ErrorField{
 								Message: schemas.ErrProviderNetworkError,
-								Error:   fmt.Errorf("Bedrock ConverseStream ended before messageStop: %w", io.ErrUnexpectedEOF),
+								Error:   fmt.Errorf("Bedrock ConverseStream ended before messageStop or usage metadata: %w", io.ErrUnexpectedEOF),
 							},
 						}, responseChan, provider.logger, postHookSpanFinalizer)
 						return
@@ -2116,6 +2117,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 
 				if streamEvent.Usage != nil {
+					sawUsageMetadata = true
 					// Accumulate usage information instead of overwriting
 					// In some cases usage comes in multiple events, so we need to take the maximum values
 					accumulateBedrockResponsesUsage(usage, billedUsage, streamEvent.Usage)

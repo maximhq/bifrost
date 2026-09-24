@@ -459,6 +459,37 @@ func TestResponsesStream_EmptyOpus48ConverseIsError(t *testing.T) {
 	}
 }
 
+func TestResponsesStream_MessageStopWithoutMetadataIsError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		headers := eventstream.Headers{
+			{Name: ":message-type", Value: eventstream.StringValue("event")},
+			{Name: ":event-type", Value: eventstream.StringValue("messageStop")},
+			{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+		}
+		require.NoError(t, eventstream.NewEncoder().Encode(w, eventstream.Message{
+			Headers: headers, Payload: []byte(`{"stopReason":"end_turn"}`),
+		}))
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	request := testResponsesRequest()
+	request.Model = "eu.anthropic.claude-opus-4-8"
+	stream, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), request)
+	require.Nil(t, bifrostErr)
+
+	chunk, ok := <-stream
+	require.True(t, ok)
+	require.NotNil(t, chunk.BifrostError)
+	assert.False(t, chunk.BifrostError.IsBifrostError)
+	assert.Equal(t, schemas.ErrProviderNetworkError, chunk.BifrostError.Error.Message)
+	for range stream {
+		t.Fatal("unexpected response after incomplete-stream error")
+	}
+}
+
 // assertRetryableExceptionChunk is the shared assertion helper for all three
 // streaming-method retryable-exception tests.
 func assertRetryableExceptionChunk(t *testing.T, streamChan chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError, excType string, expectedStatus int) {
