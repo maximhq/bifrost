@@ -164,6 +164,52 @@ func hoistAdditionalTools(message schemas.ResponsesMessage) []schemas.ResponsesT
 	return tools
 }
 
+// normalizeAsyncTools keeps OpenAI's async marker only where the API accepts it:
+// on function/custom tool definitions for models that support async tool calling.
+// Namespace children are normalized recursively. Every modified node is copied so
+// conversion never mutates the caller-owned request.
+func normalizeAsyncTools(tools []schemas.ResponsesTool, supported bool) []schemas.ResponsesTool {
+	if len(tools) == 0 {
+		return tools
+	}
+
+	normalized := make([]schemas.ResponsesTool, len(tools))
+	for i, tool := range tools {
+		if !supported || (tool.Type != schemas.ResponsesToolTypeFunction && tool.Type != schemas.ResponsesToolTypeCustom) {
+			tool.Async = nil
+		}
+		if tool.ResponsesToolNamespace != nil && len(tool.ResponsesToolNamespace.Tools) > 0 {
+			namespaceCopy := *tool.ResponsesToolNamespace
+			namespaceCopy.Tools = normalizeAsyncTools(tool.ResponsesToolNamespace.Tools, supported)
+			tool.ResponsesToolNamespace = &namespaceCopy
+		}
+		normalized[i] = tool
+	}
+	return normalized
+}
+
+// normalizeAsyncCallItems applies the same capability gate to replayed calls.
+// OpenAI defines async only on function_call and custom_tool_call items.
+func normalizeAsyncCallItems(messages []schemas.ResponsesMessage, supported bool) []schemas.ResponsesMessage {
+	for i := range messages {
+		message := &messages[i]
+		if message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Async == nil {
+			continue
+		}
+		allowedType := message.Type != nil &&
+			(*message.Type == schemas.ResponsesMessageTypeFunctionCall ||
+				*message.Type == schemas.ResponsesMessageTypeCustomToolCall)
+		if supported && allowedType {
+			continue
+		}
+
+		toolMessageCopy := *message.ResponsesToolMessage
+		toolMessageCopy.Async = nil
+		message.ResponsesToolMessage = &toolMessageCopy
+	}
+	return messages
+}
+
 // PromptCacheBreakpointModeExplicit is the only mode a prompt_cache_breakpoint
 // accepts. OpenAI defined the field for gpt-5.6+; OpenRouter reuses it as the
 // Responses-shaped spelling of an Anthropic cache breakpoint.
@@ -583,6 +629,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Updating params
 	params := bifrostReq.Params
+	asyncToolsSupported := caps.SupportsAsyncTools(defaultSupportsAsyncTools(capModel))
+	messages = normalizeAsyncCallItems(messages, asyncToolsSupported)
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model:    bifrostReq.Model,
@@ -765,8 +813,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// strict-pydantic upstreams (e.g. sglang) reject the explicit null outright.
 	// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
 	if len(req.Tools) > 0 {
-		normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
-		copy(normalizedTools, req.Tools)
+		normalizedTools := normalizeAsyncTools(req.Tools, asyncToolsSupported)
 		for i, tool := range normalizedTools {
 			if tool.Type == schemas.ResponsesToolTypeFunction &&
 				tool.ResponsesToolFunction != nil {

@@ -287,6 +287,15 @@ func (c ModelCaps) SupportsPromptCacheBreakpoint(fallback bool) bool {
 	return fallback
 }
 
+// SupportsAsyncTools reports whether the model accepts OpenAI's async flag on tool
+// definitions and on replayed function/custom call items.
+func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsAsyncTools != nil {
+		return *c.record.SupportsAsyncTools
+	}
+	return fallback
+}
+
 // SupportsPromptCaching reports whether the model supports explicit prompt caching
 // at all. It is the base feature that SupportsPromptCachingScope and
 // SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a

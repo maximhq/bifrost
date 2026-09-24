@@ -1540,3 +1540,71 @@ func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
 		t.Fatalf("mutating copied error changed original: %#v", originalError)
 	}
 }
+
+// TestResponsesToolOpenAIFields pins the OpenAI tool fields async (function and
+// custom), output_schema (function) and tunnel_id (MCP) through a round trip,
+// including function tools nested in a namespace.
+func TestResponsesToolOpenAIFields(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"function","name":"get_weather","async":true,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":true,"output_schema":{"type":"object","properties":{"temp":{"type":"number","exclusiveMinimum":-273}},"const":"x"}}`,
+		`{"type":"custom","name":"run_job","async":false,"format":{"type":"text"}}`,
+		`{"type":"mcp","server_label":"internal","tunnel_id":"tunnel_0123456789abcdef0123456789abcdef","require_approval":"never"}`,
+		`{"type":"namespace","name":"jobs","description":"Job tools","tools":[{"type":"function","name":"start","async":true,"parameters":{"type":"object","properties":{}},"strict":false,"output_schema":{"type":"string"}}]}`,
+	} {
+		var tool ResponsesTool
+		if err := Unmarshal([]byte(in), &tool); err != nil {
+			t.Fatalf("unmarshal %s: %v", in, err)
+		}
+		out, err := MarshalSorted(tool)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+	}
+}
+
+// TestResponsesToolCallAsyncSurvives pins async on function_call and
+// custom_tool_call items. A replayed pending async call without it is rejected by
+// OpenAI with "No tool output found for function call".
+func TestResponsesToolCallAsyncSurvives(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Paris\"}","async":true,"status":"completed"}`,
+		`{"type":"custom_tool_call","call_id":"call_2","name":"run_job","input":"go","async":true}`,
+	} {
+		var msg ResponsesMessage
+		if err := Unmarshal([]byte(in), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+
+		copied := DeepCopyResponsesMessage(msg)
+		if copied.ResponsesToolMessage.Async == nil || !*copied.ResponsesToolMessage.Async {
+			t.Fatalf("deep copy lost async: %s", in)
+		}
+		if copied.ResponsesToolMessage.Async == msg.ResponsesToolMessage.Async {
+			t.Fatalf("deep copy aliases the async pointer: %s", in)
+		}
+	}
+}
