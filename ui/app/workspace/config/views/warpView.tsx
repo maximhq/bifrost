@@ -146,7 +146,7 @@ const EMPTY_FORM: WarpFormState = {
  * between the value and the control.
  */
 export default function WarpView() {
-	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
+	const hasWarpUpdateAccess = useRbac(RbacResource.Warp, RbacOperation.Update);
 	const { data: config, isLoading: isLoadingConfig, isError: isConfigError } = useGetWarpConfigQuery();
 	const {
 		data: providersData,
@@ -232,7 +232,7 @@ export default function WarpView() {
 		// hide the running job or its cancel action after a reload - the status
 		// and cancel endpoints need admin access and the backfill stores, not a
 		// currently-configured Warp.
-		skip: !hasSettingsUpdateAccess,
+		skip: !hasWarpUpdateAccess,
 		pollingInterval: activeBackfillID ? 2000 : 10000,
 	});
 	const isBackfillActive =
@@ -537,7 +537,7 @@ export default function WarpView() {
 									size="md"
 									data-testid="warp-enabled-switch"
 									checked={form.enabled}
-									disabled={!hasSettingsUpdateAccess || (!config?.vector_store_connected && !form.enabled)}
+									disabled={!hasWarpUpdateAccess || (!config?.vector_store_connected && !form.enabled)}
 									onCheckedChange={(checked) => update("enabled", checked)}
 								/>
 							</div>
@@ -579,7 +579,7 @@ export default function WarpView() {
 									// the previous provider would be silently invalid.
 									setForm((current) => ({ ...current, provider: value, model: "", apiKeyID: "" }));
 								}}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							>
 								<SelectTrigger className="w-full" id="warp-provider" data-testid="warp-provider-select">
 									<SelectValue placeholder="Select provider" />
@@ -664,7 +664,7 @@ export default function WarpView() {
 								value={form.model}
 								onChange={(model) => update("model", model)}
 								placeholder={form.provider ? "Search or type a model..." : "Select a provider first"}
-								disabled={!form.provider || !hasSettingsUpdateAccess}
+								disabled={!form.provider || !hasWarpUpdateAccess}
 							/>
 						</div>
 
@@ -696,7 +696,7 @@ export default function WarpView() {
 								}}
 								// Also disabled while this provider's keys are unknown, so a stale
 								// or empty list cannot be committed as a choice.
-								disabled={!form.provider || isKeysLoading || isKeysError || !hasSettingsUpdateAccess}
+								disabled={!form.provider || isKeysLoading || isKeysError || !hasWarpUpdateAccess}
 							>
 								<SelectTrigger className="w-full" id="warp-api-key-id" data-testid="warp-api-key-select">
 									<SelectValue placeholder={form.provider ? "Any key" : "Select a provider first"} />
@@ -764,7 +764,7 @@ export default function WarpView() {
 											if (!value) return;
 											setForm((current) => ({ ...current, embeddingProvider: value, embeddingModel: "", embeddingAPIKeyID: "" }));
 										}}
-										disabled={!hasSettingsUpdateAccess}
+										disabled={!hasWarpUpdateAccess}
 									>
 										<SelectTrigger className="w-full" id="warp-embedding-provider" data-testid="warp-embedding-provider-select">
 											<SelectValue placeholder="Select embedding provider" />
@@ -813,7 +813,7 @@ export default function WarpView() {
 										value={form.embeddingModel}
 										onChange={(model) => update("embeddingModel", model)}
 										placeholder={form.embeddingProvider ? "Search or type an embedding model..." : "Select a provider first"}
-										disabled={!form.embeddingProvider || !hasSettingsUpdateAccess}
+										disabled={!form.embeddingProvider || !hasWarpUpdateAccess}
 									/>
 								</div>
 
@@ -834,7 +834,7 @@ export default function WarpView() {
 												embeddingModel: "",
 											}));
 										}}
-										disabled={!form.embeddingProvider || isEmbeddingKeysLoading || isEmbeddingKeysError || !hasSettingsUpdateAccess}
+										disabled={!form.embeddingProvider || isEmbeddingKeysLoading || isEmbeddingKeysError || !hasWarpUpdateAccess}
 									>
 										<SelectTrigger className="w-full" id="warp-embedding-api-key" data-testid="warp-embedding-api-key-select">
 											<SelectValue placeholder="Any key" />
@@ -876,7 +876,7 @@ export default function WarpView() {
 										data-testid="warp-embedding-dimension-input"
 										value={form.embeddingDimension}
 										onChange={(event) => update("embeddingDimension", Number(event.target.value))}
-										disabled={!hasSettingsUpdateAccess}
+										disabled={!hasWarpUpdateAccess}
 									/>
 								</div>
 
@@ -887,7 +887,7 @@ export default function WarpView() {
 										data-testid="warp-vector-namespace-input"
 										value={form.namespace}
 										onChange={(event) => update("namespace", event.target.value)}
-										disabled={!hasSettingsUpdateAccess}
+										disabled={!hasWarpUpdateAccess}
 									/>
 									<p className="text-muted-foreground text-xs">
 										Only vector embeddings and operational metadata are stored here; plaintext conversation content stays in the log store.
@@ -905,7 +905,7 @@ export default function WarpView() {
 										data-testid="warp-search-threshold-input"
 										value={form.threshold}
 										onChange={(event) => update("threshold", Number(event.target.value))}
-										disabled={!hasSettingsUpdateAccess}
+										disabled={!hasWarpUpdateAccess}
 									/>
 								</div>
 								<div className="space-y-2">
@@ -918,7 +918,7 @@ export default function WarpView() {
 										data-testid="warp-search-limit-input"
 										value={form.searchLimit}
 										onChange={(event) => update("searchLimit", Number(event.target.value))}
-										disabled={!hasSettingsUpdateAccess}
+										disabled={!hasWarpUpdateAccess}
 									/>
 								</div>
 							</div>
@@ -952,7 +952,7 @@ export default function WarpView() {
 								className={baseURLInvalid ? "border-destructive" : ""}
 								value={form.baseURL}
 								onChange={(event) => update("baseURL", event.target.value)}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							/>
 							{baseURLInvalid && (
 								<p className="text-destructive text-sm">Enter an absolute http:// or https:// URL, with no username or password</p>
@@ -974,7 +974,7 @@ export default function WarpView() {
 								className={iterationsInvalid ? "border-destructive" : ""}
 								value={form.maxIterations}
 								onChange={(event) => update("maxIterations", Number(event.target.value))}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							/>
 							{iterationsInvalid && <p className="text-destructive text-sm">Must be between 1 and 20</p>}
 						</div>
@@ -993,7 +993,7 @@ export default function WarpView() {
 								className={timeoutInvalid ? "border-destructive" : ""}
 								value={form.requestTimeoutSeconds}
 								onChange={(event) => update("requestTimeoutSeconds", Number(event.target.value))}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							/>
 							{timeoutInvalid && <p className="text-destructive text-sm">Must be at least 1 second</p>}
 						</div>
@@ -1019,7 +1019,7 @@ export default function WarpView() {
 									const raw = event.target.value;
 									update("temperature", raw === "" ? "" : Number(raw));
 								}}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							/>
 							{temperatureInvalid && (
 								<p className="text-destructive text-sm">
@@ -1039,7 +1039,7 @@ export default function WarpView() {
 							<Select
 								value={form.reasoningEffort || WARP_REASONING_UNSET}
 								onValueChange={(value) => update("reasoningEffort", value === WARP_REASONING_UNSET ? "" : value)}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							>
 								<SelectTrigger id="warp-reasoning-effort" data-testid="warp-reasoning-effort-select">
 									<SelectValue />
@@ -1071,7 +1071,7 @@ export default function WarpView() {
 								className={retentionInvalid ? "border-destructive" : ""}
 								value={form.historyRetentionDays}
 								onChange={(event) => update("historyRetentionDays", Number(event.target.value))}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							/>
 							{retentionInvalid && <p className="text-destructive text-sm">{retentionError}</p>}
 						</div>
@@ -1091,7 +1091,7 @@ export default function WarpView() {
 								data-testid="warp-system-prompt-suffix-input"
 								value={form.systemPromptSuffix}
 								onChange={(event) => update("systemPromptSuffix", event.target.value)}
-								disabled={!hasSettingsUpdateAccess}
+								disabled={!hasWarpUpdateAccess}
 							/>
 						</div>
 
@@ -1115,7 +1115,7 @@ export default function WarpView() {
 											setBackfillStart(event.target.value);
 											setBackfillStartCompare(event.target.value ? new Date(event.target.value).toISOString() : null);
 										}}
-										disabled={isBackfillActive || !hasSettingsUpdateAccess}
+										disabled={isBackfillActive || !hasWarpUpdateAccess}
 									/>
 								</div>
 								<div className="space-y-2">
@@ -1129,7 +1129,7 @@ export default function WarpView() {
 											setBackfillEnd(event.target.value);
 											setBackfillEndCompare(event.target.value ? new Date(event.target.value).toISOString() : null);
 										}}
-										disabled={isBackfillActive || !hasSettingsUpdateAccess}
+										disabled={isBackfillActive || !hasWarpUpdateAccess}
 									/>
 								</div>
 							</div>
@@ -1178,7 +1178,7 @@ export default function WarpView() {
 										type="button"
 										variant="outline"
 										onClick={onCancelBackfill}
-										disabled={isCancellingBackfill || !hasSettingsUpdateAccess}
+										disabled={isCancellingBackfill || !hasWarpUpdateAccess}
 										data-testid="warp-backfill-cancel-btn"
 									>
 										{isCancellingBackfill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Cancel backfill
@@ -1199,7 +1199,7 @@ export default function WarpView() {
 													isBackfillStatusError ||
 													!config?.configured ||
 													!config.vector_store_connected ||
-													!hasSettingsUpdateAccess ||
+													!hasWarpUpdateAccess ||
 													hasChanges
 												}
 												data-testid="warp-backfill-restart-btn"
@@ -1219,7 +1219,7 @@ export default function WarpView() {
 												isBackfillStatusError ||
 												!config?.configured ||
 												!config.vector_store_connected ||
-												!hasSettingsUpdateAccess ||
+												!hasWarpUpdateAccess ||
 												hasChanges ||
 												backfillWindowAlreadyDone
 											}
@@ -1249,7 +1249,7 @@ export default function WarpView() {
 							Choose a provider and model to enable Warp.
 						</p>
 					)}
-					<Button type="submit" disabled={!hasChanges || isSaving || invalid || !hasSettingsUpdateAccess} data-testid="warp-save-btn">
+					<Button type="submit" disabled={!hasChanges || isSaving || invalid || !hasWarpUpdateAccess} data-testid="warp-save-btn">
 						{isSaving ? "Saving..." : "Save Changes"}
 					</Button>
 				</div>

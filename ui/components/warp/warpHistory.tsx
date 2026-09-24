@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useDeleteWarpConversationMutation, useListWarpConversationsQuery } from "@/lib/store/apis/warpApi";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -48,6 +49,7 @@ interface WarpHistoryProps {
 export default function WarpHistory({ activeConversationId, onOpen, onDeleted }: WarpHistoryProps) {
 	const { data: conversations, isLoading, isError } = useListWarpConversationsQuery({ limit: 50 }, { refetchOnMountOrArgChange: true });
 	const [deleteConversation] = useDeleteWarpConversationMutation();
+	const canDelete = useRbac(RbacResource.WarpSession, RbacOperation.Delete);
 	const [openingId, setOpeningId] = useState<string | null>(null);
 	const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -146,21 +148,23 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 									{openingId === conversation.id && <Loader2 className="ml-1 size-3 animate-spin" />}
 								</p>
 							</button>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								aria-label="Delete conversation"
-								data-testid={`warp-history-delete-${conversation.id}`}
-								disabled={deletingId !== null || openingId !== null}
-								onClick={() => setPendingDelete(conversation)}
-								// Visible by default, revealed on hover only where hover exists.
-								// opacity-0 with group-hover made the control undiscoverable on
-								// touch, where there is no hover state to enter.
-								className="text-muted-foreground hover:text-destructive absolute top-1/2 right-1 size-7 -translate-y-1/2 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
-							>
-								{deletingId === conversation.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-							</Button>
+							{canDelete && (
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									aria-label="Delete conversation"
+									data-testid={`warp-history-delete-${conversation.id}`}
+									disabled={deletingId !== null || openingId !== null}
+									onClick={() => setPendingDelete(conversation)}
+									// Visible by default, revealed on hover only where hover exists.
+									// opacity-0 with group-hover made the control undiscoverable on
+									// touch, where there is no hover state to enter.
+									className="text-muted-foreground hover:text-destructive absolute top-1/2 right-1 size-7 -translate-y-1/2 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
+								>
+									{deletingId === conversation.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+								</Button>
+							)}
 						</li>
 					);
 				})}

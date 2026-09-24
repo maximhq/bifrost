@@ -205,7 +205,7 @@ type warpBackfillStatus struct {
 }
 
 func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can backfill Warp embeddings")
 		return
 	}
@@ -269,7 +269,7 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 const warpBackfillUnavailable = "Background job runner or backfill store is not available"
 
 func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can inspect Warp backfills")
 		return
 	}
@@ -315,7 +315,7 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 }
 
 func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can cancel Warp backfills")
 		return
 	}
@@ -449,6 +449,7 @@ func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
 		// endpoints, models and internal detail. An administrator debugging a
 		// stalled index needs exactly that text; an ordinary dashboard user needs
 		// the state and the counts, and gets those without the provider's words.
+		// Local admin only: this route needs just WarpSession View, so a role ID proves nothing here.
 		if !warpLocalAdmin(ctx) {
 			backfill.LastError = ""
 		}
@@ -496,9 +497,20 @@ func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {
 	return status
 }
 
+// warpLocalAdmin reports whether the caller is the local admin: the password
+// login, or any caller while dashboard auth is off.
 func warpLocalAdmin(ctx *fasthttp.RequestCtx) bool {
 	admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
 	return admin
+}
+
+// warpAdmin admits the local admin, or a caller enterprise RBAC already authorized for Warp Update (the only place a role ID is set).
+func warpAdmin(ctx *fasthttp.RequestCtx) bool {
+	if warpLocalAdmin(ctx) {
+		return true
+	}
+	roleID, _ := ctx.UserValue(schemas.BifrostContextKeyUserRoleID).(uint)
+	return roleID != 0
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller
@@ -523,7 +535,7 @@ func (h *WarpHandler) getConfig(ctx *fasthttp.RequestCtx) {
 // the server will then use to make outbound calls, which is not something an
 // ordinary dashboard user should be able to do.
 func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
-	if localAdmin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); !localAdmin {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can configure Warp")
 		return
 	}
