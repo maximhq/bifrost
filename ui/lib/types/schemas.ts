@@ -265,9 +265,14 @@ export const replicateKeyConfigSchema = z.object({
 // trusting the tag would let any malformed literal skip every check below.
 const isSecretVarRef = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => !!v?.ref?.trim();
 
+// A stored secret comes back from the API masked ("******" or "1234****...****5678"), and the
+// edit form round-trips that mask untouched so the server keeps the original. Judging the
+// mask's shape would fail every edit of a key whose credentials were not all retyped.
+const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => isRedacted(v?.value ?? "");
+
 const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
 	if (!isSecretVarSet(v)) return true; // presence is checked separately
-	if (isSecretVarRef(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
 	return /^\d+$/.test((v?.value ?? "").trim());
 };
 
@@ -283,7 +288,7 @@ const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s
 
 const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
 	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
 	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
 	const match = PEM_PRIVATE_KEY.exec(body);
 	// The back-reference makes BEGIN and END agree; the body must also carry something.
