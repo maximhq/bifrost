@@ -24,14 +24,17 @@ import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/provi
 import { useCreateRoutingRuleMutation, useGetRoutingRulesQuery, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import {
 	DEFAULT_ROUTING_FALLBACK,
+	DEFAULT_ROUTING_FALLBACK,
 	DEFAULT_ROUTING_RULE_FORM_DATA,
 	DEFAULT_ROUTING_TARGET,
 	ROUTING_RULE_SCOPES,
+	RoutingFallbackFormData,
 	RoutingFallbackFormData,
 	RoutingRule,
 	RoutingRuleFormData,
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
+import { denormalizeFallback, normalizeFallback } from "@/lib/utils/routingRules";
 import { denormalizeFallback, normalizeFallback } from "@/lib/utils/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
@@ -164,6 +167,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setValue("description", editingRule.description);
 			setValue("cel_expression", editingRule.cel_expression);
 			setValue("fallbacks", (editingRule.fallbacks || []).map(normalizeFallback));
+			setValue("fallbacks", (editingRule.fallbacks || []).map(normalizeFallback));
 			setValue("scope", editingRule.scope);
 			setValue("scope_id", editingRule.scope_id || "");
 			setValue("priority", editingRule.priority);
@@ -221,6 +225,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				weight: Math.max(0, parseFloat(remaining.toFixed(4))),
 			},
 		]);
+		setTargets((prev) => [
+			...prev,
+			{
+				...DEFAULT_ROUTING_TARGET,
+				weight: Math.max(0, parseFloat(remaining.toFixed(4))),
+			},
+		]);
 	};
 
 	const removeTarget = (index: number) => {
@@ -229,6 +240,20 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 	const updateTarget = (index: number, field: keyof RoutingTargetFormData, value: string | number) => {
 		setTargets((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)));
+	};
+
+	const updateFallback = (index: number, changes: Partial<RoutingFallbackFormData>) => {
+		setValue(
+			"fallbacks",
+			(fallbacks || []).map((fb, i) => (i === index ? { ...fb, ...changes } : fb)),
+		);
+	};
+
+	const removeFallback = (index: number) => {
+		setValue(
+			"fallbacks",
+			(fallbacks || []).filter((_, i) => i !== index),
+		);
 	};
 
 	const updateFallback = (index: number, changes: Partial<RoutingFallbackFormData>) => {
@@ -294,6 +319,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 		// Filter out incomplete fallbacks (empty provider)
 		const validFallbacks = (data.fallbacks || []).filter((fb) => (fb.provider ?? "").trim().length > 0).map(denormalizeFallback);
+		const validFallbacks = (data.fallbacks || []).filter((fb) => (fb.provider ?? "").trim().length > 0).map(denormalizeFallback);
 
 		const payload = {
 			name: data.name,
@@ -317,9 +343,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		const submitPromise =
 			isEditing && editingRule
 				? updateRoutingRule({
-						id: editingRule.id,
-						data: payload,
-					}).unwrap()
+					id: editingRule.id,
+					data: payload,
+				}).unwrap()
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
@@ -376,6 +402,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							<Input
 								id="name"
 								placeholder="e.g., Route GPT-4 to Azure"
+								{...register("name", {
+									required: "Rule name is required",
+									maxLength: 255,
+								})}
 								{...register("name", {
 									required: "Rule name is required",
 									maxLength: 255,
@@ -579,12 +609,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									<Label>Fallbacks</Label>{" "}
 									<p className="text-muted-foreground mt-0.5 text-xs">
 										Provider is required, but model and API key are optional. Leave model empty to use the incoming request value.
+										Provider is required, but model and API key are optional. Leave model empty to use the incoming request value.
 									</p>
 								</div>
 								<Button
 									type="button"
 									variant="outline"
 									size="sm"
+									onClick={() => setValue("fallbacks", [...(fallbacks || []), { ...DEFAULT_ROUTING_FALLBACK }])}
 									onClick={() => setValue("fallbacks", [...(fallbacks || []), { ...DEFAULT_ROUTING_FALLBACK }])}
 									className="gap-2"
 								>
@@ -873,6 +905,14 @@ function TargetRow({ target, index, referencedProviderOptions, allKeys, showRemo
 				</div>
 			</div>
 
+			<ProviderKeySelect
+				idPrefix={`routing-target-${index}`}
+				clearLabel={`Clear API key for target ${index + 1}`}
+				provider={target.provider}
+				keyId={target.key_id}
+				allKeys={allKeys}
+				onChange={(value) => onUpdate(index, "key_id", value)}
+			/>
 			<ProviderKeySelect
 				idPrefix={`routing-target-${index}`}
 				clearLabel={`Clear API key for target ${index + 1}`}
