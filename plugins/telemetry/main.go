@@ -641,7 +641,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_key_rotation_events_total",
-			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate-limit/auth/billing/permission) that triggered a switch to a different key on the next retry.",
+			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate limit, rejected credential, exhausted quota, model access, retired model, region block) that triggered a switch to a different key on the next retry.",
 		},
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
@@ -1280,15 +1280,18 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		// Emit one rotation counter increment per attempt that actually caused a key swap on the
-		// next try (per-key failure — rate-limit/auth/billing/permission — with retries remaining).
-		// Mark the key unhealthy on any failure, since key health is per-failure not per-rotation.
+		// next try (a per-key failure with a key left to move to). Mark the key unhealthy on any
+		// failure, since key health is per-failure not per-rotation, except when the failure says
+		// nothing about the key's health: a request for a model this key cannot reach, or a
+		// region block that may be the gateway's own location. The walk past those would
+		// otherwise mark every key in the pool down on one caller's typo or one blocked egress.
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), model, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
 			}
-			if record.FailReason != nil {
+			if record.FailReason != nil && record.FailureClass != schemas.FailureClassModelAccess && record.FailureClass != schemas.FailureClassModelGone && record.FailureClass != schemas.FailureClassRegionBlocked {
 				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
 		}
