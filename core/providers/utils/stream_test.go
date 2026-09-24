@@ -778,6 +778,33 @@ func TestAttemptAbort_NilIsInert(t *testing.T) {
 	}
 }
 
+// Expire fires an armed deadline at once, and never flips one the first token
+// already disarmed: that stream has committed and must not be cut.
+func TestAttemptAbort_Expire(t *testing.T) {
+	armed := NewAttemptAbort(time.Hour)
+	armed.Expire()
+	select {
+	case <-armed.Done():
+	default:
+		t.Fatal("Expire did not fire an armed deadline")
+	}
+	if !armed.Fired() || armed.Disarm() {
+		t.Fatal("an expired deadline must read as fired and refuse to disarm")
+	}
+	armed.Expire() // idempotent
+
+	disarmed := NewAttemptAbort(time.Hour)
+	if !disarmed.Disarm() {
+		t.Fatal("setup: disarm failed")
+	}
+	disarmed.Expire()
+	if disarmed.Fired() {
+		t.Fatal("Expire fired a deadline the first token had already disarmed")
+	}
+	var nilAbort *AttemptAbort
+	nilAbort.Expire()
+}
+
 // Exactly one of "deadline fired" and "first token arrived" wins, however
 // close together they land.
 func TestAttemptAbort_FireAndDisarmHaveOneWinner(t *testing.T) {
@@ -833,6 +860,109 @@ func TestCheckStreamPreamble_FirstTokenDeadlineCutsOffStartupOnlyStream(t *testi
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("cut-off stream failed to drain")
+	}
+}
+
+// bigPreambleChunk is a startup event the size of response.created or
+// response.in_progress echoing a large request's instructions and tools.
+func bigPreambleChunk(size int) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		ID:    "preamble",
+		Model: strings.Repeat("x", size),
+	}}
+}
+
+// Two startup events that together pass the byte cap must not commit the
+// stream while a TTFT deadline is armed: that would disarm the deadline with
+// no output, and a stall after them would never be cut off.
+func TestCheckStreamPreamble_ByteOverflowKeepsFirstTokenDeadline(t *testing.T) {
+	ctx, abort := withAttemptAbort(t, 100*time.Millisecond)
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+	source <- bigPreambleChunk(150 * 1024)
+	source <- bigPreambleChunk(150 * 1024)
+
+	wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
+	if wrapped != nil {
+		t.Fatal("oversized startup events committed the stream and disarmed the TTFT deadline")
+	}
+	assertFirstTokenTimeoutError(t, err)
+	if !abort.Fired() {
+		t.Fatal("abort did not record the miss")
+	}
+	closeSource()
+	<-done
+}
+
+// A full preamble buffer under an armed deadline ends the attempt as an early
+// TTFT miss: it must neither commit the stream (the deadline would be lost)
+// nor keep buffering (memory would be unbounded). Both caps are covered, and
+// the long deadline proves the cap, not the timer, ended the attempt.
+func TestCheckStreamPreamble_FullBufferUnderDeadlineIsAnEarlyMiss(t *testing.T) {
+	for name, chunks := range map[string][]*schemas.BifrostStreamChunk{
+		"chunk cap": func() []*schemas.BifrostStreamChunk {
+			out := make([]*schemas.BifrostStreamChunk, maxStreamPreambleChunks)
+			for i := range out {
+				out[i] = preambleChunk()
+			}
+			return out
+		}(),
+		"byte budget": func() []*schemas.BifrostStreamChunk {
+			out := make([]*schemas.BifrostStreamChunk, 5)
+			for i := range out {
+				out[i] = bigPreambleChunk(1024 * 1024)
+			}
+			return out
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, abort := withAttemptAbort(t, 5*time.Second)
+			source := make(chan *schemas.BifrostStreamChunk, len(chunks))
+			closeSource := sync.OnceFunc(func() { close(source) })
+			defer closeSource()
+			for _, chunk := range chunks {
+				source <- chunk
+			}
+
+			start := time.Now()
+			wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
+			if wrapped != nil {
+				t.Fatal("a full preamble buffer committed the stream and disarmed the TTFT deadline")
+			}
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Fatalf("attempt ended after %v: the buffer limit did not end it, the deadline did", elapsed)
+			}
+			assertFirstTokenTimeoutError(t, err)
+			if !abort.Fired() {
+				t.Fatal("the abort must fire so the socket watchers cut the attempt")
+			}
+			closeSource()
+			<-done
+		})
+	}
+}
+
+// Without a TTFT deadline the byte cap still bounds the buffer: an oversized
+// startup event commits the stream and every event replays in order.
+func TestCheckStreamPreamble_ByteOverflowCommitsWithoutDeadline(t *testing.T) {
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	first, second := bigPreambleChunk(150*1024), bigPreambleChunk(150*1024)
+	source <- first
+	source <- second
+	close(source)
+
+	wrapped, done, err := CheckStreamPreambleForError(context.Background(), t.Name(), source, isTestPreamble)
+	if err != nil || wrapped == nil {
+		t.Fatalf("expected a committed stream, got wrapped=%v err=%v", wrapped, err)
+	}
+	var got []*schemas.BifrostStreamChunk
+	for chunk := range wrapped {
+		got = append(got, chunk)
+	}
+	<-done
+	if len(got) != 2 || got[0] != first || got[1] != second {
+		t.Fatalf("replayed %d chunks, want both startup events in order", len(got))
 	}
 }
 
