@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -235,7 +237,12 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias)
 }
 
-// Redacted returns a redacted copy of the network configuration with CACertPEM masked.
+// Redacted returns a redacted copy of the network configuration with CACertPEM and
+// every ExtraHeaders value masked. Header values are masked regardless of name:
+// operators put client secrets and bearer tokens there, and a name-based filter
+// would miss any header it does not recognize. They are fully redacted because a
+// short credential would otherwise expose most of itself through the kept prefix
+// and suffix.
 func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	if nc == nil {
 		return nil
@@ -244,7 +251,44 @@ func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	if nc.CACertPEM != nil && nc.CACertPEM.IsSet() {
 		redacted.CACertPEM = nc.CACertPEM.Redacted()
 	}
+	if nc.ExtraHeaders != nil {
+		redacted.ExtraHeaders = make(map[string]SecretVar, len(nc.ExtraHeaders))
+		for name, value := range nc.ExtraHeaders {
+			redacted.ExtraHeaders[name] = *value.FullyRedacted()
+		}
+	}
 	return &redacted
+}
+
+// RestoreRedactedExtraHeaders returns incoming with every header that came back under
+// its stored name with a masked value replaced by the stored raw value, so saving a
+// form that echoed the redacted config keeps the real secrets. Edited values and
+// env.*/vault.* references are kept as sent. A masked value with no stored header of
+// the same name (a renamed or new header) is an error: saving it would send the mask
+// upstream as the header value.
+func RestoreRedactedExtraHeaders(incoming, raw map[string]SecretVar) (map[string]SecretVar, error) {
+	if incoming == nil {
+		return nil, nil
+	}
+	restored := make(map[string]SecretVar, len(incoming))
+	var unrestorable []string
+	for name, value := range incoming {
+		if value.IsRedacted() && !value.IsFromSecret() {
+			rawValue, ok := raw[name]
+			if !ok {
+				unrestorable = append(unrestorable, name)
+				continue
+			}
+			restored[name] = rawValue
+			continue
+		}
+		restored[name] = value
+	}
+	if len(unrestorable) > 0 {
+		slices.Sort(unrestorable)
+		return nil, fmt.Errorf("masked value for extra header %s cannot be restored because no stored header has that name; re-enter the value", strings.Join(unrestorable, ", "))
+	}
+	return restored, nil
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.

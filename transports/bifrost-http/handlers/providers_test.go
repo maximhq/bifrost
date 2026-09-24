@@ -398,6 +398,81 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 	}
 }
 
+// TestProviderHandler_RejectsUnrestorableMaskedHeaders checks that update and add return 400
+// when an extra header carries a masked value that cannot be matched to a stored header by
+// name, instead of saving the mask as the header value.
+func TestProviderHandler_RejectsUnrestorableMaskedHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	newHandler := func() *ProviderHandler {
+		return &ProviderHandler{
+			inMemoryStore: &lib.Config{
+				ClientConfig: &configstore.ClientConfig{},
+				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+					schemas.OpenAI: {
+						Keys: []schemas.Key{{ID: "key-existing"}},
+						NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
+							"Authorization": *schemas.NewSecretVar("Bearer real-token"),
+						}},
+					},
+				},
+			},
+			modelsManager: &mockModelsManager{},
+		}
+	}
+	assertMaskedHeaderError := func(t *testing.T, ctx *fasthttp.RequestCtx, header string) {
+		t.Helper()
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		var bifrostErr schemas.BifrostError
+		if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil || bifrostErr.Error == nil {
+			t.Fatalf("unexpected error body %s: %v", ctx.Response.Body(), err)
+		}
+		if msg := bifrostErr.Error.Message; !strings.Contains(msg, "masked value") || !strings.Contains(msg, header) {
+			t.Fatalf("expected a masked-value error naming %s, got %q", header, msg)
+		}
+	}
+
+	t.Run("update with a case-only rename", func(t *testing.T) {
+		h := newHandler()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+		ctx.Request.SetRequestURI("/api/providers/openai")
+		ctx.Request.SetBody([]byte(`{
+			"network_config": {"extra_headers": {"authorization": "<REDACTED>"}},
+			"concurrency_and_buffer_size": {"concurrency": 1, "buffer_size": 1}
+		}`))
+		ctx.SetUserValue("provider", string(schemas.OpenAI))
+
+		h.updateProvider(ctx)
+
+		assertMaskedHeaderError(t, ctx, "authorization")
+		stored := h.inMemoryStore.Providers[schemas.OpenAI].NetworkConfig.ExtraHeaders["Authorization"]
+		if stored.GetValue() != "Bearer real-token" {
+			t.Fatalf("stored header changed to %q", stored.GetValue())
+		}
+	})
+
+	t.Run("add with a masked value", func(t *testing.T) {
+		h := newHandler()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.SetBody([]byte(`{
+			"provider": "hyperpod",
+			"custom_provider_config": {"base_provider_type": "openai"},
+			"network_config": {"extra_headers": {"X-Client-Secret": "<REDACTED>"}},
+			"concurrency_and_buffer_size": {"concurrency": 1, "buffer_size": 1}
+		}`))
+
+		h.addProvider(ctx)
+
+		assertMaskedHeaderError(t, ctx, "X-Client-Secret")
+	})
+}
+
 func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.ModelCatalog {
 	t.Helper()
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
