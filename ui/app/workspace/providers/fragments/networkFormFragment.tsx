@@ -533,6 +533,10 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											disabled={!hasUpdateProviderAccess}
 										/>
 									</FormControl>
+									<FormDescription>
+										Values are masked once saved; leave a masked value unchanged to keep it. Renaming a header needs its value re-entered.
+										Use <code>env.VAR_NAME</code> or <code>vault.path</code> to reference a secret instead of storing it.
+									</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
