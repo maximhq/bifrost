@@ -1,11 +1,18 @@
 logs:
   get:
     operationId: getLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get logs
     description: |
       Retrieves logs with filtering, search, and pagination via query parameters.
-
-      **Required permission:** `Logs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -171,11 +178,18 @@ logs:
 
   delete:
     operationId: deleteLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete logs
     description: |
       Deletes logs by their IDs.
-
-      **Required permission:** `Logs:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     requestBody:
@@ -202,11 +216,18 @@ logs:
 logs-stats:
   get:
     operationId: getLogsStats
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get log statistics
     description: |
       Returns statistics for logs matching the specified filters.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -359,11 +380,18 @@ logs-stats:
 logs-dropped:
   get:
     operationId: getDroppedRequests
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get dropped requests count
     description: |
       Returns the number of dropped requests.
-
-      **Required permission:** `Logs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     security:
@@ -380,13 +408,19 @@ logs-dropped:
 logs-filterdata:
   get:
     operationId: getAvailableFilterData
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get available filter data
     description: >-
       Returns the distinct values each filter dimension offers, drawn from the
       logs of roughly the last month.
-
-
-      **Required permission:** `Logs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -424,11 +458,18 @@ logs-filterdata:
 logs-by-id:
   get:
     operationId: getLogById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a single log entry
     description: |
       Retrieves a single log entry by its ID.
-
-      **Required permission:** `Logs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -460,11 +501,18 @@ logs-by-id:
 logs-histogram:
   get:
     operationId: getLogsHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get request count histogram
     description: |
       Returns time-bucketed request counts. Bucket size is auto-calculated from the time range.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -517,11 +565,18 @@ logs-histogram:
 logs-histogram-tokens:
   get:
     operationId: getLogsTokenHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get token usage histogram
     description: |
       Returns time-bucketed token usage (prompt, completion, total).
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -563,11 +618,18 @@ logs-histogram-tokens:
 logs-histogram-cost:
   get:
     operationId: getLogsCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get cost histogram
     description: |
       Returns time-bucketed cost data with model breakdown.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -609,11 +671,18 @@ logs-histogram-cost:
 logs-histogram-models:
   get:
     operationId: getLogsModelHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model usage histogram
     description: |
       Returns time-bucketed model usage with success/error breakdown.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -655,11 +724,18 @@ logs-histogram-models:
 logs-histogram-latency:
   get:
     operationId: getLogsLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get latency histogram
     description: |
       Returns time-bucketed latency percentiles (avg, p90, p95, p99).
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -701,11 +777,18 @@ logs-histogram-latency:
 logs-histogram-cost-by-provider:
   get:
     operationId: getLogsProviderCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get cost histogram by provider
     description: |
       Returns time-bucketed cost data with provider breakdown.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -747,11 +830,18 @@ logs-histogram-cost-by-provider:
 logs-histogram-tokens-by-provider:
   get:
     operationId: getLogsProviderTokenHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get token histogram by provider
     description: |
       Returns time-bucketed token usage with provider breakdown.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -793,11 +883,18 @@ logs-histogram-tokens-by-provider:
 logs-histogram-latency-by-provider:
   get:
     operationId: getLogsProviderLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get latency histogram by provider
     description: |
       Returns time-bucketed latency percentiles with provider breakdown.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -839,13 +936,19 @@ logs-histogram-latency-by-provider:
 logs-histogram-throughput:
   get:
     operationId: getLogsThroughputHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get throughput histogram
     description: >-
       Returns time-bucketed token-generation throughput in tokens per second.
       The bucket size is derived from the requested window.
-
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -891,12 +994,18 @@ logs-histogram-throughput:
 logs-histogram-throughput-by-provider:
   get:
     operationId: getLogsProviderThroughputHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get throughput histogram by provider
     description: >-
       Returns time-bucketed tokens per second with a per-provider breakdown.
-
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1172,6 +1281,15 @@ _ranking-parameters:
 logs-recalculate-cost:
   post:
     operationId: recalculateLogCosts
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Recalculate log costs
     description: |
       Starts an asynchronous background job that recalculates log costs in batches.
@@ -1180,8 +1298,6 @@ logs-recalculate-cost:
       Recalculation updates the cost fields on matching log records only. It does not
       retroactively debit, credit, or otherwise adjust governance budget usage. Governance
       budgets retain the usage recorded when each request was originally processed.
-
-      **Required permission:** `Logs:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     requestBody:
@@ -1220,12 +1336,19 @@ logs-recalculate-cost:
 logs-recalculate-cost-status:
   get:
     operationId: getRecalculateCostStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get log cost recalculation status
     description: |
       Returns the current status of a log cost recalculation job.
       When `id` is omitted, the current in-flight job is returned, or `idle` when no job is running.
-
-      **Required permission:** `Logs:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1262,6 +1385,15 @@ logs-recalculate-cost-status:
 logs-recalculate-cost-cancel:
   post:
     operationId: cancelRecalculateCost
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Cancel log cost recalculation
     description: |
       Cancels the recalculation job selected by `id`, or the current in-flight recalculation
@@ -1273,8 +1405,6 @@ logs-recalculate-cost-cancel:
       partial progress recorded at the time of the response. The worker may still be unwinding,
       so poll the status endpoint with the returned `id` to obtain its final counters. If the
       selected job has already reached a terminal state, the endpoint returns it unchanged.
-
-      **Required permission:** `Logs:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1316,11 +1446,18 @@ logs-recalculate-cost-cancel:
 mcp-logs:
   get:
     operationId: getMCPLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool logs
     description: |
       Retrieves MCP tool execution logs with filtering, search, and pagination via query parameters.
-
-      **Required permission:** `MCPLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1421,11 +1558,18 @@ mcp-logs:
 
   delete:
     operationId: deleteMCPLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete MCP tool logs
     description: |
       Deletes MCP tool logs by their IDs.
-
-      **Required permission:** `MCPLogs:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     requestBody:
@@ -1452,11 +1596,18 @@ mcp-logs:
 mcp-logs-by-id:
   get:
     operationId: getMCPLogById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool log by ID
     description: |
       Retrieves a single MCP tool execution log by ID, including hydrated object-storage payloads when configured.
-
-      **Required permission:** `MCPLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1486,11 +1637,18 @@ mcp-logs-by-id:
 mcp-logs-stats:
   get:
     operationId: getMCPLogsStats
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool log statistics
     description: |
       Returns statistics for MCP tool logs matching the specified filters.
-
-      **Required permission:** `MCPLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1565,11 +1723,18 @@ mcp-logs-stats:
 mcp-logs-filterdata:
   get:
     operationId: getMCPLogsFilterData
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get available MCP log filter data
     description: |
       Returns all unique filter data from MCP tool logs (tool names, server labels).
-
-      **Required permission:** `MCPLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     security:
@@ -1588,12 +1753,19 @@ mcp-logs-filterdata:
 logs-sessions-by-id:
   get:
     operationId: getLogSessionById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get logs for a session
     description: |
       Returns the paginated logs belonging to a single parent-request session
       (grouped by `parent_request_id`). Sorted ascending by timestamp by default.
-
-      **Required permission:** `Logs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1641,11 +1813,18 @@ logs-sessions-by-id:
 logs-sessions-summary-by-id:
   get:
     operationId: getLogSessionSummaryById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get aggregate totals for a session
     description: |
       Returns aggregate request count, token usage, cost, and duration for a single session.
-
-      **Required permission:** `Logs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1673,13 +1852,20 @@ logs-sessions-summary-by-id:
 logs-rankings:
   get:
     operationId: getModelRankings
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model usage rankings
     description: |
       Returns models ranked by usage with trend percentages versus the previous
       comparable period. Accepts the same filter parameters as the histogram
       endpoints.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1734,6 +1920,15 @@ logs-rankings:
 logs-rankings-by-dimension:
   get:
     operationId: getDimensionRankings
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get rankings by governance dimension
     description: |
       Returns the entities of one governance dimension ranked by spend, tokens
@@ -1745,8 +1940,6 @@ logs-rankings-by-dimension:
       Note that the accepted `dimension` values differ from the ones the
       `/by-dimension` histogram endpoints take: rankings use `project` where the
       histograms use `project_id`.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1815,14 +2008,19 @@ logs-rankings-users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get user usage rankings
     description: >-
       Returns users ranked by spend, tokens and request volume, with trend
       percentages versus the previous comparable period. Only requests that
       resolved to a user are counted.
-
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1861,6 +2059,15 @@ logs-rankings-users:
 logs-dashboard:
   get:
     operationId: getDashboard
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get consolidated dashboard data
     description: |
       Returns every metric shown on the workspace dashboard in a single
@@ -1875,8 +2082,6 @@ logs-dashboard:
       section is computed against the same time window and bucket size. The
       request fails as a whole if any section cannot be computed, so the payload
       is always complete.
-
-      **Required permission:** `Logs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1942,14 +2147,21 @@ logs-dashboard:
 logs-histogram-cost-by-dimension:
   get:
     operationId: getLogsDimensionCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get cost histogram by dimension
     description: |
       Returns time-bucketed cost data grouped by an arbitrary dimension
       (`provider`, `team_id`, `customer_id`, `user_id`, `business_unit_id`,
       `project_id`, `app`, `user_agent`). The dimension is supplied via the
       required `dimension` query parameter.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -1997,12 +2209,19 @@ logs-histogram-cost-by-dimension:
 logs-histogram-tokens-by-dimension:
   get:
     operationId: getLogsDimensionTokenHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get token histogram by dimension
     description: |
       Returns time-bucketed token usage grouped by an arbitrary dimension.
       See `getLogsDimensionCostHistogram` for the list of supported dimensions.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -2050,12 +2269,19 @@ logs-histogram-tokens-by-dimension:
 logs-histogram-latency-by-dimension:
   get:
     operationId: getLogsDimensionLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get latency histogram by dimension
     description: |
       Returns time-bucketed latency percentiles (avg, p90, p95, p99) grouped by
       an arbitrary dimension.
-
-      **Required permission:** `Dashboard:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -2103,11 +2329,18 @@ logs-histogram-latency-by-dimension:
 mcp-logs-histogram:
   get:
     operationId: getMCPLogsHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool call volume histogram
     description: |
       Returns time-bucketed MCP tool call volume with success/error breakdown.
-
-      **Required permission:** `MCPLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -2181,11 +2414,18 @@ mcp-logs-histogram:
 mcp-logs-histogram-cost:
   get:
     operationId: getMCPLogsCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP cost histogram
     description: |
       Returns time-bucketed MCP tool call cost data.
-
-      **Required permission:** `MCPLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:
@@ -2259,11 +2499,18 @@ mcp-logs-histogram-cost:
 mcp-logs-histogram-top-tools:
   get:
     operationId: getMCPLogsTopTools
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get top MCP tools by call count
     description: |
       Returns the top 10 MCP tools by call count, with cost totals.
-
-      **Required permission:** `MCPLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Logging
     parameters:

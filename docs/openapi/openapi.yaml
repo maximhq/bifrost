@@ -156,6 +156,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: API Keys
+    description: Management API key issuance, scoping, and revocation
 
 paths:
   # ==================== Unified Inference API ====================
@@ -1275,6 +1277,12 @@ paths:
   /inspect:
     $ref: "./paths/management/inspect.yaml#/inspect"
 
+  # API Keys
+  /api/api-keys:
+    $ref: "./paths/management/apikeys.yaml#/api-keys"
+  /api/api-keys/{id}:
+    $ref: "./paths/management/apikeys.yaml#/api-keys-by-id"
+
   # Webhooks
   /api/webhooks:
     $ref: "./paths/management/webhooks.yaml#/webhooks"
@@ -1974,6 +1982,18 @@ components:
       $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
+
+    # API Keys
+    APIKey:
+      $ref: "./schemas/management/apikeys.yaml#/APIKey"
+    APIKeyRequest:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyRequest"
+    APIKeyResponse:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyResponse"
+    APIKeyCreatedResponse:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyCreatedResponse"
+    APIKeyList:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyList"
 
     # Webhooks
     WebhookEvent:

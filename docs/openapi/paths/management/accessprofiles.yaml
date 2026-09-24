@@ -10,11 +10,17 @@ access-profiles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List access profiles
     description: |
       Returns access profiles visible to the caller.
-
-      **Required permission:** `AccessProfiles:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -61,12 +67,18 @@ access-profiles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create access profile
     description: |
       Creates a new access profile template. The profile is inactive until attached to a role.
       No size limits are enforced on create; the limits apply on update.
-
-      **Required permission:** `AccessProfiles:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     requestBody:
@@ -102,11 +114,17 @@ access-profiles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get access profile by ID
     description: |
       Returns the profile plus its role attachments and the count of users holding a copy.
-
-      **Required permission:** `AccessProfiles:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -139,13 +157,19 @@ access-profiles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update access profile
     description: |
       Partial update. Omitted fields preserve the current value.
       `rate_limit: null` explicitly clears the existing rate limit.
       Size limits enforced: max 100 provider_configs, max 100 budgets, max 50 tags.
-
-      **Required permission:** `AccessProfiles:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -188,11 +212,17 @@ access-profiles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete access profile
     description: |
       Blocked with 409 if any users still hold copies. Detach role attachments or remove user assignments first.
-
-      **Required permission:** `AccessProfiles:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -228,11 +258,17 @@ access-profiles-activate:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Activate access profile
     description: |
       Sets the profile active. Idempotent.
-
-      **Required permission:** `AccessProfiles:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -266,11 +302,17 @@ access-profiles-deactivate:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Deactivate access profile
     description: |
       Sets the profile inactive. Idempotent. User copies are preserved; the profile is hidden from selection menus.
-
-      **Required permission:** `AccessProfiles:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -304,11 +346,17 @@ access-profiles-clone:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Clone an access profile
     description: |
       Creates a fresh copy of the profile under a new name. The clone has no role attachments or user copies.
-
-      **Required permission:** `AccessProfiles:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -352,12 +400,18 @@ access-profiles-propagate:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Propagate template changes to user copies
     description: |
       Pushes selected fields from the template to every user that holds a copy.
       Use `dry_run: true` to preview the impact. By default, accumulated usage is preserved.
-
-      **Required permission:** `AccessProfiles:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -399,12 +453,18 @@ access-profiles-roles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach roles to access profile
     description: |
       Attaches one or more roles. Setting `is_default: true` makes the profile the role's default
       for new users. `apply_to_existing: true` provisions the profile to users already in the role.
-
-      **Required permission:** `AccessProfiles:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -439,8 +499,6 @@ access-profiles-roles:
 access-profiles-role-by-id:
   delete:
     operationId: detachRoleFromAccessProfile
-    description: |
-      **Required permission:** `AccessProfiles:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -448,6 +506,14 @@ access-profiles-role-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach role from access profile
     tags:
       - Access Profiles
@@ -480,8 +546,6 @@ access-profiles-role-by-id:
 access-profiles-versions:
   get:
     operationId: listAccessProfileVersions
-    description: |
-      **Required permission:** `AccessProfiles:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -489,6 +553,14 @@ access-profiles-versions:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List version snapshots for an access profile
     tags:
       - Access Profiles
@@ -514,8 +586,6 @@ access-profiles-versions:
 access-profiles-version-by-number:
   get:
     operationId: getAccessProfileVersion
-    description: |
-      **Required permission:** `AccessProfiles:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -523,6 +593,14 @@ access-profiles-version-by-number:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a single version snapshot
     tags:
       - Access Profiles
@@ -555,8 +633,6 @@ access-profiles-version-by-number:
 access-profiles-audit-logs-by-id:
   get:
     operationId: listAccessProfileAuditLogsById
-    description: |
-      **Required permission:** `AccessProfiles:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -564,6 +640,14 @@ access-profiles-audit-logs-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List audit log entries for a single profile
     tags:
       - Access Profiles
@@ -606,8 +690,6 @@ access-profiles-audit-logs-by-id:
 access-profiles-audit-logs-all:
   get:
     operationId: listAccessProfileAuditLogs
-    description: |
-      **Required permission:** `AccessProfiles:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -615,6 +697,14 @@ access-profiles-audit-logs-all:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List workspace-wide audit log entries
     tags:
       - Access Profiles
@@ -651,8 +741,6 @@ access-profiles-audit-logs-all:
 users-access-profiles:
   get:
     operationId: listUserAccessProfiles
-    description: |
-      **Required permission:** `AccessProfiles:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -660,6 +748,14 @@ users-access-profiles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List access profiles held by a user
     tags:
       - Access Profiles
@@ -692,11 +788,17 @@ users-access-profile-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a user's access profile
     description: |
       Removes the profile from the user and deletes every virtual key it produced. Fails closed if a virtual key cannot be deleted.
-
-      **Required permission:** `AccessProfiles:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -735,6 +837,14 @@ users-access-profile-budget-override:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Set a user's access-profile budget override
     description: |
       Sets or replaces the spending override on one budget of a single user's copy of an access profile.
@@ -751,8 +861,6 @@ users-access-profile-budget-override:
 
       Requires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy
       of the profile, not on the shared template.
-
-      **Required permission:** `AccessProfiles:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -806,6 +914,14 @@ users-access-profile-budget-override:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove a user's access-profile budget override
     description: |
       Removes any active override from the user's budget, so it is enforced against its base `max_limit`
@@ -813,8 +929,6 @@ users-access-profile-budget-override:
       cleared grant cannot be re-derived. Safe to call on a budget that has no override.
 
       Requires the `AccessProfiles.Update` permission.
-
-      **Required permission:** `AccessProfiles:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -868,6 +982,14 @@ users-access-profile-virtual-keys:
           **Deprecated.** Use [`POST /api/governance/users/{user_id}/virtual-keys`](/api-reference/governance/mint-an-extra-virtual-key-for-a-user)
           instead. This path still works and behaves identically, but will be removed in a future major release.
         </Warning>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add an extra virtual key under a user's access profile (deprecated)
     description: |
       Issues an additional virtual key for the user. 
@@ -876,8 +998,6 @@ users-access-profile-virtual-keys:
       the key is resolved at request time from whichever of the user's active profiles grant it. So
       `profile_id` is ignored — the key minted is the same whichever profile is named, and it is not
       bound to that profile or removed with it. The user must hold at least one access profile.
-
-      **Required permission:** `AccessProfiles:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Access Profiles
     parameters:
@@ -926,8 +1046,6 @@ users-access-profile-virtual-keys:
 users-access-profile-virtual-key-by-id:
   delete:
     operationId: deleteUserAccessProfileVirtualKey
-    description: |
-      **Required permission:** `AccessProfiles:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -935,6 +1053,14 @@ users-access-profile-virtual-key-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a virtual key from a user's access profile
     tags:
       - Access Profiles

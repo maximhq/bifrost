@@ -1,11 +1,18 @@
 execute-tool:
   post:
     operationId: executeMCPTool
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Execute MCP tool
     description: |
       Executes an MCP tool and returns the result.
-
-      **Required permission:** none. This endpoint is not RBAC-gated; it is authorized by the credential listed under Authorizations ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     parameters:
@@ -77,14 +84,21 @@ execute-tool:
 clients:
   get:
     operationId: getMCPClients
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List MCP clients
     description: |
       Returns a paginated list of configured MCP clients with their tools and connection state.
       Supports case-insensitive name search and exact-match filtering by connection type, auth type,
       code-mode, and enabled/disabled status. Multi-value filters accept a comma-separated list and
       use OR semantics within a field.
-
-      **Required permission:** `MCPGateway:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     parameters:
@@ -177,6 +191,15 @@ clients:
 client:
   post:
     operationId: addMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add MCP client
     description: |
       Adds a new MCP client with the specified configuration.
@@ -192,8 +215,6 @@ client:
       subprocess), and connection_type "http"/"sse" whose connection_string
       resolves to a loopback, private-network, link-local, or CGNAT address.
       Public http/sse targets are unaffected.
-
-      **Required permission:** `MCPGateway:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     requestBody:
@@ -233,6 +254,15 @@ client:
 client-by-id:
   put:
     operationId: editMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Edit MCP client
     description: |
       Updates an existing MCP client's configuration. All fields are optional
@@ -244,8 +274,6 @@ client-by-id:
       a field actually changes (see MCPClientUpdateRequest.oauth_config).
       Optionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.
       Set disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.
-
-      **Required permission:** `MCPGateway:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     parameters:
@@ -278,11 +306,18 @@ client-by-id:
 
   delete:
     operationId: removeMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove MCP client
     description: |
       Removes an MCP client from the configuration.
-
-      **Required permission:** `MCPGateway:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     parameters:
@@ -310,6 +345,15 @@ client-by-id:
 client-reconnect:
   post:
     operationId: reconnectMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reconnect MCP client
     description: |
       Reconnects an MCP client that is in an error or unstable state.
@@ -318,8 +362,6 @@ client-reconnect:
       per-user auth type — since none of them hold a shared upstream
       connection to re-establish. Also not applicable to clients in
       pending_verification state — complete the admin verification instead.
-
-      **Required permission:** `MCPGateway:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     parameters:
@@ -347,6 +389,15 @@ client-reconnect:
 client-complete-oauth:
   post:
     operationId: completeMCPClientOAuth
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Complete MCP client OAuth flow
     description: |
       Completes an OAuth flow for an MCP client after the admin has authorized
@@ -375,8 +426,6 @@ client-complete-oauth:
       the flow's own row rather than the client's overall OAuth status,
       which never regresses once a client has been authorized once and so
       can't distinguish a stale prior authorization from a fresh one.
-
-      **Required permission:** `MCPGateway:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
       - OAuth
@@ -420,6 +469,15 @@ client-complete-oauth:
 client-initiate-verification:
   post:
     operationId: initiateMCPClientVerification
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Initiate verification for a pending MCP client
     description: |
       Starts the one-time admin OAuth authorization for an MCP client sitting
@@ -433,8 +491,6 @@ client-initiate-verification:
       browser, poll status_url until "authorized", then POST complete_url.
       Safe to call again if a previous attempt expired or was abandoned — each
       call starts a fresh flow.
-
-      **Required permission:** `MCPGateway:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
       - OAuth
@@ -466,6 +522,15 @@ client-initiate-verification:
 client-reauthorize:
   post:
     operationId: reauthorizeMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reauthorize an MCP client
     description: |
       Redoes the OAuth consent flow for an already-authorized OAuth-based MCP
@@ -485,8 +550,6 @@ client-reauthorize:
       Complete the returned flow like any other admin OAuth flow: open
       authorize_url in a browser, poll status_url until "authorized", then
       POST complete_url.
-
-      **Required permission:** `MCPGateway:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
       - OAuth
@@ -528,6 +591,15 @@ client-reauthorize:
 client-verify-headers:
   post:
     operationId: verifyMCPClientHeaders
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Verify a pending per-user-headers MCP client
     description: |
       Completes the admin verification for an MCP client with auth_type
@@ -546,8 +618,6 @@ client-verify-headers:
       verification and upserts the credential back to active, whether or not
       it currently needs repair (mirrors POST /reauthorize for OAuth-based
       clients).
-
-      **Required permission:** `MCPGateway:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     parameters:
@@ -611,6 +681,15 @@ client-verify-headers:
 client-verify-exchange:
   post:
     operationId: verifyMCPClientExchange
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Verify a pending or repair a needs_reauth token_exchange MCP client
     description: |
       Completes admin verification for an MCP client with auth_type
@@ -632,8 +711,6 @@ client-verify-exchange:
       resubmitting always re-runs verification and retains a fresh
       credential, whether or not it currently needs repair (mirrors POST
       /reauthorize for OAuth-based clients).
-
-      **Required permission:** `MCPGateway:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP
     parameters:
@@ -699,9 +776,16 @@ sessions:
       When both a credential and a pending flow exist for the same
       `(identity, mcp_client)` binding, the credential is returned and the
       flow is suppressed to avoid duplicate entries.
-
-      **Required permission:** `MCPGateway:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     operationId: listMcpSessions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     security:
       - ManagementBearerAuth: []
@@ -736,9 +820,16 @@ session-by-id:
 
       Bifrost does **not** call the upstream provider's revoke endpoint —
       revocation is local. Per-user-headers credentials never call upstream.
-
-      **Required permission:** `MCPGateway:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     operationId: revokeMcpSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -779,9 +870,16 @@ session-reauth:
       Refused with 403 if the row is `orphaned` — a fresh credential wouldn't
       help; the issue is the identity has lost access to the MCP, which the
       admin must fix.
-
-      **Required permission:** `MCPGateway:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     operationId: reauthMcpSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -821,9 +919,16 @@ per-user-headers-flow:
       render the values form.
 
       Requires management API authentication via `Authorization: Bearer <API key>`.
-
-      **Required permission:** `MCPGateway:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     operationId: getPerUserHeadersFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -858,9 +963,16 @@ per-user-headers-flow:
 
       Values for any key not in the live `per_user_header_keys` schema are
       dropped server-side so a stale UI can't persist deprecated keys.
-
-      **Required permission:** `MCPGateway:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     operationId: submitPerUserHeadersFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -909,9 +1021,16 @@ per-user-headers-credential:
       The unified DELETE /api/mcp/sessions/{id} is the more convenient entry
       point; this typed endpoint exists for callers that already know they're
       acting on a header credential row.
-
-      **Required permission:** `MCPGateway:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     operationId: revokePerUserHeadersCredential
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id

@@ -19,6 +19,8 @@ Use an API key as the bearer token when calling these endpoints from scripts, ba
 5. Create the key.
 6. Copy the generated key and store it in your secret manager.
 
+Keys can also be managed over the API itself — see [Create an API key](/api-reference/api-keys/create-an-api-key). A key's access comes from its scopes alone and never inherits the creator's role, and you can only grant scopes you already hold yourself.
+
 <Warning>
   Copy the generated key when it is shown and follow general security practices.
 </Warning>
@@ -92,4 +94,5 @@ Governance resources moved under the `/api/governance` namespace. Both generatio
 | Audit logs | `/api/governance/audit-logs`, `/api/governance/audit-logs/{id}`, `/api/governance/audit-logs/filterdata`, `/api/governance/audit-logs/export`, `/api/governance/audit-logs/{id}/verify` |
 | Audit logs (deprecated aliases) | `/api/audit-logs`, `/api/audit-logs/{id}`, `/api/audit-logs/filterdata`, `/api/audit-logs/export`, `/api/audit-logs/{id}/verify` |
 | Webhooks | `/api/webhooks`, `/api/webhooks/{id}`, `/api/webhooks/{id}/deliveries`, `/api/webhooks/{id}/rotate-secret`, `/api/webhooks/{id}/test`, `/api/webhooks/deliveries/{id}/redeliver` |
+| API keys | `/api/api-keys`, `/api/api-keys/{id}` |
 | Session and vault operations | `/api/session/logout`, `/api/session/ws-ticket`, `/api/vault/flush-cache` |

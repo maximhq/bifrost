@@ -1,13 +1,20 @@
 oauth-callback:
   get:
     operationId: handleOAuthCallback
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: OAuth callback endpoint
     description: |
       Handles the OAuth provider callback after user authorization.
       This endpoint processes the authorization code and exchanges it for an access token.
       On success, displays an HTML page that closes the authorization window.
-
-      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - OAuth
     parameters:
@@ -59,13 +66,20 @@ oauth-callback:
 oauth-config-status:
   get:
     operationId: getOAuthConfigStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get OAuth config status
     description: |
       Retrieves the current status of an OAuth configuration.
       Shows whether the OAuth flow is pending, authorized, or failed,
       and includes token expiration and scopes if authorized.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:
@@ -97,6 +111,15 @@ oauth-config-status:
 oauth-config-by-id:
   delete:
     operationId: revokeOAuthConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Revoke OAuth config
     description: |
       Revokes a server-level OAuth configuration and its associated access token.
@@ -104,8 +127,6 @@ oauth-config-by-id:
       Revocation is not terminal for the client: an admin can restore access by
       redoing consent via POST /api/mcp/client/{id}/reauthorize, which runs
       against the credentials currently stored on the client's OAuth config.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:
@@ -139,6 +160,15 @@ oauth-config-by-id:
 per-user-oauth-flow-detail:
   get:
     operationId: getPerUserOauthFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get per-user OAuth flow detail
     description: |
       Returns the pending OAuth flow row metadata: which MCP client is being
@@ -147,8 +177,6 @@ per-user-oauth-flow-detail:
       binding (`has_active_token`).
 
       Requires management API authentication via `Authorization: Bearer <API key>`.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:
@@ -178,6 +206,15 @@ per-user-oauth-flow-detail:
 per-user-oauth-flow-start:
   get:
     operationId: startPerUserOauthFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Start the upstream OAuth authorization for a pending flow
     description: |
       Reconstructs the upstream provider's authorize URL for a pending OAuth
@@ -189,8 +226,6 @@ per-user-oauth-flow-start:
       Returns 410 if the flow is no longer pending (expired / completed /
       failed). The caller should restart the original action to get a fresh
       flow.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:

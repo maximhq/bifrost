@@ -8,6 +8,14 @@ flush-cache:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Flush vault secret cache
     description: |
       Clears the in-memory vault secret cache so the next resolution of every
@@ -19,8 +27,6 @@ flush-cache:
       peer nodes automatically — you only need to call this on one node.
 
       Returns `400` if vault integration is not enabled.
-
-      **Required permission:** `Settings:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Vault
     security:

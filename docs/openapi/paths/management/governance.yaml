@@ -3,11 +3,18 @@
 virtual-keys:
   get:
     operationId: listVirtualKeys
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List virtual keys
     description: |
       Returns a list of all virtual keys with their configurations.
-
-      **Required permission:** `VirtualKeys:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -98,11 +105,18 @@ virtual-keys:
 
   post:
     operationId: createVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create virtual key
     description: |
       Creates a new virtual key with the specified configuration.
-
-      **Required permission:** `VirtualKeys:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     requestBody:
@@ -129,6 +143,15 @@ virtual-keys:
 virtual-keys-quota:
   get:
     operationId: getVirtualKeyQuota
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get virtual key quota
     description: |
       Returns the overall budget and rate limit quota for the authenticated virtual key,
@@ -140,8 +163,6 @@ virtual-keys-quota:
       previous key value also authenticates until previous_value_expires_at.
       An expired virtual key is rejected with 403; an inactive one still returns
       its quota with is_active false.
-
-      **Required permission:** none. This endpoint is not RBAC-gated; it is authorized by the credential listed under Authorizations ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     # Self-service: the virtual key value is the credential. Registered without the
@@ -186,11 +207,18 @@ virtual-keys-quota:
 virtual-keys-by-id:
   get:
     operationId: getVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get virtual key
     description: |
       Returns a specific virtual key by ID.
-
-      **Required permission:** `VirtualKeys:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -232,11 +260,18 @@ virtual-keys-by-id:
 
   put:
     operationId: updateVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update virtual key
     description: |
       Updates an existing virtual key's configuration.
-
-      **Required permission:** `VirtualKeys:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -275,11 +310,18 @@ virtual-keys-by-id:
 
   delete:
     operationId: deleteVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete virtual key
     description: |
       Deletes a virtual key.
-
-      **Required permission:** `VirtualKeys:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -311,6 +353,15 @@ virtual-keys-by-id:
 virtual-keys-rotate-by-id:
   post:
     operationId: rotateVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rotate virtual key
     description: |
       Generates a new credential value for the virtual key while leaving its configuration,
@@ -324,8 +375,6 @@ virtual-keys-rotate-by-id:
 
       The new credential is returned in `virtual_key.value`. Store it securely and update clients
       that use the previous value.
-
-      **Required permission:** `VirtualKeys:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -356,6 +405,15 @@ virtual-keys-rotate-by-id:
 virtual-keys-budget-override:
   put:
     operationId: updateVirtualKeyBudgetOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Set virtual key budget override
     description: |
       Sets or replaces the spending override on one of a virtual key's budgets. The override is additive —
@@ -366,8 +424,6 @@ virtual-keys-budget-override:
       (the current window counts as the first), or `mode: forever` to keep the override until it is deleted.
       A finite grant is anchored to the budget's current reset window, so every node in a cluster derives the
       same number of remaining cycles and a config reload cannot resurrect a spent one.
-
-      **Required permission:** `VirtualKeys:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -412,13 +468,20 @@ virtual-keys-budget-override:
 
   delete:
     operationId: deleteVirtualKeyBudgetOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove virtual key budget override
     description: |
       Removes any active override from the budget, so it is enforced against its base `max_limit` again.
       The budget's current usage and reset schedule are unchanged, and the removal is permanent — a cleared
       grant cannot be re-derived. Safe to call on a budget that has no override.
-
-      **Required permission:** `VirtualKeys:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -456,11 +519,18 @@ virtual-keys-budget-override:
 virtual-keys-rotate:
   post:
     operationId: bulkRotateVirtualKeys
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rotate multiple virtual keys
     description: |
       Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
-
-      **Required permission:** `VirtualKeys:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     security:
@@ -535,11 +605,18 @@ virtual-keys-rotate:
 virtual-keys-by-id-rotate:
   post:
     operationId: rotateVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rotate virtual key
     description: |
       Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
-
-      **Required permission:** `VirtualKeys:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -580,11 +657,18 @@ virtual-keys-by-id-rotate:
 teams:
   get:
     operationId: listTeams
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List teams
     description: |
       Returns a list of all teams.
-
-      **Required permission:** `Teams:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -614,11 +698,18 @@ teams:
 
   post:
     operationId: createTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create team
     description: |
       Creates a new team.
-
-      **Required permission:** `Teams:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     requestBody:
@@ -645,11 +736,18 @@ teams:
 teams-by-id:
   get:
     operationId: getTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get team
     description: |
       Returns a specific team by ID.
-
-      **Required permission:** `Teams:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -689,11 +787,18 @@ teams-by-id:
 
   put:
     operationId: updateTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update team
     description: |
       Updates an existing team.
-
-      **Required permission:** `Teams:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -732,11 +837,18 @@ teams-by-id:
 
   delete:
     operationId: deleteTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete team
     description: |
       Deletes a team.
-
-      **Required permission:** `Teams:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -770,11 +882,18 @@ teams-by-id:
 customers:
   get:
     operationId: listCustomers
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List customers
     description: |
       Returns a list of all customers.
-
-      **Required permission:** `Customers:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -799,11 +918,18 @@ customers:
 
   post:
     operationId: createCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create customer
     description: |
       Creates a new customer.
-
-      **Required permission:** `Customers:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     requestBody:
@@ -830,11 +956,18 @@ customers:
 customers-by-id:
   get:
     operationId: getCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get customer
     description: |
       Returns a specific customer by ID.
-
-      **Required permission:** `Customers:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -874,11 +1007,18 @@ customers-by-id:
 
   put:
     operationId: updateCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update customer
     description: |
       Updates an existing customer.
-
-      **Required permission:** `Customers:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -917,11 +1057,18 @@ customers-by-id:
 
   delete:
     operationId: deleteCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete customer
     description: |
       Deletes a customer.
-
-      **Required permission:** `Customers:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -955,11 +1102,18 @@ customers-by-id:
 budgets:
   get:
     operationId: listBudgets
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List budgets
     description: |
       Returns a list of all budgets. Use the `from_memory` query parameter to get data from in-memory cache.
-
-      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -985,11 +1139,18 @@ budgets:
 rate-limits:
   get:
     operationId: listRateLimits
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List rate limits
     description: |
       Returns a list of all rate limits. Use the `from_memory` query parameter to get data from in-memory cache.
-
-      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1017,11 +1178,18 @@ rate-limits:
 model-configs:
   get:
     operationId: listModelConfigs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List model limits
     description: |
       Returns a paginated list of model limits with their budget and rate limit settings.
-
-      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     security:
@@ -1082,6 +1250,15 @@ model-configs:
 
   post:
     operationId: createModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create model config
     description: |
       Creates a new model configuration with budget and rate limit settings.
@@ -1090,8 +1267,6 @@ model-configs:
       budgets for a person are now declared on an access profile and materialize per user as
       `access_profile`-scoped limits. Existing `user`-scoped rows keep working and stay editable
       through the update endpoint.
-
-      **Required permission:** `Governance:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     requestBody:
@@ -1126,11 +1301,18 @@ model-configs:
 model-configs-by-id:
   get:
     operationId: getModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model config
     description: |
       Returns a specific model configuration by ID.
-
-      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1164,11 +1346,18 @@ model-configs-by-id:
 
   put:
     operationId: updateModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update model config
     description: |
       Updates an existing model configuration's budget and rate limit settings.
-
-      **Required permission:** `Governance:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1207,11 +1396,18 @@ model-configs-by-id:
 
   delete:
     operationId: deleteModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete model config
     description: |
       Deletes a model configuration.
-
-      **Required permission:** `Governance:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1245,11 +1441,18 @@ model-configs-by-id:
 provider-governance:
   get:
     operationId: listProviderGovernance
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List provider governance
     description: |
       Returns a list of all providers with their governance settings (budget and rate limits).
-
-      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     security:
@@ -1268,11 +1471,18 @@ provider-governance:
 provider-governance-by-name:
   put:
     operationId: updateProviderGovernance
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update provider governance
     description: |
       Updates governance settings (budget and rate limits) for a specific provider.
-
-      **Required permission:** `Governance:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1311,11 +1521,18 @@ provider-governance-by-name:
 
   delete:
     operationId: deleteProviderGovernance
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete provider governance
     description: |
       Removes governance settings (budget and rate limits) for a specific provider.
-
-      **Required permission:** `Governance:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1348,11 +1565,18 @@ provider-governance-by-name:
 pricing-overrides:
   get:
     operationId: listPricingOverrides
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List pricing overrides
     description: |
       Returns all pricing overrides, optionally filtered by scope.
-
-      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1413,11 +1637,18 @@ pricing-overrides:
 
   post:
     operationId: createPricingOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create pricing override
     description: |
       Creates a new pricing override. The most specific matching scope always wins during cost resolution.
-
-      **Required permission:** `Governance:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     requestBody:
@@ -1444,11 +1675,18 @@ pricing-overrides:
 pricing-overrides-by-id:
   put:
     operationId: updatePricingOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update pricing override
     description: |
       Updates an existing pricing override. Omitted fields are merged from the existing record. The `patch` field is always replaced in full when provided.
-
-      **Required permission:** `Governance:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:
@@ -1487,11 +1725,18 @@ pricing-overrides-by-id:
 
   delete:
     operationId: deletePricingOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete pricing override
     description: |
       Deletes a pricing override by ID.
-
-      **Required permission:** `Governance:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Governance
     parameters:

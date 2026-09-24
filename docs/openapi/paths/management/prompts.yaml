@@ -3,11 +3,18 @@
 folders:
   get:
     operationId: listFolders
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List folders
     description: |
       Returns all prompt folders.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     security:
@@ -30,11 +37,18 @@ folders:
 
   post:
     operationId: createFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create folder
     description: |
       Creates a new prompt folder.
-
-      **Required permission:** `PromptRepository:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     requestBody:
@@ -64,11 +78,18 @@ folders:
 folders-by-id:
   get:
     operationId: getFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get folder
     description: |
       Returns a folder by ID.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -101,11 +122,18 @@ folders-by-id:
 
   put:
     operationId: updateFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update folder
     description: |
       Updates a folder's name or description.
-
-      **Required permission:** `PromptRepository:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -146,11 +174,18 @@ folders-by-id:
 
   delete:
     operationId: deleteFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete folder
     description: |
       Deletes a folder and cascades to contained prompts.
-
-      **Required permission:** `PromptRepository:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -181,11 +216,18 @@ folders-by-id:
 prompts:
   get:
     operationId: listPrompts
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List prompts
     description: |
       Returns all prompts, optionally filtered by folder.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -214,11 +256,18 @@ prompts:
 
   post:
     operationId: createPrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create prompt
     description: |
       Creates a new prompt.
-
-      **Required permission:** `PromptRepository:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     requestBody:
@@ -248,11 +297,18 @@ prompts:
 prompts-by-id:
   get:
     operationId: getPrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get prompt
     description: |
       Returns a prompt by ID with its latest version.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -285,11 +341,18 @@ prompts-by-id:
 
   put:
     operationId: updatePrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update prompt
     description: |
       Updates a prompt's name or folder.
-
-      **Required permission:** `PromptRepository:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -324,11 +387,18 @@ prompts-by-id:
 
   delete:
     operationId: deletePrompt
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete prompt
     description: |
       Deletes a prompt and all its versions and sessions.
-
-      **Required permission:** `PromptRepository:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -359,11 +429,18 @@ prompts-by-id:
 prompt-versions:
   get:
     operationId: listPromptVersions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List prompt versions
     description: |
       Returns all versions for a prompt.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -393,11 +470,18 @@ prompt-versions:
 
   post:
     operationId: createPromptVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create prompt version
     description: |
       Creates a new version for a prompt.
-
-      **Required permission:** `PromptRepository:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -434,11 +518,18 @@ prompt-versions:
 versions-by-id:
   get:
     operationId: getPromptVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get prompt version
     description: |
       Returns a specific version by ID.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -472,11 +563,18 @@ versions-by-id:
 
   delete:
     operationId: deletePromptVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete prompt version
     description: |
       Deletes a specific version.
-
-      **Required permission:** `PromptRepository:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -508,11 +606,18 @@ versions-by-id:
 prompt-sessions:
   get:
     operationId: listPromptSessions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List prompt sessions
     description: |
       Returns all sessions for a prompt.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -542,11 +647,18 @@ prompt-sessions:
 
   post:
     operationId: createPromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create prompt session
     description: |
       Creates a new playground session for a prompt.
-
-      **Required permission:** `PromptRepository:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -583,11 +695,18 @@ prompt-sessions:
 sessions-by-id:
   get:
     operationId: getPromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get prompt session
     description: |
       Returns a specific session by ID.
-
-      **Required permission:** `PromptRepository:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -621,11 +740,18 @@ sessions-by-id:
 
   put:
     operationId: updatePromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update prompt session
     description: |
       Updates a session's messages, model params, etc.
-
-      **Required permission:** `PromptRepository:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -661,11 +787,18 @@ sessions-by-id:
 
   delete:
     operationId: deletePromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete prompt session
     description: |
       Deletes a specific session.
-
-      **Required permission:** `PromptRepository:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -697,11 +830,18 @@ sessions-by-id:
 sessions-rename:
   put:
     operationId: renamePromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rename prompt session
     description: |
       Renames a session.
-
-      **Required permission:** `PromptRepository:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:
@@ -738,11 +878,18 @@ sessions-rename:
 sessions-commit:
   post:
     operationId: commitPromptSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `PromptRepository:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Commit session as version
     description: |
       Commits the current session state as a new prompt version.
-
-      **Required permission:** `PromptRepository:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Prompt Repository
     parameters:

@@ -3,6 +3,15 @@
 websocket:
   get:
     operationId: websocketConnect
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: WebSocket connection
     description: |
       Upgrades to a WebSocket connection for real-time updates.
@@ -23,8 +32,6 @@ websocket:
       The message shapes are documented as `StoreUpdateMessage` and
       `RedivisionProgressMessage`; they arrive over the socket rather than as
       an HTTP response body.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Infrastructure
     parameters:
@@ -56,12 +63,19 @@ websocket:
 mcp-server:
   post:
     operationId: mcpServerMessage
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: MCP protocol message
     description: |
       Receives a JSON-RPC 2.0 message for the MCP protocol server.
       Returns a JSON-RPC 2.0 response, or null for notifications.
-
-      **Required permission:** none. This endpoint is not RBAC-gated; it is authorized by the credential listed under Authorizations ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Infrastructure
     requestBody:
@@ -113,12 +127,19 @@ mcp-server:
       - ApiKeyAuth: []
   get:
     operationId: mcpServerSSE
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: MCP protocol SSE stream
     description: |
       Opens a Server-Sent Events stream for the MCP protocol server.
       Returns `Content-Type: text/event-stream`.
-
-      **Required permission:** none. This endpoint is not RBAC-gated; it is authorized by the credential listed under Authorizations ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Infrastructure
     responses:
@@ -136,13 +157,20 @@ mcp-server:
 metrics:
   get:
     operationId: getMetrics
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Metrics:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Prometheus metrics
     description: |
       Returns Prometheus-formatted metrics for monitoring.
       Registered behind the management auth middleware chain, so a scraper must present
       management credentials (or the route must be added to `client_config.whitelisted_routes`).
-
-      **Required permission:** `Metrics:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Infrastructure
     security:

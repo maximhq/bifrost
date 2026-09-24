@@ -10,14 +10,20 @@ projects:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List projects
     description: |
       Returns projects visible to the caller: those they created, those with no
       recorded creator, and those they belong to. Each project's roster is
       narrowed the same way, so `members` is a subset of the true roster and
       `pagination.total` counts only what the caller may see.
-
-      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -69,13 +75,19 @@ projects:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create project
     description: |
       Creates a project. `access_rule` is required and has no default, since a
       rule that could be assumed might widen a request. The project starts with
       no members: add the roster through the member routes.
-
-      **Required permission:** `Projects:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     requestBody:
@@ -110,13 +122,19 @@ projects-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get project
     description: |
       Returns one project with its caps, its provider and MCP access, and the
       part of its roster the caller may see. A project outside the caller's data
       access reads as not found rather than forbidden.
-
-      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -150,6 +168,14 @@ projects-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update project
     description: |
       Applies a patch to the stored project. Fields the body omits are left as
@@ -162,8 +188,6 @@ projects-by-id:
       queued and its id is returned as `redivision_job_id`; the project's own
       write has already committed by then, so a failure to queue is reported as
       a server error rather than rolling the edit back.
-
-      **Required permission:** `Projects:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -205,13 +229,19 @@ projects-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete project
     description: |
       Deletes the project with its providers, its caps, the spend recorded
       against them, and its roster. A roster is not a reason to refuse, so there
       is no force flag. Log rows keep the attribution they already carry.
-
-      **Required permission:** `Projects:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -246,12 +276,18 @@ projects-members:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List project members
     description: |
       Returns the roster with each member's caps, narrowed to what the caller's
       data access permits. There is no pagination on this route.
-
-      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -285,6 +321,14 @@ projects-members:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add project members
     description: |
       Adds users to the roster. The call is create-only: a user already on the
@@ -295,8 +339,6 @@ projects-members:
       whole units for the resulting roster is refused before anything is
       written, and the recalculation is queued and reported as
       `redivision_job_id`.
-
-      **Required permission:** `Projects:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -337,6 +379,14 @@ projects-member-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update project member caps
     description: |
       Restates one member's caps in full: a source the body does not name loses
@@ -347,8 +397,6 @@ projects-member-by-id:
       split the division owns those rows, and the request is refused before the
       body is read. `{member_id}` is the membership row id, and a member outside
       the caller's data access reads as not found.
-
-      **Required permission:** `Projects:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -394,14 +442,20 @@ projects-member-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove project member
     description: |
       Removes a member from the roster and deletes the caps derived for them. On
       a project with `split_policy: equal` this enlarges every remaining
       member's slice, and the recalculation is queued and reported as
       `redivision_job_id`.
-
-      **Required permission:** `Projects:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -442,6 +496,14 @@ users-projects:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Projects:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List a user's projects
     description: |
       Returns the projects the named user belongs to, intersected with the
@@ -451,8 +513,6 @@ users-projects:
 
       This listing is assembled without the per-model caps, the member shares
       and the member display names; read a project directly for those.
-
-      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:

@@ -8,6 +8,14 @@ audit-logs:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List audit logs
     description: |
       Retrieves CADF-compliant audit log events with filtering, search, and
@@ -15,8 +23,6 @@ audit-logs:
       single value (singular parameter, e.g. `action`) or a JSON-encoded array
       of values (plural parameter, e.g. `actions`); when both are supplied the
       plural array takes precedence.
-
-      **Required permission:** `AuditLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Audit Logs
     parameters:
@@ -206,12 +212,18 @@ audit-logs-filterdata:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get audit log filter data
     description: |
       Returns the distinct values available for each audit log filter dimension,
       used to populate filter dropdowns in the dashboard.
-
-      **Required permission:** `AuditLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Audit Logs
     parameters:
@@ -254,13 +266,19 @@ audit-logs-export:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Export audit logs
     description: |
       Streams audit log events matching the supplied filters as a downloadable
       file. Accepts the same filter query parameters as `GET /api/audit-logs`.
       The response is returned as an attachment with a generated filename.
-
-      **Required permission:** `AuditLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Audit Logs
     parameters:
@@ -341,11 +359,17 @@ audit-logs-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get audit log by ID
     description: |
       Retrieves a single audit log event by its unique ID.
-
-      **Required permission:** `AuditLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Audit Logs
     parameters:
@@ -382,13 +406,19 @@ audit-logs-verify:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Verify audit log signature
     description: |
       Recomputes the HMAC-SHA256 signature for a single audit log event and
       compares it (in constant time) against the stored signature to detect
       tampering.
-
-      **Required permission:** `AuditLogs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Audit Logs
     parameters:

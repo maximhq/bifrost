@@ -10,6 +10,14 @@ inspect:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Inspect a request without forwarding it
     description: |
       Runs the pre-model plugin checks against a request and answers whether
@@ -25,8 +33,6 @@ inspect:
       inspected request to a governance project exactly as the header would.
       When called with `phase: "response"` and `log: true`, the resolved
       project is recorded on the log row this endpoint writes.
-
-      **Required permission:** none. This endpoint is not RBAC-gated; it is authorized by the credential listed under Authorizations ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Infrastructure
     requestBody:

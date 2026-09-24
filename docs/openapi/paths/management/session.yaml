@@ -1,12 +1,19 @@
 login:
   post:
     operationId: login
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Login
     description: |
       Authenticates a user and returns a session token.
       Sets a cookie with the session token for subsequent requests.
-
-      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - Session
     requestBody:
@@ -45,11 +52,18 @@ login:
 logout:
   post:
     operationId: logout
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Logout
     description: |
       Logs out the current user and invalidates the session token.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Session
     # Authenticated like every management endpoint (management API key), and the
@@ -75,11 +89,18 @@ logout:
 is-auth-enabled:
   get:
     operationId: isAuthEnabled
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Check if authentication is enabled
     description: |
       Returns whether authentication is enabled and if the current token is valid.
-
-      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - Session
     # Public: callable before login so the UI can decide whether to prompt for
@@ -98,12 +119,19 @@ is-auth-enabled:
 ws-ticket:
   post:
     operationId: issueWSTicket
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Issue WebSocket ticket
     description: |
       Issues a short-lived ticket for authenticating WebSocket connections.
       The ticket can be used as a query parameter when upgrading to WebSocket.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Session
     # Authenticated like every management endpoint (management API key), and the

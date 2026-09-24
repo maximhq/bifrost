@@ -1,12 +1,19 @@
 config:
   get:
     operationId: getConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get configuration
     description: |
       Retrieves the current Bifrost configuration including client config, framework config,
       auth config, and connection status for various stores.
-
-      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     parameters:
@@ -31,12 +38,19 @@ config:
 
   put:
     operationId: updateConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update configuration
     description: |
       Updates the Bifrost configuration. Supports hot-reloading of certain settings
       like drop_excess_requests. Some settings may require a restart to take effect.
-
-      **Required permission:** `Settings:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     requestBody:
@@ -63,12 +77,19 @@ config:
 version:
   get:
     operationId: getVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get version
     description: |
       Returns the current Bifrost version information.
       Unauthenticated by design - `/api/version` is in the auth middleware's system whitelist.
-
-      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - Configuration
     # Public: system-whitelisted in AuthMiddleware.APIMiddleware().
@@ -84,11 +105,18 @@ version:
 proxy-config:
   get:
     operationId: getProxyConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get proxy configuration
     description: |
       Retrieves the current global proxy configuration.
-
-      **Required permission:** `Settings:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     security:
@@ -112,11 +140,18 @@ proxy-config:
 
   put:
     operationId: updateProxyConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update proxy configuration
     description: |
       Updates the global proxy configuration.
-
-      **Required permission:** `Settings:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     requestBody:
@@ -143,11 +178,18 @@ proxy-config:
 force-sync-pricing:
   post:
     operationId: forceSyncPricing
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Force pricing sync
     description: |
       Triggers an immediate pricing sync and resets the pricing sync timer.
-
-      **Required permission:** `Settings:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     security:
