@@ -1537,9 +1537,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status: &statusInProgress,
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:    chunk.ContentBlock.ID,
-						Name:      chunk.ContentBlock.Name,
-						Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
+						CallID:      chunk.ContentBlock.ID,
+						Name:        chunk.ContentBlock.Name,
+						ToolsetName: chunk.ContentBlock.ToolsetName,
+						Arguments:   schemas.Ptr(""), // Arguments will be filled by deltas
 					},
 				}
 
@@ -3275,6 +3276,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 							if bifrostResp.Item.ResponsesToolMessage != nil {
 								contentBlock.ID = providerUtils.SanitizeAnthropicToolUseIDPtr(bifrostResp.Item.ResponsesToolMessage.CallID)
 								contentBlock.Name = bifrostResp.Item.ResponsesToolMessage.Name
+								contentBlock.ToolsetName = bifrostResp.Item.ResponsesToolMessage.ToolsetName
 								// Always start with empty input for streaming compatibility
 								contentBlock.Input = json.RawMessage("{}")
 
@@ -4032,6 +4034,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	// Convert basic parameters
 	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
+	}
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		maps.Copy(params.ExtraParams, req.ExtraParams)
 	}
 
 	// Anthropic native server-side fallback ("fallbacks" objects) is forwarded to
@@ -5216,6 +5221,13 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// NOT be emitted as a tool_result, or Anthropic rejects the whole request.
 	knownToolUseIDs := make(map[string]bool)
 
+	// toolsetNameByToolUseID carries each member tool_use's toolset_name so the
+	// matching tool_result can be tagged with it. Anthropic rejects a pair whose
+	// halves disagree, and a client speaking a dialect without the field (an
+	// OpenAI-shaped function_call_output, say) returns only the call id, so the
+	// value is restored here rather than trusted to survive the round trip.
+	toolsetNameByToolUseID := make(map[string]string)
+
 	// midConvPlacementOK reports whether a mid-conversation system message at input index i can
 	// legally be forwarded as role:"system". Anthropic enforces two clauses and rejects a
 	// violation of either with "messages.N: role 'system' must follow a 'user' message ...":
@@ -5280,6 +5292,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		var orphaned []AnthropicContentBlock
 		for _, block := range pendingToolResultBlocks {
 			if block.ToolUseID != nil && knownToolUseIDs[*block.ToolUseID] {
+				if block.ToolsetName == nil {
+					if name, ok := toolsetNameByToolUseID[*block.ToolUseID]; ok {
+						block.ToolsetName = &name
+					}
+				}
 				matched = append(matched, block)
 			} else {
 				orphaned = append(orphaned, block)
@@ -5459,6 +5476,9 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				for _, b := range anthropicMsg.Content.ContentBlocks {
 					if (b.Type == AnthropicContentBlockTypeToolUse || b.Type == AnthropicContentBlockTypeServerToolUse) && b.ID != nil {
 						knownToolUseIDs[*b.ID] = true
+						if b.ToolsetName != nil {
+							toolsetNameByToolUseID[*b.ID] = *b.ToolsetName
+						}
 					}
 				}
 				seenConversation = true
@@ -5526,6 +5546,9 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 							}
 							if toolUseBlock.ID != nil {
 								currentToolCallIDs[*toolUseBlock.ID] = true
+								if toolUseBlock.ToolsetName != nil {
+									toolsetNameByToolUseID[*toolUseBlock.ID] = *toolUseBlock.ToolsetName
+								}
 							}
 							// Use this message as the current one for subsequent tool calls
 							pendingToolCalls = lastMsg.Content.ContentBlocks
@@ -5544,6 +5567,9 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 				if toolUseBlock.ID != nil {
 					currentToolCallIDs[*toolUseBlock.ID] = true
+					if toolUseBlock.ToolsetName != nil {
+						toolsetNameByToolUseID[*toolUseBlock.ID] = *toolUseBlock.ToolsetName
+					}
 				}
 			}
 
@@ -6295,7 +6321,8 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 					Status:       schemas.Ptr("completed"),
 					CacheControl: block.CacheControl,
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: block.ToolUseID,
+						CallID:      block.ToolUseID,
+						ToolsetName: block.ToolsetName,
 					},
 				}
 				// Initialize the nested struct before any writes
@@ -6665,8 +6692,9 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 						Status:       schemas.Ptr("completed"),
 						CacheControl: block.CacheControl,
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
-							CallID: block.ID,
-							Name:   block.Name,
+							CallID:      block.ID,
+							Name:        block.Name,
+							ToolsetName: block.ToolsetName,
 						},
 					}
 					if isOutputMessage {
@@ -6717,7 +6745,8 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					Status:       schemas.Ptr("completed"),
 					CacheControl: block.CacheControl,
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: block.ToolUseID,
+						CallID:      block.ToolUseID,
+						ToolsetName: block.ToolsetName,
 					},
 				}
 				// Initialize the nested struct before any writes
@@ -7227,6 +7256,7 @@ func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, m
 		if msg.ResponsesToolMessage.Name != nil {
 			toolUseBlock.Name = msg.ResponsesToolMessage.Name
 		}
+		toolUseBlock.ToolsetName = msg.ResponsesToolMessage.ToolsetName
 
 		// Parse arguments as JSON input
 		if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
@@ -7262,6 +7292,7 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 			Type:         AnthropicContentBlockTypeToolResult,
 			ToolUseID:    providerUtils.SanitizeAnthropicToolUseIDPtr(msg.ResponsesToolMessage.CallID),
 			CacheControl: msg.CacheControl,
+			ToolsetName:  msg.ResponsesToolMessage.ToolsetName,
 		}
 
 		if msg.ResponsesToolMessage.Output != nil {
@@ -8333,6 +8364,14 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		}
 
 		switch *tool.Type {
+		case AnthropicToolTypeComputerToolset20260801:
+			// The toolset carries no display geometry; the generation is re-derived
+			// from the target model on the way out, so nothing else needs keeping.
+			return &schemas.ResponsesTool{
+				Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+				ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{Environment: "browser"},
+			}
+
 		case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeComputerUsePreview,
@@ -8692,8 +8731,31 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
 			computerToolType := AnthropicToolTypeComputer20250124
-			if ComputerUseGeneration(caps) == ComputerUseGen20251124 {
+			switch ComputerUseGeneration(caps) {
+			case ComputerUseGenToolset20260801:
+				// Bare entry: name and display_* are rejected on a toolset.
+				return &AnthropicTool{
+					Type:         schemas.Ptr(AnthropicToolTypeComputerToolset20260801),
+					CacheControl: tool.CacheControl,
+				}
+			case ComputerUseGen20251124:
 				computerToolType = AnthropicToolTypeComputer20251124
+			}
+			// No geometry means this cannot become a dated tool: those validate
+			// display_*_px as >= 1. A toolset carries none by design, so when the
+			// target takes a toolset, send that — converting it into a dated tool
+			// the caller never asked for, or dropping a tool the model supports,
+			// both lose capability. Only when neither form is reachable is the tool
+			// dropped, the way any unsupported tool is.
+			if tool.ResponsesToolComputerUsePreview.DisplayWidth <= 0 ||
+				tool.ResponsesToolComputerUsePreview.DisplayHeight <= 0 {
+				if AcceptsComputerToolset(caps) {
+					return &AnthropicTool{
+						Type:         schemas.Ptr(AnthropicToolTypeComputerToolset20260801),
+						CacheControl: tool.CacheControl,
+					}
+				}
+				return nil
 			}
 			return &AnthropicTool{
 				Type: schemas.Ptr(computerToolType),

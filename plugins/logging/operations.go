@@ -375,19 +375,13 @@ func (p *LoggerPlugin) updateLogEntry(
 // It receives the already-inserted entry directly (no DB re-read needed).
 func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(entry *logstore.Log) {
 	return func(entry *logstore.Log) {
-		p.mu.Lock()
-		callback := p.logCallback
-		p.mu.Unlock()
-		if callback == nil {
-			return
-		}
 		if entry == nil {
 			return
 		}
 		if enrichFn != nil {
 			enrichFn(entry)
 		}
-		callback(p.ctx, entry)
+		p.notifyLogCallbacks(p.ctx, entry)
 	}
 }
 
@@ -577,59 +571,9 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	if result == nil {
 		return
 	}
-	// Token usage
-	var usage *schemas.BifrostLLMUsage
-	switch {
-	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-		usage = result.TextCompletionResponse.Usage
-	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-		usage = result.ChatResponse.Usage
-	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-		usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
-	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
-		usage = result.CompactionResponse.Usage.ToBifrostLLMUsage()
-	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-		usage = result.EmbeddingResponse.Usage
-	case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
-		usage = result.RerankResponse.Usage
-	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
-		usage = result.DecisionResponse.Usage
-	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
-		usage = &schemas.BifrostLLMUsage{}
-		if result.TranscriptionResponse.Usage.InputTokens != nil {
-			usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
-		}
-		if result.TranscriptionResponse.Usage.OutputTokens != nil {
-			usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
-		}
-		if result.TranscriptionResponse.Usage.TotalTokens != nil {
-			usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
-		} else {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
-		usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     result.SpeechResponse.Usage.InputTokens,
-			CompletionTokens: result.SpeechResponse.Usage.OutputTokens,
-			TotalTokens:      result.SpeechResponse.Usage.TotalTokens,
-		}
-		if usage.TotalTokens == 0 {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-	case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
-		usage = &schemas.BifrostLLMUsage{}
-		usage.PromptTokens = result.ImageGenerationResponse.Usage.InputTokens
-		usage.CompletionTokens = result.ImageGenerationResponse.Usage.OutputTokens
-		if result.ImageGenerationResponse.Usage.TotalTokens > 0 {
-			usage.TotalTokens = result.ImageGenerationResponse.Usage.TotalTokens
-		} else {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-	case result.PassthroughResponse != nil:
-		if su := result.PassthroughResponse.PassthroughUsage; su != nil {
-			usage = su.LLMUsage
-		}
-	}
+	// Token usage, via the normalizer the span path also uses, so this row and
+	// the span for the same request cannot report different token counts.
+	usage := result.NormalizedUsage()
 	if usage != nil {
 		usage = usage.DeepCopy()
 		entry.TokenUsageParsed = usage

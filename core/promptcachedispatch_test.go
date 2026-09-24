@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -619,6 +620,221 @@ func captureBody(mu *sync.Mutex, bodies *[]string, status int, reply string) htt
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, reply)
+	}
+}
+
+const billingHeaderFixture = "x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli; cc_is_subagent=true;"
+
+func billingHeaderRequest(t testing.TB, header ...string) (*schemas.BifrostContext, *schemas.BifrostResponsesRequest) {
+	t.Helper()
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyIntegrationType, "anthropic")
+	var incoming anthropic.AnthropicMessageRequest
+	require.NoError(t, schemas.Unmarshal([]byte(`{
+		"model":"openai/gpt-4o-mini","max_tokens":64,
+		"system":[
+			{"type":"text","text":"`+billingHeaderFixture+`"},
+			{"type":"text","text":"Stable instructions","cache_control":{"type":"ephemeral"}}
+		],
+		"messages":[{"role":"user","content":"Hello"}]
+	}`), &incoming))
+	if len(header) > 0 {
+		incoming.System.ContentBlocks[0].Text = schemas.Ptr(header[0])
+	}
+	req := incoming.ToBifrostResponsesRequest(ctx)
+	req.ExtractAnthropicBillingHeader()
+	return ctx, req
+}
+
+func TestBillingHeaderNormalizedIngress(t *testing.T) {
+	_, req := billingHeaderRequest(t)
+	require.Len(t, req.Input[0].Content.ContentBlocks, 1)
+	assert.Equal(t, "Stable instructions", *req.Input[0].Content.ContentBlocks[0].Text)
+}
+
+func TestBillingHeaderNonAnthropicNoCopy(t *testing.T) {
+	ctx, req := billingHeaderRequest(t)
+	out, bifrostErr := prepareResponsesRequest(ctx, nil, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, out, "non-Anthropic attempts must reuse the normalized input")
+}
+
+func TestBillingHeaderRawPassthrough(t *testing.T) {
+	ctx, req := billingHeaderRequest(t)
+	req.Model = "claude-sonnet-4"
+	req.RawRequestBody = []byte(`{"system":"` + billingHeaderFixture + `"}`)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	out := restoreResponsesBillingHeader(ctx, schemas.Anthropic, req)
+	assert.Same(t, req, out, "raw passthrough does not need a normalized copy")
+	assert.Contains(t, string(out.RawRequestBody), billingHeaderFixture)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	assert.Len(t, restoreResponsesBillingHeader(ctx, schemas.Anthropic, req).Input[0].Content.ContentBlocks, 2)
+}
+
+func BenchmarkBillingHeaderNonAnthropic100MB(b *testing.B) {
+	ctx, req := billingHeaderRequest(b)
+	// Allocate 100 distinct 1 MiB payloads before timing. Filtering should neither
+	// inspect them nor allocate a new message slice on subsequent GPT attempts.
+	for i := 0; i < 100; i++ {
+		req.Input = append(req.Input, schemas.ResponsesMessage{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(strings.Repeat("x", 1<<20))},
+		})
+	}
+	b.ReportAllocs()
+	var out *schemas.BifrostResponsesRequest
+	for b.Loop() {
+		out = restoreResponsesBillingHeader(ctx, schemas.OpenAI, req)
+	}
+	if out != req {
+		b.Fatal("non-Anthropic attempt copied the request")
+	}
+}
+
+func TestPrepareResponsesBillingHeaderModelFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		base     schemas.ModelProvider
+		alias    *schemas.AliasConfig
+		keep     bool
+	}{
+		{name: "GPT", provider: schemas.OpenAI, model: "gpt-4o-mini"},
+		{name: "Gemini", provider: schemas.Gemini, model: "gemini-2.5-flash"},
+		{name: "self hosted opaque", provider: schemas.Ollama, model: "local-model"},
+		{name: "custom OpenAI", provider: customOpenAIProviderKey, base: schemas.OpenAI, model: "deployment"},
+		{name: "Anthropic opaque", provider: schemas.Anthropic, model: "deployment", keep: true},
+		{name: "custom Anthropic opaque", provider: customAnthropicProviderKey, base: schemas.Anthropic, model: "deployment", keep: true},
+		{name: "Anthropic", provider: schemas.Anthropic, model: "claude-sonnet-4", keep: true},
+		{name: "Bedrock Claude", provider: schemas.Bedrock, model: "anthropic.claude-sonnet-4", keep: true},
+		{name: "Vertex Claude", provider: schemas.Vertex, model: "claude-sonnet-4", keep: true},
+		{name: "Azure Claude", provider: schemas.Azure, model: "claude-sonnet-4", keep: true},
+		{name: "OpenRouter Claude", provider: schemas.OpenRouter, model: "anthropic/claude-sonnet-4", keep: true},
+		{name: "Claude named GPT alias", provider: schemas.OpenAI, model: "claude-alias", alias: &schemas.AliasConfig{ModelID: "opaque", ModelFamily: schemas.Ptr(schemas.ModelFamilyOpenAI)}},
+		{name: "opaque Claude alias", provider: schemas.Azure, model: "deployment", alias: &schemas.AliasConfig{ModelID: "opaque", ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic)}, keep: true},
+		{name: "canonical Claude alias", provider: schemas.OpenRouter, model: "deployment", alias: &schemas.AliasConfig{ModelID: "opaque", ModelName: schemas.Ptr("claude-sonnet-4")}, keep: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, req := billingHeaderRequest(t)
+			req.Provider, req.Model = tc.provider, tc.model
+			if tc.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+			}
+			if tc.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: tc.model, Config: tc.alias})
+			}
+			before, err := providerUtils.MarshalSorted(req)
+			require.NoError(t, err)
+			out, bifrostErr := prepareResponsesRequest(ctx, nil, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			if tc.keep {
+				require.Len(t, out.Input[0].Content.ContentBlocks, 2)
+				assert.Equal(t, billingHeaderFixture, *out.Input[0].Content.ContentBlocks[0].Text)
+			} else {
+				assert.Same(t, req, out)
+				require.Len(t, out.Input[0].Content.ContentBlocks, 1)
+				assert.Equal(t, "Stable instructions", *out.Input[0].Content.ContentBlocks[0].Text)
+				assert.Equal(t, req.Input[0].Content.ContentBlocks[0].CacheControl, out.Input[0].Content.ContentBlocks[0].CacheControl)
+			}
+			after, err := providerUtils.MarshalSorted(req)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after), "preparation mutated the original request")
+		})
+	}
+}
+
+func TestPrepareResponsesBillingHeaderStableWireAndFallback(t *testing.T) {
+	var previous []byte
+	for _, header := range []string{billingHeaderFixture, "x-anthropic-billing-header: cc_version=2.1.270.abc; cch=fffff;"} {
+		ctx, req := billingHeaderRequest(t, header)
+		// Both directions: Claude -> GPT -> Claude, sharing the original input.
+		for _, family := range []schemas.ModelFamily{schemas.ModelFamilyAnthropic, schemas.ModelFamilyOpenAI, schemas.ModelFamilyAnthropic} {
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{ModelID: "deployment", ModelFamily: &family}})
+			out, bifrostErr := prepareResponsesRequest(ctx, nil, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			if family == schemas.ModelFamilyAnthropic {
+				require.Len(t, out.Input[0].Content.ContentBlocks, 2)
+				assert.Equal(t, header, *out.Input[0].Content.ContentBlocks[0].Text)
+				continue
+			}
+			wire, err := providerUtils.MarshalSorted(openai.ToOpenAIResponsesRequest(ctx, out))
+			require.NoError(t, err)
+			assert.NotContains(t, string(wire), "x-anthropic-billing-header:")
+			if previous != nil {
+				assert.Equal(t, string(previous), string(wire))
+			}
+			previous = wire
+		}
+	}
+}
+
+// Capture at the provider boundary so all four dispatch paths must prepare the
+// request, including Responses -> Chat conversion before streaming dispatch.
+type billingHeaderCaptureProvider struct {
+	stubProvider
+	responses *schemas.BifrostResponsesRequest
+	chat      *schemas.BifrostChatRequest
+}
+
+func (p *billingHeaderCaptureProvider) Responses(_ *schemas.BifrostContext, _ schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.responses = r
+	return &schemas.BifrostResponsesResponse{}, nil
+}
+
+func (p *billingHeaderCaptureProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, r *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.chat = r
+	return &schemas.BifrostChatResponse{}, nil
+}
+
+func (p *billingHeaderCaptureProvider) ResponsesStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, r *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.responses = r
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func (p *billingHeaderCaptureProvider) ChatCompletionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, r *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.chat = r
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func TestBillingHeaderDispatch(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, chat := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/chat=%t", stream, chat), func(t *testing.T) {
+				ctx, req := billingHeaderRequest(t)
+				if chat {
+					ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+				}
+				message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req}}
+				provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+				client := &Bifrost{}
+				if stream {
+					message.RequestType = schemas.ResponsesStreamRequest
+					_, bifrostErr := client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+					require.Nil(t, bifrostErr)
+				} else {
+					_, bifrostErr := client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+					require.Nil(t, bifrostErr)
+				}
+				var captured any
+				if chat {
+					require.NotNil(t, provider.chat)
+					captured = provider.chat
+				} else {
+					require.NotNil(t, provider.responses)
+					captured = provider.responses
+				}
+				body, err := providerUtils.MarshalSorted(captured)
+				require.NoError(t, err)
+				assert.NotContains(t, string(body), "x-anthropic-billing-header:")
+				assert.Contains(t, string(body), "Stable instructions")
+				require.Len(t, req.Input[0].Content.ContentBlocks, 1)
+				assert.Equal(t, "Stable instructions", *req.Input[0].Content.ContentBlocks[0].Text)
+			})
+		}
 	}
 }
 

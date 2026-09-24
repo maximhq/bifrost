@@ -66,6 +66,57 @@ func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 		"routing-rule pinned key_id must reach BifrostContextKeyRoutingPinnedAPIKeyID that selectKeyFromProviderForModelWithPool reads")
 }
 
+// TestApplyRoutingRules_FallbackKeyPinReachesRequest covers the fallback pin, which travels on the request's fallback list because core clears the context per attempt.
+func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
+	const fallbackKeyID = "fallback-key-xyz-789"
+
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID:            "fb-pin-1",
+		Name:          "Pinned Fallback Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		ParsedFallbacks: []configstoreTables.RoutingFallback{
+			{Fallback: schemas.Fallback{Provider: "vertex", Model: "gemini-2.5-pro", KeyID: fallbackKeyID}},
+			{Fallback: schemas.Fallback{Provider: "anthropic"}},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "global",
+		Priority: 0,
+	}))
+
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+	}
+
+	root := schemas.NewBifrostContext(context.Background(), time.Now())
+	root.BlockRestrictedWrites()
+	pluginName := PluginName
+	scoped := root.WithPluginScope(&pluginName)
+
+	decision, err := plugin.applyRoutingRules(scoped, req, rules.GovernanceScope{})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+
+	fallbacks := req.ChatRequest.Fallbacks
+	require.Len(t, fallbacks, 2)
+	assert.Equal(t, schemas.ModelProvider("vertex"), fallbacks[0].Provider)
+	assert.Equal(t, fallbackKeyID, fallbacks[0].KeyID,
+		"a routing rule's fallback key_id must reach schemas.Fallback.KeyID, which core re-pins per attempt")
+
+	// An unpinned fallback inherits the incoming model and stays load-balanced.
+	assert.Equal(t, schemas.ModelProvider("anthropic"), fallbacks[1].Provider)
+	assert.Equal(t, "gpt-4o", fallbacks[1].Model)
+	assert.Empty(t, fallbacks[1].KeyID)
+}
+
 // TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules pins the ordering this plugin
 // exists to guarantee: a matched rule rewrites the model, and both the provider allowlist and
 // the load balancer must then run against the rewritten model, not the one the caller sent.

@@ -34,6 +34,7 @@ import Toggle from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { getBusinessUnitPicker } from "@/lib/registries/businessUnitPicker";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import {
 	getErrorMessage,
@@ -63,25 +64,28 @@ import {
 } from "@/lib/utils/governance";
 import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useGetMyVKCreationPolicyQuery } from "@enterprise/lib/store/apis/accessProfileApi";
+import { useGetEntityAccessProfileQuery, useGetMyVKCreationPolicyQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useAttachVirtualKeyUsersMutation, useDetachVirtualKeyUserMutation } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
-import { Lock, RotateCcw, Users } from "lucide-react";
+import { AlertTriangle, Lock, RotateCcw, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 // Side-effect import: registers the enterprise user picker so "Assign to User"
 // becomes available. Resolves to an empty module on OSS builds.
 import "@enterprise/lib/registrations/userPicker";
+// Same pattern for the business unit owner option.
+import "@enterprise/lib/registrations/businessUnitPicker";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 interface VirtualKeySheetProps {
 	virtualKey?: VirtualKey | null;
-	// When set, the new VK is created under this team. The entity assignment is pre-set
-	// and cannot be changed (but all other fields remain editable).
-	defaultTeamId?: string;
+	// When set, the new VK is created under this owner - a team, business unit or customer. The
+	// entity assignment is pre-set and cannot be changed (but all other fields remain editable).
+	// name is only for the banner; the caller already has it, so the sheet does not look it up.
+	defaultOwner?: { kind: "team" | "business_unit" | "customer"; id: string; name?: string };
 	onSave: () => void;
 	onCancel: () => void;
 }
@@ -159,9 +163,10 @@ const formSchema = z
 		// When true, all providers are allowed; providerConfigs remain optional per-provider overrides.
 		allowAllProviders: z.boolean(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
-		entityType: z.enum(["team", "customer", "user", "none"]),
+		entityType: z.enum(["team", "customer", "business_unit", "user", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
+		businessUnitId: z.string().optional(),
 		// Enterprise-only: a VK can be attached to at most one user, via the
 		// separate /virtual-keys/{id}/users endpoint rather than the VK payload.
 		userId: z.string().optional(),
@@ -196,6 +201,10 @@ const formSchema = z
 			if (data.entityType === "customer") {
 				return data.customerId && data.customerId.trim() !== "";
 			}
+			// If entityType is "business_unit", businessUnitId must be provided and not empty
+			if (data.entityType === "business_unit") {
+				return data.businessUnitId && data.businessUnitId.trim() !== "";
+			}
 			// If entityType is "user", userId must be provided and not empty
 			if (data.entityType === "user") {
 				return data.userId && data.userId.trim() !== "";
@@ -203,7 +212,7 @@ const formSchema = z
 			return true;
 		},
 		{
-			message: "Please select a valid team, customer, or user when assignment type is chosen",
+			message: "Please select a valid team, business unit, customer, or user when assignment type is chosen",
 			path: ["entityType"], // This will show the error on the entityType field
 		},
 	);
@@ -295,7 +304,26 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 	);
 }
 
-export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
+// A key owned by a profile-holding team, customer or business unit is governed by that profile: the
+// server discards the key's own providers, budgets, rate limits and MCP access. The editors for
+// those are hidden, so drop whatever they still hold rather than send values that are thrown away.
+function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualKeyRequest>(request: T): T {
+	const {
+		provider_configs: _providerConfigs,
+		mcp_configs: _mcpConfigs,
+		budgets: _budgets,
+		rate_limit: _rateLimit,
+		calendar_aligned: _calendarAligned,
+		allow_all_providers: _allowAllProviders,
+		// Only declared on UpdateVirtualKeyRequest, so it is dropped here rather than deleted off the
+		// rest object, which TypeScript treats as a required property once narrowed.
+		reset_budget_usage: _resetBudgetUsage,
+		...rest
+	} = request as UpdateVirtualKeyRequest;
+	return rest as T;
+}
+
+export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
@@ -319,19 +347,24 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
+	// Business unit ownership is enterprise-only for the same reason: the option shows only when a
+	// picker is registered.
+	const BusinessUnitPicker = getBusinessUnitPicker();
 	// A VK can have at most one user (enforced by a unique index server-side).
 	const assignedUserId = assignedUsers[0]?.id ?? "";
 	const assignedUserLabel = assignedUsers[0]?.name || assignedUsers[0]?.email || assignedUserId;
-	// Team attachment: when creating from a team context (defaultTeamId provided), the entity
+	// Owner attachment: when creating from an entity's own sheet (defaultOwner provided), the entity
 	// assignment is pre-set and locked. When editing an existing VK the assignment can be changed.
-	const attachedTeamId = isEditing ? virtualKey?.team_id || "" : defaultTeamId || "";
-	const isTeamLocked = !isEditing && !!defaultTeamId;
-	// Only the locked banner needs this name, and only when creating under a team,
-	// so resolve that one team by id rather than holding the whole list.
+	const lockedOwner = !isEditing ? defaultOwner : undefined;
+	const isOwnerLocked = !!lockedOwner;
+	const lockedOwnerLabel = { team: "team", business_unit: "business unit", customer: "customer" }[lockedOwner?.kind ?? "team"];
+	const attachedTeamId = isEditing ? virtualKey?.team_id || "" : lockedOwner?.kind === "team" ? lockedOwner.id : "";
+	// The banner names the owner. A caller that did not pass a name falls back to the team lookup
+	// (the one owner kind with a plain by-id read here), and then to the id itself.
 	const { data: attachedTeamData } = useGetTeamQuery(attachedTeamId, {
-		skip: !isTeamLocked || !attachedTeamId,
+		skip: !isOwnerLocked || !attachedTeamId || !!lockedOwner?.name,
 	});
-	const attachedTeam = attachedTeamData?.team;
+	const lockedOwnerName = lockedOwner?.name || attachedTeamData?.team?.name || lockedOwner?.id || "";
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -478,9 +511,16 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					mcp_client_name: config.mcp_client?.name || "",
 					tools_to_execute: config.tools_to_execute || [],
 				})) || [],
-			entityType: virtualKey?.team_id ? "team" : virtualKey?.customer_id ? "customer" : !isEditing && defaultTeamId ? "team" : "none",
-			teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
-			customerId: virtualKey?.customer_id || "",
+			entityType: virtualKey?.team_id
+				? "team"
+				: virtualKey?.customer_id
+					? "customer"
+					: virtualKey?.business_unit_id
+						? "business_unit"
+						: (lockedOwner?.kind ?? "none"),
+			teamId: virtualKey?.team_id || (lockedOwner?.kind === "team" ? lockedOwner.id : ""),
+			customerId: virtualKey?.customer_id || (lockedOwner?.kind === "customer" ? lockedOwner.id : ""),
+			businessUnitId: virtualKey?.business_unit_id || (lockedOwner?.kind === "business_unit" ? lockedOwner.id : ""),
 			// The attached user arrives from a separate request; synced in below once it loads.
 			userId: "",
 			isActive: virtualKey?.is_active ?? true,
@@ -527,16 +567,24 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		if (entityType === "none") {
 			form.setValue("teamId", "", { shouldDirty: true });
 			form.setValue("customerId", "", { shouldDirty: true });
+			form.setValue("businessUnitId", "", { shouldDirty: true });
 			form.setValue("userId", "", { shouldDirty: true });
 		} else if (entityType === "team") {
 			form.setValue("customerId", "", { shouldDirty: true });
+			form.setValue("businessUnitId", "", { shouldDirty: true });
 			form.setValue("userId", "", { shouldDirty: true });
 		} else if (entityType === "customer") {
 			form.setValue("teamId", "", { shouldDirty: true });
+			form.setValue("businessUnitId", "", { shouldDirty: true });
+			form.setValue("userId", "", { shouldDirty: true });
+		} else if (entityType === "business_unit") {
+			form.setValue("teamId", "", { shouldDirty: true });
+			form.setValue("customerId", "", { shouldDirty: true });
 			form.setValue("userId", "", { shouldDirty: true });
 		} else if (entityType === "user") {
 			form.setValue("teamId", "", { shouldDirty: true });
 			form.setValue("customerId", "", { shouldDirty: true });
+			form.setValue("businessUnitId", "", { shouldDirty: true });
 		}
 	}, [form.watch("entityType"), form]);
 
@@ -560,6 +608,62 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 	// Get current MCP configs from form
 	const mcpConfigs = form.watch("mcpConfigs") || [];
+
+	// A team, customer or business unit can hold an access profile, which then governs every key
+	// the entity owns: the server strips the key's own providers, budgets, rate limits and MCP
+	// access on create or move. Resolve the profile of whichever owner is selected (including the
+	// locked defaultTeamId) so the sheet can lock those fields before Save. A 404 (no profile) or
+	// any other error leaves data undefined, which reads as "not governed".
+	const watchedEntityType = form.watch("entityType");
+	const watchedTeamId = form.watch("teamId");
+	const watchedCustomerId = form.watch("customerId");
+	const watchedBusinessUnitId = form.watch("businessUnitId");
+	const owner =
+		watchedEntityType === "team" && watchedTeamId
+			? { entityType: "team" as const, entityId: watchedTeamId, label: "team" }
+			: watchedEntityType === "customer" && watchedCustomerId
+				? { entityType: "customer" as const, entityId: watchedCustomerId, label: "customer" }
+				: watchedEntityType === "business_unit" && watchedBusinessUnitId
+					? { entityType: "business_unit" as const, entityId: watchedBusinessUnitId, label: "business unit" }
+					: undefined;
+	const {
+		data: ownerProfileData,
+		isError: isOwnerProfileError,
+		isFetching: isOwnerProfileFetching,
+		error: ownerProfileError,
+		refetch: refetchOwnerProfile,
+	} = useGetEntityAccessProfileQuery(
+		{ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" },
+		{ skip: !owner },
+	);
+	// While a newly selected owner's lookup is in flight, data still holds the previous owner's
+	// response; matching the entity keeps that stale profile from locking the form.
+	const ownerProfile =
+		owner &&
+		!isOwnerProfileError &&
+		ownerProfileData?.access_profile?.entity_type === owner.entityType &&
+		ownerProfileData.access_profile?.entity_id === owner.entityId
+			? ownerProfileData.access_profile
+			: undefined;
+	const isGovernedByOwnerProfile = !!ownerProfile;
+	// Only a 404 means "this owner holds no profile". Any other failure leaves the answer unknown,
+	// and unknown must not read as ungoverned: the governance editors would unlock, and a save would
+	// send fields the server discards for a governed owner - reporting success while dropping the
+	// operator's edits. Same for the window where the lookup is still in flight, including the one
+	// after switching owners, when the response in hand is still the previous owner's.
+	// Absent data is not "still loading": the OSS build answers this from a stub that has no backend
+	// to ask, and a settled "no profile" has to read as ungoverned or Save would never enable there.
+	// Pending is what isFetching says, and nothing else.
+	const ownerProfileStatus = (ownerProfileError as unknown as { status?: number } | null | undefined)?.status;
+	const ownerProfileFailed = !!owner && isOwnerProfileError && ownerProfileStatus !== 404;
+	const isOwnerProfileUnknown = !!owner && (isOwnerProfileFetching || ownerProfileFailed);
+	const ownerProfileNotice =
+		ownerProfile && owner ? (
+			<p data-testid="vk-owner-profile-notice">
+				Governed by <span className="font-medium">{ownerProfile.name}</span>, the access profile of this {owner.label}. Its budgets, rate
+				limits and providers apply to this key.
+			</p>
+		) : null;
 
 	// Watch budget/rate-limit fields for conditional rendering of reset buttons
 	const watchedBudgets = form.watch("budgets");
@@ -789,7 +893,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	};
 
 	const getBudgetUsageWarning = (data: FormData) => {
-		if (!isEditing || !virtualKey || isManagedByProfile) {
+		if (!isEditing || !virtualKey || isManagedByProfile || isGovernedByOwnerProfile) {
 			return null;
 		}
 
@@ -815,7 +919,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	};
 
 	const hasBudgetResetRelevantChanges = (data: FormData) => {
-		if (!isEditing || !virtualKey || isManagedByProfile) {
+		if (!isEditing || !virtualKey || isManagedByProfile || isGovernedByOwnerProfile) {
 			return false;
 		}
 
@@ -907,9 +1011,15 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 			// User assignment lives on its own endpoint (POST/DELETE /virtual-keys/{id}/users) —
 			// the same one the user detail sheet uses — so it is applied alongside the VK payload,
-			// never inside it. Team/customer are mutually exclusive with it and get cleared.
+			// never inside it. Team/customer/business unit are mutually exclusive with it and get cleared.
 			const targetUserId = data.entityType === "user" ? (data.userId || "").trim() : "";
 			const clearsEntity = data.entityType === "none" || data.entityType === "user";
+			// Each owner id is sent only when it is the selected owner; naming one owner clears the other
+			// two server-side, and an update that names none clears all three with null.
+			const ownerIdFor = (type: FormData["entityType"], id: string | undefined) =>
+				data.entityType === type && id && id.trim() !== "" ? id : undefined;
+			const ownerUpdateFor = (type: FormData["entityType"], id: string | undefined) =>
+				ownerIdFor(type, id) ?? (clearsEntity ? null : undefined);
 
 			if (isEditing && virtualKey) {
 				// Update existing virtual key
@@ -931,13 +1041,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					description: data.description,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
-					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : clearsEntity ? null : undefined,
-					customer_id:
-						data.entityType === "customer" && data.customerId && data.customerId.trim() !== ""
-							? data.customerId
-							: clearsEntity
-								? null
-								: undefined,
+					team_id: ownerUpdateFor("team", data.teamId),
+					customer_id: ownerUpdateFor("customer", data.customerId),
+					business_unit_id: ownerUpdateFor("business_unit", data.businessUnitId),
 					is_active: data.isActive,
 					calendar_aligned: data.budgetCalendarAligned,
 					allow_all_providers: data.allowAllProviders,
@@ -975,23 +1081,47 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 				await updateVirtualKey({
 					vkId: virtualKey.id,
-					data: updateData,
+					data: isGovernedByOwnerProfile ? withoutKeyGovernance(updateData) : updateData,
 				}).unwrap();
 
 				// Apply the user assignment after the VK payload, so a key moving from a team to a
 				// user has its team cleared before the attach lands.
 				if (targetUserId !== assignedUserId) {
-					if (assignedUserId) {
-						await detachVirtualKeyUser({ vkId: virtualKey.id, userId: assignedUserId }).unwrap();
-					}
-					if (targetUserId) {
-						await attachVirtualKeyUsers({
-							vkId: virtualKey.id,
-							data: { user_ids: [targetUserId], preserve_usage: false },
-						}).unwrap();
+					try {
+						if (assignedUserId) {
+							await detachVirtualKeyUser({ vkId: virtualKey.id, userId: assignedUserId }).unwrap();
+						}
+						if (targetUserId) {
+							await attachVirtualKeyUsers({
+								vkId: virtualKey.id,
+								data: { user_ids: [targetUserId], preserve_usage: false },
+							}).unwrap();
+						}
+					} catch (attachError) {
+						// The owner change is already committed. Moving to a user clears team, customer and
+						// business unit, so a failed attachment would leave the key with no owner at all -
+						// put the previous owner back before the error is reported.
+						const hadOwner = !!(virtualKey.team_id || virtualKey.customer_id || virtualKey.business_unit_id);
+						if (clearsEntity && hadOwner) {
+							try {
+								await updateVirtualKey({
+									vkId: virtualKey.id,
+									data: {
+										team_id: virtualKey.team_id ?? null,
+										customer_id: virtualKey.customer_id ?? null,
+										business_unit_id: virtualKey.business_unit_id ?? null,
+									},
+								}).unwrap();
+							} catch {
+								// The restore failed too; the attachment error below is the one to surface.
+							}
+						}
+						throw attachError;
 					}
 				}
-				await reconcileVmcpAssignments(virtualKey.id);
+				if (!isGovernedByOwnerProfile) {
+					await reconcileVmcpAssignments(virtualKey.id);
+				}
 				toast.success("Virtual key updated successfully");
 			} else {
 				// Create new virtual key
@@ -1000,8 +1130,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					description: data.description || undefined,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
-					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
-					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
+					team_id: ownerIdFor("team", data.teamId),
+					customer_id: ownerIdFor("customer", data.customerId),
+					business_unit_id: ownerIdFor("business_unit", data.businessUnitId),
 					is_active: data.isActive,
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
@@ -1031,7 +1162,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					};
 				}
 
-				const created = await createVirtualKey(createData).unwrap();
+				const created = await createVirtualKey(isGovernedByOwnerProfile ? withoutKeyGovernance(createData) : createData).unwrap();
 				if (targetUserId) {
 					// The key exists at this point; surface the assignment failure separately so the
 					// user knows the key was created but is unassigned.
@@ -1049,7 +1180,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					}
 				}
 				try {
-					await reconcileVmcpAssignments(created.virtual_key.id);
+					if (!isGovernedByOwnerProfile) await reconcileVmcpAssignments(created.virtual_key.id);
 				} catch (error) {
 					toast.error("Virtual key created, but assigning Virtual MCPs failed", { description: getErrorMessage(error) });
 					onSave();
@@ -1109,12 +1240,34 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="grow space-y-4 px-4 md:px-8">
-							{isManagedByProfile && (
+							{ownerProfileFailed && (
+								<Alert variant="destructive" data-testid="vk-owner-profile-error">
+									<AlertTriangle className="h-4 w-4" />
+									<AlertDescription className="flex w-full items-center justify-between gap-3">
+										<span>
+											Couldn&apos;t check whether this {owner?.label ?? "owner"}&apos;s access profile governs the key, so saving is held
+											back - the profile decides which providers, budgets and rate limits apply.
+										</span>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void refetchOwnerProfile()}
+											data-testid="vk-owner-profile-retry"
+										>
+											Retry
+										</Button>
+									</AlertDescription>
+								</Alert>
+							)}
+							{(isManagedByProfile || isGovernedByOwnerProfile) && (
 								<>
 									<Alert variant="info">
 										<Lock className="h-4 w-4" />
 										<AlertDescription>
-											{isEditing ? (
+											{ownerProfileNotice ? (
+												ownerProfileNotice
+											) : isEditing ? (
 												<>
 													This virtual key belongs to an access profile. What it can reach, and what it can spend, are the profile&apos;s:
 													the key itself carries only a name and a description.
@@ -1134,16 +1287,19 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											)}
 										</AlertDescription>
 									</Alert>
-									{isEditing && <ManagedVirtualKeyActions managingProfile={managingProfile} />}
+									{isEditing && isManagedByProfile && <ManagedVirtualKeyActions managingProfile={managingProfile} />}
 								</>
 							)}
 
-							{isTeamLocked && !isManagedByProfile && (
+							{isOwnerLocked && !isManagedByProfile && (
 								<Alert variant="info">
 									<Users className="h-4 w-4" />
 									<AlertDescription>
-										Creating this virtual key under team <span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>. Team
-										assignment is pre-set; all other fields are editable.
+										Creating this virtual key under {lockedOwnerLabel} <span className="font-medium">{lockedOwnerName}</span>. The{" "}
+										{lockedOwnerLabel} assignment is pre-set;{" "}
+										{isGovernedByOwnerProfile
+											? `this ${lockedOwnerLabel}'s access profile governs the providers, budgets, rate limits and MCP access of every key it owns.`
+											: "all other fields are editable."}
 									</AlertDescription>
 								</Alert>
 							)}
@@ -1196,264 +1352,270 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											render={({ field }) => <ExpiryPickerField value={field.value} onChange={field.onChange} />}
 										/>
 									</div>
-									{/* Provider Configurations */}
-									<ProviderConfigsEditor
-										testIdPrefix="vk"
-										value={providerConfigs.map((config) => ({
-											providerName: config.provider,
-											allowedModels: config.allowed_models || [],
-											blacklistedModels: config.blacklisted_models || [],
-											weight: config.weight,
-											keyIds: config.key_ids || [],
-											budgets: config.budgets || [],
-											rateLimit: config.rate_limit ?? null,
-											modelBudgets: (config.model_budgets || []).map((mb) => ({
-												model_name: mb.model_name,
-												budgets: mb.budgets || [],
-												rate_limit: mb.rate_limit,
-											})),
-										}))}
-										onChange={(entries) =>
-											form.setValue(
-												"providerConfigs",
-												entries.map((entry) => ({
-													provider: entry.providerName,
-													allowed_models: entry.allowedModels,
-													blacklisted_models: entry.blacklistedModels,
-													weight: entry.weight ?? undefined,
-													key_ids: entry.keyIds,
-													budgets: (entry.budgets || []).map((l) => ({
-														id: l.id,
-														max_limit: l.max_limit,
-														reset_duration: l.reset_duration,
-														reset_config: l.reset_config,
+									{/* The owner's access profile supplies providers, MCP access, budgets and rate limits,
+									    so the key's own editors are hidden while a profile-holding owner is selected. */}
+									{!isGovernedByOwnerProfile && (
+										<>
+											{/* Provider Configurations */}
+											<ProviderConfigsEditor
+												testIdPrefix="vk"
+												value={providerConfigs.map((config) => ({
+													providerName: config.provider,
+													allowedModels: config.allowed_models || [],
+													blacklistedModels: config.blacklisted_models || [],
+													weight: config.weight,
+													keyIds: config.key_ids || [],
+													budgets: config.budgets || [],
+													rateLimit: config.rate_limit ?? null,
+													modelBudgets: (config.model_budgets || []).map((mb) => ({
+														model_name: mb.model_name,
+														budgets: mb.budgets || [],
+														rate_limit: mb.rate_limit,
 													})),
-													rate_limit: entry.rateLimit ?? undefined,
-													model_budgets: entry.modelBudgets,
-												})),
-												{ shouldDirty: true },
-											)
-										}
-										allowAllProviders={allowAllProviders}
-										onAllowAllProvidersChange={(checked) => form.setValue("allowAllProviders", checked, { shouldDirty: true })}
-										onManageProviders={() => navigate({ to: "/workspace/providers" })}
-										error={form.formState.errors.providerConfigs?.message}
-									/>
-									{/* MCP Server Configurations */}
-									<MCPClientConfigsEditor
-										value={mcpConfigs}
-										onChange={(next) => form.setValue("mcpConfigs", next, { shouldDirty: true })}
-										showDefaultsNote
-									/>
-									{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save). Renders
-									    inline like the MCP server editor above; assignedVmcpIds fills in from the VK detail
-									    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
-									    diff before that baseline is in. */}
-									<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
-									<DottedSeparator className="mt-6 mb-5" />
-									{/* Budget Configuration */}
-									<div className="space-y-4">
-										<MultiBudgetLines
-											data-testid="vk-budget-lines"
-											label="Budget Configuration"
-											lines={form.watch("budgets") ?? []}
-											onChange={(lines) => {
-												form.setValue("budgets", lines, { shouldDirty: true });
-											}}
-											onReset={clearVirtualKeyBudget}
-											showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
-										/>
-
-										{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
-											<div className="space-y-3 rounded-sm border p-4" data-testid="vk-budget-overrides-section">
-												<div>
-													<h4 className="text-sm font-medium">Budget Overrides</h4>
-													<p className="text-muted-foreground text-xs">
-														Add temporary capacity without changing the configured base budgets above.
-													</p>
-												</div>
-												<div className="divide-y">
-													{persistedOverrideBudgets.map(({ budget, label }) => (
-														<div key={budget.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
-															<div className="min-w-0">
-																<p className="truncate text-sm font-medium">
-																	{label} · resets every {parseResetPeriod(budget.reset_duration)}
-																</p>
-																<p className="text-muted-foreground text-xs">
-																	Base {formatCurrency(budget.max_limit)}
-																	{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
-																</p>
-															</div>
-															<BudgetOverrideDialog
-																budget={budget}
-																onSave={(data) => saveBudgetOverride(budget.id, data)}
-																onRemove={() => clearBudgetOverride(budget.id)}
-																disabled={!hasUpdateAccess}
-																calendarAligned={virtualKey.calendar_aligned}
-															/>
-														</div>
-													))}
-												</div>
-											</div>
-										) : null}
-
-										{/* Reassign team confirmation dialog */}
-										<AlertDialog
-											open={showReassignTeamWarning}
-											onOpenChange={(open) => {
-												setShowReassignTeamWarning(open);
-												if (!open) {
-													setPendingTeamId(null);
+												}))}
+												onChange={(entries) =>
+													form.setValue(
+														"providerConfigs",
+														entries.map((entry) => ({
+															provider: entry.providerName,
+															allowed_models: entry.allowedModels,
+															blacklisted_models: entry.blacklistedModels,
+															weight: entry.weight ?? undefined,
+															key_ids: entry.keyIds,
+															budgets: (entry.budgets || []).map((l) => ({
+																id: l.id,
+																max_limit: l.max_limit,
+																reset_duration: l.reset_duration,
+																reset_config: l.reset_config,
+															})),
+															rate_limit: entry.rateLimit ?? undefined,
+															model_budgets: entry.modelBudgets,
+														})),
+														{ shouldDirty: true },
+													)
 												}
-											}}
-										>
-											<AlertDialogContent>
-												<AlertDialogHeader>
-													<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
-													<AlertDialogDescription>
-														This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
-														requests through this key will count against this team’s budget, not the previous one.
-													</AlertDialogDescription>
-												</AlertDialogHeader>
-												<AlertDialogFooter>
-													<AlertDialogCancel data-testid="virtual-key-reassign-cancel" onClick={() => setPendingTeamId(null)}>
-														Cancel
-													</AlertDialogCancel>
-													<AlertDialogAction
-														data-testid="virtual-key-reassign-confirm"
-														onClick={() => {
-															if (pendingTeamId !== null) {
-																form.setValue("teamId", pendingTeamId, {
+												allowAllProviders={allowAllProviders}
+												onAllowAllProvidersChange={(checked) => form.setValue("allowAllProviders", checked, { shouldDirty: true })}
+												onManageProviders={() => navigate({ to: "/workspace/providers" })}
+												error={form.formState.errors.providerConfigs?.message}
+											/>
+											{/* MCP Server Configurations */}
+											<MCPClientConfigsEditor
+												value={mcpConfigs}
+												onChange={(next) => form.setValue("mcpConfigs", next, { shouldDirty: true })}
+												showDefaultsNote
+											/>
+											{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save). Renders
+											    inline like the MCP server editor above; assignedVmcpIds fills in from the VK detail
+											    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
+											    diff before that baseline is in. */}
+											<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
+											<DottedSeparator className="mt-6 mb-5" />
+											{/* Budget Configuration */}
+											<div className="space-y-4">
+												<MultiBudgetLines
+													data-testid="vk-budget-lines"
+													label="Budget Configuration"
+													lines={form.watch("budgets") ?? []}
+													onChange={(lines) => {
+														form.setValue("budgets", lines, { shouldDirty: true });
+													}}
+													onReset={clearVirtualKeyBudget}
+													showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
+												/>
+
+												{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
+													<div className="space-y-3 rounded-sm border p-4" data-testid="vk-budget-overrides-section">
+														<div>
+															<h4 className="text-sm font-medium">Budget Overrides</h4>
+															<p className="text-muted-foreground text-xs">
+																Add temporary capacity without changing the configured base budgets above.
+															</p>
+														</div>
+														<div className="divide-y">
+															{persistedOverrideBudgets.map(({ budget, label }) => (
+																<div key={budget.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+																	<div className="min-w-0">
+																		<p className="truncate text-sm font-medium">
+																			{label} · resets every {parseResetPeriod(budget.reset_duration)}
+																		</p>
+																		<p className="text-muted-foreground text-xs">
+																			Base {formatCurrency(budget.max_limit)}
+																			{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
+																		</p>
+																	</div>
+																	<BudgetOverrideDialog
+																		budget={budget}
+																		onSave={(data) => saveBudgetOverride(budget.id, data)}
+																		onRemove={() => clearBudgetOverride(budget.id)}
+																		disabled={!hasUpdateAccess}
+																		calendarAligned={virtualKey.calendar_aligned}
+																	/>
+																</div>
+															))}
+														</div>
+													</div>
+												) : null}
+
+											</div>
+											{/* Rate Limiting Configuration */}
+											<div className="space-y-4">
+												<div className="flex items-center justify-between gap-2">
+													<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
+													{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
+														<Button
+															type="button"
+															variant="ghost"
+															size="sm"
+															onClick={clearVirtualKeyRateLimits}
+															data-testid="vk-rate-limit-reset-button"
+														>
+															<RotateCcw className="h-4 w-4" />
+															Reset
+														</Button>
+													)}
+												</div>
+
+												<FormField
+													control={form.control}
+													name="tokenMaxLimit"
+													render={({ field }) => (
+														<FormItem>
+															<NumberAndSelect
+																id="tokenMaxLimit"
+																labelClassName="font-normal"
+																label="Maximum Tokens"
+																value={field.value}
+																selectValue={form.watch("tokenResetDuration") || "1h"}
+																onChangeNumber={(value) => {
+																	field.onChange(value);
+																}}
+																onChangeSelect={(value) =>
+																	form.setValue("tokenResetDuration", value, {
+																		shouldDirty: true,
+																	})
+																}
+																options={resetDurationOptions}
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+
+												<FormField
+													control={form.control}
+													name="requestMaxLimit"
+													render={({ field }) => (
+														<FormItem>
+															<NumberAndSelect
+																id="requestMaxLimit"
+																labelClassName="font-normal"
+																label="Maximum Requests"
+																value={field.value}
+																selectValue={form.watch("requestResetDuration") || "1h"}
+																onChangeNumber={(value) => {
+																	field.onChange(value);
+																}}
+																onChangeSelect={(value) =>
+																	form.setValue("requestResetDuration", value, {
+																		shouldDirty: true,
+																	})
+																}
+																options={resetDurationOptions}
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											</div>
+											{/* Calendar alignment: VK-wide setting that applies to both budgets and rate limits */}
+											{showCalendarAlignToggle && (
+												<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+													<div className="space-y-0.5">
+														<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
+															Align to calendar cycle
+														</Label>
+														<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
+															Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
+															date. Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
+														</p>
+													</div>
+													<Switch
+														id="vk-budget-calendar-aligned-toggle"
+														aria-describedby="vk-budget-calendar-aligned-description"
+														checked={watchedBudgetCalendarAligned}
+														onCheckedChange={handleCalendarAlignedChange}
+														data-testid="vk-budget-calendar-aligned-toggle"
+													/>
+												</div>
+											)}
+
+											{/* Warning dialog shown when enabling calendar alignment on an existing VK */}
+											<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+												<AlertDialogContent>
+													<AlertDialogHeader>
+														<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
+														<AlertDialogDescription>
+															Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
+															token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
+															reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
+															undone, but calendar alignment can be turned off later. This will take effect when you save.
+														</AlertDialogDescription>
+													</AlertDialogHeader>
+													<AlertDialogFooter>
+														<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+														<AlertDialogAction
+															data-testid="vk-calendar-align-enable-btn"
+															onClick={() => {
+																form.setValue("budgetCalendarAligned", true, {
 																	shouldDirty: true,
 																});
-																void form.trigger("entityType");
-															}
-															setPendingTeamId(null);
-															setShowReassignTeamWarning(false);
-														}}
-													>
-														Reassign
-													</AlertDialogAction>
-												</AlertDialogFooter>
-											</AlertDialogContent>
-										</AlertDialog>
-									</div>
-									{/* Rate Limiting Configuration */}
-									<div className="space-y-4">
-										<div className="flex items-center justify-between gap-2">
-											<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
-											{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
-												<Button
-													type="button"
-													variant="ghost"
-													size="sm"
-													onClick={clearVirtualKeyRateLimits}
-													data-testid="vk-rate-limit-reset-button"
-												>
-													<RotateCcw className="h-4 w-4" />
-													Reset
-												</Button>
-											)}
-										</div>
-
-										<FormField
-											control={form.control}
-											name="tokenMaxLimit"
-											render={({ field }) => (
-												<FormItem>
-													<NumberAndSelect
-														id="tokenMaxLimit"
-														labelClassName="font-normal"
-														label="Maximum Tokens"
-														value={field.value}
-														selectValue={form.watch("tokenResetDuration") || "1h"}
-														onChangeNumber={(value) => {
-															field.onChange(value);
-														}}
-														onChangeSelect={(value) =>
-															form.setValue("tokenResetDuration", value, {
-																shouldDirty: true,
-															})
-														}
-														options={resetDurationOptions}
-													/>
-													<FormMessage />
-												</FormItem>
-											)}
-										/>
-
-										<FormField
-											control={form.control}
-											name="requestMaxLimit"
-											render={({ field }) => (
-												<FormItem>
-													<NumberAndSelect
-														id="requestMaxLimit"
-														labelClassName="font-normal"
-														label="Maximum Requests"
-														value={field.value}
-														selectValue={form.watch("requestResetDuration") || "1h"}
-														onChangeNumber={(value) => {
-															field.onChange(value);
-														}}
-														onChangeSelect={(value) =>
-															form.setValue("requestResetDuration", value, {
-																shouldDirty: true,
-															})
-														}
-														options={resetDurationOptions}
-													/>
-													<FormMessage />
-												</FormItem>
-											)}
-										/>
-									</div>
-									{/* Calendar alignment: VK-wide setting that applies to both budgets and rate limits */}
-									{showCalendarAlignToggle && (
-										<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-											<div className="space-y-0.5">
-												<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
-													Align to calendar cycle
-												</Label>
-												<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
-													Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
-													date. Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
-												</p>
-											</div>
-											<Switch
-												id="vk-budget-calendar-aligned-toggle"
-												aria-describedby="vk-budget-calendar-aligned-description"
-												checked={watchedBudgetCalendarAligned}
-												onCheckedChange={handleCalendarAlignedChange}
-												data-testid="vk-budget-calendar-aligned-toggle"
-											/>
-										</div>
+																setShowCalendarAlignWarning(false);
+															}}
+														>
+															Enable Calendar Alignment
+														</AlertDialogAction>
+													</AlertDialogFooter>
+												</AlertDialogContent>
+											</AlertDialog>
+										</>
 									)}
-
-									{/* Warning dialog shown when enabling calendar alignment on an existing VK */}
-									<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+									{/* Reassign team confirmation dialog */}
+									<AlertDialog
+										open={showReassignTeamWarning}
+										onOpenChange={(open) => {
+											setShowReassignTeamWarning(open);
+											if (!open) {
+												setPendingTeamId(null);
+											}
+										}}
+									>
 										<AlertDialogContent>
 											<AlertDialogHeader>
-												<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
+												<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
 												<AlertDialogDescription>
-													Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
-													token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
-													reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
-													undone, but calendar alignment can be turned off later. This will take effect when you save.
+													This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
+													requests through this key will count against this team’s budget, not the previous one.
 												</AlertDialogDescription>
 											</AlertDialogHeader>
 											<AlertDialogFooter>
-												<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+												<AlertDialogCancel data-testid="virtual-key-reassign-cancel" onClick={() => setPendingTeamId(null)}>
+													Cancel
+												</AlertDialogCancel>
 												<AlertDialogAction
-													data-testid="vk-calendar-align-enable-btn"
+													data-testid="virtual-key-reassign-confirm"
 													onClick={() => {
-														form.setValue("budgetCalendarAligned", true, {
-															shouldDirty: true,
-														});
-														setShowCalendarAlignWarning(false);
+														if (pendingTeamId !== null) {
+															form.setValue("teamId", pendingTeamId, {
+																shouldDirty: true,
+															});
+															void form.trigger("entityType");
+														}
+														setPendingTeamId(null);
+														setShowReassignTeamWarning(false);
 													}}
 												>
-													Enable Calendar Alignment
+													Reassign
 												</AlertDialogAction>
 											</AlertDialogFooter>
 										</AlertDialogContent>
@@ -1479,6 +1641,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																	value: "customer",
 																	label: "Assign to Customer",
 																},
+																// Enterprise-only, like the user option below; kept visible when the VK is
+																// already owned by a business unit so the current state is never mislabelled.
+																...(BusinessUnitPicker || field.value === "business_unit"
+																	? [{ value: "business_unit", label: "Assign to Business Unit" }]
+																	: []),
 																// Enterprise-only; also kept visible when the VK is already
 																// user-assigned so the current state is never mislabelled.
 																...(UserPicker || field.value === "user" ? [{ value: "user", label: "Assign to User" }] : []),
@@ -1493,10 +1660,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																// eager trigger left a stuck refine error on entityType.
 																form.setValue("teamId", "", { shouldDirty: true });
 																form.setValue("customerId", "", { shouldDirty: true });
+																form.setValue("businessUnitId", "", { shouldDirty: true });
 																form.setValue("userId", "", { shouldDirty: true });
-																form.clearErrors(["entityType", "teamId", "customerId", "userId"]);
+																form.clearErrors(["entityType", "teamId", "customerId", "businessUnitId", "userId"]);
 															}}
-															disabled={isTeamLocked}
+															disabled={isOwnerLocked}
 															disableSearch
 															hideClear
 															className="h-9"
@@ -1536,7 +1704,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																			}
 																		: null
 																}
-																disabled={isTeamLocked}
+																disabled={isOwnerLocked}
 																triggerClassName="h-9"
 															/>
 															<FormMessage />
@@ -1554,6 +1722,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															<FormLabel className="font-normal">Select Customer</FormLabel>
 															<CustomerSelector
 																value={field.value || ""}
+																disabled={isOwnerLocked}
 																onChange={(val) => {
 																	field.onChange(val);
 																	void form.trigger("entityType");
@@ -1569,6 +1738,30 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																			}
 																		: null
 																}
+																triggerClassName="h-9"
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											)}
+
+											{form.watch("entityType") === "business_unit" && BusinessUnitPicker && (
+												<FormField
+													control={form.control}
+													name="businessUnitId"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel className="font-normal">Select Business Unit</FormLabel>
+															<BusinessUnitPicker
+																value={field.value || ""}
+																disabled={isOwnerLocked}
+																onChange={(val) => {
+																	field.onChange(val);
+																	void form.trigger("entityType");
+																}}
+																// No fallbackOption: the key carries only the business unit id (no
+																// preloaded relation), so the picker resolves the selected label itself.
 																triggerClassName="h-9"
 															/>
 															<FormMessage />
@@ -1696,23 +1889,27 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												<span className="inline-block">
 													<Button
 														type="submit"
-														disabled={isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit}
+														disabled={isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit || isOwnerProfileUnknown}
 														data-testid="vk-save-btn"
 													>
 														{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 													</Button>
 												</span>
 											</TooltipTrigger>
-											{(isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit) && (
+											{(isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit || isOwnerProfileUnknown) && (
 												<TooltipContent>
 													<p>
 														{!canSubmit
 															? "You don't have permission to perform this action"
 															: isLoading
 																? "Saving..."
-																: !(form.formState.isDirty || vmcpDirty)
-																	? "No changes made"
-																	: ""}
+																: ownerProfileFailed
+																	? "Couldn't check whether this owner's access profile governs the key"
+																	: isOwnerProfileUnknown
+																		? "Checking whether this owner's access profile governs the key..."
+																		: !(form.formState.isDirty || vmcpDirty)
+																			? "No changes made"
+																			: ""}
 													</p>
 												</TooltipContent>
 											)}

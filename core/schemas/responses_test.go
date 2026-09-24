@@ -2,12 +2,93 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAnthropicBillingHeaderExtraction(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli; cch=12345;"
+	for _, tc := range []struct {
+		name, text string
+		strip      bool
+	}{
+		{"metadata", header, true},
+		{"whitespace", " \n" + header + "\n", true},
+		{"future field", "x-anthropic-billing-header: cc_version=2.1.270.abc; future=value;", true},
+		{"ordinary text", "Keep these instructions.", false},
+		{"quoted header", "Discuss " + header, false},
+		{"mixed multiline", header + "\nKeep these instructions.", false},
+		{"mixed same line", header + " Keep these instructions.", false},
+	} {
+		for _, shape := range []string{"string", "blocks"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
+				content := &ResponsesMessageContent{ContentStr: &tc.text}
+				if shape == "blocks" {
+					content = &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeText, Text: &tc.text}}}
+				}
+				r := &BifrostResponsesRequest{Input: []ResponsesMessage{
+					{Role: Ptr(ResponsesInputMessageRoleSystem), Content: content},
+					{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: &tc.text}},
+				}, RawRequestBody: []byte("original raw body")}
+				before, err := MarshalSorted(r)
+				require.NoError(t, err)
+				r.ExtractAnthropicBillingHeader()
+				r.ExtractAnthropicBillingHeader() // Repeated normalization is harmless.
+				if tc.strip {
+					require.Len(t, r.Input, 1)
+					assert.Equal(t, ResponsesInputMessageRoleUser, *r.Input[0].Role)
+					assert.Equal(t, tc.text, *r.Input[0].Content.ContentStr)
+				} else {
+					assert.Nil(t, r.anthropicBillingHeader)
+					require.Len(t, r.Input, 2)
+				}
+				assert.Equal(t, "original raw body", string(r.RawRequestBody))
+				restored := r.WithAnthropicBillingHeader()
+				after, err := MarshalSorted(restored)
+				require.NoError(t, err)
+				assert.Equal(t, string(before), string(after))
+				assert.Same(t, restored, restored.WithAnthropicBillingHeader())
+			})
+		}
+	}
+}
+
+func TestAnthropicBillingHeaderRestoresPositionsAndCacheMarkers(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c;"
+	block := func(text string) ResponsesMessageContentBlock {
+		return ResponsesMessageContentBlock{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr(text)}
+	}
+	for _, onlyHeaders := range []bool{false, true} {
+		blocks := []ResponsesMessageContentBlock{block(header), block(header)}
+		if !onlyHeaders {
+			blocks = []ResponsesMessageContentBlock{block("first"), block(header), block("last"), block(header)}
+		}
+		blocks[1].CacheControl = &CacheControl{Type: CacheControlTypeEphemeral}
+		r := &BifrostResponsesRequest{Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: blocks}},
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hello")}},
+		}}
+		before, err := MarshalSorted(r)
+		require.NoError(t, err)
+		r.ExtractAnthropicBillingHeader()
+		normalized, err := MarshalSorted(r)
+		require.NoError(t, err)
+		assert.NotContains(t, string(normalized), "x-anthropic-billing-header:")
+		// Core fallbacks shallow-copy the request; the private metadata must survive.
+		fallback := *r
+		restored := fallback.WithAnthropicBillingHeader()
+		after, err := MarshalSorted(restored)
+		require.NoError(t, err)
+		assert.Equal(t, string(before), string(after))
+		unchanged, err := MarshalSorted(r)
+		require.NoError(t, err)
+		assert.Equal(t, string(normalized), string(unchanged))
+	}
+}
 
 // TestBifrostResponsesStreamResponseOmitsEmptyItem verifies that events without
 // an item object (response.created, output_text.delta, response.completed, ...)
@@ -732,6 +813,227 @@ func TestDeepCopyResponsesMessagePreservesRawPreserved(t *testing.T) {
 	}
 	if string(encoded) != raw {
 		t.Fatalf("copy did not round-trip verbatim:\n got: %s\nwant: %s", encoded, raw)
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesCacheControls verifies cache breakpoints survive copy-on-write request transforms.
+func TestDeepCopyResponsesMessagePreservesCacheControls(t *testing.T) {
+	ttl := "1h"
+	scope := "user"
+	original := ResponsesMessage{
+		Type:         Ptr(ResponsesMessageTypeFunctionCallOutput),
+		CacheControl: &CacheControl{Type: CacheControlTypeEphemeral, TTL: &ttl, Scope: &scope},
+		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+			Type:         ResponsesInputMessageContentBlockTypeText,
+			Text:         Ptr("cacheable content"),
+			CacheControl: &CacheControl{Type: CacheControlTypeEphemeral, TTL: &ttl, Scope: &scope},
+		}}},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	cacheControls := [][2]*CacheControl{
+		{original.CacheControl, copied.CacheControl},
+		{original.Content.ContentBlocks[0].CacheControl, copied.Content.ContentBlocks[0].CacheControl},
+	}
+	for _, pair := range cacheControls {
+		originalCacheControl, copiedCacheControl := pair[0], pair[1]
+		if copiedCacheControl == nil {
+			t.Fatal("deep copy dropped cache control")
+		}
+		if copiedCacheControl.Type != originalCacheControl.Type || copiedCacheControl.TTL == nil || originalCacheControl.TTL == nil || *copiedCacheControl.TTL != *originalCacheControl.TTL || copiedCacheControl.Scope == nil || originalCacheControl.Scope == nil || *copiedCacheControl.Scope != *originalCacheControl.Scope {
+			t.Fatalf("cache control = %#v, want %#v", copiedCacheControl, originalCacheControl)
+		}
+		if copiedCacheControl == originalCacheControl {
+			t.Error("copy aliases the original cache control struct")
+		}
+		if copiedCacheControl.TTL == originalCacheControl.TTL {
+			t.Error("copy aliases the original cache control TTL")
+		}
+		if copiedCacheControl.Scope == originalCacheControl.Scope {
+			t.Error("copy aliases the original cache control scope")
+		}
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesExtendedFields verifies newly supported Responses fields survive the shared copy path.
+func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
+	fileType := "application/pdf"
+	breakpointMode := "explicit"
+	annotationIndex := 1
+	annotationPage := 2
+	annotationSource := "anthropic"
+	annotationEncryptedIndex := "ciphertext"
+	category := "safety"
+	original := ResponsesMessage{
+		ProviderNativeParts: json.RawMessage(`{"thoughtSignature":"opaque"}`),
+		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+			Type:                                  ResponsesOutputMessageContentTypeText,
+			ResponsesInputMessageContentBlockFile: &ResponsesInputMessageContentBlockFile{FileType: &fileType},
+			Citations:                             &Citations{Enabled: Ptr(true)},
+			PromptCacheBreakpoint:                 &PromptCacheBreakpoint{Mode: &breakpointMode},
+			ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{Annotations: []ResponsesOutputMessageContentTextAnnotation{{
+				Index:           &annotationIndex,
+				StartCharIndex:  &annotationIndex,
+				EndCharIndex:    &annotationIndex,
+				StartPageNumber: &annotationPage,
+				EndPageNumber:   &annotationPage,
+				StartBlockIndex: &annotationIndex,
+				EndBlockIndex:   &annotationIndex,
+				Source:          &annotationSource,
+				EncryptedIndex:  &annotationEncryptedIndex,
+			}}},
+			ResponsesOutputMessageContentRenderedContent: &ResponsesOutputMessageContentRenderedContent{RenderedContent: "rendered"},
+			ResponsesOutputMessageContentCompaction:      &ResponsesOutputMessageContentCompaction{Summary: "summary"},
+			ResponsesOutputMessageContentFallback: &ResponsesOutputMessageContentFallback{
+				FromModel:       "claude-opus-5",
+				ToModel:         "claude-sonnet-5",
+				TriggerType:     "refusal",
+				TriggerCategory: &category,
+			},
+		}}},
+		ResponsesToolMessage: &ResponsesToolMessage{
+			Action: &ResponsesToolMessageActionStruct{ResponsesToolCallActionStr: Ptr("generate")},
+			ResponsesComputerToolCall: &ResponsesComputerToolCall{PendingSafetyChecks: []ResponsesComputerToolCallPendingSafetyCheck{{
+				ID: "check_1", Code: "confirm", Message: "confirm action",
+			}}},
+			ResponsesComputerToolCallOutput: &ResponsesComputerToolCallOutput{AcknowledgedSafetyChecks: []ResponsesComputerToolCallAcknowledgedSafetyCheck{{
+				ID: "check_1", Code: Ptr("confirm"), Message: Ptr("approved"),
+			}}},
+			ResponsesCodeInterpreterToolCall: &ResponsesCodeInterpreterToolCall{
+				Code:        Ptr("print('hello')"),
+				ContainerID: "container_1",
+				Outputs: []ResponsesCodeInterpreterOutput{{
+					ResponsesCodeInterpreterOutputLogs: &ResponsesCodeInterpreterOutputLogs{Type: "logs", Logs: "hello"},
+				}},
+			},
+			ResponsesMCPToolCall: &ResponsesMCPToolCall{ServerLabel: "repo"},
+			ResponsesImageGenerationCall: &ResponsesImageGenerationCall{
+				Result:        "image",
+				Background:    Ptr("transparent"),
+				OutputFormat:  Ptr("png"),
+				Quality:       Ptr("high"),
+				RevisedPrompt: Ptr("draw a cat"),
+				Size:          Ptr("1024x1024"),
+			},
+			ResponsesMCPListTools: &ResponsesMCPListTools{ServerLabel: "repo", Tools: []ResponsesMCPTool{{
+				Name:        "read_file",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"path": "string"}},
+				Description: Ptr("read a file"),
+				Annotations: &map[string]any{"readOnlyHint": true},
+			}}},
+			ResponsesMCPApprovalResponse: &ResponsesMCPApprovalResponse{
+				ApprovalResponseID: "approval_1", Approve: true, Reason: Ptr("allowed"),
+			},
+			ResponsesAdvisorCall: &ResponsesAdvisorCall{
+				ResultType:       "advisor_result",
+				Text:             Ptr("advice"),
+				EncryptedContent: Ptr("encrypted"),
+				ErrorCode:        Ptr("none"),
+				StopReason:       Ptr("end_turn"),
+			},
+			ResponsesToolSearchCall: &ResponsesToolSearchCall{ToolReferences: []string{"read_file"}},
+			ResponsesCodeExecutionCall: &ResponsesCodeExecutionCall{
+				ToolName: "bash_code_execution",
+				Input:    Ptr(`{"command":"pwd"}`),
+				Lines:    []string{"line one"},
+				Files:    []ResponsesCodeExecutionFileOutput{{FileID: "file_1"}},
+				Caller:   &ResponsesToolCaller{Type: "code_execution_20260120", ToolID: Ptr("tool_1")},
+			},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	if !reflect.DeepEqual(original, copied) {
+		t.Fatalf("deep copy lost Responses fields\noriginal: %#v\ncopied: %#v", original, copied)
+	}
+	if &original.ProviderNativeParts[0] == &copied.ProviderNativeParts[0] {
+		t.Fatal("copy aliases provider native parts")
+	}
+	if original.Content.ContentBlocks[0].ResponsesInputMessageContentBlockFile.FileType == copied.Content.ContentBlocks[0].ResponsesInputMessageContentBlockFile.FileType {
+		t.Fatal("copy aliases file type")
+	}
+	if original.ResponsesToolMessage.Action.ResponsesToolCallActionStr == copied.ResponsesToolMessage.Action.ResponsesToolCallActionStr {
+		t.Fatal("copy aliases bare tool action")
+	}
+
+	copied.ProviderNativeParts[0] = '['
+	copied.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].InputSchema["type"] = "array"
+	copied.ResponsesToolMessage.ResponsesCodeExecutionCall.Lines[0] = "changed"
+	if string(original.ProviderNativeParts) != `{"thoughtSignature":"opaque"}` {
+		t.Fatal("mutating copied provider native parts changed the original")
+	}
+	if original.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].InputSchema["type"] != "object" {
+		t.Fatal("mutating copied MCP schema changed the original")
+	}
+	if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Lines[0] != "line one" {
+		t.Fatal("mutating copied code execution lines changed the original")
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesNilMCPAnnotations verifies a non-nil annotations pointer to a nil map is copied without panicking or aliasing.
+func TestDeepCopyResponsesMessagePreservesNilMCPAnnotations(t *testing.T) {
+	annotations := map[string]any(nil)
+	original := ResponsesMessage{
+		ResponsesToolMessage: &ResponsesToolMessage{
+			ResponsesMCPListTools: &ResponsesMCPListTools{Tools: []ResponsesMCPTool{{Annotations: &annotations}}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	copyAnnotations := copied.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].Annotations
+	if copyAnnotations == nil {
+		t.Fatal("copy dropped annotations pointer")
+	}
+	if copyAnnotations == original.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].Annotations {
+		t.Fatal("copy aliases annotations pointer")
+	}
+	if *copyAnnotations != nil {
+		t.Fatal("copy changed nil annotations map")
+	}
+}
+
+// TestDeepCopyResponsesMessageCopiesCodeExecutionPointers verifies code-execution pointer fields do not alias the original message.
+func TestDeepCopyResponsesMessageCopiesCodeExecutionPointers(t *testing.T) {
+	originalCall := &ResponsesCodeExecutionCall{
+		Input:              Ptr(`{"command":"pwd"}`),
+		Stdout:             Ptr("output"),
+		Stderr:             Ptr("error"),
+		ReturnCode:         Ptr(1),
+		EncryptedStdout:    Ptr("encrypted"),
+		FileType:           Ptr("text"),
+		FileContent:        Ptr("contents"),
+		StartLine:          Ptr(1),
+		NumLines:           Ptr(2),
+		TotalLines:         Ptr(3),
+		IsFileUpdate:       Ptr(true),
+		OldStart:           Ptr(4),
+		OldLines:           Ptr(5),
+		NewStart:           Ptr(6),
+		NewLines:           Ptr(7),
+		Lines:              []string{"before", "after"},
+		ErrorCode:          Ptr("unavailable"),
+		Files:              []ResponsesCodeExecutionFileOutput{{FileID: "file_1"}},
+		ContainerExpiresAt: Ptr("2026-10-01T00:00:00Z"),
+		Caller:             &ResponsesToolCaller{Type: "code_execution_20260120", ToolID: Ptr("tool_1")},
+	}
+	original := ResponsesMessage{ResponsesToolMessage: &ResponsesToolMessage{ResponsesCodeExecutionCall: originalCall}}
+
+	copied := DeepCopyResponsesMessage(original)
+	copiedCall := copied.ResponsesToolMessage.ResponsesCodeExecutionCall
+	if !reflect.DeepEqual(originalCall, copiedCall) {
+		t.Fatalf("deep copy changed code-execution call\noriginal: %#v\ncopied: %#v", originalCall, copiedCall)
+	}
+
+	for _, field := range []string{
+		"Input", "Stdout", "Stderr", "ReturnCode", "EncryptedStdout", "FileType", "FileContent",
+		"StartLine", "NumLines", "TotalLines", "IsFileUpdate", "OldStart", "OldLines", "NewStart",
+		"NewLines", "ErrorCode", "ContainerExpiresAt",
+	} {
+		originalPointer := reflect.ValueOf(originalCall).Elem().FieldByName(field)
+		copiedPointer := reflect.ValueOf(copiedCall).Elem().FieldByName(field)
+		if originalPointer.Pointer() == copiedPointer.Pointer() {
+			t.Fatalf("copy aliases code-execution %s", field)
+		}
 	}
 }
 

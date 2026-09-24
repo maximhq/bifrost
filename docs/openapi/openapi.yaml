@@ -160,6 +160,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: Warp
+    description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
 
 paths:
   # ==================== Unified Inference API ====================
@@ -819,12 +821,16 @@ paths:
     $ref: "./paths/management/mcp.yaml#/client-by-id"
   /api/mcp/client/{id}/reconnect:
     $ref: "./paths/management/mcp.yaml#/client-reconnect"
+  /api/mcp/client/{id}/refresh-tools:
+    $ref: "./paths/management/mcp.yaml#/client-refresh-tools"
   /api/mcp/client/{id}/complete-oauth:
     $ref: "./paths/management/mcp.yaml#/client-complete-oauth"
   /api/mcp/client/{id}/initiate-verification:
     $ref: "./paths/management/mcp.yaml#/client-initiate-verification"
   /api/mcp/client/{id}/reauthorize:
     $ref: "./paths/management/mcp.yaml#/client-reauthorize"
+  /api/mcp/client/{id}/reregister:
+    $ref: "./paths/management/mcp.yaml#/client-reregister"
   /api/mcp/client/{id}/verify-headers:
     $ref: "./paths/management/mcp.yaml#/client-verify-headers"
   /api/mcp/client/{id}/verify-exchange:
@@ -1306,6 +1312,24 @@ paths:
   # Notifications
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
+
+  # Warp
+  /api/warp/config:
+    $ref: "./paths/management/warp.yaml#/warp-config"
+  /api/warp/log-index/backfill:
+    $ref: "./paths/management/warp.yaml#/warp-backfill"
+  /api/warp/log-index/backfill/status:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-status"
+  /api/warp/log-index/backfill/cancel:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
+  /api/warp/chat:
+    $ref: "./paths/management/warp.yaml#/warp-session"
+  /api/warp/log-index/status:
+    $ref: "./paths/management/warp.yaml#/warp-log-index-status"
+  /api/warp/conversations:
+    $ref: "./paths/management/warp.yaml#/warp-conversations"
+  /api/warp/conversations/{id}:
+    $ref: "./paths/management/warp.yaml#/warp-conversation-by-id"
 
 components:
   securitySchemes:
@@ -2027,3 +2051,32 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # Warp
+    WarpConfig:
+      $ref: "./schemas/management/warp.yaml#/WarpConfig"
+    WarpConfigInput:
+      $ref: "./schemas/management/warp.yaml#/WarpConfigInput"
+    WarpBackfillRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillRequest"
+    WarpBackfillStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillStatus"
+    WarpUnavailable:
+      $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
+    WarpSessionRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpSessionRequest"
+    WarpSessionResponse:
+      $ref: "./schemas/management/warp.yaml#/WarpSessionResponse"
+    WarpLogIndexStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpLogIndexStatus"
+    WarpConversation:
+      $ref: "./schemas/management/warp.yaml#/WarpConversation"
+    WarpConversationList:
+      $ref: "./schemas/management/warp.yaml#/WarpConversationList"
+    WarpConversationDetail:
+      $ref: "./schemas/management/warp.yaml#/WarpConversationDetail"
+    WarpStoredMessage:
+      $ref: "./schemas/management/warp.yaml#/WarpStoredMessage"
+    WarpStoredToolCall:
+      $ref: "./schemas/management/warp.yaml#/WarpStoredToolCall"
+    WarpStoredQuestion:
+      $ref: "./schemas/management/warp.yaml#/WarpStoredQuestion"

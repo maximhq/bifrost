@@ -317,8 +317,8 @@ func TestSessionAffinityFallbackReplacesAnOlderKeyBindingOnItsProvider(t *testin
 	_ = kv.SetWithTTL(azureKey, "key-b", time.Hour)
 	_ = kv.SetWithTTL(routeKey, "azure/gpt-4o", time.Hour)
 
-	// This turn follows azure and its key, azure fails, and the openai fallback serves on key-c,
-	// picked freely because a fallback attempt gets no key from the session.
+	// This turn follows azure and its key, azure fails on that key, and the openai fallback serves
+	// on key-c, picked freely because a fallback attempt gets no key from the session.
 	ctx := sessionCtx("session-1")
 	if got := a.ResolveRoute(ctx, requested, []schemas.Route{openai, azure}); got[0] != azure {
 		t.Fatalf("session did not follow azure: %v", got)
@@ -338,8 +338,10 @@ func TestSessionAffinityFallbackReplacesAnOlderKeyBindingOnItsProvider(t *testin
 	if entry := kv.data[openaiKey]; entry.value != "key-c" {
 		t.Fatalf("openai key binding after its fallback served on key-c: %+v, want key-c", entry)
 	}
-	if entry := kv.data[azureKey]; entry.value != "key-b" {
-		t.Fatalf("azure key binding changed though azure did not serve: %+v", entry)
+	// Azure failed on the key the session followed, so that binding is dropped rather than kept
+	// for the rest of its TTL: the next time azure serves this session, a key is picked afresh.
+	if entry, bound := kv.data[azureKey]; bound {
+		t.Fatalf("azure key binding survived azure failing on it: %+v", entry)
 	}
 }
 
@@ -395,13 +397,25 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 		}
 	})
 
-	t.Run("the model comes from the chain, not the binding", func(t *testing.T) {
+	// A binding names a route, provider and model together. A chain that offers the provider on
+	// another model does not offer that route: a session served on azure/gpt-4o-old must not be
+	// moved onto azure/gpt-4o just because both are azure, the routing decision stands instead.
+	t.Run("a bound route whose model the chain does not offer is dropped, provider or not", func(t *testing.T) {
 		kv := newMockKVStore()
+		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
 		bind(kv, ctx, "azure/gpt-4o-old")
-		got := testAffinity(kv).ResolveRoute(ctx, requested, chain)
-		if got[0] != chain[2] {
-			t.Fatalf("got %v, want azure with the chain's model first", got)
+		if got := a.ResolveRoute(ctx, requested, chain); !slices.Equal(got, chain) {
+			t.Fatalf("got %v, want the chain unchanged", got)
+		}
+		if _, bound := kv.data[SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")]; bound {
+			t.Fatal("a binding to a route the chain does not offer was kept")
+		}
+		if !trailMentions(ctx, "cannot use") {
+			t.Fatal("the dropped binding was not explained in the trail")
+		}
+		if _, recorded := ctx.Value(sessionAffinityResolvedKey).(sessionResolution); recorded {
+			t.Fatal("a binding outside the chain was recorded as followed")
 		}
 	})
 
@@ -546,7 +560,7 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 		}
 	})
 
-	t.Run("failures write nothing", func(t *testing.T) {
+	t.Run("a failure that followed nothing writes nothing", func(t *testing.T) {
 		kv := newMockKVStore()
 		ctx := sessionCtx("session-1")
 		testAffinity(kv).Observe(ctx, requested, schemas.RouteOutcome{Err: &schemas.BifrostError{}})
@@ -561,6 +575,132 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 		testAffinity(kv).Observe(ctx, requested, servedBy(routeOf(schemas.OpenAI, "gpt-4o"), "", false))
 		if len(kv.data) != 1 {
 			t.Fatalf("a served route without a key should bind only the route: %v", kv.data)
+		}
+	})
+}
+
+// A binding the request followed into a failure is dropped, at both levels, so the next request
+// is routed and keyed afresh instead of returning to what just failed for up to the TTL. A binding
+// the request did not follow says nothing about the failure and is left alone.
+func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
+	requested := routeOf("", "gpt-4o")
+	chain := []schemas.Route{routeOf(schemas.OpenAI, "gpt-4o"), routeOf(schemas.Azure, "gpt-4o")}
+	failed := schemas.RouteOutcome{Err: &schemas.BifrostError{}}
+	keys := func(ctx *schemas.BifrostContext) (route, openaiKey, azureKey string) {
+		return SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o"),
+			SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"),
+			SessionStateKey(ctx, SessionStateKindKey, "azure", "gpt-4o")
+	}
+
+	t.Run("a failed request drops the route and the key it followed", func(t *testing.T) {
+		kv := newMockKVStore()
+		a := testAffinity(kv)
+		ctx := sessionCtx("session-1")
+		route, openaiKey, azureKey := keys(ctx)
+		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
+		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+		_ = kv.SetWithTTL(azureKey, "az-1", time.Minute)
+		a.ResolveRoute(ctx, requested, chain)
+		if key, ok := a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool); !ok || key.ID != "key-b" {
+			t.Fatalf("setup: the session did not follow key-b: %q ok=%v", key.ID, ok)
+		}
+		a.Observe(ctx, requested, failed)
+		if _, bound := kv.data[route]; bound {
+			t.Fatalf("the route binding survived the failure of the provider it named: %+v", kv.data[route])
+		}
+		if _, bound := kv.data[openaiKey]; bound {
+			t.Fatalf("the key binding survived the failure of the key it named: %+v", kv.data[openaiKey])
+		}
+		if entry := kv.data[azureKey]; entry.value != "az-1" {
+			t.Fatalf("a key binding the request never followed was touched: %+v", entry)
+		}
+		if !trailMentions(ctx, "failed") {
+			t.Fatalf("dropping the bindings left no trace in the trail: %v", ctx.GetRoutingEngineLogs())
+		}
+	})
+
+	// A caller that gives up on a request says nothing about the provider or key it followed, so
+	// a cancellation keeps both bindings. A deadline is the provider's failure to answer and drops.
+	t.Run("a request the caller cancelled keeps what it followed, a timeout does not", func(t *testing.T) {
+		for _, tc := range []struct {
+			errType string
+			kept    bool
+		}{{schemas.RequestCancelled, true}, {schemas.RequestTimedOut, false}} {
+			kv := newMockKVStore()
+			a := testAffinity(kv)
+			ctx := sessionCtx("session-1")
+			route, openaiKey, _ := keys(ctx)
+			_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
+			_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+			a.ResolveRoute(ctx, requested, chain)
+			a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool)
+			errType := tc.errType
+			a.Observe(ctx, requested, schemas.RouteOutcome{Err: &schemas.BifrostError{Error: &schemas.ErrorField{Type: &errType}}})
+			_, routeBound := kv.data[route]
+			_, keyBound := kv.data[openaiKey]
+			if routeBound != tc.kept || keyBound != tc.kept {
+				t.Fatalf("%s: route bound=%v key bound=%v, want both %v", tc.errType, routeBound, keyBound, tc.kept)
+			}
+		}
+	})
+
+	t.Run("a failed request that followed nothing leaves bindings alone", func(t *testing.T) {
+		kv := newMockKVStore()
+		a := testAffinity(kv)
+		ctx := sessionCtx("session-1")
+		route, openaiKey, _ := keys(ctx)
+		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
+		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+		// The caller named its provider, so the route binding was never consulted, and the key
+		// pool had one key, so neither was the key binding.
+		named := routeOf(schemas.OpenAI, "gpt-4o")
+		a.ResolveRoute(ctx, named, chain[:1])
+		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool[:1])
+		a.Observe(ctx, named, failed)
+		if entry := kv.data[route]; entry.value != "openai/gpt-4o" {
+			t.Fatalf("route binding touched by a request that never followed it: %+v", entry)
+		}
+		if entry := kv.data[openaiKey]; entry.value != "key-b" {
+			t.Fatalf("key binding touched by a request that never followed it: %+v", entry)
+		}
+	})
+
+	t.Run("a fallback that served drops the key the primary followed and binds its own", func(t *testing.T) {
+		kv := newMockKVStore()
+		a := testAffinity(kv)
+		ctx := sessionCtx("session-1")
+		route, openaiKey, azureKey := keys(ctx)
+		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
+		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+		a.ResolveRoute(ctx, requested, chain)
+		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool)
+		a.Observe(ctx, requested, servedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", true))
+		if _, bound := kv.data[openaiKey]; bound {
+			t.Fatalf("the key the primary followed into its failure survived: %+v", kv.data[openaiKey])
+		}
+		if entry := kv.data[azureKey]; entry.value != "az-1" {
+			t.Fatalf("the fallback's key was not bound: %+v", entry)
+		}
+		if entry := kv.data[route]; entry.value != "azure/gpt-4o" {
+			t.Fatalf("the route did not move to the fallback that served: %+v", entry)
+		}
+	})
+
+	t.Run("a failed request that followed only the route keeps a key binding it never used", func(t *testing.T) {
+		kv := newMockKVStore()
+		a := testAffinity(kv)
+		ctx := sessionCtx("session-1")
+		route, openaiKey, _ := keys(ctx)
+		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
+		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+		// The route was followed; the key was decided by a pin, so ResolveKey was never asked.
+		a.ResolveRoute(ctx, requested, chain)
+		a.Observe(ctx, requested, failed)
+		if _, bound := kv.data[route]; bound {
+			t.Fatalf("the route binding survived the failure: %+v", kv.data[route])
+		}
+		if entry := kv.data[openaiKey]; entry.value != "key-b" {
+			t.Fatalf("a key binding a pinned request never consulted was touched: %+v", entry)
 		}
 	})
 }
@@ -737,6 +877,155 @@ func TestResolveSessionRouteAppliesTheAnswer(t *testing.T) {
 		// One with no session at all has nothing to explain.
 		if len(noSession.GetRoutingEngineLogs()) != 0 {
 			t.Fatalf("a request with no session wrote a trail: %v", noSession.GetRoutingEngineLogs())
+		}
+	})
+}
+
+// TestResolveSessionRouteMovesKeyPinsWithTheirRoutes pins the bug where a routing rule's key
+// pin stayed on the request when the session moved the primary to another provider: a Vertex
+// key looked up among Anthropic's keys can only fail, and the attempt died with "no supported
+// key found" before Anthropic was ever called. A pin belongs to the route it was decided for,
+// so it follows that route wherever the session puts it in the chain, and a fallback the
+// session promotes brings its own pin along.
+func TestResolveSessionRouteMovesKeyPinsWithTheirRoutes(t *testing.T) {
+	const vertexPin, anthropicPin = "vertex-key-id", "anthropic-key-id"
+	reverse := func(chain []schemas.Route) []schemas.Route {
+		out := slices.Clone(chain)
+		slices.Reverse(out)
+		return out
+	}
+	newRequest := func(fallbackPin string) *schemas.BifrostRequest {
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "claude-opus-5"},
+		}
+		req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-opus-5", KeyID: fallbackPin}})
+		return req
+	}
+	setup := func(t *testing.T, answer func([]schemas.Route) []schemas.Route) *Bifrost {
+		t.Helper()
+		client, err := Init(context.Background(), schemas.BifrostConfig{
+			Account:         NewMockAccount(),
+			Logger:          NewDefaultLogger(schemas.LogLevelError),
+			SessionAffinity: &recordingAffinity{routeAnswer: answer},
+		})
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		t.Cleanup(client.Shutdown)
+		return client
+	}
+	// pinned is a context as RunPreRequestHooks leaves it once a rule pinned a key for the
+	// primary: the routing pin recorded, and committed into the api-key-id key selection reads.
+	pinned := func() *schemas.BifrostContext {
+		ctx := sessionCtx("s")
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, vertexPin)
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, vertexPin)
+		return ctx
+	}
+	// primaryPin is the pin the primary attempt will read, checking that the routing pin and
+	// the committed api-key-id never disagree.
+	primaryPin := func(t *testing.T, ctx *schemas.BifrostContext) string {
+		t.Helper()
+		routing, _ := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+		apiKey, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
+		if routing != apiKey {
+			t.Fatalf("routing pin %q and api-key-id %q disagree", routing, apiKey)
+		}
+		return apiKey
+	}
+	fallbacksOf := func(req *schemas.BifrostRequest) []schemas.Fallback {
+		_, _, fallbacks := req.GetRequestFields()
+		return fallbacks
+	}
+
+	t.Run("the primary's pin follows it when the session demotes it to a fallback", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := pinned()
+		req := newRequest("")
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+		if provider, _, _ := req.GetRequestFields(); provider != schemas.Anthropic {
+			t.Fatalf("primary = %s, want anthropic", provider)
+		}
+		if pin := primaryPin(t, ctx); pin != "" {
+			t.Fatalf("the moved primary still reads pin %q, which names a vertex key", pin)
+		}
+		want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5", KeyID: vertexPin}}
+		if got := fallbacksOf(req); !slices.Equal(got, want) {
+			t.Fatalf("fallbacks = %+v, want the demoted vertex route carrying its pin %+v", got, want)
+		}
+		if !trailMentions(ctx, "pinned") {
+			t.Fatalf("moving the pin left no trace in the trail: %v", ctx.GetRoutingEngineLogs())
+		}
+	})
+
+	t.Run("a promoted fallback's own pin becomes the primary pin", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := pinned()
+		req := newRequest(anthropicPin)
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+		if pin := primaryPin(t, ctx); pin != anthropicPin {
+			t.Fatalf("primary pin = %q, want the promoted route's own %q", pin, anthropicPin)
+		}
+		want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5", KeyID: vertexPin}}
+		if got := fallbacksOf(req); !slices.Equal(got, want) {
+			t.Fatalf("fallbacks = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("an unpinned primary demoted behind a pinned fallback claims no pin of its own", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := sessionCtx("s")
+		req := newRequest(anthropicPin)
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+		if pin := primaryPin(t, ctx); pin != anthropicPin {
+			t.Fatalf("primary pin = %q, want the promoted route's own %q", pin, anthropicPin)
+		}
+		want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5"}}
+		if got := fallbacksOf(req); !slices.Equal(got, want) {
+			t.Fatalf("fallbacks = %+v, want the demoted vertex route with no pin %+v", got, want)
+		}
+		if trailMentions(ctx, "applies if") {
+			t.Fatalf("the trail claims a pin for vertex that the rule never set: %v", ctx.GetRoutingEngineLogs())
+		}
+	})
+
+	t.Run("pins stay where they are when the session agrees with routing", func(t *testing.T) {
+		for name, answer := range map[string]func([]schemas.Route) []schemas.Route{
+			"same":  nil,
+			"empty": func([]schemas.Route) []schemas.Route { return nil },
+		} {
+			client := setup(t, answer)
+			ctx := pinned()
+			req := newRequest(anthropicPin)
+			client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
+			if pin := primaryPin(t, ctx); pin != vertexPin {
+				t.Fatalf("%s: primary pin = %q, want %q untouched", name, pin, vertexPin)
+			}
+			want := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-opus-5", KeyID: anthropicPin}}
+			if got := fallbacksOf(req); !slices.Equal(got, want) {
+				t.Fatalf("%s: fallbacks = %+v, want %+v untouched", name, got, want)
+			}
+			if trailMentions(ctx, "pinned") {
+				t.Fatalf("%s: the trail claims a pin moved: %v", name, ctx.GetRoutingEngineLogs())
+			}
+		}
+	})
+
+	t.Run("a caller's own pins are left alone", func(t *testing.T) {
+		client := setup(t, reverse)
+		ctx := sessionCtx("s")
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-key")
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "caller-name")
+		client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), newRequest(""))
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "caller-key" {
+			t.Fatalf("api-key-id = %q after a session move, want the caller's own pin kept", got)
+		}
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); got != "caller-name" {
+			t.Fatalf("api-key name = %q after a session move, want the caller's own pin kept", got)
+		}
+		if trailMentions(ctx, "pinned") {
+			t.Fatalf("the trail mentions a routing pin the request never had: %v", ctx.GetRoutingEngineLogs())
 		}
 	})
 }

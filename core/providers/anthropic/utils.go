@@ -306,7 +306,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if req.OutputConfig != nil {
 			effort = req.OutputConfig.Effort
 		}
-		if RejectsDisabledThinking(model, effort) {
+		if RejectsDisabledThinking(caps, effort) {
 			req.Thinking.Type = "adaptive"
 			req.Thinking.BudgetTokens = nil
 		}
@@ -704,7 +704,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
 			effort = new(e.String())
 		}
-		if RejectsDisabledThinking(model, effort) {
+		if RejectsDisabledThinking(caps, effort) {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "adaptive")
 			if err != nil {
 				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
@@ -1026,18 +1026,22 @@ func RejectsEnabledThinking(caps schemas.ModelCaps) bool {
 //	to adaptive mode when not specified; use "thinking.type.enabled" with
 //	"budget_tokens" for extended thinking.
 //
-// Fable 5, Mythos 5 and Mythos Preview are always-on and reject it outright.
-// Opus 5 (and later) accept it only at effort "high" or below - pairing it with
+// Fable 5, Mythos 5, Mythos Preview and Opus 5.5 are always-on and reject it
+// outright. Opus 5 accepts it only at effort "high" or below - pairing it with
 // "xhigh" or "max" is rejected, and that is enforced per request, which is why
 // effort has to be passed in rather than inferred from the model alone. Opus
 // 4.7/4.8 and Sonnet 5 accept "disabled" at any effort.
 //
-// effort is nil when the caller did not set output_config.effort; the default
-// sits below "xhigh", so "disabled" is accepted.
+// The unconditional half reads caps.CanDisableReasoning so the datasheet's
+// supports_reasoning_disable drives this passthrough gate and the converter's
+// (chat.go, responses.go) from one value; the effort carve-out stays per
+// request. effort is nil when the caller did not set output_config.effort; the
+// default sits below "xhigh", so "disabled" is accepted.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
-func RejectsDisabledThinking(model string, effort *string) bool {
-	if IsFableFamily(model) {
+func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
+	model := caps.Model()
+	if !caps.CanDisableReasoning(DefaultCanDisableReasoning(model)) {
 		return true
 	}
 	if IsOpus5Plus(model) && effort != nil {
@@ -1103,11 +1107,11 @@ func DefaultAdaptiveOnlyThinking(model string) bool {
 	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
-// DefaultCanDisableReasoning: the Fable/Mythos family rejects
+// DefaultCanDisableReasoning: the Fable/Mythos family and Opus 5.5 reject
 // thinking:{type:"disabled"} — adaptive thinking is always on, so the param must
 // be omitted entirely rather than sent as disabled.
 func DefaultCanDisableReasoning(model string) bool {
-	return !IsFableFamily(model)
+	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model)
 }
 
 // SupportsNativeEffort reports whether the model takes output_config.effort as
@@ -1363,13 +1367,16 @@ const (
 )
 
 // Computer-use tool generations.
+//   - "20260801" — the client toolset, the only form Opus 5.5 accepts
 //   - "20251124" — Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, Sonnet 4.6, Opus 4.5
 //   - "20250124" — everything else (Sonnet 4.5, Haiku 4.5, Opus 4.1, Sonnet 4, Opus 4, Sonnet 3.7)
 //
-// The bash tool is generation-invariant (always bash_20250124).
+// The bash tool is generation-invariant (always bash_20250124). The toolset
+// generation has no text_editor member, so TextEditorGeneration never returns it.
 const (
-	ComputerUseGen20251124 = "20251124"
-	ComputerUseGen20250124 = "20250124"
+	ComputerUseGenToolset20260801 = "20260801"
+	ComputerUseGen20251124        = "20251124"
+	ComputerUseGen20250124        = "20250124"
 )
 
 // ComputerUseGeneration returns the tool-version generation a Claude model
@@ -1378,16 +1385,29 @@ const (
 //   - Which computer_*/text_editor_* type the upstream API will accept.
 //   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
 //
-// Prefers the datasheet's server_tools["computer_use"] ("computer_20251124" →
-// new gen, anything else → old gen), falling back to substring detection.
+// Prefers the datasheet's server_tools["computer_use"], which names the exact
+// tool type, falling back to substring detection.
+//
+// The fallback only moves a model to the toolset when the dated tools are
+// actually rejected, which today is Opus 5.5 and only on the surfaces that
+// dropped them (the Claude API and Google Cloud; AWS and Foundry still serve
+// computer_20251124). Opus 4.8 through Fable 5.1 accept both forms, so they stay
+// on computer_20251124 and a row moves them when their surface is ready.
 func ComputerUseGeneration(caps schemas.ModelCaps) string {
 	if computerUse, ok := caps.ServerTool(ServerToolComputerUse); ok {
-		if computerUse == string(AnthropicToolTypeComputer20251124) {
+		switch computerUse {
+		case string(AnthropicToolTypeComputerToolset20260801):
+			return ComputerUseGenToolset20260801
+		case string(AnthropicToolTypeComputer20251124):
 			return ComputerUseGen20251124
+		default:
+			return ComputerUseGen20250124
 		}
-		return ComputerUseGen20250124
 	}
 	m := strings.ToLower(caps.Model())
+	if schemas.IsOpus55Plus(m) && toolsetOnlyComputerUseProvider(caps.Provider()) {
+		return ComputerUseGenToolset20260801
+	}
 	// Opus 4.7+, Sonnet 5+, and the Fable/Mythos family use the new generation.
 	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
 		return ComputerUseGen20251124
@@ -1405,6 +1425,47 @@ func ComputerUseGeneration(caps schemas.ModelCaps) string {
 		}
 	}
 	return ComputerUseGen20250124
+}
+
+// toolsetOnlyComputerUseProvider reports whether a surface has dropped the dated
+// computer_* tools in favour of the toolset. AWS and Microsoft Foundry still
+// serve computer_20251124 on the same models, so the split is per surface rather
+// than per model.
+//
+// Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
+func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
+	return provider == schemas.Anthropic || provider == schemas.Vertex
+}
+
+// AcceptsComputerToolset reports whether the (provider, model) pair takes a
+// computer_toolset_20260801 entry on the wire. Wider than ComputerUseGeneration,
+// which answers what to *convert* to: every model here except Opus 5.5 also
+// accepts the dated computer_* tools, so a caller that already sent the toolset
+// must have it forwarded rather than converted into a form it never asked for.
+//
+// Override-aware: the datasheet's supports_computer_toolset decides when set, so
+// a model gaining the toolset is a catalog change. The provider gate stays in
+// code because the toolset is GA on the Claude API and Google Cloud only.
+func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
+	if !toolsetOnlyComputerUseProvider(caps.Provider()) {
+		return false
+	}
+	return caps.SupportsComputerToolset(DefaultSupportsComputerToolset(caps.Model()))
+}
+
+// DefaultSupportsComputerToolset is the name-based fallback for
+// ModelCaps.SupportsComputerToolset, listing the models the computer-use docs
+// publish for the toolset: the Fable/Mythos family, Opus 5.5, Opus 5, Sonnet 5
+// and Opus 4.8. Opus 4.7 and older take the dated tool only.
+//
+// Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
+func DefaultSupportsComputerToolset(model string) bool {
+	m := strings.ToLower(model)
+	if IsFableFamily(m) || schemas.IsOpus55Plus(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) {
+		return true
+	}
+	return strings.Contains(m, "opus") &&
+		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
 }
 
 // TextEditorGeneration returns the text_editor tool-version generation for a model.
@@ -1453,7 +1514,11 @@ func TextEditorGeneration(caps schemas.ModelCaps) string {
 func NormalizedToolSpec(generation, baseTool string) (toolType, toolName string) {
 	switch baseTool {
 	case "computer":
-		if generation == ComputerUseGen20251124 {
+		switch generation {
+		case ComputerUseGenToolset20260801:
+			// Toolsets take no name — the member names are fixed by the type.
+			return string(AnthropicToolTypeComputerToolset20260801), ""
+		case ComputerUseGen20251124:
 			return string(AnthropicToolTypeComputer20251124), "computer"
 		}
 		return string(AnthropicToolTypeComputer20250124), "computer"
@@ -1922,6 +1987,7 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 // betaHeaderPrefixKnown maps known beta header prefixes for prefix-aware dedup.
 var betaHeaderPrefixKnown = []string{
 	AnthropicDangerousToolUseBetaHeaderPrefix,
+	AnthropicAutoModeClassifierBetaHeaderPrefix,
 	"computer-use-",
 	AnthropicStructuredOutputsBetaHeaderPrefix,
 	AnthropicMCPClientBetaHeaderPrefix,
@@ -2344,6 +2410,7 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 	// request per tool, making this O(tools × body).
 	// Pinned by TestRemapRawToolVersionsForProvider_AllocationScaling.
 	normalized := make([][]byte, len(tools))
+	dropped := make([]bool, len(tools))
 	anyNormalized := false
 	for i, tool := range tools {
 		normalized[i] = []byte(tool.Raw)
@@ -2360,12 +2427,47 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		if wantType == "" {
 			continue
 		}
+		// The caller already sent a form this pair accepts, so leave it alone.
+		// Normalizing it into the generation's dated tool would strip the toolset
+		// the model supports and lose its member-call shape.
+		if toolType == string(AnthropicToolTypeComputerToolset20260801) && AcceptsComputerToolset(caps) {
+			continue
+		}
+		// A dated computer tool validates display_*_px as >= 1 and requires a name;
+		// a toolset entry has neither, by design. Rewriting its type would emit an
+		// entry the API rejects outright, so drop it the way any unsupported tool is
+		// dropped. Scoped to the computer family: text_editor and bash carry no
+		// geometry and are valid without it.
+		if baseTool == "computer" && wantName != "" {
+			width := providerUtils.GetJSONField(normalized[i], "display_width_px")
+			height := providerUtils.GetJSONField(normalized[i], "display_height_px")
+			if !width.Exists() || !height.Exists() || width.Int() <= 0 || height.Int() <= 0 {
+				dropped[i] = true
+				anyNormalized = true
+				continue
+			}
+		}
 		if toolType != wantType {
 			normalized[i], err = providerUtils.SetJSONField(normalized[i], "type", wantType)
 			if err != nil {
 				return nil, fmt.Errorf("failed to normalize tool type: %w", err)
 			}
 			anyNormalized = true
+		}
+		if wantName == "" {
+			// Toolset form: name and the display_* geometry are rejected outright,
+			// so a dated entry being upgraded has to shed them.
+			for _, field := range []string{"name", "display_width_px", "display_height_px", "display_number", "enable_zoom"} {
+				if !providerUtils.JSONFieldExists(normalized[i], field) {
+					continue
+				}
+				normalized[i], err = providerUtils.DeleteJSONField(normalized[i], field)
+				if err != nil {
+					return nil, fmt.Errorf("failed to strip %s for toolset: %w", field, err)
+				}
+				anyNormalized = true
+			}
+			continue
 		}
 		// Only set name if the tool has one (custom tools use input_schema; computer-use family always has a name).
 		if existingName := tool.Get("name").String(); existingName != "" && existingName != wantName {
@@ -2377,7 +2479,13 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		}
 	}
 	if anyNormalized {
-		jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "tools", rawJSONArrayOf(normalized))
+		kept := normalized[:0:0]
+		for i, tool := range normalized {
+			if !dropped[i] {
+				kept = append(kept, tool)
+			}
+		}
+		jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "tools", rawJSONArrayOf(kept))
 		if err != nil {
 			return nil, fmt.Errorf("failed to normalize tool versions: %w", err)
 		}
@@ -2421,7 +2529,8 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 // betaHeaderPrefixToFeature maps each known beta header prefix to a function that checks
 // whether the feature is supported by the provider's default feature set.
 var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
-	AnthropicDangerousToolUseBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.Safeguards },
+	AnthropicDangerousToolUseBetaHeaderPrefix:   func(f ProviderFeatureSupport) bool { return f.Safeguards },
+	AnthropicAutoModeClassifierBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.Safeguards },
 	"computer-use-": func(f ProviderFeatureSupport) bool { return f.ComputerUse },
 	AnthropicStructuredOutputsBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.StructuredOutputs },
 	AnthropicMCPClientBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.MCP },

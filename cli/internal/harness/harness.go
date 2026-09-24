@@ -17,15 +17,19 @@ import (
 
 // Harness defines a coding assistant CLI that Bifrost can launch and manage.
 type Harness struct {
-	ID               string
-	Label            string
-	Binary           string
-	InstallPkg       string
-	VersionArgs      []string
-	BasePath         string
-	BaseURLEnv       string
-	APIKeyEnv        string
-	AuthTokenEnv     string
+	ID           string
+	Label        string
+	Binary       string
+	InstallPkg   string
+	VersionArgs  []string
+	BasePath     string
+	BaseURLEnv   string
+	APIKeyEnv    string
+	AuthTokenEnv string
+	// AgentTokenEnv is the environment variable through which this harness can
+	// send a Bifrost Enterprise agent bearer. Empty means the harness cannot use
+	// an SSO session directly and still requires a virtual key.
+	AgentTokenEnv    string
 	ModelEnv         string
 	SupportsMCP      bool
 	SupportsWorktree bool
@@ -56,6 +60,7 @@ var all = map[string]Harness{
 		BaseURLEnv:       "ANTHROPIC_BASE_URL",
 		APIKeyEnv:        "ANTHROPIC_API_KEY",
 		AuthTokenEnv:     "ANTHROPIC_AUTH_TOKEN",
+		AgentTokenEnv:    "ANTHROPIC_AUTH_TOKEN",
 		SupportsMCP:      true,
 		SupportsWorktree: true,
 		RunArgsForMod: func(model string) []string {
@@ -83,10 +88,11 @@ var all = map[string]Harness{
 		VersionArgs: []string{
 			"--version",
 		},
-		BasePath:   "/openai",
-		BaseURLEnv: "OPENAI_BASE_URL",
-		APIKeyEnv:  "OPENAI_API_KEY",
-		ModelEnv:   "OPENAI_MODEL",
+		BasePath:      "/openai",
+		BaseURLEnv:    "OPENAI_BASE_URL",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		AgentTokenEnv: "OPENAI_API_KEY",
+		ModelEnv:      "OPENAI_MODEL",
 		RunArgsForMod: func(model string) []string {
 			if strings.TrimSpace(model) == "" {
 				return nil
@@ -124,9 +130,10 @@ var all = map[string]Harness{
 		VersionArgs: []string{
 			"--version",
 		},
-		BasePath:   "/openai",
-		BaseURLEnv: "OPENAI_BASE_URL",
-		APIKeyEnv:  "OPENAI_API_KEY",
+		BasePath:      "/openai",
+		BaseURLEnv:    "OPENAI_BASE_URL",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		AgentTokenEnv: "OPENAI_API_KEY",
 		RunArgsForMod: func(model string) []string {
 			if strings.TrimSpace(model) == "" {
 				return nil

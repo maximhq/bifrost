@@ -827,7 +827,10 @@ jobs:
           go-version: "1.27.0"
 
       - name: Run memory regression tests
-        run: make test-memory
+        run: |
+          # Transport tests need the core/framework/plugins from this checkout.
+          source ./.github/workflows/scripts/setup-go-workspace.sh
+          make test-memory
 
       - name: Upload memory test report
         if: ${{ !cancelled() }}

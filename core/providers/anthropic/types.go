@@ -24,6 +24,9 @@ const (
 	// AnthropicDangerousToolUseBetaHeader activates safeguards evaluation.
 	AnthropicDangerousToolUseBetaHeader       = "dangerous-tool-use-2026-09-03"
 	AnthropicDangerousToolUseBetaHeaderPrefix = "dangerous-tool-use-"
+	// AnthropicAutoModeClassifierBetaHeaderPrefix rides on Claude Code's auto-mode
+	// classifier follow-up requests; sibling of dangerous-tool-use, same feature gate.
+	AnthropicAutoModeClassifierBetaHeaderPrefix = "auto-mode-classifier-"
 
 	// Beta headers for various Anthropic features
 	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
@@ -709,6 +712,11 @@ func (req *AnthropicMessageRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
 
+// SetExtraParams implements the integration router's extra-parameter setter.
+func (req *AnthropicMessageRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
+}
+
 type AnthropicMetaData struct {
 	UserID *string `json:"user_id"`
 }
@@ -1299,6 +1307,11 @@ type AnthropicContentBlock struct {
 	ErrorCode        *string                   `json:"error_code,omitempty"`        // any *_tool_result_error variant
 	StopReason       *string                   `json:"stop_reason,omitempty"`       // advisor_result / advisor_redacted_result inner block; present when advisor tool max_tokens is set
 	Caller           *AnthropicToolCaller      `json:"caller,omitempty"`            // tool_use, server_tool_use, every *_tool_result block
+	// ToolsetName names the client toolset a member call belongs to ("computer").
+	// It must appear on both halves of a pair or neither: a tool_result answering
+	// a member tool_use without it, or carrying it when the tool_use does not, is
+	// a 400. Set on tool_use and tool_result only.
+	ToolsetName *string `json:"toolset_name,omitempty"`
 
 	// search_result block: the API uses the literal key "source" with a plain
 	// string value, which collides with the existing Source *AnthropicSource
@@ -1616,6 +1629,12 @@ const (
 	AnthropicToolTypeTextEditor20250429 AnthropicToolType = "text_editor_20250429"
 	AnthropicToolTypeTextEditor20250728 AnthropicToolType = "text_editor_20250728"
 
+	// Client toolsets. A toolset entry carries no name and no display_* fields —
+	// its members are fixed by the dated type — and every call comes back under a
+	// member name ("screenshot", "left_click") tagged with toolset_name.
+	AnthropicToolTypeComputerToolset20260801 AnthropicToolType = "computer_toolset_20260801"
+	AnthropicToolTypeBrowserToolset20260801  AnthropicToolType = "browser_toolset_20260801"
+
 	// Code execution
 	AnthropicToolTypeCodeExecution20250522 AnthropicToolType = "code_execution_20250522" // Legacy Python-only
 	AnthropicToolTypeCodeExecution         AnthropicToolType = "code_execution_20250825"
@@ -1732,7 +1751,9 @@ type AnthropicToolInputExample struct {
 
 // AnthropicTool represents a tool in Anthropic format
 type AnthropicTool struct {
-	Name                string                          `json:"name"`
+	// Name is omitted when empty: a toolset entry rejects it outright ("name is
+	// not accepted on a toolset entry"), and every other tool always sets one.
+	Name                string                          `json:"name,omitempty"`
 	Type                *AnthropicToolType              `json:"type,omitempty"`
 	Description         *string                         `json:"description,omitempty"`
 	InputSchema         *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`

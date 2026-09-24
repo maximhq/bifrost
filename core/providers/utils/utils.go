@@ -4414,3 +4414,423 @@ func ModelMatchesDenylist(denylist []string, candidates ...string) bool {
 	}
 	return false
 }
+
+// jsonSchemaPatternKey is the JSON Schema keyword whose value is a regex.
+const jsonSchemaPatternKey = "pattern"
+
+// NormalizeRegexNULEscape rewrites the `\0` NUL escape to `\x00`.
+//
+// The two denote the same character in every engine that accepts both, but some
+// model backends reject the `\0` spelling when they validate tool schemas, and
+// they fail the whole request rather than reporting a bad pattern. They also fail
+// differently: DeepSeek answers 400 `"^[^\0]*$" is not a "regex"`, while
+// moonshotai.kimi-k3 on Bedrock answers 200 with an empty event stream and says
+// nothing at all. This is those validators' behaviour, not a regex-engine rule:
+// Go's own regexp accepts `\0` as a one-digit octal escape, and OpenAI, Anthropic
+// and Gemini accept it unchanged. `\x00` is accepted by every backend tested, so
+// the rewrite is lossless; which models receive it is decided by the caller (see
+// toolSchemaPatternRewriter in core), not here.
+//
+// Only a `\0` that is not the start of a legacy octal escape is rewritten, so
+// `\012` is left alone, and escape pairs are consumed two at a time so the `0` in
+// `\\0` (a literal backslash then a zero) is never mistaken for a NUL.
+func NormalizeRegexNULEscape(pattern string) string {
+	if !strings.Contains(pattern, `\0`) {
+		return pattern
+	}
+	var b strings.Builder
+	b.Grow(len(pattern) + 8)
+	for i := 0; i < len(pattern); {
+		if pattern[i] != '\\' || i+1 >= len(pattern) {
+			b.WriteByte(pattern[i])
+			i++
+			continue
+		}
+		// Only 0-7 are octal digits: `\012` is a legacy octal escape and stays,
+		// but `\08` is a NUL escape followed by a literal 8 and must be rewritten.
+		if pattern[i+1] == '0' && (i+2 >= len(pattern) || pattern[i+2] < '0' || pattern[i+2] > '7') {
+			b.WriteString(`\x00`)
+		} else {
+			b.WriteByte(pattern[i])
+			b.WriteByte(pattern[i+1])
+		}
+		i += 2
+	}
+	return b.String()
+}
+
+// normalizeSchemaValue normalizes any nested JSON Schema value. It returns the
+// input untouched, and reports false, when nothing changed -- the common case,
+// which must not allocate.
+func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
+	switch typed := value.(type) {
+	case *schemas.OrderedMap:
+		return normalizeSchemaMap(typed, rewrite)
+	case map[string]any:
+		// Nested schemas built in code arrive as plain maps (BuildDecisionSchema
+		// stores each question's schema this way inside an OrderedMap), so they
+		// need the same pattern handling. Copy-on-write like the other cases: the
+		// map is duplicated only when a value changes.
+		var updated map[string]any
+		for key, nested := range typed {
+			normalized, changed := nested, false
+			if key == jsonSchemaPatternKey {
+				if pattern, ok := nested.(string); ok {
+					if rewritten := rewrite(pattern); rewritten != pattern {
+						normalized, changed = rewritten, true
+					}
+				}
+			}
+			if !changed {
+				normalized, changed = normalizeSchemaValue(nested, rewrite)
+			}
+			if !changed {
+				continue
+			}
+			if updated == nil {
+				updated = make(map[string]any, len(typed))
+				for k, v := range typed {
+					updated[k] = v
+				}
+			}
+			updated[key] = normalized
+		}
+		if updated == nil {
+			return typed, false
+		}
+		return updated, true
+	case []any:
+		var updated []any
+		for i := range typed {
+			normalized, changed := normalizeSchemaValue(typed[i], rewrite)
+			if !changed {
+				continue
+			}
+			if updated == nil {
+				updated = make([]any, len(typed))
+				copy(updated, typed)
+			}
+			updated[i] = normalized
+		}
+		if updated == nil {
+			return typed, false
+		}
+		return updated, true
+	}
+	return value, false
+}
+
+// normalizeSchemaMap walks one schema object. OrderedMap.Clone is shallow, so a
+// clone is taken only when this level actually changes and untouched subtrees stay
+// shared with the caller's schema. Set replaces a value without disturbing key
+// order, which the prompt cache depends on.
+func normalizeSchemaMap(schema *schemas.OrderedMap, rewrite PatternRewriter) (*schemas.OrderedMap, bool) {
+	if schema == nil || schema.Len() == 0 {
+		return schema, false
+	}
+	var updated *schemas.OrderedMap
+	for _, key := range schema.Keys() {
+		value, _ := schema.Get(key)
+
+		normalized, changed := value, false
+		if key == jsonSchemaPatternKey {
+			if pattern, ok := value.(string); ok {
+				if rewritten := rewrite(pattern); rewritten != pattern {
+					normalized, changed = rewritten, true
+				}
+			}
+		}
+		if !changed {
+			normalized, changed = normalizeSchemaValue(value, rewrite)
+		}
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = schema.Clone()
+		}
+		updated.Set(key, normalized)
+	}
+	if updated == nil {
+		return schema, false
+	}
+	return updated, true
+}
+
+// RewriteToolSchemaPatterns applies rewrite to every regex `pattern` in the tool
+// parameter schema, copy-on-write: a schema with nothing to rewrite is returned
+// as-is and allocates nothing.
+func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite PatternRewriter) (*schemas.ToolFunctionParameters, bool) {
+	if params == nil {
+		return params, false
+	}
+
+	// Struct assignment carries the unexported keyOrder and explicitEmptyObject
+	// fields across, so a rewritten schema still serializes in the client's key
+	// order and an explicit `{}` stays `{}`.
+	updated := *params
+	changed := false
+
+	if params.Pattern != nil {
+		if rewritten := rewrite(*params.Pattern); rewritten != *params.Pattern {
+			updated.Pattern = &rewritten
+			changed = true
+		}
+	}
+
+	for _, field := range []struct {
+		value  *schemas.OrderedMap
+		assign func(*schemas.OrderedMap)
+	}{
+		{params.Properties, func(m *schemas.OrderedMap) { updated.Properties = m }},
+		{params.Items, func(m *schemas.OrderedMap) { updated.Items = m }},
+		{params.Defs, func(m *schemas.OrderedMap) { updated.Defs = m }},
+		{params.Definitions, func(m *schemas.OrderedMap) { updated.Definitions = m }},
+	} {
+		if normalized, fieldChanged := normalizeSchemaMap(field.value, rewrite); fieldChanged {
+			field.assign(normalized)
+			changed = true
+		}
+	}
+
+	// additionalProperties is a schema in its own right, not just a boolean, so a
+	// pattern under it must be rewritten too. The struct is copied only when its
+	// map changes; the boolean variant is carried through untouched.
+	if additional := params.AdditionalProperties; additional != nil && additional.AdditionalPropertiesMap != nil {
+		if normalized, fieldChanged := normalizeSchemaMap(additional.AdditionalPropertiesMap, rewrite); fieldChanged {
+			additionalCopy := *additional
+			additionalCopy.AdditionalPropertiesMap = normalized
+			updated.AdditionalProperties = &additionalCopy
+			changed = true
+		}
+	}
+
+	for _, composition := range []struct {
+		value  []schemas.OrderedMap
+		assign func([]schemas.OrderedMap)
+	}{
+		{params.AnyOf, func(s []schemas.OrderedMap) { updated.AnyOf = s }},
+		{params.OneOf, func(s []schemas.OrderedMap) { updated.OneOf = s }},
+		{params.AllOf, func(s []schemas.OrderedMap) { updated.AllOf = s }},
+	} {
+		var rewritten []schemas.OrderedMap
+		for i := range composition.value {
+			normalized, elementChanged := normalizeSchemaMap(&composition.value[i], rewrite)
+			if !elementChanged {
+				continue
+			}
+			if rewritten == nil {
+				rewritten = make([]schemas.OrderedMap, len(composition.value))
+				copy(rewritten, composition.value)
+			}
+			rewritten[i] = *normalized
+		}
+		if rewritten != nil {
+			composition.assign(rewritten)
+			changed = true
+		}
+	}
+
+	if !changed {
+		return params, false
+	}
+	return &updated, true
+}
+
+// RewriteResponsesToolSchemas applies rewrite to the regex patterns in every
+// Responses tool's parameter schema, copy-on-write. Tools with nothing to rewrite
+// are shared with the caller's slice rather than copied, and ResponsesToolFunction
+// is embedded by pointer, so a rewritten one is replaced rather than written
+// through.
+func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternRewriter) ([]schemas.ResponsesTool, bool) {
+	var updated []schemas.ResponsesTool
+	for i := range tools {
+		if tools[i].ResponsesToolFunction == nil || tools[i].ResponsesToolFunction.Parameters == nil {
+			continue
+		}
+		normalized, changed := RewriteToolSchemaPatterns(tools[i].ResponsesToolFunction.Parameters, rewrite)
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = make([]schemas.ResponsesTool, len(tools))
+			copy(updated, tools)
+		}
+		function := *tools[i].ResponsesToolFunction
+		function.Parameters = normalized
+		updated[i].ResponsesToolFunction = &function
+	}
+	if updated == nil {
+		return tools, false
+	}
+	return updated, true
+}
+
+// PatternRewriter rewrites one regex `pattern` value. It must return its input
+// unchanged when it has nothing to do, so callers can detect a no-op by equality
+// and keep the original schema bytes.
+type PatternRewriter func(pattern string) string
+
+// ComposePatternRewriters applies rewriters left to right.
+func ComposePatternRewriters(rewriters ...PatternRewriter) PatternRewriter {
+	return func(pattern string) string {
+		for _, rewrite := range rewriters {
+			pattern = rewrite(pattern)
+		}
+		return pattern
+	}
+}
+
+// StripRegexLookaround removes every zero-width lookaround assertion, `(?=...)`,
+// `(?!...)`, `(?<=...)` and `(?<!...)`, from a regex pattern.
+//
+// This is a lossy relaxation and is deliberately not applied to every provider.
+// Some model backends reject lookaround outright: moonshotai.kimi-k3 on Bedrock
+// answers a tool whose schema uses `(?!` with HTTP 200 and an empty event
+// stream, and Claude Code's ArtifactData tool ships four such patterns, so every
+// Claude Code request to kimi-k3 died. OpenAI and Anthropic accept lookaround,
+// and for them the assertion is real guidance, so the rewrite is gated to models
+// outside those families (see regexLookaroundSupported in core).
+//
+// Removing a zero-width assertion can only widen what the pattern matches, never
+// narrow it, so the result is always a valid relaxation of the original: the
+// character-class and length constraints survive and only the exclusion the
+// lookaround expressed is lost. Non-capturing `(?:...)` and named `(?<name>...)`
+// groups are not lookaround and are left alone. An unbalanced pattern is
+// returned unchanged rather than truncated.
+func StripRegexLookaround(pattern string) string {
+	if !strings.Contains(pattern, "(?") {
+		return pattern
+	}
+	var b strings.Builder
+	b.Grow(len(pattern))
+	changed := false
+	for i := 0; i < len(pattern); {
+		c := pattern[i]
+		switch {
+		case c == '\\' && i+1 < len(pattern):
+			b.WriteByte(c)
+			b.WriteByte(pattern[i+1])
+			i += 2
+		case c == '[':
+			end := regexClassEnd(pattern, i)
+			b.WriteString(pattern[i:end])
+			i = end
+		case c == '(' && isRegexLookaroundStart(pattern, i):
+			end := regexGroupEnd(pattern, i)
+			if end < 0 {
+				return pattern
+			}
+			changed = true
+			// A quantifier attached to the removed assertion would otherwise land on
+			// the previous atom, or lead the pattern and fail to parse, so it goes too.
+			i = regexQuantifierEnd(pattern, end)
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	if !changed {
+		return pattern
+	}
+	return b.String()
+}
+
+// regexQuantifierEnd returns the index just past a quantifier starting at
+// pattern[start] (`*`, `+`, `?`, or a well-formed `{n}`, `{n,}`, `{n,m}`), plus an
+// optional lazy `?`. Anything else, including a malformed brace, is left in place
+// and start is returned unchanged.
+func regexQuantifierEnd(pattern string, start int) int {
+	if start >= len(pattern) {
+		return start
+	}
+	i := start
+	switch pattern[i] {
+	case '*', '+', '?':
+		i++
+	case '{':
+		j := i + 1
+		digits := func() bool {
+			n := j
+			for j < len(pattern) && pattern[j] >= '0' && pattern[j] <= '9' {
+				j++
+			}
+			return j > n
+		}
+		if !digits() {
+			return start
+		}
+		if j < len(pattern) && pattern[j] == ',' {
+			j++
+			digits()
+		}
+		if j >= len(pattern) || pattern[j] != '}' {
+			return start
+		}
+		i = j + 1
+	default:
+		return start
+	}
+	if i < len(pattern) && pattern[i] == '?' {
+		i++
+	}
+	return i
+}
+
+// isRegexLookaroundStart reports whether pattern[i:] opens a lookaround group.
+func isRegexLookaroundStart(pattern string, i int) bool {
+	rest := pattern[i:]
+	return strings.HasPrefix(rest, "(?=") || strings.HasPrefix(rest, "(?!") ||
+		strings.HasPrefix(rest, "(?<=") || strings.HasPrefix(rest, "(?<!")
+}
+
+// regexClassEnd returns the index just past the character class opening at
+// pattern[start]. A `]` in first position (after an optional `^`) is a literal,
+// and escapes are skipped, so a `(` inside the class is never read as a group.
+func regexClassEnd(pattern string, start int) int {
+	j := start + 1
+	if j < len(pattern) && pattern[j] == '^' {
+		j++
+	}
+	if j < len(pattern) && pattern[j] == ']' {
+		j++
+	}
+	for j < len(pattern) {
+		switch pattern[j] {
+		case '\\':
+			j += 2
+		case ']':
+			return j + 1
+		default:
+			j++
+		}
+	}
+	return len(pattern)
+}
+
+// regexGroupEnd returns the index just past the `)` that closes the group opening
+// at pattern[start], honouring escapes, character classes and nesting. It returns
+// -1 when the group never closes.
+func regexGroupEnd(pattern string, start int) int {
+	depth := 0
+	for j := start; j < len(pattern); {
+		switch pattern[j] {
+		case '\\':
+			j += 2
+		case '[':
+			j = regexClassEnd(pattern, j)
+		case '(':
+			depth++
+			j++
+		case ')':
+			depth--
+			j++
+			if depth == 0 {
+				return j
+			}
+		default:
+			j++
+		}
+	}
+	return -1
+}

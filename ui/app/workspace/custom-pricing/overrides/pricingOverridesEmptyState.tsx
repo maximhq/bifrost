@@ -4,7 +4,9 @@ import { ArrowUpRight, SlidersHorizontal } from "lucide-react";
 const PRICING_OVERRIDES_DOCS_URL = "https://docs.getbifrost.ai/providers/custom-pricing";
 
 interface PricingOverridesEmptyStateProps {
-	onCreateClick: () => void;
+	// Left out when the viewer may not create overrides, so the empty state
+	// explains the feature without offering an action that would be refused.
+	onCreateClick?: () => void;
 }
 
 export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEmptyStateProps) {
@@ -32,9 +34,11 @@ export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEm
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Create your first pricing override" data-testid="pricing-override-create-btn" onClick={onCreateClick}>
-						Create Override
-					</Button>
+					{onCreateClick && (
+						<Button aria-label="Create your first pricing override" data-testid="pricing-override-create-btn" onClick={onCreateClick}>
+							Create Override
+						</Button>
+					)}
 				</div>
 			</div>
 		</div>

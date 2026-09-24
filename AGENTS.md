@@ -935,6 +935,26 @@ Do not edit `entitySelector.tsx` to accommodate one surface. It only carries beh
 
 ---
 
+### Provider and model pickers — always `ProviderSelector` / `ModelSelector`
+
+Every provider or model picker goes through `ui/components/ui/providerSelector.tsx` or `modelSelector.tsx`. Never hand-roll a `Select` over `VisibleProviderNames`, a `Combobox` over `useGetProvidersQuery`, or a search box over `useGetModelsQuery`: these already carry provider icons and labels, server-side model search with paging, deprecated demotion, a pinned "Selected" row for a value no longer in the list, and multi-mode chips.
+
+```tsx
+<ProviderSelector value={p} onChange={setP} />                              // single
+<ProviderSelector multiple value={ps} onChange={setPs} />                   // multi
+<ProviderSelector mode="add" onSelect={add} trigger={<Button>Add</Button>} /> // fire-and-forget
+<ModelSelector provider={p} value={m} onChange={setM} allowCustomModel />
+```
+
+- `source` on `ProviderSelector`: `"configured"` (default, what the user set up), `"catalog"` (everything Bifrost supports, for add flows), `"values"` (a list from elsewhere, e.g. analytics labels that may name a deleted provider).
+- Scope models with `provider` / `keys` / `vks`; `baseModelsWithoutProvider` collapses duplicates when no provider is picked, `allowCustomModel` accepts a name off-catalog, `unfiltered` bypasses the provider's model pool.
+- Rows outside the source list go in `extraOptions` (above), `footerOptions` (below), or `allOption` for an "All Providers" sentinel. `ALL_MODELS_OPTION` is exported for the `*` row. Never merge them into the fetched array yourself.
+- They own fetch, search, paging and reset. No parent `useState` mirror, debounce, or refetch-on-open.
+- Per-surface differences are props, not forks: `size="sm"`, `contentWidth`, `noPortal` (inside a sheet), `className`, `inputId` / `ariaDescribedBy` / `ariaInvalid`, `data-testid`, `optionTestId`, `contentTestId`. For selectability use `getOptionState` (model) or `disabled` + `disabledReason` on an option (provider). Anything new is a prop defaulting to today's behaviour.
+- Pure helpers live in `providerSelector.utils.ts` with a case in `providerSelector.test.ts`, since the components pull in the store.
+
+---
+
 ### JSX & Rendering
 
 - Avoid deeply nested conditional rendering

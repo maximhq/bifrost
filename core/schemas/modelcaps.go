@@ -630,6 +630,17 @@ func (c ModelCaps) SupportsFilesAPI(fallback bool) bool {
 	return fallback
 }
 
+// SupportsComputerToolset reports whether the model accepts the
+// computer_toolset_20260801 client toolset. Distinct from the dated computer_*
+// tools: most models that take the toolset still accept the dated form too, and
+// Opus 5.5 on the Claude API and Google Cloud takes only the toolset.
+func (c ModelCaps) SupportsComputerToolset(fallback bool) bool {
+	if c.record != nil && c.record.SupportsComputerToolset != nil {
+		return *c.record.SupportsComputerToolset
+	}
+	return fallback
+}
+
 // SupportsTextEditorTool reports whether the model accepts the text_editor client tool.
 func (c ModelCaps) SupportsTextEditorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsTextEditorTool != nil {

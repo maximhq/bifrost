@@ -2,6 +2,8 @@ package logstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -47,6 +49,43 @@ type ClickHouseLogStore struct {
 	// Cross-pod races are not covered, but a given request id is only mutated
 	// by the pod that processed it.
 	rmwLocks [chRMWShards]sync.Mutex
+	// warpLocker serializes Warp history writes across instances; rmwLocks only
+	// covers this process. Nil means single-instance behaviour. Set once at
+	// startup, before any Warp write, so it is read without synchronization.
+	warpLocker DistributedLocker
+}
+
+// warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
+// because owner ids carry opaque JWT subjects of any length, and the lock table
+// caps keys at 255 characters.
+func warpHistoryLockKey(ownerID string) string {
+	sum := sha256.Sum256([]byte(ownerID))
+	return "warp_history:" + hex.EncodeToString(sum[:])
+}
+
+// SetDistributedLocker gives the Warp history writes a lock every instance
+// sharing this ClickHouse honours.
+func (s *ClickHouseLogStore) SetDistributedLocker(locker DistributedLocker) {
+	s.warpLocker = locker
+}
+
+// lockWarpOwner takes the owner's shared Warp history lock, or does nothing
+// without a locker. Per owner rather than per thread: every Warp write but the
+// age sweep already carries the owner, and the prune touches up to a batch of
+// threads that one lock covers where a lock per thread would not. It is always
+// taken before rmwLocks, so the two cannot deadlock against each other.
+//
+// The returned context is the one to write on: it is cancelled if the lock is
+// lost mid-write, so the write stops rather than finishing unprotected.
+func (s *ClickHouseLogStore) lockWarpOwner(ctx context.Context, ownerID string) (context.Context, func(), error) {
+	if s.warpLocker == nil {
+		return ctx, func() {}, nil
+	}
+	held, release, err := s.warpLocker.Acquire(ctx, warpHistoryLockKey(ownerID))
+	if err != nil {
+		return nil, nil, fmt.Errorf("acquire warp history lock: %w", err)
+	}
+	return held, release, nil
 }
 
 // chRMWShards is the number of RMW lock shards; keys are hashed onto them.
@@ -652,4 +691,278 @@ func (s *ClickHouseLogStore) UpdateAsyncJob(ctx context.Context, id string, upda
 		return err
 	}
 	return s.chReinsert(ctx, &existing)
+}
+
+// --- Warp conversations ---
+//
+// The SQL implementations in warpconversations.go wrap every write in a
+// transaction. ClickHouse has none, and it has no cheap UPDATE or DELETE
+// either, so each write path is re-expressed here: the timestamp bump becomes a
+// read-modify-write re-insert under the row's RMW shard lock, and every delete
+// becomes a lightweight delete. The ordering rules are the same ones the SQL
+// versions document, and the reason is unchanged - only the primitives differ.
+//
+// The reads (ListWarpConversations, CountWarpMessages, GetWarpConversation) and
+// CreateWarpConversation are inherited as-is: plain SELECTs and a plain INSERT
+// both work here, and an id collision on create is not a case this store has to
+// absorb, because the id is generated server-side per thread.
+
+// AppendWarpMessages adds turns and bumps the thread's updated time.
+//
+// Messages are written before the bump, which is the safe half to lose: a
+// thread carrying its new messages under a stale timestamp sorts low in the
+// history but is intact, while a bumped thread with no messages would advertise
+// a turn that was never saved. The SQL store gets both or neither; here the
+// choice has to be made explicitly.
+func (s *ClickHouseLogStore) AppendWarpMessages(ctx context.Context, ownerID, conversationID string, messages []WarpMessage) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	// The whole read-modify-write is held: two appends to one thread would
+	// otherwise read the same base row and the later re-insert would drop the
+	// earlier one's timestamp. The messages themselves never collide - Position
+	// is scoped to the append that wrote it.
+	//
+	// rmwLocks is per-process. Two Bifrost instances sharing one ClickHouse
+	// cluster are serialized by the owner's distributed lock instead, since
+	// ClickHouse offers neither transactions nor a conditional insert. Without a
+	// locker the re-check below is the only guard; see the comment there for
+	// what it does not fix on its own.
+	ctx, release, err := s.lockWarpOwner(ctx, ownerID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	defer s.lockRMW("warp_conversations", conversationID)()
+
+	var existing WarpConversation
+	if err := s.db.WithContext(ctx).
+		Where("id = ? AND owner_id = ?", conversationID, ownerID).
+		First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrWarpConversationNotFound
+		}
+		return err
+	}
+	for i := range messages {
+		messages[i].ConversationID = conversationID
+		messages[i].Position = i
+	}
+	if err := s.db.WithContext(ctx).Create(&messages).Error; err != nil {
+		return err
+	}
+	// Re-read before the re-insert, because the thread may have been deleted by
+	// another instance while these messages were being written. Without this the
+	// re-insert lands with a higher ver than anything the delete left behind, and
+	// ReplacingMergeTree resurrects a conversation somebody asked to be rid of.
+	//
+	// What this fixes: the transcript no longer outlives the delete. The messages
+	// just written are removed and the caller is told the thread is gone, so the
+	// content someone deleted does not sit in warp_messages unreachable.
+	//
+	// What it does not fix on its own: a delete committing between this check
+	// and the re-insert still resurrects the row, because a lightweight delete
+	// writes a row mask, not a versioned row, and loses to a later insert. The
+	// owner's distributed lock closes that across instances - every Warp delete
+	// takes it too - so this re-check only matters when no locker is configured.
+	stillThere, err := s.chExistsWhere(ctx, "warp_conversations", "id = ? AND owner_id = ?", conversationID, ownerID)
+	if err != nil {
+		return err
+	}
+	if !stillThere {
+		if cleanupErr := s.chLightweightDelete(ctx, "warp_messages", "conversation_id = ?", conversationID); cleanupErr != nil {
+			return fmt.Errorf("warp conversation %s was deleted mid-append and its messages could not be removed: %w", conversationID, cleanupErr)
+		}
+		return ErrWarpConversationNotFound
+	}
+	// Nil the association before re-inserting: chReinsert goes through Create,
+	// and a populated Messages slice would have GORM write the whole transcript
+	// back as well.
+	existing.Messages = nil
+	// Monotonic against what this instance read, matching the SQL store. This is
+	// a partial guard here and deliberately labelled as one: the table is a
+	// ReplacingMergeTree keyed on ver, which defaults to now64(), so the newest
+	// reinsert wins regardless of updated_at. Two instances that both read T0 and
+	// reinsert T2 then T1 still leave T1 effective - the clamp only ever sees the
+	// stale T0 it read. Closing that needs a conditional or explicitly versioned
+	// write that keeps the greatest updated_at at commit time, which ClickHouse
+	// cannot express through this path; see the note in AppendWarpMessages.
+	stamp := messages[len(messages)-1].CreatedAt
+	if existing.UpdatedAt.After(stamp) {
+		stamp = existing.UpdatedAt
+	}
+	existing.UpdatedAt = stamp
+	return s.chReinsert(ctx, &existing)
+}
+
+// DeleteWarpConversation removes a thread and its messages.
+//
+// Messages go first here, the opposite of the bulk sweeps below, because there
+// is no staleness predicate that could spare the thread: it is going either
+// way, so the risk to avoid is the transcript outliving it. Orphaned messages
+// are unreachable copies of the exact content somebody asked to be rid of.
+func (s *ClickHouseLogStore) DeleteWarpConversation(ctx context.Context, ownerID, id string) error {
+	ctx, release, err := s.lockWarpOwner(ctx, ownerID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	defer s.lockRMW("warp_conversations", id)()
+	exists, err := s.chExistsWhere(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrWarpConversationNotFound
+	}
+	if err := s.chLightweightDelete(ctx, "warp_messages", "conversation_id = ?", id); err != nil {
+		return err
+	}
+	return s.chLightweightDelete(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID)
+}
+
+// DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
+//
+// Held under the same locks AppendWarpMessages holds for its whole write - the
+// owner's distributed lock and this process's RMW lock - so an append on any
+// instance either finishes first and the check sees its messages, or starts
+// after and finds the thread gone. Without a locker only the RMW lock applies:
+// an append on another instance that loses the race sees the thread missing on
+// its re-check, removes its own messages and returns
+// ErrWarpConversationNotFound.
+func (s *ClickHouseLogStore) DeleteWarpConversationIfEmpty(ctx context.Context, ownerID, id string) (bool, error) {
+	ctx, release, err := s.lockWarpOwner(ctx, ownerID)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	defer s.lockRMW("warp_conversations", id)()
+	exists, err := s.chExistsWhere(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, ErrWarpConversationNotFound
+	}
+	hasMessages, err := s.chExistsWhere(ctx, "warp_messages", "conversation_id = ?", id)
+	if err != nil || hasMessages {
+		return false, err
+	}
+	if err := s.chLightweightDelete(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PruneWarpConversations drops an owner's oldest threads beyond keep.
+func (s *ClickHouseLogStore) PruneWarpConversations(ctx context.Context, ownerID string, keep int) (int64, error) {
+	if keep <= 0 {
+		return 0, fmt.Errorf("keep must be positive")
+	}
+	ctx, release, err := s.lockWarpOwner(ctx, ownerID)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	var stale []WarpConversation
+	if err := s.db.WithContext(ctx).
+		Where("owner_id = ?", ownerID).
+		Order("updated_at DESC").
+		Offset(keep).
+		Limit(1000).
+		Find(&stale).Error; err != nil {
+		return 0, err
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(stale))
+	newest := stale[0].UpdatedAt
+	for _, conversation := range stale {
+		ids = append(ids, conversation.ID)
+		if conversation.UpdatedAt.After(newest) {
+			newest = conversation.UpdatedAt
+		}
+	}
+	defer s.lockRMWBatch("warp_conversations", ids)()
+	deleted, err := s.chDeleteWhere(ctx, "warp_conversations",
+		"id IN ? AND owner_id = ? AND updated_at <= ?", ids, ownerID, newest)
+	if err != nil {
+		return 0, err
+	}
+	return deleted, s.deleteStrandedWarpMessages(ctx, ids)
+}
+
+// DeleteWarpConversationsOlderThan drops threads last touched before the cutoff,
+// across all owners, and returns how many it removed.
+//
+// One bounded batch per call, like the SQL implementation, so a caller clearing
+// a backlog loops until a call returns zero. See the SQL implementation for why
+// this runs off Warp's own retention setting rather than the table TTL every
+// other table here uses.
+func (s *ClickHouseLogStore) DeleteWarpConversationsOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	var stale []WarpConversation
+	if err := s.db.WithContext(ctx).
+		Where("updated_at < ?", cutoff).
+		Limit(1000).
+		Find(&stale).Error; err != nil {
+		return 0, err
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	// Grouped by owner, because that is what the shared lock is keyed on: each
+	// owner's threads are deleted under that owner's lock, so an append on
+	// another instance reviving one of them cannot interleave with the delete.
+	// The updated_at predicate still re-asserts staleness under the lock.
+	byOwner := map[string][]string{}
+	for _, conversation := range stale {
+		byOwner[conversation.OwnerID] = append(byOwner[conversation.OwnerID], conversation.ID)
+	}
+	owners := make([]string, 0, len(byOwner))
+	for owner := range byOwner {
+		owners = append(owners, owner)
+	}
+	sort.Strings(owners)
+	var total int64
+	for _, owner := range owners {
+		deleted, err := s.deleteStaleWarpConversationsForOwner(ctx, owner, byOwner[owner], cutoff)
+		total += deleted
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+func (s *ClickHouseLogStore) deleteStaleWarpConversationsForOwner(ctx context.Context, ownerID string, ids []string, cutoff time.Time) (int64, error) {
+	ctx, release, err := s.lockWarpOwner(ctx, ownerID)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	defer s.lockRMWBatch("warp_conversations", ids)()
+	deleted, err := s.chDeleteWhere(ctx, "warp_conversations", "id IN ? AND owner_id = ? AND updated_at < ?", ids, ownerID, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return deleted, s.deleteStrandedWarpMessages(ctx, ids)
+}
+
+// deleteStrandedWarpMessages is the ClickHouse form of the helper of the same
+// name in warpconversations.go: the bulk deletes re-assert staleness, so only
+// the threads that actually went lose their transcripts.
+func (s *ClickHouseLogStore) deleteStrandedWarpMessages(ctx context.Context, ids []string) error {
+	var survivors []string
+	if err := s.db.WithContext(ctx).
+		Model(&WarpConversation{}).
+		Where("id IN ?", ids).
+		Pluck("id", &survivors).Error; err != nil {
+		return err
+	}
+	removed := warpThreadsRemoved(ids, survivors)
+	if len(removed) == 0 {
+		return nil
+	}
+	return s.chLightweightDelete(ctx, "warp_messages", "conversation_id IN ?", removed)
 }

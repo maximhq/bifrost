@@ -410,10 +410,10 @@ func forcedToolChoiceChatRequest(model string, tc *schemas.ChatToolChoice) *sche
 	}
 }
 
-func TestForcedToolChoice_DroppedOnFable51(t *testing.T) {
+func TestForcedToolChoice_DroppedWhenUnsupported(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 
-	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5"} {
 		t.Run(model+" responses any", func(t *testing.T) {
 			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
 				&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))

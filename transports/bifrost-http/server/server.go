@@ -165,6 +165,10 @@ type ServerCallbacks interface {
 	// together.
 	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
 	ReconnectMCPClient(ctx context.Context, id string) error
+	// RefreshMCPClientTools re-discovers a client's tools from its upstream
+	// server on demand and reports how many it serves afterwards. Unlike
+	// ReconnectMCPClient it applies to per-call clients too.
+	RefreshMCPClientTools(ctx context.Context, id string) (int, error)
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.
@@ -246,6 +250,7 @@ type BifrostHTTPServer struct {
 
 	WebSocketHandler    *handlers.WebSocketHandler
 	NotificationService *handlers.NotificationService
+	WarpHandler         *handlers.WarpHandler
 	MCPServerHandler    *handlers.MCPServerHandler
 	devPprofHandler     *handlers.DevPprofHandler
 	IntegrationHandler  *handlers.IntegrationHandler
@@ -386,6 +391,19 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 		logger.Warn("failed to sync MCP servers after adding client: %v", err)
 	}
 	return nil
+}
+
+// RefreshMCPClientTools re-discovers an MCP client's tools from its upstream
+// server on demand, so an operator who has just changed that server does not
+// have to wait out the connection checker's tool-sync interval (10 minutes by
+// default) or restart the gateway. Applies to every client type, including
+// the per-call ones ReconnectMCPClient rejects.
+//
+// The discovery itself persists the new tool set and re-syncs the hosted
+// /mcp surface through the tools-change callback, exactly like every other
+// discovery path, so there is nothing to sync here.
+func (s *BifrostHTTPServer) RefreshMCPClientTools(ctx context.Context, id string) (int, error) {
+	return s.Client.RefreshMCPClientTools(ctx, id)
 }
 
 // UpdateMCPClient updates an MCP client in the in-memory store
@@ -2261,7 +2279,23 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingResponsesPlugin, ok := plugin.(routing.ResponsesExecutorSetter); ok {
 		routingResponsesPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 	}
-	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
+	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
+		return err
+	}
+	// Rebind Warp's reader onto the live service rather than rebuilding the
+	// handler: routes were registered at startup and hold the original
+	// handler's closures, so a fresh handler would never be reached. Without
+	// this, enabling logging at runtime leaves the chat endpoint answering 503
+	// until the process restarts.
+	//
+	// After the sync, not before: SyncLoadedPlugin replaces the configured
+	// plugin and can then fail in Client.ReloadPlugin, which returns without
+	// rolling back. Rebinding first left Warp researching through the new log
+	// manager while the Bifrost client was still running the previous plugin.
+	if loggerPlugin, ok := plugin.(*logging.LoggerPlugin); ok && s.WarpHandler != nil {
+		s.WarpHandler.Service().SetLogReader(handlers.NewWarpLogReader(loggerPlugin.GetPluginLogManager()))
+	}
+	return nil
 }
 
 // RemovePlugin removes a plugin from the server.
@@ -2294,6 +2328,14 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	// 3. Reload observability plugins if necessary
 	if isObservability {
 		s.reloadObservabilityPlugins()
+	}
+
+	// 3a. Warp's reader belongs to the plugin that was just removed. AddPlugin
+	// rebinds it on the way in, and without the matching clear on the way out
+	// Warp kept researching through a log manager nobody owns any more - and
+	// CanChat stayed true, because it only asks whether logs is non-nil.
+	if _, ok := plugin.(*logging.LoggerPlugin); ok && s.WarpHandler != nil {
+		s.WarpHandler.Service().SetLogReader(nil)
 	}
 
 	// 4. Update status and marshaller
@@ -2432,6 +2474,21 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.NotificationPublisher = s.NotificationService.Publish
 		s.NotificationService.Start(s.Ctx)
 	}
+	// This is the first point in Bootstrap where the logging plugin - and so
+	// the log manager Warp's chat route needs - is known, which is why Warp is
+	// built here rather than earlier.
+	//
+	// A nil log manager here is a supported deployment (logging disabled), not
+	// a failure - Warp then serves only its config routes.
+	//
+	// The nil check stays even though nothing builds a prior instance today:
+	// RegisterAPIRoutes has exactly one caller now, but if that ever changes -
+	// a config or plugin reload re-running it - this must not leak the
+	// previous instance's subscriptions and worker pool.
+	if s.WarpHandler != nil {
+		s.WarpHandler.Shutdown()
+	}
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool { return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp) })
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2516,6 +2573,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if s.NotificationService != nil {
 		s.NotificationService.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.WarpHandler != nil {
+		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
@@ -2729,6 +2789,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 	s.Config.NotificationPublisher = s.NotificationService.Publish
 	s.NotificationService.Start(s.Ctx)
+	// Warp is built once, in RegisterAPIRoutes below (called from this same
+	// Bootstrap, before it returns): that is the first point the logging
+	// plugin - and so the log manager Warp's chat route needs - is known.
+	// Building one here too used to seem necessary so the config routes would
+	// exist early, but RegisterRoutes is only ever called once, later, on
+	// whichever handler is current then - so a handler built here never
+	// serves a request or gets its routes registered before being replaced.
+	// It still cost a full warp.NewService (its own dedicated Bifrost
+	// instance and worker pool) that was immediately shut down again a few
+	// lines into RegisterAPIRoutes, on every boot.
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
@@ -3145,6 +3215,15 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			// Warp first. Its indexer workers call s.Client.EmbeddingRequest, and
+			// LogIndexer.Close waits for them - so shutting the client down first
+			// cancelled its context underneath work that was still being waited on,
+			// and pending indexing failed during an orderly shutdown.
+			if s.WarpHandler != nil {
+				logger.Info("shutting down warp...")
+				s.WarpHandler.Shutdown()
+				logger.Info("warp shutdown completed")
+			}
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")

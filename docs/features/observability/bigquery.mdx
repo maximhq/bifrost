@@ -129,6 +129,7 @@ export GCP_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"...", ..
 | `flush_interval_seconds` | `integer` | No | `5` | Interval between buffer flushes, in seconds. Must be `> 0`. |
 | `buffer_size` | `integer` | No | `500` | Max rows to buffer before forcing a flush. Must be `> 0`. |
 | `disable_content_logging` | `boolean` | No | `false` | When `true`, conversation content columns (`input_history`, `output_message`) are omitted. |
+| `export_raw_payloads` | `boolean` | No | `false` | When `true`, stores the raw provider request/response bodies in the `raw_request` and `raw_response` columns. Requires the provider's `store_raw_request_response`; suppressed by `disable_content_logging`. Bodies over 256 KB are dropped. Guardrail redaction still applies; raw bodies carry provider-specific fields the normalized view does not. |
 | `request_headers` | `string[]` | No | — | Request-header name patterns to capture into the `request_headers` column. Supports exact names and wildcards (`x-custom-*`, `*`). |
 | `custom_labels` | `object` | No | — | Arbitrary key-value pairs stored as JSON in the `labels` column. Values support `env.VAR_NAME`. |
 | `plugin_span_filter` | `object` | No | — | Controls which plugin spans contribute to the stored row. See [Plugin Span Filtering](#plugin-span-filtering). |

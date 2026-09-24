@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -1801,6 +1801,20 @@ run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
 		exit 1; \
 	fi; \
 	cd tests/e2e/api && "$$BASH4" ./runners/run-newman-api-tests.sh --all-reports
+
+run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suite (no API keys, no paid calls). Builds tmp/bifrost-http from local code unless BINARY is given (Usage: make run-mcp-codemode-test [BINARY=path/to/bifrost-http])
+	@BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
+	$(ECHO) "$(GREEN)Running MCP Code Mode E2E tests against $$BINARY...$(NC)"; \
+	./tests/e2e/api/runners/individual/run-newman-mcp-codemode-tests.sh --binary "$$BINARY"
 
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin

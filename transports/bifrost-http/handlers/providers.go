@@ -802,6 +802,11 @@ type modelListQuery struct {
 	Limit      int
 	Offset     int
 	Unfiltered bool
+	// HideDeprecated drops deprecated models from the listing entirely, total included.
+	// Only the browse listing sets it, and only when nothing was searched for.
+	HideDeprecated bool
+	// IncludeDeprecated is the caller's explicit opt-out of HideDeprecated.
+	IncludeDeprecated bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -812,6 +817,7 @@ type modelListQuery struct {
 type listedModel struct {
 	Name             string
 	Provider         schemas.ModelProvider
+	IsDeprecated     bool
 	AccessibleByKeys []string
 }
 
@@ -821,6 +827,9 @@ type listedModel struct {
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of provider key UUIDs to filter models accessible by those keys
 //   - limit: Maximum number of results to return (default: 5)
+//   - offset: Number of results to skip (for pagination)
+//   - include_deprecated: If true, list deprecated models even when nothing is searched for.
+//     Without it, deprecated models appear only in a search (`query`), sorted below live ones.
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -837,6 +846,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		return
 	}
+	query.HideDeprecated = query.Query == "" && !query.IncludeDeprecated
 	allModels, total, err := h.listManagementModels(query)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
@@ -848,7 +858,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 		entry := ModelResponse{
 			Name:         model.Name,
 			Provider:     string(model.Provider),
-			IsDeprecated: h.isModelDeprecated(model.Name, model.Provider),
+			IsDeprecated: model.IsDeprecated,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			entry.AccessibleByKeys = model.AccessibleByKeys
@@ -1041,6 +1051,7 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Limit:      defaultLimit,
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
+	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
 
 	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
 		keyIDs := strings.Split(string(keysRaw), ",")
@@ -1110,6 +1121,29 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
+	}
+
+	for i := range models {
+		models[i].IsDeprecated = h.isModelDeprecated(models[i].Name, models[i].Provider)
+	}
+
+	// Browsing with nothing typed is someone looking for a model to use, so the retired
+	// ones only get in the way. Searching is the opposite: a name typed in full is often
+	// a deprecated model the caller already has configured, and hiding it would read as
+	// "no such model". So they are dropped only while the listing is unsearched, and sink
+	// below the live ones once it is.
+	if query.HideDeprecated {
+		models = slices.DeleteFunc(models, func(m listedModel) bool { return m.IsDeprecated })
+	} else {
+		slices.SortStableFunc(models, func(a, b listedModel) int {
+			if a.IsDeprecated == b.IsDeprecated {
+				return 0
+			}
+			if a.IsDeprecated {
+				return 1
+			}
+			return -1
+		})
 	}
 
 	total := len(models)
