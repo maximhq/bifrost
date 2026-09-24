@@ -286,6 +286,7 @@
 			"chatHistory": "Cronologia chat",
 			"newChat": "Nuova chat",
 			"close": "Chiudi Warp",
+			"preview": "Anteprima",
 			"loading": "Caricamento di Warp...",
 			"loadFailed": "Impossibile caricare la configurazione di Warp. Ricarica la pagina per riprovare.",
 			"turnedOff": "Warp è disattivato",

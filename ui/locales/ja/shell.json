@@ -286,6 +286,7 @@
 			"chatHistory": "チャット履歴",
 			"newChat": "新しいチャット",
 			"close": "Warp を閉じる",
+			"preview": "プレビュー",
 			"loading": "Warp を読み込み中...",
 			"loadFailed": "Warp の設定を読み込めませんでした。ページを再読み込みして再試行してください。",
 			"turnedOff": "Warp はオフです",

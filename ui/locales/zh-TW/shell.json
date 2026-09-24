@@ -286,6 +286,7 @@
 			"chatHistory": "聊天歷史",
 			"newChat": "新聊天",
 			"close": "關閉 Warp",
+			"preview": "預覽",
 			"loading": "正在載入 Warp…",
 			"loadFailed": "無法載入 Warp 的設定。請重新載入頁面後再試。",
 			"turnedOff": "Warp 已關閉",
