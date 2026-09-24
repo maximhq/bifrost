@@ -36,7 +36,7 @@ Claude Code subagents send the same session ID as their parent, so an agent run 
 
 ### Provider level
 
-When the caller asks for a bare model (`gpt-4o`) and routing offers more than one provider for it, the provider that last served the session is tried first, as long as routing still offers it. Routing engines build the chain of providers; affinity reorders that chain, and nothing else. A provider that routing excluded, for budget, rate limits, model allowance, or health, is never brought back by a session.
+When the caller asks for a bare model (`gpt-4o`) and routing offers more than one provider for it, the route that last served the session, provider and model together, is tried first, as long as routing still offers that exact route. A chain that offers the same provider on a different model does not offer it: the binding is dropped and the routing decision stands. Routing engines build the chain of providers; affinity reorders that chain, and nothing else. A provider that routing excluded, for budget, rate limits, model allowance, or health, is never brought back by a session.
 
 The binding is keyed by what the caller asked for, so a session that asks for `gpt-4o` and later for `gpt-4o-mini` holds one binding per model.
 
@@ -58,10 +58,12 @@ Bindings are written only when a request is served. A failed request writes noth
 | ------------------------------------------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | First served request of the session                    | Written to the provider that served                                    | Written to the key that served                                       |
 | Served request that followed the binding               | TTL refreshed                                                          | TTL refreshed                                                        |
-| Served by a fallback provider                          | Moved to the fallback provider                                         | Moved to the key the fallback used                                   |
+| Served by a fallback provider                          | Moved to the fallback provider                                         | The key the primary followed is deleted; moved to the key the fallback used |
+| Failed after following the binding                     | Deleted, the next request follows the routing decision                 | Deleted, a key is picked normally on the next request                |
+| Cancelled by the caller after following the binding    | Unchanged, the failure is not the provider's                           | Unchanged                                                            |
 | Request failed on every attempt                        | Untouched                                                              | Untouched                                                            |
 | Request refused by governance before routing           | Untouched                                                              | Untouched                                                            |
-| Bound provider not in the chain routing built          | Deleted, the routing decision stands, the next served request rebinds  | Unchanged                                                            |
+| Bound route not in the chain routing built (provider and model) | Deleted, the routing decision stands, the next served request rebinds  | Unchanged                                                            |
 | Bound key not in the eligible pool                     | Unchanged                                                              | Deleted, a key is picked normally, the next served request rebinds   |
 | TTL expires with no served request                     | Gone                                                                   | Gone                                                                 |
 | Request sent with `x-bf-session-affinity: off`         | Neither read nor written                                               | Neither read nor written                                             |
@@ -141,16 +143,19 @@ Every decision affinity makes is written to the request's routing trail under th
 
 | Trail entry                                                                                                                          | Meaning                                                                                              |
 | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `Session stays on azure for gpt-4o; routing proposed openai`                                                                         | The bound provider was moved ahead of the one routing put first.                                     |
-| `Session stays on azure for gpt-4o, which routing also proposed`                                                                     | The bound provider was already first, so the chain was left as it is.                                |
+| `Session stays on azure/gpt-4o for gpt-4o; routing proposed openai/gpt-4o`                                                          | The bound route was moved ahead of the one routing put first.                                        |
+| `Session stays on azure/gpt-4o for gpt-4o, which routing also proposed`                                                              | The bound route was already first, so the chain was left as it is.                                   |
 | `Session reused key prod-eu-2 for azure/gpt-4o`                                                                                      | The bound key was used instead of running key selection.                                             |
-| `Session was last served by azure for gpt-4o, which this request cannot use, so the routing decision stands and the session rebinds on its next served request` | Routing no longer offers the bound provider, so the binding was deleted.        |
+| `Session was last served by azure/gpt-4o for gpt-4o, which this request cannot use, so the routing decision stands and the session rebinds on its next served request` | Routing no longer offers the bound route, provider and model together, so the binding was deleted. |
+| `Session moved the request from vertex to anthropic, so a key is picked normally there; the key pinned for vertex applies if vertex is tried as a fallback` | The session promoted another provider; the routing rule's pin stayed with the provider it was set for, now a fallback entry. |
+| `The key this session followed for azure/gpt-4o failed, so the session forgets it and a key is picked normally next time`            | The request followed the key binding and did not serve on it, so the binding was deleted.            |
+| `The provider this session followed for gpt-4o failed, so the session forgets it and the next request follows the routing decision`  | The request followed the route binding and failed outright, so the binding was deleted.              |
 | `The key this session last used for azure/gpt-4o is no longer eligible, so one is being picked`                                      | The bound key left the pool, so the binding was deleted.                                             |
 | `Request carries a session but asked not to follow it, so the routing decision stands for gpt-4o`                                    | The request sent `x-bf-session-affinity: off`, so no binding was read or written.                    |
 | `Session was last served by azure for gpt-4o, which is failing on this node, so the routing decision stands`                         | Enterprise only: the load balancer marks the provider as failed here, so the binding was dropped.    |
 | `The key this session last used for azure/gpt-4o is held back by the circuit breaker on this node, so one is being picked`           | Enterprise only: the circuit breaker removed the bound key from the pool, so the binding was dropped. |
 
-The last two entries are emitted only by Bifrost Enterprise; an open-source deployment never writes them, because it follows a binding until the request itself fails.
+The last two entries are emitted only by Bifrost Enterprise; an open-source deployment never writes them, because it follows a binding until the request itself fails, and only then forgets it, which the two entries before them record.
 
 Both levels record every binding they follow, whether or not it changed the outcome, so a session that agrees with routing is distinguishable in the trail from one that was never consulted.
 
