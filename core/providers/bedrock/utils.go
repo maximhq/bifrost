@@ -524,7 +524,10 @@ func bedrockAliasToolName(ctx context.Context, name string) string {
 		semanticName = "tool"
 	}
 
-	hash := fmt.Sprintf("%08x", uint32(xxhash.Sum64String(name)))
+	// The "t" keeps the alias letter-first: a bare hex hash starts with a digit 10
+	// times in 16, and moonshotai.kimi-k3 answers any digit-leading tool name with
+	// HTTP 200 and an empty stream.
+	hash := fmt.Sprintf("t%08x", uint32(xxhash.Sum64String(name)))
 	maxSemanticLen := 64 - len(hash) - 1
 	if len(semanticName) > maxSemanticLen {
 		semanticName = semanticName[:maxSemanticLen]

@@ -150707,7 +150707,7 @@
                   "  for (var i = 0; i < tools.length; i++) {",
                   "    var name = (tools[i].function || {}).name || '';",
                   "    pm.expect(name, 'tool[' + i + '] name ' + JSON.stringify(name) + ' (len ' + name.length + ') breaks the 64-char contract').to.match(/^[A-Za-z0-9_-]{1,64}$/);",
-                  "    pm.expect(name, 'a 98-char alias must take the <8-hex hash>_<function> form on a 64-char wire').to.match(/^[0-9a-f]{8}_/);",
+                  "    pm.expect(name, 'a 98-char alias must take the letter-first t<8-hex hash>_<function> form on a 64-char wire').to.match(/^t[0-9a-f]{8}_/);",
                   "  }",
                   "  pm.expect(tools[0].function.name, 'the function name must stay readable after the hash prefix').to.include('read_repository_file');",
                   "});"
@@ -150730,6 +150730,86 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"mcp__server_with_a_very_long_name_server_with_a_very_long_name_x\",\n      \"description\": \"A long MCP-style namespace\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"read_repository_file_contents_v2\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"list_repository_directory_entries\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock/us.moonshotai.kimi-k3 /v1/responses over-64-char namespace alias: hashed name is letter-first so kimi answers (was digit-leading, empty stream) (raw_request) - namespace-alias-length",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bifrost hashes an over-64-char namespace alias to <hash>_<function>. A bare 8-hex",
+                  "// hash starts with a digit 10 times in 16, and moonshotai.kimi-k3 on Bedrock answers",
+                  "// any digit-leading tool name with HTTP 200 and an empty stream (Codex: 0 tokens, no",
+                  "// text). This namespace hashes to 7e4a44cb under the old scheme, so pre-fix the wire",
+                  "// carries '7e4a44cb_execute_document_command' and the model never answers.",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var tools = ((rr || {}).toolConfig || {}).tools || [];",
+                  "var names = tools.map(function (t) { return (t.toolSpec || {}).name || ''; });",
+                  "pm.test('bedrock kimi-k3: request accepted - namespace-alias-length', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('bedrock kimi-k3: hashed alias is letter-first on the wire - namespace-alias-length', function () {",
+                  "  pm.expect(names, 'outbound tool names: ' + JSON.stringify(names)).to.eql(['t7e4a44cb_execute_document_command']);",
+                  "  pm.expect(names[0], 'a digit-leading tool name makes kimi-k3 return an empty stream').to.match(/^[A-Za-z]/);",
+                  "});",
+                  "pm.test('bedrock kimi-k3: the model answers - namespace-alias-length', function () {",
+                  "  // Positive usage alone is not an answer. The model must either reply in text or",
+                  "  // call the tool, and a call must come back under the caller's own namespace and",
+                  "  // name: the hashed alias is Bifrost's wire name and must never leak to the client.",
+                  "  var NS = 'mcp__codex_apps__codex_document_control_harness_alias_00';",
+                  "  var output = body.output || [];",
+                  "  var text = output.filter(function (o) { return o && o.type === 'message'; }).map(function (o) {",
+                  "    return (o.content || []).filter(function (c) { return c && c.type === 'output_text'; }).map(function (c) { return c.text || ''; }).join('');",
+                  "  }).join('');",
+                  "  var calls = output.filter(function (o) { return o && o.type === 'function_call'; });",
+                  "  var restored = calls.filter(function (o) { return o.name === 'execute_document_command' && o.namespace === NS; });",
+                  "  pm.expect(text.trim().length > 0 || restored.length > 0, 'want output_text or a function_call restored to ' + NS + '/execute_document_command, got output: ' + JSON.stringify(output).slice(0, 400) + ' body: ' + txt.slice(0, 300)).to.be.true;",
+                  "  pm.expect(calls.length, 'every function_call must be restored to the caller namespace and name: ' + JSON.stringify(calls).slice(0, 300)).to.equal(restored.length);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.moonshotai.kimi-k3\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"mcp__codex_apps__codex_document_control_harness_alias_00\",\n      \"description\": \"A long Codex-style MCP namespace\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"execute_document_command\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
