@@ -17,6 +17,14 @@ func isPerplexityResponsesSupported(model string) bool {
 // perplexityAgentSonarModel is Perplexity's own base Sonar model name.
 const perplexityAgentSonarModel = "sonar"
 
+// perplexityAgentPresetModel is a Bifrost-only sentinel (not a real Perplexity
+// model): it tells withWireModelForAgentAPI to omit `model` from the wire and let
+// an ExtraParams `preset` (fast/low/medium/high/xhigh/wide-research) pick Perplexity's
+// own default model. Unlike bare "sonar" — a real product name a caller may want
+// regardless of any preset — "preset" has no meaning as an actual wire model, so
+// both the bare and "perplexity/"-prefixed spellings are treated identically.
+const perplexityAgentPresetModel = "preset"
+
 // wireModelForAgentAPI returns the model string to send on the wire to Perplexity's
 // Agent API (/v1/responses). Live-verified against api.perplexity.ai on 2026-09-17:
 // Perplexity's own bare "sonar" model requires the "perplexity/" vendor-namespace

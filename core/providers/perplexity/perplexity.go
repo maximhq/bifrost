@@ -286,15 +286,14 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 //   - {"preset":"fast",...} (no model key)                    -> preset's own default model
 //   - {"model":"","preset":"fast",...}                        -> same as above (empty == absent)
 //
-// Bifrost requires a non-empty Model for internal routing, and bare "sonar" is
-// already the documented generic entry point into the Agent API (see
-// wireModelForAgentAPI). Treat "bare sonar + preset set" as "no explicit model
-// requested" and clear Model so the preset controls it on the wire. A caller who
-// wants a specific model together with a preset still gets it by naming that
-// model explicitly (e.g. "perplexity/sonar-pro", "openai/gpt-5.6-sol", or even
-// the fully-qualified "perplexity/sonar") instead of the bare "sonar" alias.
+// Bifrost requires a non-empty Model for internal routing, so a caller who wants
+// the preset to pick the model opts in explicitly with the perplexityAgentPresetModel
+// sentinel ("preset", not a real Perplexity model — see its doc comment) instead of
+// naming a real model. Every other model, including bare "sonar" (Perplexity's own
+// base model — see wireModelForAgentAPI), is left for the preset/model interplay
+// Perplexity itself already resolves correctly (an explicit model always wins).
 func withWireModelForAgentAPI(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
-	if request.Model == perplexityAgentSonarModel && request.Params != nil {
+	if strings.TrimPrefix(request.Model, "perplexity/") == perplexityAgentPresetModel && request.Params != nil {
 		if presetVal, ok := request.Params.ExtraParams["preset"]; ok {
 			if preset, ok := presetVal.(string); ok && preset != "" {
 				reqCopy := *request

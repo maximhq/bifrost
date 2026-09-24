@@ -217,15 +217,14 @@ func TestWireModelForAgentAPI(t *testing.T) {
 }
 
 // TestWithWireModelForAgentAPI covers withWireModelForAgentAPI directly: the bare
-// "sonar" rewrite from TestWireModelForAgentAPI, plus the preset/model precedence
-// added on top of it. Live-verified against api.perplexity.ai on 2026-09-24:
-// sending any `model` value, even an empty string, always wins over a `preset`'s
-// own default model — only a wire request with no `model` field at all lets the
-// preset choose. Bare "sonar" is the documented generic Agent API entry point, so
-// "bare sonar + preset set" is treated as "no explicit model requested" and the
-// wire Model is cleared; any other model string (including a preset combined with
-// an explicit model) is left for the preset/model interplay Perplexity itself
-// already resolves correctly (model wins).
+// "sonar" rewrite from TestWireModelForAgentAPI, plus the dedicated "preset" sentinel
+// that lets a `preset` pick Perplexity's own default model. Live-verified against
+// api.perplexity.ai on 2026-09-24: sending any `model` value, even an empty string,
+// always wins over a `preset`'s own default model — only a wire request with no
+// `model` field at all lets the preset choose. Bare "sonar" is a real Perplexity
+// model, so it is never touched by a preset (a caller who wants it keeps it
+// regardless of any preset); the "preset" sentinel (not a real model — see
+// perplexityAgentPresetModel) is the explicit opt-in for letting the preset decide.
 func TestWithWireModelForAgentAPI(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -235,9 +234,11 @@ func TestWithWireModelForAgentAPI(t *testing.T) {
 		want      string
 	}{
 		{name: "bare sonar, no preset param at all: rewritten as usual", model: "sonar", want: "perplexity/sonar"},
-		{name: "bare sonar + non-empty preset: model cleared for preset to control", model: "sonar", hasPreset: true, preset: "fast", want: ""},
-		{name: "bare sonar + preset key present but empty value: rewritten as usual", model: "sonar", hasPreset: true, preset: "", want: "perplexity/sonar"},
-		{name: "already-prefixed sonar + preset: explicit model wins", model: "perplexity/sonar", hasPreset: true, preset: "fast", want: "perplexity/sonar"},
+		{name: "bare sonar + preset: explicit sonar model still wins, unaffected", model: "sonar", hasPreset: true, preset: "fast", want: "perplexity/sonar"},
+		{name: "preset sentinel, no preset param: left untouched (caller error)", model: "preset", want: "preset"},
+		{name: "bare preset sentinel + non-empty preset: model cleared for preset to control", model: "preset", hasPreset: true, preset: "fast", want: ""},
+		{name: "prefixed preset sentinel + non-empty preset: model cleared for preset to control", model: "perplexity/preset", hasPreset: true, preset: "fast", want: ""},
+		{name: "preset sentinel + preset key present but empty value: left untouched", model: "preset", hasPreset: true, preset: "", want: "preset"},
 		{name: "third-party model + preset: explicit model wins", model: "openai/gpt-5.6-sol", hasPreset: true, preset: "fast", want: "openai/gpt-5.6-sol"},
 	}
 	for _, tt := range tests {
@@ -308,11 +309,12 @@ func TestResponses_AgentAPIRewritesBareSonarModel(t *testing.T) {
 }
 
 // TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt verifies the fix end to end at
-// the wire level: a Responses call combining the bare "sonar" model with a `preset`
-// reaches Perplexity's /v1/responses with no `model` field at all, so the preset's
-// own default model is used server-side instead of Bifrost's required routing model
-// always winning (live-verified against api.perplexity.ai on 2026-09-24). preset and
-// max_steps still reach the wire via ExtraParams passthrough.
+// the wire level: a Responses call using the perplexityAgentPresetModel sentinel
+// ("preset") together with a `preset` reaches Perplexity's /v1/responses with no
+// `model` field at all, so the preset's own default model is used server-side
+// instead of Bifrost's required routing model always winning (live-verified
+// against api.perplexity.ai on 2026-09-24). preset and max_steps still reach the
+// wire via ExtraParams passthrough.
 func TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt(t *testing.T) {
 	t.Parallel()
 
@@ -334,7 +336,7 @@ func TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt(t *testing.T) {
 	hello := "hi"
 	req := &schemas.BifrostResponsesRequest{
 		Provider: schemas.Perplexity,
-		Model:    "sonar",
+		Model:    "preset",
 		Input: []schemas.ResponsesMessage{
 			{
 				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -368,8 +370,8 @@ func TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt(t *testing.T) {
 		t.Fatalf("expected max_steps=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
 	}
 	// The caller's own request object must not be mutated.
-	if req.Model != "sonar" {
-		t.Fatalf("caller's request.Model was mutated: got %q, want \"sonar\"", req.Model)
+	if req.Model != "preset" {
+		t.Fatalf("caller's request.Model was mutated: got %q, want \"preset\"", req.Model)
 	}
 }
 
@@ -463,10 +465,11 @@ func TestResponsesStream_AgentAPIRewritesBareSonarModel(t *testing.T) {
 // streaming counterpart of TestResponses_AgentAPIForwardsExtraParamsAutomatically and
 // TestResponses_AgentAPIOmitsModelWhenPresetSelectsIt: ResponsesStream must apply the
 // same automatic BifrostContextKeyPassthroughExtraParams and
-// withWireModelForAgentAPI(request) handling (including clearing model when a preset
-// is set on the documented generic "sonar" entry point) as the unary Responses path,
-// since streaming requests reach Perplexity's Agent API through the same /v1/responses
-// endpoint (see openai.HandleOpenAIResponsesStreaming in ResponsesStream above).
+// withWireModelForAgentAPI(request) handling (including clearing model for the
+// perplexityAgentPresetModel sentinel when a preset is set) as the unary Responses
+// path, since streaming requests reach Perplexity's Agent API through the same
+// /v1/responses endpoint (see openai.HandleOpenAIResponsesStreaming in
+// ResponsesStream above).
 func TestResponsesStream_AgentAPIOmitsModelForPresetAndForwardsExtraParams(t *testing.T) {
 	t.Parallel()
 
@@ -492,7 +495,7 @@ func TestResponsesStream_AgentAPIOmitsModelForPresetAndForwardsExtraParams(t *te
 	hello := "hi"
 	req := &schemas.BifrostResponsesRequest{
 		Provider: schemas.Perplexity,
-		Model:    "sonar",
+		Model:    "preset",
 		Input: []schemas.ResponsesMessage{
 			{
 				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -533,7 +536,7 @@ func TestResponsesStream_AgentAPIOmitsModelForPresetAndForwardsExtraParams(t *te
 		t.Fatalf("expected max_steps=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
 	}
 	// The caller's own request object must not be mutated.
-	if req.Model != "sonar" {
-		t.Fatalf("caller's request.Model was mutated: got %q, want \"sonar\"", req.Model)
+	if req.Model != "preset" {
+		t.Fatalf("caller's request.Model was mutated: got %q, want \"preset\"", req.Model)
 	}
 }

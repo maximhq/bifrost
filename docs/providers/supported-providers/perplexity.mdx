@@ -457,7 +457,7 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
 Bifrost's Perplexity provider always forwards `extra_params` for this operation — unlike most other providers, no `x-bf-passthrough-extra-params` header or context flag is needed.
 
 <Note>
-An explicit `model` always wins over a `preset`'s own default model (live-verified against api.perplexity.ai) — the example above pins `openai/gpt-5.6-sol` regardless of `preset`. To let the preset choose the model instead, set `"model": "sonar"` (Bifrost's generic Agent API entry point): Bifrost omits `model` from the wire request in that case so Perplexity's preset default applies.
+An explicit `model` always wins over a `preset`'s own default model (live-verified against api.perplexity.ai) — the example above pins `openai/gpt-5.6-sol` regardless of `preset`. To let the preset choose the model instead, set `"model": "perplexity/preset"` — a Bifrost-only sentinel, not a real Perplexity model — together with `preset`: Bifrost omits `model` from the wire request in that case so Perplexity's preset default applies. Bare `sonar` and every other real model name are unaffected and always win over `preset`, same as any other explicit model.
 </Note>
 
 ## Tools
