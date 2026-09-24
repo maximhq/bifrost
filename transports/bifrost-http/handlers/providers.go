@@ -347,6 +347,11 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	}
 	// Validate retry backoff values if NetworkConfig is provided
 	if payload.NetworkConfig != nil {
+		// A new provider has no stored headers, so any masked value here would be saved as-is
+		if _, err := schemas.RestoreRedactedExtraHeaders(payload.NetworkConfig.ExtraHeaders, nil); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		if err := validateRetryBackoff(payload.NetworkConfig); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 			return
@@ -420,20 +425,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, err)
-		// Fall back to the raw config (no keys)
-		response := h.getProviderResponseFromConfig(payload.Provider, configstore.ProviderConfig{
-			NetworkConfig:            config.NetworkConfig,
-			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
-			ProxyConfig:              config.ProxyConfig,
-			SendBackRawRequest:       config.SendBackRawRequest,
-			SendBackRawResponse:      config.SendBackRawResponse,
-			StoreRawRequestResponse:  config.StoreRawRequestResponse,
-			CustomProviderConfig:     config.CustomProviderConfig,
-			OpenAIConfig:             config.OpenAIConfig,
-			PromptCache:              config.PromptCache,
-			Status:                   config.Status,
-			Description:              config.Description,
-		}, ProviderStatusActive)
+		// Fall back to the submitted config, redacted and without keys
+		sanitized := config.Redacted()
+		sanitized.Keys = nil
+		response := h.getProviderResponseFromConfig(payload.Provider, *sanitized, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
@@ -573,12 +568,22 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
-	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
+	// Merge network config - restore ca_cert_pem and extra header values if the redacted placeholder was sent back
 	if oldConfigRaw.NetworkConfig != nil && oldRedactedConfig.NetworkConfig != nil && nc.CACertPEM != nil {
 		if nc.CACertPEM.IsRedacted() && nc.CACertPEM.Equals(oldRedactedConfig.NetworkConfig.CACertPEM) {
 			nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
 		}
 	}
+	var storedHeaders map[string]schemas.SecretVar
+	if oldConfigRaw.NetworkConfig != nil {
+		storedHeaders = oldConfigRaw.NetworkConfig.ExtraHeaders
+	}
+	restoredHeaders, err := schemas.RestoreRedactedExtraHeaders(nc.ExtraHeaders, storedHeaders)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	nc.ExtraHeaders = restoredHeaders
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil && oldRedactedConfig.ProxyConfig != nil {
@@ -656,20 +661,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", provider, err)
-		// Fall back to sanitized config (no keys)
-		response := h.getProviderResponseFromConfig(provider, configstore.ProviderConfig{
-			NetworkConfig:            config.NetworkConfig,
-			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
-			ProxyConfig:              config.ProxyConfig,
-			SendBackRawRequest:       config.SendBackRawRequest,
-			SendBackRawResponse:      config.SendBackRawResponse,
-			StoreRawRequestResponse:  config.StoreRawRequestResponse,
-			CustomProviderConfig:     config.CustomProviderConfig,
-			OpenAIConfig:             config.OpenAIConfig,
-			PromptCache:              config.PromptCache,
-			Status:                   config.Status,
-			Description:              config.Description,
-		}, ProviderStatusActive)
+		// Fall back to the saved config, redacted and without keys
+		sanitized := config.Redacted()
+		sanitized.Keys = nil
+		response := h.getProviderResponseFromConfig(provider, *sanitized, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
