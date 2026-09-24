@@ -2027,6 +2027,17 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					return
 				}
 				if err == io.EOF {
+					if streamState.StopReason == nil {
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: schemas.ErrProviderNetworkError,
+								Error:   fmt.Errorf("Bedrock ConverseStream ended before messageStop: %w", io.ErrUnexpectedEOF),
+							},
+						}, responseChan, provider.logger, postHookSpanFinalizer)
+						return
+					}
 					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
