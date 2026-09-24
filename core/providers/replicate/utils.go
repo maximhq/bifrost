@@ -47,9 +47,9 @@ func checkForErrorStatus(prediction *ReplicatePredictionResponse) *schemas.Bifro
 // parsePreferHeader parses the Prefer header to extract wait duration
 // Examples: "wait", "wait=30", "wait=60"
 // Returns the header value to use and whether sync mode should be enabled
-func parsePreferHeader(extraHeaders map[string]string) bool {
+func parsePreferHeader(extraHeaders map[string]schemas.SecretVar) bool {
 	if preferValue, exists := extraHeaders["Prefer"]; exists {
-		if strings.HasPrefix(preferValue, "wait") {
+		if strings.HasPrefix(preferValue.GetValue(), "wait") {
 			return true
 		}
 		return false
@@ -59,7 +59,7 @@ func parsePreferHeader(extraHeaders map[string]string) bool {
 
 // Streaming requests should always be async and not wait for completion,
 // so the Prefer header (which enables sync mode) must be excluded.
-func stripPreferHeader(extraHeaders map[string]string) map[string]string {
+func stripPreferHeader(extraHeaders map[string]schemas.SecretVar) map[string]schemas.SecretVar {
 	if extraHeaders == nil {
 		return nil
 	}
@@ -71,7 +71,7 @@ func stripPreferHeader(extraHeaders map[string]string) map[string]string {
 	}
 
 	// Create new map without Prefer header
-	filtered := make(map[string]string, len(extraHeaders)-1)
+	filtered := make(map[string]schemas.SecretVar, len(extraHeaders)-1)
 	for key, value := range extraHeaders {
 		if key != "Prefer" {
 			filtered[key] = value

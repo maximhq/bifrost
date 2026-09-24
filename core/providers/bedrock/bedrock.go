@@ -4488,12 +4488,12 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 // invokeStreamHeaders adds Accept-Encoding: identity to the static extra
 // headers so the event stream arrives frame by frame rather than as one gzip
 // burst, matching what makeStreamingRequest does for ConverseStream.
-func (provider *BedrockProvider) invokeStreamHeaders() map[string]string {
+func (provider *BedrockProvider) invokeStreamHeaders() map[string]schemas.SecretVar {
 	out := maps.Clone(provider.networkConfig.ExtraHeaders)
 	if out == nil {
-		out = make(map[string]string, 1)
+		out = make(map[string]schemas.SecretVar, 1)
 	}
-	out["Accept-Encoding"] = "identity"
+	out["Accept-Encoding"] = schemas.SecretVar{Val: "identity"}
 	return out
 }
 

@@ -710,7 +710,6 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		providerConfig := providers[providerName]
 		dbProvider := tables.TableProvider{
 			Name:                     string(providerName),
-			NetworkConfig:            providerConfig.NetworkConfig,
 			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
 			ProxyConfig:              providerConfig.ProxyConfig,
 			SendBackRawRequest:       providerConfig.SendBackRawRequest,
@@ -723,6 +722,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
 		}
+		dbProvider.SetNetworkConfig(providerConfig.NetworkConfig)
 
 		// Carry over governance FKs from the existing row so UpdateAll never
 		// overwrites them with NULL. New providers (not in governanceFKs) correctly
@@ -954,7 +954,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	// Preserve ConfigHash (it has json:"-" tag so deepCopy via JSON doesn't copy it)
 	configCopy.ConfigHash = config.ConfigHash
 	// Update provider fields
-	dbProvider.NetworkConfig = configCopy.NetworkConfig
+	dbProvider.SetNetworkConfig(configCopy.NetworkConfig)
 	dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
 	dbProvider.ProxyConfig = configCopy.ProxyConfig
 	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
@@ -1141,7 +1141,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create new provider
 	dbProvider := tables.TableProvider{
 		Name:                     string(provider),
-		NetworkConfig:            configCopy.NetworkConfig,
 		ConcurrencyAndBufferSize: configCopy.ConcurrencyAndBufferSize,
 		ProxyConfig:              configCopy.ProxyConfig,
 		SendBackRawRequest:       configCopy.SendBackRawRequest,
@@ -1152,6 +1151,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		PromptCache:              configCopy.PromptCache,
 		ConfigHash:               configCopy.ConfigHash,
 	}
+	dbProvider.SetNetworkConfig(configCopy.NetworkConfig)
 	// Create the provider
 	if err := txDB.WithContext(ctx).Create(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)

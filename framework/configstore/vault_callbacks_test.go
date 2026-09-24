@@ -199,3 +199,114 @@ func TestVaultCallbacks_NoOpWhenDisabled(t *testing.T) {
 	require.NoError(t, db.First(&row, "client_id = ?", "client-2").Error)
 	require.False(t, strings.Contains(row.HeadersJSON, "vault."), "no vault ref expected when disabled: %s", row.HeadersJSON)
 }
+
+// stubVaultResolve installs a resolve hook that reads back what stubVaultHooks stored,
+// so rows holding vault refs load with their secret values.
+func stubVaultResolve(t *testing.T, stored map[string]string) {
+	t.Helper()
+	prev := schemas.VaultResolveHook
+	schemas.VaultResolveHook = func(_ context.Context, value *string) error {
+		path := strings.TrimPrefix(*value, "vault.")
+		secret, ok := stored[path]
+		if !ok {
+			return fmt.Errorf("no vault secret at %s", path)
+		}
+		*value = secret
+		return nil
+	}
+	t.Cleanup(func() { schemas.VaultResolveHook = prev })
+}
+
+// storedNetworkConfigHeaders reads network_config_json straight from the row, so the test
+// sees what was persisted rather than the resolved values.
+func storedNetworkConfigHeaders(t *testing.T, db *gorm.DB, name string) map[string]string {
+	t.Helper()
+	var row struct{ NetworkConfigJSON string }
+	require.NoError(t, db.Table("config_providers").Select("network_config_json").Where("name = ?", name).Scan(&row).Error)
+	var nc struct {
+		ExtraHeaders map[string]string `json:"extra_headers"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(row.NetworkConfigJSON), &nc))
+	return nc.ExtraHeaders
+}
+
+// TestVaultCallbacks_ProviderExtraHeaders covers provider extra headers through the store's
+// add, update, config.json sync and delete paths: plaintext values go to the vault, the row
+// keeps only refs, env refs are left alone, the caller's config is not rewritten, and
+// deleting the provider removes the secrets it owns.
+func TestVaultCallbacks_ProviderExtraHeaders(t *testing.T) {
+	stored, removed := stubVaultHooks(t)
+	stubVaultResolve(t, stored)
+	t.Setenv("BF_TEST_HEADER_FROM_ENV", "env-value")
+
+	store := setupRDBTestStore(t)
+	RegisterVaultCallbacks(store.DB())
+	ctx := context.Background()
+	const provider = schemas.ModelProvider("hyperpod")
+	base := "bifrost/config_providers/hyperpod/extra_headers/"
+
+	config := ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
+			"X-Client-Secret": {Val: "oauth-client-secret"},
+			"X-From-Env":      *schemas.NewSecretVar("env.BF_TEST_HEADER_FROM_ENV"),
+		}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+	}
+	require.NoError(t, store.AddProvider(ctx, provider, config))
+
+	t.Run("add stores plaintext values and persists refs", func(t *testing.T) {
+		require.Equal(t, "oauth-client-secret", stored[base+"X-Client-Secret"])
+		_, envStored := stored[base+"X-From-Env"]
+		require.False(t, envStored, "env refs must not be copied into the vault")
+
+		headers := storedNetworkConfigHeaders(t, store.DB(), string(provider))
+		require.Equal(t, "vault."+base+"X-Client-Secret", headers["X-Client-Secret"])
+		require.Equal(t, "env.BF_TEST_HEADER_FROM_ENV", headers["X-From-Env"])
+
+		caller := config.NetworkConfig.ExtraHeaders["X-Client-Secret"]
+		require.False(t, caller.IsFromVault(), "the caller's header map must not be rewritten")
+	})
+
+	t.Run("loaded config resolves the vault ref", func(t *testing.T) {
+		loaded, err := store.GetProviderConfig(ctx, provider)
+		require.NoError(t, err)
+		secret := loaded.NetworkConfig.ExtraHeaders["X-Client-Secret"]
+		require.True(t, secret.IsFromVault())
+		require.Equal(t, "oauth-client-secret", secret.GetValue())
+	})
+
+	t.Run("update stores a changed value and a new header", func(t *testing.T) {
+		updated := config
+		updated.NetworkConfig = &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
+			"X-Client-Secret": {Val: "rotated-secret"},
+			"X-From-Env":      *schemas.NewSecretVar("env.BF_TEST_HEADER_FROM_ENV"),
+			"X-Client-Id":     {Val: "client-id-123"},
+		}}
+		require.NoError(t, store.UpdateProvider(ctx, provider, updated))
+		require.Equal(t, "rotated-secret", stored[base+"X-Client-Secret"])
+		require.Equal(t, "client-id-123", stored[base+"X-Client-Id"])
+		headers := storedNetworkConfigHeaders(t, store.DB(), string(provider))
+		require.Equal(t, "vault."+base+"X-Client-Id", headers["X-Client-Id"])
+	})
+
+	t.Run("config.json sync stores values too", func(t *testing.T) {
+		synced := config
+		synced.NetworkConfig = &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
+			"X-Client-Secret": {Val: "from-config-json"},
+		}}
+		require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{provider: synced}))
+		require.Equal(t, "from-config-json", stored[base+"X-Client-Secret"])
+		headers := storedNetworkConfigHeaders(t, store.DB(), string(provider))
+		require.Equal(t, "vault."+base+"X-Client-Secret", headers["X-Client-Secret"])
+		caller := synced.NetworkConfig.ExtraHeaders["X-Client-Secret"]
+		require.False(t, caller.IsFromVault(), "sync must not rewrite the live config's header map")
+	})
+
+	t.Run("delete removes the owned secrets", func(t *testing.T) {
+		require.NoError(t, store.DeleteProvider(ctx, provider))
+		require.Contains(t, *removed, base+"X-Client-Secret")
+		for _, path := range *removed {
+			require.True(t, strings.HasPrefix(path, base), "removed a path the provider does not own: %s", path)
+		}
+	})
+}

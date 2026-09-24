@@ -1047,7 +1047,7 @@ func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]stri
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -1057,7 +1057,7 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if len(req.Header.Peek(canonicalKey)) == 0 {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 	// Give priority to extra headers in the context
@@ -2107,7 +2107,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -2117,7 +2117,7 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if req.Header.Get(canonicalKey) == "" {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 
