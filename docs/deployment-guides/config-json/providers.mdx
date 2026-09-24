@@ -55,7 +55,7 @@ Per-provider `network_config` options (applies to all standard providers):
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |
 | `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
-| `extra_headers` | object | Static headers added to every provider request |
+| `extra_headers` | object | Static headers added to every provider request. Values accept `env.VAR_NAME` / `vault.path` references and are masked in API responses |
 | `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 120) |
 | `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
 | `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |
