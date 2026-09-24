@@ -21,10 +21,12 @@ const (
 
 // PluginStatus represents the status of a plugin.
 type PluginStatus struct {
-	Name   string       `json:"name"` // Display name of the plugin
-	Status string       `json:"status"`
-	Logs   []string     `json:"logs"`
-	Types  []PluginType `json:"types"` // Plugin types (LLM, MCP, HTTP)
+	Name     string       `json:"name"` // Display name of the plugin
+	Status   string       `json:"status"`
+	Logs     []string     `json:"logs"`
+	Types    []PluginType `json:"types"`               // Plugin types (LLM, MCP, HTTP)
+	SHA256   string       `json:"sha256,omitempty"`    // SHA256 is the hex digest of the plugin file loaded on this instance (custom .so plugins only)
+	LoadedAt *time.Time   `json:"loaded_at,omitempty"` // When this instance loaded the plugin file
 }
 
 // PluginType represents the type of plugin.

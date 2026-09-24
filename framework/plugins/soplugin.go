@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"plugin"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -16,6 +17,9 @@ type DynamicPlugin struct {
 
 	filename string
 	plugin   *plugin.Plugin
+	sha256   string
+	hashErr  error
+	loadedAt time.Time
 
 	// BasePlugin (required)
 	getName func() string
@@ -64,6 +68,11 @@ type DynamicPlugin struct {
 // GetName returns the name of the plugin (BasePlugin interface)
 func (dp *DynamicPlugin) GetName() string {
 	return dp.getName()
+}
+
+// FileInfo returns the SHA-256 hex digest of the loaded plugin file, when it was loaded, and any hashing error.
+func (dp *DynamicPlugin) FileInfo() (string, time.Time, error) {
+	return dp.sha256, dp.loadedAt, dp.hashErr
 }
 
 // Cleanup is invoked by core/bifrost.go during plugin unload, reload, and shutdown (BasePlugin interface)

@@ -6279,6 +6279,32 @@ func (c *Config) UpdatePluginOverallStatus(name string, displayName string, stat
 	}
 }
 
+// SetPluginFileInfo records the loaded file hash on the status of plugins that expose it (custom .so plugins).
+func (c *Config) SetPluginFileInfo(name string, plugin schemas.BasePlugin) {
+	fi, ok := plugin.(interface {
+		FileInfo() (string, time.Time, error)
+	})
+	if !ok {
+		return
+	}
+	sha, loadedAt, err := fi.FileInfo()
+	if err != nil {
+		logger.Warn("failed to hash plugin file for %s: %v", name, err)
+	}
+	if sha == "" {
+		return
+	}
+	c.pluginStatusMu.Lock()
+	defer c.pluginStatusMu.Unlock()
+	entry, ok := c.pluginStatus[name]
+	if !ok {
+		return
+	}
+	entry.SHA256 = sha
+	entry.LoadedAt = &loadedAt
+	c.pluginStatus[name] = entry
+}
+
 // UpdatePluginDisplayName updates the display name of a plugin
 func (c *Config) UpdatePluginDisplayName(name string, displayName string) error {
 	c.pluginStatusMu.Lock()
@@ -6296,13 +6322,9 @@ func (c *Config) UpdatePluginDisplayName(name string, displayName string) error 
 		return fmt.Errorf("display name %s already in use", displayName)
 	}
 
-	if _, ok := c.pluginStatus[name]; ok {
-		c.pluginStatus[name] = schemas.PluginStatus{
-			Name:   displayName,
-			Status: c.pluginStatus[name].Status,
-			Logs:   c.pluginStatus[name].Logs,
-			Types:  c.pluginStatus[name].Types,
-		}
+	if entry, ok := c.pluginStatus[name]; ok {
+		entry.Name = displayName
+		c.pluginStatus[name] = entry
 		return nil
 	}
 	return fmt.Errorf("plugin %s not found", name)

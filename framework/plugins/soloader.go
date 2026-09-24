@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"plugin"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -59,6 +60,9 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 	if err != nil {
 		return nil, err
 	}
+	// a failed hash must not block loading.
+	dp.sha256, dp.hashErr = hashFile(dp.Path)
+	dp.loadedAt = time.Now()
 
 	// Optional Init method
 	if initSym, err := pluginObj.Lookup("Init"); err == nil {

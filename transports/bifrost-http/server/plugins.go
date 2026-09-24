@@ -377,6 +377,7 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 		s.Config.SetPluginOrderInfo(plugin.GetName(), cfg.Placement, cfg.Order)
 		s.Config.UpdatePluginOverallStatus(plugin.GetName(), cfg.Name, schemas.PluginStatusActive,
 			[]string{fmt.Sprintf("plugin %s initialized successfully", cfg.Name)}, InferPluginTypes(plugin))
+		s.Config.SetPluginFileInfo(plugin.GetName(), plugin)
 	}
 	return nil
 }
