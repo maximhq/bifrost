@@ -523,6 +523,10 @@ export class VirtualKeysPage extends BasePage {
       await this.page.getByTestId(testId).click();
     }
     if (deleteAfterExpire !== undefined) {
+      // Without an expiry the switch is hidden and the key cannot delete after expire, so false holds.
+      if (!deleteAfterExpire && !(await this.deleteAfterExpireCheckbox.isVisible())) {
+        return;
+      }
       await expect(this.deleteAfterExpireCheckbox).toBeVisible({ timeout: 5000 });
       const isChecked = (await this.deleteAfterExpireCheckbox.getAttribute("data-state")) === "checked";
       if (isChecked !== deleteAfterExpire) {
