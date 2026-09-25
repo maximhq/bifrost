@@ -1,0 +1,307 @@
+{
+  "$schema_note": "Proxy egress selection for the proxy e2e flow (tests/e2e/api/runners/proxy/run-proxy-matrix.sh), in smoke-manifest.json's format: rows are matched by (folder, name) against the augmented collection and run with `make run-provider-harness-test SMOKE=<this file> PARALLEL=0`. One pillar per provider, each the cheapest existing row that reaches that provider's live upstream. `hosts` is not read by the harness: run-proxy-matrix.sh requires every pattern (an extended regex) to appear in the proxy's access log after a cell, which is what proves the provider's traffic, token exchange included, went through the proxy.",
+  "budget": 23,
+  "total_selected": 23,
+  "pillars": [
+    {
+      "key": "openai",
+      "intent": "openai upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.openai\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "OpenAI (10 latest)",
+          "name": "openai/gpt-4o-mini"
+        }
+      ]
+    },
+    {
+      "key": "azure",
+      "intent": "azure upstream reached through the proxy under test.",
+      "hosts": [
+        "\\.openai\\.azure\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "8.1.C OpenAI drop-in /openai/v1/chat/completions × non-OpenAI providers",
+          "name": "azure/gpt-4o-mini"
+        }
+      ]
+    },
+    {
+      "key": "anthropic",
+      "intent": "anthropic upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.anthropic\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "Anthropic (10 latest)",
+          "name": "anthropic/claude-haiku-4-5"
+        }
+      ]
+    },
+    {
+      "key": "gemini",
+      "intent": "gemini upstream reached through the proxy under test.",
+      "hosts": [
+        "generativelanguage\\.googleapis\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "Gemini / GenAI (10 latest)",
+          "name": "gemini/gemini-2.5-flash"
+        }
+      ]
+    },
+    {
+      "key": "vertex",
+      "intent": "vertex upstream reached through the proxy under test.",
+      "hosts": [
+        "aiplatform\\.googleapis\\.com",
+        "oauth2\\.googleapis\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "Vertex (10 latest)",
+          "name": "vertex/gemini-2.5-flash"
+        }
+      ]
+    },
+    {
+      "key": "bedrock",
+      "intent": "bedrock upstream reached through the proxy under test.",
+      "hosts": [
+        "bedrock-runtime\\.[a-z0-9-]+\\.amazonaws\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "Bedrock (10 latest)",
+          "name": "bedrock/us.amazon.nova-lite-v1:0"
+        }
+      ]
+    },
+    {
+      "key": "bedrock_mantle",
+      "intent": "bedrock_mantle upstream reached through the proxy under test.",
+      "hosts": [
+        "bedrock-mantle\\.[a-z0-9-]+\\.api\\.aws"
+      ],
+      "requests": [
+        {
+          "folder": "108. Decision emulation matrix - all providers (decision-emulation-matrix)",
+          "name": "/v1/decisions - matches jev anchors - bedrock_mantle/openai.gpt-oss-20b"
+        }
+      ]
+    },
+    {
+      "key": "xai",
+      "intent": "xai upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.x\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "47.1.1.A native /v1/chat/completions",
+          "name": "47.1.1.A native /v1/chat/completions -> xai/grok-4-0709"
+        }
+      ]
+    },
+    {
+      "key": "deepseek",
+      "intent": "deepseek upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.deepseek\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "DeepSeek (2 latest)",
+          "name": "deepseek/deepseek-v4-flash"
+        }
+      ]
+    },
+    {
+      "key": "openrouter",
+      "intent": "openrouter upstream reached through the proxy under test.",
+      "hosts": [
+        "openrouter\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "13. OpenRouter Prompt Caching (cache_control)",
+          "name": "OpenRouter OpenAI GPT-4o: cache_control ignored (no 400)"
+        }
+      ]
+    },
+    {
+      "key": "runware",
+      "intent": "runware upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.runware\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "54.1 Text inference (OpenAI-compatible /v1/chat/completions + mux'd /v1/responses)",
+          "name": "runware/anthropic:claude@haiku-4.5 chat completions"
+        }
+      ]
+    },
+    {
+      "key": "mistral",
+      "intent": "mistral upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.mistral\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "108. Decision emulation matrix - all providers (decision-emulation-matrix)",
+          "name": "/v1/decisions - matches jev anchors - mistral/mistral-small-latest"
+        }
+      ]
+    },
+    {
+      "key": "parasail",
+      "intent": "parasail upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.parasail\\.io"
+      ],
+      "requests": [
+        {
+          "folder": "108. Decision emulation matrix - all providers (decision-emulation-matrix)",
+          "name": "/v1/decisions - matches jev anchors - parasail/parasail-gpt-oss-120b"
+        }
+      ]
+    },
+    {
+      "key": "groq",
+      "intent": "groq upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.groq\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "108. Decision emulation matrix - all providers (decision-emulation-matrix)",
+          "name": "/v1/decisions - matches jev anchors - groq/qwen/qwen3.8-27b"
+        }
+      ]
+    },
+    {
+      "key": "perplexity",
+      "intent": "perplexity upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.perplexity\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "108. Decision emulation matrix - all providers (decision-emulation-matrix)",
+          "name": "/v1/decisions - matches jev anchors - perplexity/sonar"
+        }
+      ]
+    },
+    {
+      "key": "cerebras",
+      "intent": "cerebras upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.cerebras\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "108. Decision emulation matrix - all providers (decision-emulation-matrix)",
+          "name": "/v1/decisions - matches jev anchors - cerebras/llama-3.3-70b"
+        }
+      ]
+    },
+    {
+      "key": "cohere",
+      "intent": "cohere upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.cohere\\.(ai|com)"
+      ],
+      "requests": [
+        {
+          "folder": "Cross-Cut Round 18: Cohere Drop-in Smoke",
+          "name": "Cohere drop-in: basic chat"
+        }
+      ]
+    },
+    {
+      "key": "typesafe",
+      "intent": "typesafe upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.typesafe\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "106. Typesafe decisions provider (typesafe-decisions)",
+          "name": "/v1/decisions - mixed kinds return typed answers - typesafe/jev-1.13.0"
+        }
+      ]
+    },
+    {
+      "key": "replicate",
+      "intent": "replicate upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.replicate\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "30. Replicate input_images field mapping (image-to-image on /v1/images/generations)",
+          "name": "replicate/black-forest-labs/flux-kontext-pro input_images -> input_image (match_input_image)"
+        }
+      ]
+    },
+    {
+      "key": "huggingface",
+      "intent": "huggingface upstream reached through the proxy under test.",
+      "hosts": [
+        "huggingface\\.co"
+      ],
+      "requests": [
+        {
+          "folder": "61. Hugging Face Baseten model discovery (#6631)",
+          "name": "Hugging Face Baseten models appear in /v1/models - #6631"
+        }
+      ]
+    },
+    {
+      "key": "runway",
+      "intent": "runway upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.dev\\.runwayml\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "101. Typed resource IDs stay on their upstream endpoint (PR #7307) (resource-id-path-escape)",
+          "name": "[EXPECT-4XX] runway native video retrieve: well-formed missing task reaches the provider - #7307"
+        }
+      ]
+    },
+    {
+      "key": "nebius",
+      "intent": "nebius upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.tokenfactory\\.nebius\\.com"
+      ],
+      "requests": [
+        {
+          "folder": "118. Proxy egress: upstream reach for providers with no other cheap row (proxy-egress)",
+          "name": "nebius models listed through /v1/models reach api.tokenfactory.nebius.com - proxy-egress"
+        }
+      ]
+    },
+    {
+      "key": "elevenlabs",
+      "intent": "elevenlabs upstream reached through the proxy under test.",
+      "hosts": [
+        "api\\.elevenlabs\\.io"
+      ],
+      "requests": [
+        {
+          "folder": "118. Proxy egress: upstream reach for providers with no other cheap row (proxy-egress)",
+          "name": "elevenlabs models listed through /v1/models reach api.elevenlabs.io - proxy-egress"
+        }
+      ]
+    }
+  ]
+}
