@@ -834,7 +834,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Filter out tools that the OpenAI-compatible target doesn't support.
 	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
-	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider))
+	req.filterUnsupportedTools(toolProvider, supportsWebSearchContentTypes(toolCaps, toolProvider))
 	req.keepDeferLoading = toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel))
 
 	if bifrostReq.Params != nil {
@@ -970,7 +970,7 @@ func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.Re
 	return message
 }
 
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool) {
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(provider schemas.ModelProvider, webSearchContentTypesSupported bool) {
 	if len(resp.Tools) == 0 {
 		return
 	}
@@ -999,7 +999,9 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 		supportedTypes[schemas.ResponsesToolTypeXSearch] = true
 	}
 	// Perplexity Agent API server-side tools (docs.perplexity.ai/docs/agent-api/tools).
-	if resp.Provider == schemas.Perplexity {
+	// Match on the resolved base provider, not resp.Provider: a custom provider
+	// backed by Perplexity reports its own key (see the toolProvider comment above).
+	if provider == schemas.Perplexity {
 		supportedTypes[schemas.ResponsesToolTypeSandbox] = true
 		supportedTypes[schemas.ResponsesToolTypeFetchURL] = true
 		supportedTypes[schemas.ResponsesToolTypeFinanceSearch] = true
@@ -1028,7 +1030,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				}
 				newTool.ResponsesToolComputerUsePreview = newComputerUse
 				filteredTools = append(filteredTools, newTool)
-			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil && resp.Provider == schemas.Perplexity {
+			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil && provider == schemas.Perplexity {
 				// Perplexity's Agent API web_search tool accepts its own superset of
 				// fields (search_domain_filter, search_recency_filter, date filters,
 				// max_results, max_tokens, max_tokens_per_page — see

@@ -2390,6 +2390,54 @@ func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchD
 	})
 }
 
+// TestToOpenAIResponsesRequest_PerplexityCustomProviderRetainsNativeTools covers
+// a gap CodeRabbit flagged in filterUnsupportedTools: it checked resp.Provider
+// directly for the Perplexity exemption, but a custom provider backed by
+// Perplexity reports its own provider key on resp.Provider while the resolved
+// base provider (schemas.BifrostContextKeyBaseProviderType, read through
+// schemas.ResolveBaseProvider) is Perplexity. That mismatch silently stripped
+// the Agent API's server-side tools and fell back to the generic
+// AllowedDomains-only web_search handling for such a custom provider.
+func TestToOpenAIResponsesRequest_PerplexityCustomProviderRetainsNativeTools(t *testing.T) {
+	const customProvider = schemas.ModelProvider("my-perplexity-clone")
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: customProvider,
+		Model:    "sonar",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFetchURL},
+				{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+						Filters: &schemas.ResponsesToolWebSearchFilters{
+							AllowedDomains: []string{"wikipedia.org"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+		schemas.BifrostContextKeyBaseProviderType, schemas.Perplexity)
+
+	result := ToOpenAIResponsesRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 2, "fetch_url must survive filtering for a custom provider based on Perplexity")
+	require.Equal(t, schemas.ResponsesToolTypeFetchURL, result.Tools[0].Type)
+
+	webSearch := result.Tools[1].ResponsesToolWebSearch
+	require.NotNil(t, webSearch)
+	require.NotNil(t, webSearch.Filters)
+	require.Empty(t, webSearch.Filters.AllowedDomains, "AllowedDomains should have been mapped, not forwarded unchanged")
+	require.Equal(t, []string{"wikipedia.org"}, webSearch.Filters.SearchDomainFilter)
+}
+
 func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing.T) {
 	tests := []struct {
 		name         string
