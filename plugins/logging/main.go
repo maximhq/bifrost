@@ -263,37 +263,74 @@ func dropCapturedInput(entry *logstore.Log) {
 	entry.PassthroughRequestBody = ""
 }
 
-// governanceDecisionPending reports whether governance may still stamp a content-logging decision
-// for this request after our hook has run, so the policy on the context is not final yet. Two
-// things carry such a decision: a presented virtual key governance has not resolved onto the context
-// yet, and a project the request named that governance has not admitted yet (a project's decision
-// overrides the key's).
+// contentDecisionScope says which layers can still be stamped after a pre-hook runs.
+type contentDecisionScope int
+
+const (
+	// contentScopeMCP: only the caller's layers, which governance stamps in its own pre-hook. MCP
+	// calls and relays use it, since neither picks a provider key.
+	contentScopeMCP contentDecisionScope = iota
+	// contentScopeLLM: the caller's layers, plus the provider key, which core picks after every
+	// PreLLMHook.
+	contentScopeLLM
+)
+
+// contentDecisionPending reports whether a layer stamped after our pre-hook could still change this
+// request's content decision, so whatever the pre-hook captures is provisional and the post-hook's
+// final policy keeps or drops it.
 //
-// A named project is read off the request headers the way the governance funnel reads it, so a
-// header that arrived empty still counts as having named one, and it is admitted once the request's
-// identity carries it. The presented key is read the way governance reads it: off the settled
-// identity first, then off the transport's context key.
-func governanceDecisionPending(ctx *schemas.BifrostContext) bool {
+//   - An allowed x-bf-disable-content-logging header outranks every layer, so nothing stamped later
+//     can change the decision.
+//   - The caller's layers (business unit, team, user, virtual key, access profile) are pending while
+//     the request presented a caller, or named a project, that governance has not marked resolved
+//     yet. A project governance admits overrides the virtual key's decision, and governance admits it
+//     while it resolves the caller, so the same marker ends both waits.
+//   - On the LLM path the provider key is pending unless a layer already stamped leaves it nothing to
+//     change (a higher tier decided, or a peer in its tier already turned content off).
+func contentDecisionPending(ctx *schemas.BifrostContext, scope contentDecisionScope) bool {
 	if ctx == nil {
 		return false
 	}
-	var identity schemas.Identity
-	if grant := ctx.Grant(); grant != nil {
-		identity = grant.Identity()
-	}
-	if identity == nil || identity.Project() == nil {
-		headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-		for _, header := range []string{schemas.HeaderGovernanceProjectID, schemas.HeaderGovernanceProjectName} {
-			if _, named := headers[header]; named {
-				return true
-			}
+	if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
+		if _, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+			return false
 		}
 	}
-	if stamped, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); stamped != "" {
-		return false
-	}
-	if identity != nil && identity.Credential().Kind == string(schemas.EntityVirtualKey) {
+	if !schemas.CallerContentLoggingResolved(ctx) && (callerPresented(ctx) || projectNamed(ctx)) {
 		return true
+	}
+	if scope == contentScopeLLM {
+		return schemas.ContentLoggingLayerCanChange(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging)
+	}
+	return false
+}
+
+// projectNamed reports whether the request named a project that its settled identity does not carry
+// yet. The project is read off the request headers the way the governance funnel reads it, so a header
+// that arrived empty still counts as having named one.
+func projectNamed(ctx *schemas.BifrostContext) bool {
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil && identity.Project() != nil {
+			return false
+		}
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	for _, header := range []string{schemas.HeaderGovernanceProjectID, schemas.HeaderGovernanceProjectName} {
+		if _, named := headers[header]; named {
+			return true
+		}
+	}
+	return false
+}
+
+// callerPresented reports whether the request presented a caller governance will resolve: any
+// credential or user the transport settled on the identity, or, for a context nothing settled an
+// identity on, a virtual key stamped on the context directly.
+func callerPresented(ctx *schemas.BifrostContext) bool {
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil {
+			return identity.Credential().Kind != "" || identity.User() != nil
+		}
 	}
 	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 	return presented != ""
@@ -2078,16 +2115,16 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
-	// Capture while content is on, and also while governance has yet to resolve the presented virtual
-	// key or the named project: it may stamp a decision that turns content on after ours runs (the
-	// passthrough path, and any request that names a project).
-	// PostLLMHook applies the final policy and drops whatever it does not allow, and the processing
-	// notification below never carries input captured this way.
+	// Capture while content is on, and also while a layer stamped after ours could still turn it on:
+	// governance resolves some callers and admits a named project after this hook (the passthrough
+	// path, and any request that names a project), and core stamps the provider key only once it picks
+	// one. PostLLMHook applies the final policy and drops whatever it does not allow, and the
+	// processing notification below never carries input captured this way.
 	if req.PassthroughRequest != nil {
 		initialData.PassthroughMethod = req.PassthroughRequest.Method
 		initialData.PassthroughPath = req.PassthroughRequest.Path
 	}
-	captureProvisional := governanceDecisionPending(ctx)
+	captureProvisional := contentDecisionPending(ctx, contentScopeLLM)
 	requestContentPolicy := p.resolveContentPolicy(ctx)
 	if requestContentPolicy.storeContent || captureProvisional {
 		p.captureRequestInput(ctx, req, initialData)
@@ -3774,13 +3811,13 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 
 	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
-	// request that presents a virtual key or names a project governance has not stamped yet has no
-	// final content decision: hold the arguments aside instead of putting them on the pending entry,
-	// where the pre-hook callback and the stale-entry reaper would expose them. PostMCPHook attaches
-	// them once the policy is final; a stale entry never gets them.
-	// The hold does not depend on the current policy: a key or project that turns content on over a
-	// disabled client flag is entitled to its arguments once PostMCPHook sees the final decision.
-	if governanceDecisionPending(ctx) {
+	// request whose caller (a virtual key, or a user who authenticated without one) or named project
+	// governance has not resolved yet has no final content decision: hold the arguments aside instead of putting
+	// them on the pending entry, where the pre-hook callback and the stale-entry reaper would expose
+	// them. PostMCPHook attaches them once the policy is final; a stale entry never gets them.
+	// The hold does not depend on the current policy: a caller or project that turns content on over a disabled
+	// client flag is entitled to its arguments once PostMCPHook sees the final decision.
+	if contentDecisionPending(ctx, contentScopeMCP) {
 		p.provisionalMCPArguments.Store(mcpLogID, arguments)
 	} else if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
