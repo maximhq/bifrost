@@ -1004,7 +1004,7 @@ Enable debug logging to see routing rule evaluation:
 ### Routing Stops Working After a Downgrade
 
 <Info>
-This only affects a downgrade across the release that added key-pinned fallbacks, and only when a rule has a `key_id` on a fallback.
+This only affects a downgrade across the release that added key-pinned fallbacks, and only when a rule has a `key_id` (or, in `config.json`, a `provider_key_name`) on a fallback.
 
 - OSS: rolling back from 2.2.3 or later to 2.2.2 or earlier
 - Enterprise: rolling back from v2.2.3 or later to v2.2.2 or earlier
@@ -1012,11 +1012,13 @@ This only affects a downgrade across the release that added key-pinned fallbacks
 Staying on either side of that line, or downgrading with no pinned fallback in any rule, is unaffected.
 </Info>
 
-**Symptom**: After the rollback, the log shows `failed to load plugin routing` at startup, the routing plugin reports an error status, and `GET /api/routing/rules` returns 500.
+**Symptom**: After the rollback, the log shows `failed to load plugin routing` at startup, the routing plugin reports an error status, and `GET /api/routing/rules` returns 500. If the pinned fallback is in `config.json` rather than the database, Bifrost exits at startup with `failed to unmarshal config` instead.
 
-**Cause**: Since 2.2.3, a fallback with a `key_id` is stored as a JSON object in the `fallbacks` column of the `routing_rules` table. Earlier versions only decode string entries. The decode fails for the whole row, and because rules load in one query, that single row takes every routing rule down with it, including rules that never had a pinned fallback.
+**Cause**: Since 2.2.3, a fallback with a pinned key is a JSON object, both in `config.json` and in the `fallbacks` column of the `routing_rules` table. Earlier versions only decode string entries. In the database, the decode fails for the whole row, and because rules load in one query, that single row takes every routing rule down with it, including rules that never had a pinned fallback. In `config.json`, the decode fails for the whole file.
 
-**Solution**: Rewrite each object entry back to its `"provider/model"` string, then restart Bifrost. The pinned key is dropped, so that fallback goes back to load-balanced key selection. Every other entry is left as it is. Run the statement for your config store backend once against the database; rows without an object entry are not touched.
+**Solution**: Rewrite each object entry back to its `"provider/model"` string, then restart Bifrost. The pinned key is dropped, so that fallback goes back to load-balanced key selection. Every other entry is left as it is.
+
+If `config.json` defines routing rules, edit the file first: replace each fallback object under `governance.routing_rules[].fallbacks` with its `"provider/model"` string. Then run the statement for your config store backend once against the database; rows without an object entry are not touched.
 
 <Tabs>
 <Tab title="PostgreSQL">
