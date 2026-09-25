@@ -40,11 +40,13 @@ type GeminiProvider struct {
 // Express rejects requests carrying both credentials). Must be called after
 // providerUtils.SetExtraHeaders, which may inject a forwarded Authorization.
 func setGeminiAuthHeader(req *fasthttp.Request, apiKey string) {
-	if apiKey == "" {
-		return
+	if apiKey != "" {
+		req.Header.Set("x-goog-api-key", apiKey)
 	}
-	req.Header.Set("x-goog-api-key", apiKey)
-	req.Header.Del("Authorization")
+	// Key off the assembled header: an API key can also arrive via extra headers.
+	if len(req.Header.Peek("x-goog-api-key")) > 0 {
+		req.Header.Del("Authorization")
+	}
 }
 
 func setGeminiRequestBody(req *fasthttp.Request, bodyReader io.Reader, bodySize int, jsonData []byte) {

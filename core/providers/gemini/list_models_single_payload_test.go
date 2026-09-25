@@ -74,11 +74,14 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 	cases := []struct {
 		name           string
 		apiKey         string
+		configKey      string // x-goog-api-key supplied through network-config extra headers
 		wantGoogAPIKey string
 		wantAuth       string // expected upstream Authorization ("" => stripped)
 	}{
 		{name: "api_key_set_strips_authorization", apiKey: "dummy-key", wantGoogAPIKey: "dummy-key", wantAuth: ""},
 		{name: "no_api_key_keeps_authorization", apiKey: "", wantGoogAPIKey: "", wantAuth: "Bearer leaked-token"},
+		// No provider key, but an API key arrives via extra headers: still strip Authorization.
+		{name: "extra_header_api_key_strips_authorization", apiKey: "", configKey: "config-key", wantGoogAPIKey: "config-key", wantAuth: ""},
 	}
 
 	for _, tc := range cases {
@@ -95,10 +98,14 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 			}))
 			defer ts.Close()
 
+			extra := map[string]string{"Authorization": "Bearer leaked-token"}
+			if tc.configKey != "" {
+				extra["X-Goog-Api-Key"] = tc.configKey
+			}
 			provider := NewGeminiProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
 					BaseURL:      ts.URL,
-					ExtraHeaders: map[string]string{"Authorization": "Bearer leaked-token"},
+					ExtraHeaders: extra,
 				},
 			}, testNoopLogger{})
 
