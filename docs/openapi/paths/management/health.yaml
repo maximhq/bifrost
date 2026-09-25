@@ -1,6 +1,15 @@
 health:
   get:
     operationId: getHealth
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Health check
     description: |
       Returns the health status of the Bifrost server. Checks connectivity to config store,

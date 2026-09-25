@@ -140,3 +140,53 @@ func TestGenerateRoutingRuleHash_PinnedFallbackChangesHash(t *testing.T) {
 
 	assert.NotEqual(t, unpinned, pinned, "pinning a key must change the rule hash")
 }
+
+// TestGenerateRoutingRuleHash_FallbackFormsStableAcrossRestart pins that the config-origin and
+// DB-origin hashes agree and that saving and reloading a rule does not change its hash or stored
+// column. A drift here rewrites the rule from config.json on every boot.
+func TestGenerateRoutingRuleHash_FallbackFormsStableAcrossRestart(t *testing.T) {
+	for _, fallbacksJSON := range []string{
+		`["anthropic/claude-sonnet-4"]`,
+		`["azure/"]`,
+		`[{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k1"}]`,
+		`[{"provider":"vertex","model":"","key_id":"k1"}]`,
+		`["openai/gpt-4o",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k1"},"azure/"]`,
+	} {
+		t.Run(fallbacksJSON, func(t *testing.T) {
+			rule := ruleWithFallbacks(t, fallbacksJSON)
+			fromConfig, err := GenerateRoutingRuleHash(rule)
+			require.NoError(t, err)
+
+			saved := rule
+			require.NoError(t, saved.BeforeSave(nil))
+			require.NotNil(t, saved.Fallbacks)
+			fromDB, err := GenerateRoutingRuleHash(saved)
+			require.NoError(t, err)
+			assert.Equal(t, fromConfig, fromDB, "config-origin and DB-origin hashes disagree")
+
+			reloaded := tables.TableRoutingRule{ID: saved.ID, Name: saved.Name, CelExpression: saved.CelExpression, Scope: saved.Scope, Targets: saved.Targets, Fallbacks: saved.Fallbacks}
+			require.NoError(t, reloaded.AfterFind(nil))
+			require.NoError(t, reloaded.BeforeSave(nil))
+			assert.Equal(t, *saved.Fallbacks, *reloaded.Fallbacks, "re-saving a reloaded rule changed the stored column")
+			afterRestart, err := GenerateRoutingRuleHash(reloaded)
+			require.NoError(t, err)
+			assert.Equal(t, fromConfig, afterRestart, "hash changed across a restart")
+		})
+	}
+}
+
+// TestGenerateRoutingRuleHash_FallbackIdentity pins which fallback edits change the hash: the key
+// pin, provider and model do; spelling an unpinned entry as an object instead of a string does not.
+func TestGenerateRoutingRuleHash_FallbackIdentity(t *testing.T) {
+	hash := func(fallbacksJSON string) string {
+		h, err := GenerateRoutingRuleHash(ruleWithFallbacks(t, fallbacksJSON))
+		require.NoError(t, err)
+		return h
+	}
+	base := hash(`[{"provider":"vertex","model":"m","key_id":"k1"}]`)
+	assert.NotEqual(t, base, hash(`[{"provider":"vertex","model":"m","key_id":"k2"}]`), "a different key pin must change the hash")
+	assert.NotEqual(t, base, hash(`[{"provider":"vertex","model":"other","key_id":"k1"}]`), "a different model must change the hash")
+	assert.NotEqual(t, base, hash(`[{"provider":"azure","model":"m","key_id":"k1"}]`), "a different provider must change the hash")
+	assert.Equal(t, hash(`["vertex/m"]`), hash(`[{"provider":"vertex","model":"m"}]`), "an unpinned object must hash like its string form")
+	assert.Equal(t, hash(`["anthropic/"]`), hash(`[{"provider":"anthropic"}]`), "an unpinned provider-only object must hash like its string form")
+}

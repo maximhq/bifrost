@@ -3,10 +3,12 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4104,5 +4106,264 @@ func TestFallbackUsesPinnedKey(t *testing.T) {
 
 	if got, _ := gotAPIKey.Load().(string); got != "sk-pinned" {
 		t.Fatalf("fallback used api key %q, want %q", got, "sk-pinned")
+	}
+}
+
+// openAICompatFallbackServer answers chat completions in OpenAI shape, JSON or SSE, and records the
+// bearer token of every request so a test can tell which provider key served each attempt.
+func openAICompatFallbackServer(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	stream := sseHandler(`{"id":"chatcmpl-fb","object":"chat.completion.chunk","created":1,"model":"fb-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-fb","object":"chat.completion.chunk","created":1,"model":"fb-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		seen = append(seen, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		mu.Unlock()
+		if strings.Contains(string(body), `"stream":true`) {
+			stream(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-fb","object":"chat.completion","created":1,"model":"fb-model",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+}
+
+// failingAnthropicPrimary always answers 429 so every request moves on to its fallbacks.
+func failingAnthropicPrimary(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// addFallbackProvider registers a standard OpenAI provider or a custom OpenAI-compatible one at
+// baseURL, with an unpinned key that normal selection always picks and a zero-weight pinned key
+// that only a pin can reach.
+func addFallbackProvider(account *MockAccount, provider schemas.ModelProvider, custom bool, baseURL string) {
+	account.AddProviderWithBaseURL(provider, 1, 1, baseURL)
+	account.configs[provider].NetworkConfig.MaxRetries = 0
+	if custom {
+		account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+	}
+	account.SetKeysForProvider(provider, []schemas.Key{
+		{ID: "unpinned-key", Value: *schemas.NewSecretVar("sk-unpinned"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		{ID: "pinned-key", Value: *schemas.NewSecretVar("sk-pinned"), Models: schemas.WhiteList{"*"}, Weight: 0},
+	})
+}
+
+// runFallbackChat sends one chat request, JSON or streaming, and fails the test if it does not
+// succeed end to end.
+func runFallbackChat(t *testing.T, client *Bifrost, stream bool, primary schemas.ModelProvider, fallbacks []schemas.Fallback) {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	req := &schemas.BifrostChatRequest{
+		Provider: primary,
+		Model:    "claude-3-5-haiku-20241022",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: fallbacks,
+	}
+	if !stream {
+		if _, bifrostErr := client.ChatCompletionRequest(ctx, req); bifrostErr != nil {
+			t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+		}
+		return
+	}
+	ch, bifrostErr := client.ChatCompletionStreamRequest(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("stream failed: %s", bifrostErr.Error.Message)
+	}
+	if _, errs := drainChatStream(ch); len(errs) > 0 {
+		t.Fatalf("stream emitted error chunks: %v", errs)
+	}
+}
+
+// TestFallbackKeyPinMatrix covers a routing fallback's key pin on both orchestrator loops, for a
+// standard provider and a custom OpenAI-compatible one: a pin reaches its key, an unpinned
+// fallback keeps normal selection, and a pin to a key the provider does not have skips only that
+// attempt.
+func TestFallbackKeyPinMatrix(t *testing.T) {
+	providers := []struct {
+		name     string
+		provider schemas.ModelProvider
+		custom   bool
+	}{
+		{name: "standard", provider: schemas.OpenAI},
+		{name: "custom", provider: schemas.ModelProvider("custom-fallback-pin"), custom: true},
+	}
+	scenarios := []struct {
+		name      string
+		fallbacks func(p schemas.ModelProvider) []schemas.Fallback
+		wantKeys  []string // bearer tokens the fallback upstream must see, in order
+	}{
+		{
+			name: "pinned",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model", KeyID: "pinned-key"}}
+			},
+			wantKeys: []string{"sk-pinned"},
+		},
+		{
+			name: "unpinned",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model"}}
+			},
+			wantKeys: []string{"sk-unpinned"},
+		},
+		{
+			name: "pin to a missing key is skipped, next fallback serves",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model", KeyID: "not-in-this-pool"}, {Provider: p, Model: "fb-model"}}
+			},
+			wantKeys: []string{"sk-unpinned"},
+		},
+		{
+			name: "pin does not leak into the next fallback",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				// The first attempt's model is refused by both keys, so it fails before upstream and
+				// the second, unpinned attempt must not inherit the first attempt's pin.
+				return []schemas.Fallback{{Provider: p, Model: "blocked-model", KeyID: "pinned-key"}, {Provider: p, Model: "fb-model"}}
+			},
+			wantKeys: []string{"sk-unpinned"},
+		},
+	}
+	for _, prov := range providers {
+		for _, sc := range scenarios {
+			for _, stream := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/stream=%t", prov.name, sc.name, stream)
+				t.Run(name, func(t *testing.T) {
+					primary := failingAnthropicPrimary(t)
+					fallback, seen := openAICompatFallbackServer(t)
+
+					account := NewMockAccount()
+					account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
+					account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+					account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+						{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+					})
+					addFallbackProvider(account, prov.provider, prov.custom, fallback.URL)
+					keys := account.keys[prov.provider]
+					for i := range keys {
+						keys[i].BlacklistedModels = schemas.BlackList{"blocked-model"}
+					}
+					client := newStreamTestClient(t, account)
+
+					runFallbackChat(t, client, stream, schemas.Anthropic, sc.fallbacks(prov.provider))
+					if got := seen(); !reflect.DeepEqual(got, sc.wantKeys) {
+						t.Fatalf("fallback upstream saw keys %v, want %v", got, sc.wantKeys)
+					}
+				})
+			}
+		}
+	}
+}
+
+// allowedKeysAccount mirrors the transport account: it offers only the keys a virtual key allows,
+// read from the per-attempt governance context value.
+type allowedKeysAccount struct {
+	*MockAccount
+}
+
+func (a *allowedKeysAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	keys, err := a.MockAccount.GetKeysForProvider(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	allowed, ok := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string)
+	if !ok {
+		return keys, nil
+	}
+	filtered := make([]schemas.Key, 0, len(keys))
+	for _, key := range keys {
+		if slices.Contains(allowed, key.ID) {
+			filtered = append(filtered, key)
+		}
+	}
+	return filtered, nil
+}
+
+// allowedKeysPlugin stands in for governance, which publishes a virtual key's allowed keys in
+// PreLLMHook on every attempt, after core has cleared the previous attempt's value.
+type allowedKeysPlugin struct {
+	allowed map[schemas.ModelProvider][]string
+}
+
+func (p *allowedKeysPlugin) GetName() string { return "allowed-keys" }
+func (p *allowedKeysPlugin) Cleanup() error  { return nil }
+func (p *allowedKeysPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *allowedKeysPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	provider, _, _ := req.GetRequestFields()
+	if ids, ok := p.allowed[provider]; ok {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, ids)
+	}
+	return req, nil, nil
+}
+func (p *allowedKeysPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestFallbackPinOutsideAllowedKeysIsRefused pins that a routing fallback's key pin cannot reach a
+// key the virtual key does not allow: the pinned attempt is skipped without touching upstream and
+// the next fallback serves on an allowed key, for standard and custom providers on both loops.
+func TestFallbackPinOutsideAllowedKeysIsRefused(t *testing.T) {
+	providers := []struct {
+		name     string
+		provider schemas.ModelProvider
+		custom   bool
+	}{
+		{name: "standard", provider: schemas.OpenAI},
+		{name: "custom", provider: schemas.ModelProvider("custom-fallback-allowed"), custom: true},
+	}
+	for _, prov := range providers {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", prov.name, stream), func(t *testing.T) {
+				primary := failingAnthropicPrimary(t)
+				fallback, seen := openAICompatFallbackServer(t)
+
+				mock := NewMockAccount()
+				mock.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
+				mock.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+				mock.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+					{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+				})
+				addFallbackProvider(mock, prov.provider, prov.custom, fallback.URL)
+
+				client, err := Init(context.Background(), schemas.BifrostConfig{
+					Account:    &allowedKeysAccount{MockAccount: mock},
+					Logger:     NewDefaultLogger(schemas.LogLevelError),
+					LLMPlugins: []schemas.LLMPlugin{&allowedKeysPlugin{allowed: map[schemas.ModelProvider][]string{prov.provider: {"unpinned-key"}}}},
+				})
+				if err != nil {
+					t.Fatalf("failed to initialize bifrost: %v", err)
+				}
+				t.Cleanup(client.Shutdown)
+
+				runFallbackChat(t, client, stream, schemas.Anthropic, []schemas.Fallback{
+					{Provider: prov.provider, Model: "fb-model", KeyID: "pinned-key"},
+					{Provider: prov.provider, Model: "fb-model"},
+				})
+				if got := seen(); !reflect.DeepEqual(got, []string{"sk-unpinned"}) {
+					t.Fatalf("fallback upstream saw keys %v, want only the allowed key [sk-unpinned]", got)
+				}
+			})
+		}
 	}
 }
