@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/net/http/httpproxy"
 )
 
 // RedactURLForError reduces a resource URL to the part that is safe to echo back in an
@@ -73,10 +74,9 @@ func sanitizeFetchError(err error, redacted string) error {
 // Proxy: when ctx carries the serving provider's proxy config
 // (schemas.BifrostContextKeyProviderProxyConfig, set by bifrost on every attempt),
 // the fetch leaves through that proxy, the same egress as the provider's inference
-// traffic. The target host is still refused if it resolves to a non-public address;
-// see newFetchClient and network.NewTargetCheckingTransport for how the check works
-// once the dial goes to a proxy. With no proxy configured the fetch connects
-// directly, as before.
+// traffic. The target host is still refused if it resolves to a non-public address,
+// and the tunnel is opened to the checked address rather than the hostname; see
+// newFetchClient. With no proxy configured the fetch connects directly, as before.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
 	const maxBytes = maxFetchBytes
 
@@ -161,9 +161,42 @@ func fetchClientFor(ctx context.Context) (*http.Client, error) {
 // Direct connections, including targets the proxy is told to skip (errBypassProxy),
 // go through network.SSRFSafeDialContext, which checks the resolved target on every
 // dial. Once a request is proxied the dial goes to the proxy, which is operator
-// configuration and may well be on a private address, so it is not checked; the
-// target is judged instead by network.NewTargetCheckingTransport before every hop.
-// See NewTargetCheckingTransport for the DNS caveat that leaves.
+// configuration and may well be on a private address, so it is not checked. The
+// target is resolved and checked first (fetchResolveTarget), and the proxy is asked
+// for a tunnel to one of the checked addresses, never the hostname: the proxy cannot
+// resolve the name to somewhere else after the check. Redirect hops dial again and
+// are checked the same way. The bypass decision (no_proxy, NO_PROXY) is still made on
+// the hostname, before the address is pinned.
+// proxyBypassFunc reports whether a fetch to host:port skips proxyConfig's proxy, the
+// way ConfigureProxy's dialer decides it: a no_proxy match, or for the environment
+// proxy, NO_PROXY or no variable set for the port's scheme (443 is https, anything else
+// http, as envProxyDialFunc chooses).
+func proxyBypassFunc(proxyConfig *schemas.ProxyConfig) func(host, port string) bool {
+	noProxy := proxyConfig.NoProxy
+	var envProxy func(*url.URL) (*url.URL, error)
+	if proxyConfig.Type == schemas.EnvProxy {
+		envProxy = httpproxy.FromEnvironment().ProxyFunc()
+	}
+	return func(host, port string) bool {
+		if noProxy != "" && network.MatchesNoProxy(host, noProxy) {
+			return true
+		}
+		if envProxy == nil {
+			return false
+		}
+		scheme := "http"
+		if port == "443" {
+			scheme = "https"
+		}
+		proxyURL, err := envProxy(&url.URL{Scheme: scheme, Host: net.JoinHostPort(host, port)})
+		return err == nil && proxyURL == nil
+	}
+}
+
+// fetchResolveTarget resolves and checks a proxied fetch target. A variable so tests
+// can stand in for DNS.
+var fetchResolveTarget = network.ResolvePublicTarget
+
 func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 	ssrfDial := network.SSRFSafeDialContext(10 * time.Second)
 	direct := func(addr string) (net.Conn, error) {
@@ -181,12 +214,36 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 		client = ConfigureProxy(client, proxyConfig, getLogger())
 		if proxyDial := client.Dial; proxyDial != nil {
 			proxied = true
+			bypass := proxyBypassFunc(proxyConfig)
 			client.Dial = func(addr string) (net.Conn, error) {
-				conn, err := proxyDial(addr)
-				if errors.Is(err, errBypassProxy) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				if bypass(host, port) {
 					return direct(addr)
 				}
-				return conn, err
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				ips, err := fetchResolveTarget(ctx, host)
+				if err != nil {
+					return nil, err
+				}
+				var lastErr error
+				for _, ip := range ips {
+					pinned := net.JoinHostPort(ip.String(), port)
+					conn, err := proxyDial(pinned)
+					if errors.Is(err, errBypassProxy) {
+						// no_proxy names the address (a CIDR entry): connect directly,
+						// still through the SSRF dialer.
+						conn, err = direct(pinned)
+					}
+					if err == nil {
+						return conn, nil
+					}
+					lastErr = err
+				}
+				return nil, lastErr
 			}
 		}
 	}
@@ -195,13 +252,9 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 	}
 	client.Transport = NewContextTransport()
 
-	var transport http.RoundTripper = &fasthttpRoundTripper{client: client}
-	if proxied {
-		transport = network.NewTargetCheckingTransport(transport)
-	}
 	return &http.Client{
 		Timeout:   20 * time.Second,
-		Transport: transport,
+		Transport: &fasthttpRoundTripper{client: client},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)

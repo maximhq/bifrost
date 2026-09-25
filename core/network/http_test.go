@@ -736,7 +736,7 @@ func sendFactoryMatrixRequest(t *testing.T, factory *HTTPClientFactory, purpose 
 		case "tls":
 			client = factory.HTTPClientWithTLS(purpose, factoryMatrixTLS)
 		case "ssrf":
-			client = factory.SSRFHTTPClient(purpose, nil)
+			client = &http.Client{Transport: factory.PolicyTransport(purpose, factoryMatrixSSRFPolicy)}
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 		resp, err := client.Do(req)
@@ -748,6 +748,9 @@ func sendFactoryMatrixRequest(t *testing.T, factory *HTTPClientFactory, purpose 
 	t.Fatalf("unknown client kind %q", kind)
 	return nil
 }
+
+// factoryMatrixSSRFPolicy is the policy the "ssrf" client kind enforces.
+var factoryMatrixSSRFPolicy = SSRFPolicy(nil)
 
 // factoryMatrixTLS stands in for a caller's own TLS settings (HTTPClientWithTLS).
 var factoryMatrixTLS = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "custom.example"}
@@ -943,4 +946,53 @@ func (noopTestLogger) SetLevel(schemas.LogLevel)              {}
 func (noopTestLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (noopTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
+}
+
+// TestPolicyTransport_ProxiedTunnelIsBoundToTheCheckedAddress pins that a proxied
+// request from a policy transport reaches the proxy as a tunnel to the address the
+// policy checked, never as the hostname. The proxy would otherwise resolve the name
+// again, and a DNS answer that changed after the check (rebinding) would let a target
+// that passed as public reach an internal one. Plain http:// targets are tunneled too,
+// so no request leaves bound only to a name.
+func TestPolicyTransport_ProxiedTunnelIsBoundToTheCheckedAddress(t *testing.T) {
+	set := proxytest.NewSet(t)
+	factory := NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled:      true,
+		Type:         GlobalProxyTypeHTTP,
+		URL:          "http://127.0.0.1:" + set.Config.Port(),
+		EnableForAPI: true,
+	}, noopTestLogger{})
+	resolver := hostResolver{
+		"rebind.example":   {net.ParseIP("203.0.113.10")},
+		"internal.example": {net.ParseIP("10.0.0.5")},
+	}
+	policy := NewDialPolicy(SSRFSafeDialContext(0), publicTargetCheck(resolver, nil))
+	client := &http.Client{Transport: factory.PolicyTransport(ClientPurposeAPI, policy)}
+
+	for _, tc := range []struct {
+		url, want string
+	}{
+		{"https://rebind.example/hook", "203.0.113.10:443"},
+		{"http://rebind.example/hook", "203.0.113.10:80"},
+	} {
+		t.Run(tc.url, func(t *testing.T) {
+			set.Reset()
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, tc.url, nil)
+			if resp, err := client.Do(req); err == nil {
+				resp.Body.Close()
+			}
+			proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, tc.want, nil)
+		})
+	}
+
+	t.Run("a target resolving to a private address never reaches the proxy", func(t *testing.T) {
+		set.Reset()
+		_, err := client.Get("https://internal.example/hook")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected the policy to refuse the target, got %v", err)
+		}
+		proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+	})
 }
