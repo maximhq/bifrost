@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -689,6 +690,20 @@ var factoryMatrixSources = []factoryMatrixSource{
 		cfg.Username, cfg.Password = proxytest.User, proxytest.Pass
 		return cfg
 	}},
+	// An https:// global proxy. The global proxy has no CA field, so its self-signed
+	// certificate is accepted through skip_tls_verify, which already covers every TLS
+	// session the global proxy carries.
+	{name: "https-skip-verify", route: proxytest.Route{Proxy: "config-tls"}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeHTTP, "https://127.0.0.1:"+s.TLS.Port())
+		cfg.SkipTLSVerify = true
+		return cfg
+	}},
+	{name: "https-credentials", route: proxytest.Route{Proxy: "config-tls", Auth: proxytest.BasicAuth}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeHTTP, "https://127.0.0.1:"+s.TLS.Port())
+		cfg.SkipTLSVerify = true
+		cfg.Username, cfg.Password = proxytest.User, proxytest.Pass
+		return cfg
+	}},
 	{name: "socks5", route: proxytest.Route{Proxy: "socks"}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
 		return enabledFor(p, GlobalProxyTypeSOCKS5, "socks5://127.0.0.1:"+s.Socks.Port())
 	}},
@@ -787,6 +802,67 @@ func TestHTTPClientFactoryProxyMatrix(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestDialViaProxyTLSVerifiesTheProxy pins the TLS hop to an https:// proxy: the proxy's
+// certificate must verify against the given roots (the system roots when none are given)
+// and match the proxy's host, and a proxy that fails verification never sees the
+// CONNECT, so a spoofed proxy never learns the target or the credentials.
+func TestDialViaProxyTLSVerifiesTheProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "tls")
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(recorder.CAPEM)) {
+		t.Fatal("recorder CA does not parse")
+	}
+	trusted := &tls.Config{RootCAs: roots}
+	const target = "api.bifrost.test:443"
+
+	for _, tc := range []struct {
+		name     string
+		proxyURL string
+		tls      *tls.Config
+		wantErr  string
+	}{
+		{"trusted CA", "https://" + proxytest.User + ":" + proxytest.Pass + "@127.0.0.1:" + recorder.Port(), trusted, ""},
+		{"system roots reject a private CA", "https://127.0.0.1:" + recorder.Port(), nil, "proxy TLS handshake"},
+		{"certificate must match the proxy host", "https://localhost:" + recorder.Port(), trusted, "proxy TLS handshake"},
+		{"skip verify", "https://localhost:" + recorder.Port(), &tls.Config{InsecureSkipVerify: true}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder.Reset()
+			proxyURL, err := url.Parse(tc.proxyURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err := DialViaProxyTLS(ctx, proxyURL, target, tc.tls)
+			if tc.wantErr != "" {
+				if err == nil {
+					conn.Close()
+					t.Fatalf("dial succeeded, want %q", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("got %v, want %q", err, tc.wantErr)
+				}
+				if seen := recorder.Seen(); len(seen) != 0 {
+					t.Fatalf("an unverified proxy saw %+v", seen)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			conn.Close()
+			want := proxytest.Hit{Target: target}
+			if proxyURL.User != nil {
+				want.Auth = proxytest.BasicAuth
+			}
+			if seen := recorder.Seen(); len(seen) != 1 || seen[0] != want {
+				t.Fatalf("proxy saw %+v, want [%+v]", seen, want)
+			}
+		})
 	}
 }
 

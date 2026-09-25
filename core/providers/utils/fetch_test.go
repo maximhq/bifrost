@@ -279,6 +279,13 @@ func TestFetchClientFor_OneClientPerResolvedProxy(t *testing.T) {
 	if clientFor(proxy("one")) == direct {
 		t.Error("a proxied config must not get the direct client")
 	}
+	// An inherited global skip_tls_verify changes the client's TLS, so toggling it
+	// must not keep serving the client built with the old setting.
+	skipping := proxy("one")
+	skipping.SkipTLSVerify = true
+	if clientFor(skipping) == clientFor(proxy("one")) {
+		t.Error("a proxy config that skips TLS verification must get its own client")
+	}
 
 	env := &schemas.ProxyConfig{Type: schemas.EnvProxy}
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
