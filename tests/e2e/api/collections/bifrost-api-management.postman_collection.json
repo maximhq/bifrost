@@ -8389,6 +8389,120 @@
               ]
             }
           }
+        },
+        {
+          "name": "Update Proxy Config (SOCKS5)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a SOCKS5 global proxy is accepted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"socks5\", \"url\": \"socks5://proxy.example.com:1080\", \"username\": \"svc\", \"password\": \"s3cret\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Proxy Config (SOCKS5 persisted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the SOCKS5 global proxy is stored as sent', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.type, pm.response.text()).to.equal('socks5');",
+                  "  pm.expect(body.url).to.equal('socks5://proxy.example.com:1080');",
+                  "  pm.expect(body.username).to.equal('svc');",
+                  "  pm.expect(body.enable_for_inference).to.equal(true);",
+                  "  pm.expect(body.enable_for_api).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Proxy Config (restore HTTP)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the folder leaves the HTTP proxy it set up in place', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://proxy.example.com:8080\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
         }
       ]
     },

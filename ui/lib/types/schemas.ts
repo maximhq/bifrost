@@ -1465,6 +1465,19 @@ export const globalProxyConfigSchema = z
 			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
 			path: ["url"],
 		},
+	)
+	.refine(
+		(data) => {
+			// The dialer follows the URL's scheme, so a SOCKS5 proxy must be named by a socks5 URL
+			if (data.enabled && data.type === "socks5" && data.url && data.url.trim().length > 0) {
+				return /^socks5h?:\/\//i.test(data.url.trim());
+			}
+			return true;
+		},
+		{
+			message: "A SOCKS5 proxy URL must start with socks5:// or socks5h://",
+			path: ["url"],
+		},
 	);
 
 // Global proxy form schema for the ProxyView

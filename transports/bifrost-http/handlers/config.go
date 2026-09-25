@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1071,24 +1072,16 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	// The settings form trims what it validates; store what the dialer will parse.
+	payload.URL = strings.TrimSpace(payload.URL)
 
 	// Validate proxy config
 	if payload.Enabled {
-		// Validate proxy type
+		// Validate proxy type. http and socks5 have dialers in the HTTP client
+		// factory and the provider stacks (network.DialViaProxy); tcp has none.
 		switch payload.Type {
-		case network.GlobalProxyTypeHTTP:
-			// HTTP proxy is supported
-			// Make sure the URL is provided
-			if payload.URL == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
-				return
-			}
-			// Validate timeout if provided
-			if payload.Timeout < 0 {
-				SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
-				return
-			}
-		case network.GlobalProxyTypeSOCKS5, network.GlobalProxyTypeTCP:
+		case network.GlobalProxyTypeHTTP, network.GlobalProxyTypeSOCKS5:
+		case network.GlobalProxyTypeTCP:
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("proxy type %s is not yet supported", payload.Type))
 			return
 		default:
@@ -1099,6 +1092,11 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		// Validate URL is provided when enabled
 		if payload.URL == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
+			return
+		}
+
+		if err := validateGlobalProxyURL(payload.Type, payload.URL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 
@@ -1170,6 +1168,40 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		"status":  "success",
 		"message": "proxy configuration updated successfully",
 	})
+}
+
+// validateGlobalProxyURL checks a global proxy URL the way the HTTP client factory will
+// read it (HTTPClientFactory.proxyURLForPurpose): a bare host:port takes the type's
+// scheme, and the URL must parse with a host and a valid port. The factory treats a URL
+// it cannot parse as no proxy at all, so accepting one would send traffic direct. A
+// socks5 proxy must be named by a socks5:// or socks5h:// URL, compared case-insensitively
+// as the parser lowercases schemes, because the dialer follows the URL's scheme and would
+// otherwise speak HTTP CONNECT to it.
+func validateGlobalProxyURL(proxyType network.GlobalProxyType, raw string) error {
+	effective := raw
+	if !strings.Contains(raw, "://") {
+		scheme := "http"
+		if proxyType == network.GlobalProxyTypeSOCKS5 {
+			scheme = "socks5"
+		}
+		effective = scheme + "://" + raw
+	}
+	parsed, err := url.Parse(effective)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL: %v", err)
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("proxy URL %q names no host", raw)
+	}
+	if port := parsed.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("proxy URL %q has an invalid port", raw)
+		}
+	}
+	if proxyType == network.GlobalProxyTypeSOCKS5 && parsed.Scheme != "socks5" && parsed.Scheme != "socks5h" {
+		return fmt.Errorf("a socks5 proxy URL must use the socks5:// or socks5h:// scheme")
+	}
+	return nil
 }
 
 // headerFilterConfigEqual compares two GlobalHeaderFilterConfig for equality
