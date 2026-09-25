@@ -29,6 +29,13 @@ func TestListModelsByKeyResponseShapes(t *testing.T) {
 			wantContext: 128000,
 		},
 		{
+			name:        "OpenRouter envelope",
+			body:        `{"data":[{"id":"z-ai/glm-5.3","context_length":202752}]}`,
+			wantID:      "test/z-ai/glm-5.3",
+			wantOwnedBy: "",
+			wantContext: 202752,
+		},
+		{
 			name:        "Together array",
 			body:        `[{"id":"zai-org/GLM-5.2","organization":"Z.ai","context_length":131072}]`,
 			wantID:      "test/zai-org/GLM-5.2",

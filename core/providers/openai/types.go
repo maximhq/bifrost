@@ -1073,6 +1073,9 @@ type OpenAIModel struct {
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`
 	ContextWindow *int  `json:"context_window,omitempty"`
+
+	// OpenRouter/Together style context size
+	ContextLength *int `json:"context_length,omitempty"`
 }
 
 // OpenAIListModelsResponse represents an OpenAI list models response
@@ -1092,8 +1095,7 @@ func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
 
 	var models []struct {
 		OpenAIModel
-		Organization  string `json:"organization"`
-		ContextLength *int   `json:"context_length,omitempty"`
+		Organization string `json:"organization"`
 	}
 	if err := sonic.Unmarshal(trimmed, &models); err != nil {
 		return err
@@ -1104,9 +1106,6 @@ func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
 		response.Data[i] = model.OpenAIModel
 		if response.Data[i].OwnedBy == "" {
 			response.Data[i].OwnedBy = model.Organization
-		}
-		if response.Data[i].ContextWindow == nil {
-			response.Data[i].ContextWindow = model.ContextLength
 		}
 	}
 	return nil
