@@ -83,10 +83,12 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var gotAuth, gotKey string
+			gotHeaders := make(chan http.Header, 1)
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotAuth = r.Header.Get("Authorization")
-				gotKey = r.Header.Get("x-goog-api-key")
+				select {
+				case gotHeaders <- r.Header.Clone():
+				default:
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(stripAuthSingleModelPayload))
@@ -110,8 +112,14 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 			})
 			require.Nil(t, bifrostErr)
 
-			assert.Equal(t, tc.wantGoogAPIKey, gotKey, "x-goog-api-key header")
-			assert.Equal(t, tc.wantAuth, gotAuth, "forwarded Authorization header")
+			var headers http.Header
+			select {
+			case headers = <-gotHeaders:
+			case <-time.After(5 * time.Second):
+				t.Fatal("upstream request was never received")
+			}
+			assert.Equal(t, tc.wantGoogAPIKey, headers.Get("x-goog-api-key"), "x-goog-api-key header")
+			assert.Equal(t, tc.wantAuth, headers.Get("Authorization"), "forwarded Authorization header")
 		})
 	}
 }
