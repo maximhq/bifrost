@@ -61,6 +61,16 @@ func (a *AttemptAbort) fire() {
 	}
 }
 
+// Expire fires the deadline now, as if it had elapsed, so every watcher cuts
+// the attempt. A no-op once the deadline fired or was disarmed.
+func (a *AttemptAbort) Expire() {
+	if a == nil {
+		return
+	}
+	a.timer.Stop()
+	a.fire()
+}
+
 // Done closes when the deadline fires. A nil receiver returns a nil channel,
 // which a select never picks.
 func (a *AttemptAbort) Done() <-chan struct{} {
@@ -128,6 +138,11 @@ func NewFirstTokenTimeoutError(d time.Duration) *schemas.BifrostError {
 const (
 	maxStreamPreambleChunks = 64
 	maxStreamPreambleBytes  = 256 * 1024
+	// response.created and response.in_progress each echo the request's
+	// instructions and tools, so a large request passes 256 KB on its second
+	// startup event. Under a TTFT deadline a full buffer ends the attempt, so
+	// the budget must fit that echo.
+	maxStreamPreambleBytesUnderDeadline = 4 * 1024 * 1024
 )
 
 // Include the source channel to isolate attempts sharing a request ID.
@@ -145,15 +160,16 @@ type streamPreambleBuffer struct {
 // The owner must delete its entry on error, cancellation, or replay completion.
 var streamPreambles sync.Map // map[streamPreambleKey]*streamPreambleBuffer
 
-// tryAppend returns false when the caller should commit the stream.
-// On false, the chunk remains unbuffered; the caller must forward it
-// after replaying the buffered prefix.
-func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk) bool {
+// tryAppend returns false when the buffer cannot hold chunk within maxBytes
+// or the chunk cap. On false, the chunk remains unbuffered; the caller either
+// commits the stream (forwarding it after the buffered prefix) or, under a
+// TTFT deadline, ends the attempt.
+func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk, maxBytes int) bool {
 	if len(buffer.chunks)+1 >= maxStreamPreambleChunks {
 		return false
 	}
 	encoded, err := MarshalSorted(chunk)
-	if err != nil || len(encoded) >= maxStreamPreambleBytes-buffer.bytes {
+	if err != nil || len(encoded) >= maxBytes-buffer.bytes {
 		return false
 	}
 	buffer.chunks = append(buffer.chunks, chunk)
@@ -296,8 +312,21 @@ func CheckStreamPreambleForError(
 				(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil) {
 				return nil, drain(), err
 			}
-			if isPreamble(chunk) && buffer.tryAppend(chunk) {
-				continue
+			if isPreamble(chunk) {
+				if abort == nil {
+					if buffer.tryAppend(chunk, maxStreamPreambleBytes) {
+						continue
+					}
+				} else {
+					if buffer.tryAppend(chunk, maxStreamPreambleBytesUnderDeadline) {
+						continue
+					}
+					// Committing would disarm the deadline with no output, and
+					// buffering on would be unbounded. End the attempt as a TTFT
+					// miss now; the next fallback runs.
+					abort.Expire()
+					return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
+				}
 			}
 			if !abort.Disarm() {
 				// The deadline fired while this chunk was in flight.

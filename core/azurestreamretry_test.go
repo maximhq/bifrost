@@ -264,6 +264,11 @@ func TestAzureResponsesOutputPreamble(t *testing.T) {
 			false,
 		},
 		{
+			"safeguards update is not output",
+			`{"type":"response.safeguards_update","safeguard_results":[{"classifier":"auto_mode","verdict":"allow"}]}`,
+			true,
+		},
+		{
 			"unknown event commits",
 			`{"type":"response.future_event"}`,
 			false,
@@ -282,6 +287,36 @@ func TestAzureResponsesOutputPreamble(t *testing.T) {
 				t.Errorf("IsStreamPreamble = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// Anthropic sends safeguards_update before any content. A provider that stalls
+// right after it has produced no first token, so the TTFT deadline still cuts
+// the attempt off.
+func TestTTFTDeadlineSurvivesSafeguardsUpdate(t *testing.T) {
+	abort := providerUtils.NewAttemptAbort(100 * time.Millisecond)
+	defer abort.Disarm()
+	// Bound the wait: if the abort never fires, fail here instead of at the
+	// suite timeout.
+	parent, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx := context.WithValue(parent, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	source <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+	}}
+	source <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type:             schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+		SafeguardResults: []byte(`[{"classifier":"auto_mode","verdict":"allow"}]`),
+	}}
+	defer close(source)
+
+	stream, _, err := providerUtils.CheckStreamPreambleForError(ctx, t.Name(), source, azure.IsStreamPreamble)
+	if stream != nil {
+		t.Fatal("safeguards_update committed the stream; the stall after it was never cut off")
+	}
+	if err == nil || err.Error == nil || err.Error.Code == nil || *err.Error.Code != schemas.FirstTokenTimeoutErrorCode {
+		t.Fatalf("expected the TTFT timeout error, got %+v", err)
 	}
 }
 
