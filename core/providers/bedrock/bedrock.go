@@ -2369,6 +2369,11 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponseData interface{}
@@ -2775,7 +2780,6 @@ func (provider *BedrockProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas
 
 // FileUpload uploads a file to S3 for Bedrock batch processing.
 func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
 		if err.Error != nil {
 			provider.logger.Error("file upload operation not allowed: %s", err.Error.Message)

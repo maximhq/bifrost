@@ -1420,3 +1420,121 @@ func TestToBedrockNovaEmbeddingRequestNormalizesVideoFormatSpelling(t *testing.T
 		assert.Equal(t, "three_gp", req.SingleEmbeddingParams.Video.Format)
 	}
 }
+
+// Embedding unmarshals per model family instead of going through HandleProviderResponse, and
+// for a long time captured only the response half - and captured it by decoding into a map,
+// which reordered its keys. Every error return in the same method reports the request, so
+// omitting it on success was an asymmetry rather than a policy.
+func TestBedrockEmbeddingCapturesRawRequestAndResponse(t *testing.T) {
+	// Deliberately not alphabetical: the request half preserves this order, the response half
+	// does not, and the assertions below say so rather than relying on a fixture that hides it.
+	const providerResponse = `{"inputTextTokenCount":3,"embedding":[0.5,0.25]}`
+
+	newServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(providerResponse))
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+
+	embeddingRequest := func() *schemas.BifrostEmbeddingRequest {
+		return &schemas.BifrostEmbeddingRequest{
+			Model: "amazon.titan-embed-text-v2:0",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hello")},
+			}}},
+			Params: &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(256)},
+		}
+	}
+
+	t.Run("both halves are reported when capture is on", func(t *testing.T) {
+		provider := newTestProviderWithServer(t, newServer(t))
+		ctx := testBedrockCtx()
+		ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, true)
+		ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+
+		response, bifrostErr := provider.Embedding(ctx, testBedrockKey(), embeddingRequest())
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, response)
+
+		require.NotNil(t, response.ExtraFields.RawRequest, "the converted provider body must be reported on success, as it already is on every error return")
+		rawRequest, err := json.Marshal(response.ExtraFields.RawRequest)
+		require.NoError(t, err)
+		// inputText before dimensions: the order ToBedrockTitanEmbeddingRequest emits, which a
+		// map decode would sort the other way.
+		assert.Equal(t, `{"inputText":"hello","dimensions":256}`, string(rawRequest))
+
+		// The response half goes through sonic.Unmarshal into interface{} - the idiom the other
+		// hand-rolled handlers use - so it is semantically equal but not byte-equal: that decode
+		// sorts keys. Asserted as JSONEq rather than Equal so the test states what actually holds.
+		require.NotNil(t, response.ExtraFields.RawResponse)
+		rawResponse, err := json.Marshal(response.ExtraFields.RawResponse)
+		require.NoError(t, err)
+		assert.JSONEq(t, providerResponse, string(rawResponse), "the provider's payload must survive")
+	})
+
+	t.Run("each half stays out when its flag is off", func(t *testing.T) {
+		for _, test := range []struct {
+			name                      string
+			captureRequest            bool
+			captureResponse           bool
+			wantRequest, wantResponse bool
+		}{
+			{"neither", false, false, false, false},
+			{"request only", true, false, true, false},
+			{"response only", false, true, false, true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				provider := newTestProviderWithServer(t, newServer(t))
+				ctx := testBedrockCtx()
+				ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, test.captureRequest)
+				ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, test.captureResponse)
+
+				response, bifrostErr := provider.Embedding(ctx, testBedrockKey(), embeddingRequest())
+				require.Nil(t, bifrostErr)
+				require.NotNil(t, response)
+				assert.Equal(t, test.wantRequest, response.ExtraFields.RawRequest != nil, "raw request presence")
+				assert.Equal(t, test.wantResponse, response.ExtraFields.RawResponse != nil, "raw response presence")
+			})
+		}
+	})
+
+	// Nova and Cohere unmarshal down different branches of the same switch, so the capture -
+	// which sits after it - has to hold for all three families, not just Titan's.
+	t.Run("the capture is family-independent", func(t *testing.T) {
+		for _, test := range []struct{ model, response string }{
+			{"cohere.embed-english-v3", `{"embeddings":[[0.5]],"id":"x","response_type":"embeddings_floats"}`},
+			{"amazon.nova-2-multimodal-embeddings-v1:0", `{"embeddings":[{"embedding":[0.5],"embeddingType":"TEXT"}]}`},
+		} {
+			t.Run(test.model, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.ReadAll(r.Body)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(test.response))
+				}))
+				defer server.Close()
+
+				provider := newTestProviderWithServer(t, server)
+				ctx := testBedrockCtx()
+				ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, true)
+				ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+
+				request := embeddingRequest()
+				request.Model = test.model
+				request.Params = nil
+				response, bifrostErr := provider.Embedding(ctx, testBedrockKey(), request)
+				require.Nil(t, bifrostErr)
+				require.NotNil(t, response)
+				assert.NotNil(t, response.ExtraFields.RawRequest, "raw request missing for %s", test.model)
+
+				rawResponse, err := json.Marshal(response.ExtraFields.RawResponse)
+				require.NoError(t, err)
+				assert.JSONEq(t, test.response, string(rawResponse), "provider payload altered for %s", test.model)
+			})
+		}
+	})
+}
