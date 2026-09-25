@@ -4772,9 +4772,20 @@ func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) sche
 // Used by WebSocket handlers that need a key for upstream connections while honoring request-specific
 // AllowedRequests gates such as realtime-only support.
 func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
+	requestCtx := ctx
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	key, err := bifrost.selectKeyForProviderRequestType(ctx, requestType, providerKey, model)
+	// The session's turns are logged on the caller's context, so the key's content-logging decision
+	// is stamped there. Never on bifrost.ctx: that context outlives every request.
+	if err == nil && requestCtx != nil && key.DisableContentLogging != nil {
+		schemas.StampContentLoggingDecision(requestCtx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, *key.DisableContentLogging)
+	}
+	return key, err
+}
+
+func (bifrost *Bifrost) selectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
 	baseProvider := providerKey
 	if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
 		config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
@@ -6531,6 +6542,13 @@ func executeRequestWithRetries[T any](
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
+			// The key's content-logging decision, for the post-hooks. The stamp merges with any
+			// "off" already recorded, so a key this request was already sent on that turned
+			// content off is not reopened by a retry onto another key, and it is kept on the
+			// failure paths below that clear the selected key.
+			if currentKey.DisableContentLogging != nil {
+				schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, *currentKey.DisableContentLogging)
+			}
 		}
 
 		if attempts > 0 {

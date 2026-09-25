@@ -130,6 +130,90 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	})
 }
 
+// Selecting a provider key stamps its content-logging decision for the post-hooks, which run after
+// selection. The stamp is sticky: once a key that turned content off has been sent the request, a
+// retry onto a key that turns it on does not reopen content, and a request that fails outright keeps
+// the stamp although the selected key itself is cleared.
+func TestExecuteRequestWithRetries_StampsProviderKeyContentLogging(t *testing.T) {
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	keyOff := schemas.Key{ID: "key-off", Name: "off", DisableContentLogging: Ptr(true)}
+	keyOn := schemas.Key{ID: "key-on", Name: "on", DisableContentLogging: Ptr(false)}
+	keyInherit := schemas.Key{ID: "key-inherit", Name: "inherit"}
+	inOrder := func(keys ...schemas.Key) func(map[string]bool, map[string]bool) (schemas.Key, error) {
+		return func(used, _ map[string]bool) (schemas.Key, error) {
+			for _, k := range keys {
+				if !used[k.ID] {
+					return k, nil
+				}
+			}
+			return keys[len(keys)-1], nil
+		}
+	}
+	failFirst := func(n int) func(schemas.Key) (string, *schemas.BifrostError) {
+		calls := 0
+		return func(schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			if calls <= n {
+				return "", createBifrostError("upstream unavailable", Ptr(503), nil, false)
+			}
+			return "success", nil
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		keys        []schemas.Key
+		failures    int
+		maxRetries  int
+		wantPresent bool
+		wantValue   bool
+	}{
+		{name: "a key that turns content off", keys: []schemas.Key{keyOff}, wantPresent: true, wantValue: true},
+		{name: "a key that turns content on", keys: []schemas.Key{keyOn}, wantPresent: true, wantValue: false},
+		{name: "a key that inherits stamps nothing", keys: []schemas.Key{keyInherit}},
+		{name: "off stays off after a retry onto an on key", keys: []schemas.Key{keyOff, keyOn}, failures: 1, maxRetries: 2, wantPresent: true, wantValue: true},
+		{name: "a failed request keeps the stamp", keys: []schemas.Key{keyOff}, failures: 10, maxRetries: 0, wantPresent: true, wantValue: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			config := createTestConfig(tc.maxRetries, time.Millisecond, time.Millisecond)
+			_, _ = executeRequestWithRetries(ctx, config, failFirst(tc.failures), inOrder(tc.keys...), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+			value, present := ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging).(bool)
+			if present != tc.wantPresent || value != tc.wantValue {
+				t.Fatalf("provider key layer = (%v, present %v), want (%v, present %v)", value, present, tc.wantValue, tc.wantPresent)
+			}
+		})
+	}
+}
+
+// Realtime and WebSocket sessions pick their key here rather than through the retry executor, and
+// their turns are logged on the same context, so the key's content-logging decision is stamped at
+// this selection too.
+func TestSelectKeyForProviderRequestType_StampsProviderKeyContentLogging(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-off", Name: "Key Off", Value: *schemas.NewSecretVar("sk-off"), Models: schemas.WhiteList{"*"}, Weight: 1, DisableContentLogging: Ptr(true)},
+	})
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(bifrost.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.RealtimeRequest, schemas.OpenAI, "gpt-4o-realtime-preview")
+	if err != nil {
+		t.Fatalf("SelectKeyForProviderRequestType: %v", err)
+	}
+	if key.ID != "key-off" {
+		t.Fatalf("selected %q, want key-off", key.ID)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging).(bool); !got {
+		t.Fatalf("provider key layer = %v, want true", ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging))
+	}
+}
+
 // Test executeRequestWithRetries - retry limits
 func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	config := createTestConfig(2, 100*time.Millisecond, 1*time.Second)

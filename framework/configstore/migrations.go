@@ -14071,6 +14071,7 @@ func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, 
 var disableContentLoggingTables = []any{
 	&tables.TableVirtualKey{},
 	&tables.TableTeam{},
+	&tables.TableKey{},
 }
 
 // migrationAddDisableContentLoggingColumns adds disable_content_logging to every table that carries

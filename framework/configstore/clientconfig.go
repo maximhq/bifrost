@@ -558,6 +558,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].Aliases = maps.Clone(key.Aliases)
 		}
 		redactedConfig.Keys[i].Value = *key.Value.Redacted()
+		// Carried as is: nil is inherit, so it must not be defaulted like the flags below.
+		redactedConfig.Keys[i].DisableContentLogging = key.DisableContentLogging
 		// Add back use for batch api
 		if key.UseForBatchAPI != nil {
 			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
@@ -964,6 +966,15 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash Enabled (nil = false, only true produces different hash)
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
+	}
+	// Hash DisableContentLogging only when the key says something, so every key that predates the
+	// field keeps the hash it already has and config sync sees no drift on upgrade.
+	if key.DisableContentLogging != nil {
+		if *key.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
 	}
 	// Hash UseForBatchAPI (nil = default false for new keys)
 	useForBatchAPI := false

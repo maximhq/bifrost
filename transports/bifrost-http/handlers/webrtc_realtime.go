@@ -1210,6 +1210,12 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 			relayCtx.SetValue(key, value)
 		}
 	}
+	// Turns are logged on the relay, so it resolves content from the same layers the request did.
+	for _, key := range schemas.ContentLoggingContextKeys() {
+		if value := requestCtx.Value(key); value != nil {
+			relayCtx.SetValue(key, value)
+		}
+	}
 
 	// The relay is the request that opened it, kept alive past the request: it carries that
 	// request's grant, not a copy, the same way a realtime turn carries its session's (see
