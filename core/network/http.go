@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -162,6 +163,28 @@ func (f *HTTPClientFactory) UpdateProxyConfig(config *GlobalProxyConfig) {
 	}
 }
 
+// ApplyOptions applies opts to a factory that already exists, for a caller that shares a
+// factory it did not build (enterprise adds its SCIM buffer sizes to the one the config
+// loader built). Inner clients are rebuilt with the new settings on their next request;
+// live clients handed out earlier pick them up.
+func (f *HTTPClientFactory) ApplyOptions(opts ...FactoryOption) {
+	f.mu.Lock()
+	for _, opt := range opts {
+		opt(f)
+	}
+	oldFasthttp := f.fasthttpClients
+	oldHTTP := f.httpClients
+	f.fasthttpClients = make(map[ClientPurpose]*fasthttp.Client, 3)
+	f.httpClients = make(map[httpClientKey]*http.Client, 3)
+	f.mu.Unlock()
+	for _, client := range oldFasthttp {
+		client.CloseIdleConnections()
+	}
+	for _, client := range oldHTTP {
+		client.CloseIdleConnections()
+	}
+}
+
 // GetProxyConfig returns the current proxy configuration (thread-safe read)
 func (f *HTTPClientFactory) GetProxyConfig() *GlobalProxyConfig {
 	f.mu.RLock()
@@ -221,6 +244,7 @@ type httpClientKey struct {
 	purpose ClientPurpose
 	tls     *tls.Config // HTTPClientWithTLS: the caller's TLS settings
 	policy  *DialPolicy // PolicyTransport: which targets may be reached
+	compat  bool        // CompatTransport: environment proxy when the global one is off
 }
 
 // GetFasthttpClient returns the live fasthttp client for purpose. The same client is
@@ -335,6 +359,174 @@ func SSRFPolicyWithDialTimeout(dialTimeout time.Duration, allow *Allowlist) *Dia
 // the transport adds no timeout of its own and requires TLS 1.2 or later.
 func (f *HTTPClientFactory) PolicyTransport(purpose ClientPurpose, policy *DialPolicy) http.RoundTripper {
 	return f.liveHTTPClient(httpClientKey{purpose: purpose, policy: policy}).Transport
+}
+
+// CompatTransport returns a live RoundTripper for purpose that uses the global proxy
+// when it is enabled for purpose and otherwise behaves like http.DefaultTransport,
+// proxying from HTTP_PROXY / HTTPS_PROXY / NO_PROXY. It is for call sites that used
+// http.DefaultTransport, so turning the global proxy on reaches them without taking
+// away the environment proxy they relied on. It adds no timeout of its own.
+func (f *HTTPClientFactory) CompatTransport(purpose ClientPurpose) http.RoundTripper {
+	return f.liveHTTPClient(httpClientKey{purpose: purpose, compat: true}).Transport
+}
+
+// compatProxy is the proxy decision of CompatTransport for one request: the global
+// proxy for purpose (except no_proxy, local and metadata targets), else the
+// environment.
+func (f *HTTPClientFactory) compatProxy(purpose ClientPurpose, req *http.Request) (*url.URL, error) {
+	f.mu.RLock()
+	proxyURL := f.proxyURLForPurpose(purpose)
+	proxyCfg := f.proxyConfig
+	f.mu.RUnlock()
+	if proxyURL == nil {
+		return defaultTransportProxy(req)
+	}
+	if connectDirect(req.URL.Hostname(), proxyCfg) {
+		return nil, nil
+	}
+	return proxyURL, nil
+}
+
+// compatGRPCDial is the dial decision of DefaultGRPCDialer: the global proxy for
+// purpose, else the environment the way gRPC itself reads it (HTTPS_PROXY for every
+// target, honouring NO_PROXY).
+func (f *HTTPClientFactory) compatGRPCDial(ctx context.Context, purpose ClientPurpose, addr string) (net.Conn, error) {
+	f.mu.RLock()
+	enabled := f.proxyURLForPurpose(purpose) != nil
+	f.mu.RUnlock()
+	if enabled {
+		return f.GRPCDialer(purpose)(ctx, addr)
+	}
+	return envGRPCDial(ctx, addr)
+}
+
+// envGRPCDial dials addr through the environment's HTTPS proxy, or directly.
+func envGRPCDial(ctx context.Context, addr string) (net.Conn, error) {
+	proxyURL, err := http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: addr}})
+	if err != nil {
+		return nil, err
+	}
+	if proxyURL == nil {
+		return (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", addr)
+	}
+	return DialViaProxy(ctx, proxyURL, addr)
+}
+
+// defaultTransportProxy asks http.DefaultTransport's proxy selector, which is
+// http.ProxyFromEnvironment unless the process replaced it, so compat clients keep
+// behaving exactly like http.DefaultTransport when the global proxy is off.
+func defaultTransportProxy(req *http.Request) (*url.URL, error) {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok && transport.Proxy != nil {
+		return transport.Proxy(req)
+	}
+	return nil, nil
+}
+
+// defaultFactory is the process's HTTP client factory, registered by the server.
+var defaultFactory atomic.Pointer[HTTPClientFactory]
+
+// SetDefaultHTTPClientFactory registers the process's HTTP client factory for
+// DefaultTransport, DefaultProxyFunc and DefaultGRPCDialer. The server calls it once
+// it has built the factory; nil unregisters.
+func SetDefaultHTTPClientFactory(factory *HTTPClientFactory) {
+	defaultFactory.Store(factory)
+}
+
+// DefaultHTTPClientFactory returns the process's registered HTTP client factory, or nil
+// when none is registered, for code that needs one of its clients but was handed no
+// factory (e.g. identity providers constructed with only an *http.Client).
+func DefaultHTTPClientFactory() *HTTPClientFactory {
+	return defaultFactory.Load()
+}
+
+// DefaultTransport is the RoundTripper for outbound calls that have no factory of their
+// own to hand (OAuth discovery, catalog sync): the registered factory's transport while
+// the global proxy is on for purpose, and http.DefaultTransport itself otherwise (no
+// factory registered, or the global proxy off), so the environment proxy and anything
+// else installed there keep working.
+func DefaultTransport(purpose ClientPurpose) http.RoundTripper {
+	return defaultTransport{purpose: purpose}
+}
+
+// defaultTransport resolves the registered factory per request, so a client built
+// before the server registers its factory still follows the global proxy.
+type defaultTransport struct {
+	purpose ClientPurpose
+}
+
+func (t defaultTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if factory := defaultFactory.Load(); factory != nil && factory.proxyEnabledFor(t.purpose) {
+		return factory.CompatTransport(t.purpose).RoundTrip(req)
+	}
+	// With the global proxy off, this is http.DefaultTransport itself, not an
+	// imitation: whatever the process installed there keeps applying.
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// proxyEnabledFor reports whether the global proxy is on and configured for purpose.
+func (f *HTTPClientFactory) proxyEnabledFor(purpose ClientPurpose) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.proxyURLForPurpose(purpose) != nil
+}
+
+// DefaultProxyFunc is a net/http Proxy func for transports built elsewhere (MCP clients,
+// OpenTelemetry exporters): the registered factory's global proxy for purpose, else
+// http.DefaultTransport's selector (the environment). It resolves the factory on every
+// request.
+func DefaultProxyFunc(purpose ClientPurpose) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		if factory := defaultFactory.Load(); factory != nil {
+			return factory.compatProxy(purpose, req)
+		}
+		return defaultTransportProxy(req)
+	}
+}
+
+// DefaultGRPCDialer is a context dialer for gRPC clients built elsewhere
+// (grpc.WithContextDialer): the registered factory's global proxy for purpose, else the
+// environment's HTTPS proxy the way gRPC reads it, else a direct connection.
+func DefaultGRPCDialer(purpose ClientPurpose) func(ctx context.Context, addr string) (net.Conn, error) {
+	return func(ctx context.Context, addr string) (net.Conn, error) {
+		if socket, ok := unixSocketAddr(addr); ok {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		}
+		if factory := defaultFactory.Load(); factory != nil {
+			return factory.compatGRPCDial(ctx, purpose, addr)
+		}
+		return envGRPCDial(ctx, addr)
+	}
+}
+
+// unixSocketAddr reports whether addr, as gRPC hands it to a custom dialer, names a unix
+// socket, and returns the socket to dial. gRPC passes "unix:///abs/path" or
+// "unix:relative-path" for a unix: target, and an abstract socket as "\x00name". A unix
+// socket is local by definition, so it is never proxied.
+func unixSocketAddr(addr string) (string, bool) {
+	switch {
+	case strings.HasPrefix(addr, "unix://"):
+		return strings.TrimPrefix(addr, "unix://"), true
+	case strings.HasPrefix(addr, "unix:"):
+		return strings.TrimPrefix(addr, "unix:"), true
+	case strings.HasPrefix(addr, "\x00"):
+		// Go spells an abstract socket with a leading "@".
+		return "@" + addr[1:], true
+	}
+	return "", false
+}
+
+// GRPCPassthroughTarget prefixes a host:port gRPC endpoint with passthrough:///, for
+// clients that use a proxy dialer (GRPCDialer, DefaultGRPCDialer). gRPC otherwise
+// resolves the target with its DNS resolver before calling the dialer, so on a host
+// that can only reach the internet through the proxy, and cannot resolve public names
+// itself, the dialer would never be called. With passthrough the host name reaches the
+// dialer as is: the proxy resolves it, or the dialer does for a direct connection. An
+// endpoint that already names a resolver scheme is returned unchanged.
+func GRPCPassthroughTarget(endpoint string) string {
+	if strings.Contains(endpoint, "://") || strings.HasPrefix(endpoint, "unix:") {
+		return endpoint
+	}
+	return "passthrough:///" + endpoint
 }
 
 // liveHTTPClient returns the live client for key, creating it on first use.
@@ -606,12 +798,20 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 	proxyURL := f.proxyURLForPurpose(key.purpose)
 	if proxyURL != nil {
 		f.configureHTTPProxy(transport, proxyURL)
+	} else if key.compat {
+		transport.Proxy = defaultTransportProxy
 	}
 
 	var roundTripper http.RoundTripper = transport
 	timeout := DefaultClientConfig.ReadTimeout
 	if f.proxyConfig != nil && f.proxyConfig.Timeout > 0 {
 		timeout = time.Duration(f.proxyConfig.Timeout) * time.Second
+	}
+	if key.compat {
+		// Compat transports stand in for http.DefaultTransport: the caller's client
+		// and request context bound the request.
+		timeout = 0
+		transport.ResponseHeaderTimeout = 0
 	}
 	if policy := key.policy; policy != nil {
 		// Policy transports are bounded by the caller's client and request context.
@@ -742,6 +942,9 @@ func proxyDialAddr(proxyURL *url.URL) string {
 // source.
 func (f *HTTPClientFactory) GRPCDialer(purpose ClientPurpose) func(ctx context.Context, addr string) (net.Conn, error) {
 	return func(ctx context.Context, addr string) (net.Conn, error) {
+		if socket, ok := unixSocketAddr(addr); ok {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		}
 		f.mu.RLock()
 		proxyURL := f.proxyURLForPurpose(purpose)
 		proxyCfg := f.proxyConfig

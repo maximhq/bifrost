@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1236,7 +1237,7 @@ func sleepIfNotLastAttempt(ctx context.Context, attempt int, baseDelay time.Dura
 // Transport errors and 5xx responses are retried up to maxTokenRetries times with
 // exponential backoff. HTTP 4xx responses are returned immediately as PermanentOAuthError.
 func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
-	client := &http.Client{Timeout: networkTimeout}
+	client := &http.Client{Timeout: networkTimeout, Transport: network.DefaultTransport(network.ClientPurposeAPI)}
 	var lastErr error
 
 	for attempt := range maxTokenRetries {

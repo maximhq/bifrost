@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -948,4 +950,34 @@ func TestMCPProxySelectorPassthrough(t *testing.T) {
 	require.NoError(t, err)
 	_, err = sel(req)
 	require.ErrorIs(t, err, wantErr)
+}
+
+// TestBuildTLSHTTPClientUsesGlobalProxy pins that MCP client transports honour the
+// global proxy when it is enabled for API traffic, while the destination guard still
+// refuses instance metadata without anything reaching the proxy. They used to follow
+// only HTTP_PROXY / HTTPS_PROXY.
+func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://mcp.bifrost.test/sse", nil)
+	if resp, err := httpClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "mcp.bifrost.test:443", nil)
+
+	// MCP allows private networks (local MCP servers) but never instance metadata.
+	set.Reset()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://169.254.169.254/sse", nil)
+	_, err = httpClient.Do(req)
+	require.Error(t, err, "a metadata address must be refused")
+	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
 }

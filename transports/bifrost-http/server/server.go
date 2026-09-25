@@ -2131,12 +2131,21 @@ func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *table
 		return fmt.Errorf("config not found")
 	}
 	// Point every factory client at the new proxy, then store the config and rebuild
-	// the providers that inherit it for inference.
-	if s.HTTPClientFactory != nil {
+	// the providers that inherit it for inference. The config's factory is the one
+	// registered as the process default; a server that runs its own bootstrap
+	// (enterprise) may never set s.HTTPClientFactory, so update both.
+	if s.Config.HTTPClientFactory != nil {
+		s.Config.HTTPClientFactory.UpdateProxyConfig(config.ToNetwork())
+	}
+	if s.HTTPClientFactory != nil && s.HTTPClientFactory != s.Config.HTTPClientFactory {
 		s.HTTPClientFactory.UpdateProxyConfig(config.ToNetwork())
 	}
 	if err := s.Config.SetGlobalProxyConfig(config); err != nil {
 		return err
+	}
+	if config == nil {
+		logger.Info("proxy configuration removed")
+		return nil
 	}
 	logger.Info("proxy configuration reloaded: enabled=%t, type=%s", config.Enabled, config.Type)
 	return nil
@@ -2793,9 +2802,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if s.Config.KVStore != nil {
 		integrations.RegisterKVDecoders(s.Config.KVStore)
 	}
-	// Outbound clients for non-inference traffic, on the global proxy loaded with the
-	// config. Built before anything that makes outbound calls is constructed.
-	s.HTTPClientFactory = network.NewHTTPClientFactory(s.Config.ProxyConfig.ToNetwork(), logger)
+	// Outbound clients for non-inference traffic, built by LoadConfig on the global
+	// proxy it loaded.
+	s.HTTPClientFactory = s.Config.HTTPClientFactory
 	handlers.SetSkillFetchHTTPClientFactory(s.HTTPClientFactory)
 	// Initialize WebSocket handler early so plugins can wire event broadcasters during Init.
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.

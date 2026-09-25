@@ -8,6 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -946,4 +950,214 @@ func (noopTestLogger) SetLevel(schemas.LogLevel)              {}
 func (noopTestLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (noopTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
+}
+
+// TestDefaultHTTPClientFactoryRouting pins the process defaults (DefaultTransport,
+// DefaultProxyFunc, DefaultGRPCDialer) that outbound call sites without a factory handle
+// use: they follow the registered factory's global proxy for the purpose, fall back to
+// http.DefaultTransport's own selector when the global proxy is off or no factory is
+// registered, and resolve the factory per request, so clients built before the server
+// registers it still follow it.
+func TestDefaultHTTPClientFactoryRouting(t *testing.T) {
+	set := proxytest.NewSet(t)
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+
+	// Stand-in for an environment proxy: the selector http.DefaultTransport carries.
+	envProxy, _ := url.Parse("http://127.0.0.1:" + set.EnvHTTPS.Port())
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	previous := defaultTransport.Proxy
+	defaultTransport.Proxy = http.ProxyURL(envProxy)
+	t.Cleanup(func() { defaultTransport.Proxy = previous })
+
+	// Built before any factory is registered.
+	client := &http.Client{Transport: DefaultTransport(ClientPurposeAPI)}
+	proxyFunc := DefaultProxyFunc(ClientPurposeAPI)
+	dialer := DefaultGRPCDialer(ClientPurposeAPI)
+	req, _ := http.NewRequest(http.MethodGet, "https://api.bifrost.test/v1", nil)
+
+	send := func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		r, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.bifrost.test/v1", nil)
+		if resp, err := client.Do(r); err == nil {
+			resp.Body.Close()
+		}
+	}
+
+	// No factory: exactly http.DefaultTransport.
+	set.Reset()
+	send()
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "env-https"}, "api.bifrost.test:443", nil)
+	if got, _ := proxyFunc(req); got == nil || got.Host != envProxy.Host {
+		t.Errorf("no factory: DefaultProxyFunc = %v, want the DefaultTransport selector's %v", got, envProxy)
+	}
+
+	// Factory with the global proxy on for API: every default follows it.
+	SetDefaultHTTPClientFactory(NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(),
+		NoProxy: "bypass.bifrost.test", EnableForAPI: true,
+	}, noopTestLogger{}))
+	set.Reset()
+	send()
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "api.bifrost.test:443", nil)
+	if got, _ := proxyFunc(req); got == nil || got.Port() != set.Config.Port() {
+		t.Errorf("global proxy on: DefaultProxyFunc = %v, want the global proxy", got)
+	}
+	for _, host := range []string{"bypass.bifrost.test", "169.254.169.254", "localhost"} {
+		direct, _ := http.NewRequest(http.MethodGet, "https://"+host+"/v1", nil)
+		if got, _ := proxyFunc(direct); got != nil {
+			t.Errorf("DefaultProxyFunc(%s) = %v, want a direct connection", host, got)
+		}
+	}
+	set.Reset()
+	if conn, err := dialer(t.Context(), "api.bifrost.test:443"); err == nil {
+		conn.Close()
+	}
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "api.bifrost.test:443", nil)
+
+	// Factory with the global proxy off for API: back to DefaultTransport's selector.
+	SetDefaultHTTPClientFactory(NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForSCIM: true,
+	}, noopTestLogger{}))
+	set.Reset()
+	send()
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "env-https"}, "api.bifrost.test:443", nil)
+}
+
+// TestGRPCDialersConnectUnixSockets pins that the gRPC dialers connect a unix-socket
+// target to the socket itself, never over TCP or through a proxy, with or without a
+// registered factory and with the global proxy on. GRPCPassthroughTarget leaves unix:
+// targets alone, and gRPC then hands a custom dialer "unix:///abs/path" or
+// "unix:relative-path" (abstract sockets arrive as "\x00name"); an OTel collector
+// listening on a unix socket must keep working once the OTel plugin uses these dialers.
+func TestGRPCDialersConnectUnixSockets(t *testing.T) {
+	set := proxytest.NewSet(t)
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+	// A short directory: unix socket paths are capped near 104 bytes on macOS.
+	dir, err := os.MkdirTemp("", "grpcsock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "otel.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", socket, err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	var accepted atomic.Int32
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			conn.Close()
+		}
+	}()
+	t.Chdir(dir)
+	addrs := []string{"unix://" + socket, "unix:otel.sock"}
+	if runtime.GOOS == "linux" {
+		abstract, err := net.Listen("unix", "@bifrost-grpc-dialer-test")
+		if err != nil {
+			t.Fatalf("listen on abstract socket: %v", err)
+		}
+		t.Cleanup(func() { abstract.Close() })
+		go func() {
+			for {
+				conn, err := abstract.Accept()
+				if err != nil {
+					return
+				}
+				accepted.Add(1)
+				conn.Close()
+			}
+		}()
+		addrs = append(addrs, "\x00bifrost-grpc-dialer-test")
+	}
+
+	proxied := NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
+	}, noopTestLogger{})
+	dialers := []struct {
+		name  string
+		setup func()
+		dial  func(context.Context, string) (net.Conn, error)
+	}{
+		{"default dialer, no factory", func() { SetDefaultHTTPClientFactory(nil) }, DefaultGRPCDialer(ClientPurposeAPI)},
+		{"default dialer, global proxy on", func() { SetDefaultHTTPClientFactory(proxied) }, DefaultGRPCDialer(ClientPurposeAPI)},
+		{"factory dialer, global proxy on", func() {}, proxied.GRPCDialer(ClientPurposeAPI)},
+	}
+	for _, d := range dialers {
+		for _, addr := range addrs {
+			t.Run(d.name+"/"+strings.ReplaceAll(addr, "\x00", "@"), func(t *testing.T) {
+				d.setup()
+				set.Reset()
+				before := accepted.Load()
+				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+				defer cancel()
+				conn, err := d.dial(ctx, addr)
+				if err != nil {
+					t.Fatalf("dial %q: %v", addr, err)
+				}
+				conn.Close()
+				deadline := time.Now().Add(2 * time.Second)
+				for accepted.Load() == before && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				if accepted.Load() == before {
+					t.Fatalf("dial %q did not reach the unix socket", addr)
+				}
+				proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+			})
+		}
+	}
+}
+
+func TestGRPCPassthroughTarget(t *testing.T) {
+	tests := map[string]string{
+		"collector.example:4317":       "passthrough:///collector.example:4317",
+		"10.0.0.9:4317":                "passthrough:///10.0.0.9:4317",
+		"[::1]:4317":                   "passthrough:///[::1]:4317",
+		"dns:///collector.example:443": "dns:///collector.example:443",
+		"unix:/var/run/otel.sock":      "unix:/var/run/otel.sock",
+	}
+	for endpoint, want := range tests {
+		if got := GRPCPassthroughTarget(endpoint); got != want {
+			t.Errorf("GRPCPassthroughTarget(%q) = %q, want %q", endpoint, got, want)
+		}
+	}
+}
+
+// TestHTTPClientFactoryApplyOptions pins that options applied to a factory after it
+// handed out clients reach them: enterprise adds its SCIM header buffer sizes to the
+// factory the config loader built.
+func TestHTTPClientFactoryApplyOptions(t *testing.T) {
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	live := factory.GetFasthttpClient(ClientPurposeSCIM)
+	if inner := factory.currentFasthttpClient(ClientPurposeSCIM); inner.ReadBufferSize != 0 {
+		t.Fatalf("ReadBufferSize = %d before any option, want fasthttp's default (0)", inner.ReadBufferSize)
+	}
+	factory.ApplyOptions(WithFasthttpBufferSizes(64*1024, 32*1024))
+	inner := factory.currentFasthttpClient(ClientPurposeSCIM)
+	if inner.ReadBufferSize != 64*1024 || inner.WriteBufferSize != 32*1024 {
+		t.Errorf("SCIM inner client buffers = %d/%d, want 65536/32768", inner.ReadBufferSize, inner.WriteBufferSize)
+	}
+	if factory.GetFasthttpClient(ClientPurposeSCIM) != live {
+		t.Error("ApplyOptions must keep the live client object")
+	}
+}
+
+func TestDefaultHTTPClientFactoryGetter(t *testing.T) {
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+	SetDefaultHTTPClientFactory(nil)
+	if DefaultHTTPClientFactory() != nil {
+		t.Fatal("no factory registered: want nil")
+	}
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	SetDefaultHTTPClientFactory(factory)
+	if DefaultHTTPClientFactory() != factory {
+		t.Fatal("want the registered factory")
+	}
 }

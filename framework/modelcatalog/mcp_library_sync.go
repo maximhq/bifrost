@@ -12,6 +12,7 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -277,7 +278,7 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 			return nil, fmt.Errorf("MCP library URL validation failed: %w", err)
 		}
-		client := &http.Client{Timeout: DefaultMCPLibraryTimeout}
+		client := &http.Client{Timeout: DefaultMCPLibraryTimeout, Transport: network.DefaultTransport(network.ClientPurposeAPI)}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
