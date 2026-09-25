@@ -2207,6 +2207,12 @@ func IsElevenlabsSoundModel(model string) bool {
 	return strings.Contains(model, "eleven_text_to_sound")
 }
 
+// IsTypesafeModel checks if the model targets a TypeSafe System One decisions
+// endpoint (e.g. "typesafe/jev-1.13", "~typesafe/jev-latest") rather than chat.
+func IsTypesafeModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
