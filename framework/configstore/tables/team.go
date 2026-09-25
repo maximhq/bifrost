@@ -36,6 +36,14 @@ type TableTeam struct {
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
+	// DisableContentLogging is the team's own say on whether request and response content is
+	// persisted for its traffic. Tri-state on purpose: nil inherits (the layers below the team, then
+	// client.disable_content_logging), true forces content off, false forces it on. The team sits
+	// above the user and every credential, so its decision cannot be reopened by a virtual key or
+	// provider key. No gorm default: a default tag would make GORM write the default for a nil
+	// pointer on insert and collapse "inherit" into "false".
+	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`

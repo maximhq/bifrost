@@ -1533,6 +1533,10 @@ type CreateTeamRequest struct {
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`       // Team can have its own rate limit
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // Team-wide: snap all team budgets and rate-limit resets to calendar boundaries
+	// DisableContentLogging is the team's own content-logging decision. Omit to inherit; true forces
+	// content off for the team's traffic, false forces it on. It outranks every virtual key and
+	// provider key the team's traffic comes in with.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // UpdateTeamRequest represents the request body for updating a team
@@ -1545,6 +1549,23 @@ type UpdateTeamRequest struct {
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	// The reset boundary is left alone; only accumulated spend is cleared.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
+	// clears it back to inheriting, true/false set it.
+	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
+}
+
+// applyTeamContentLoggingUpdate applies the tri-state disable_content_logging field of a team
+// update: omitted leaves the team's decision as it is, null clears it back to inheriting, true or
+// false set it.
+func applyTeamContentLoggingUpdate(team *configstoreTables.TableTeam, req *UpdateTeamRequest) {
+	if !req.DisableContentLogging.Set {
+		return
+	}
+	if req.DisableContentLogging.Null {
+		team.DisableContentLogging = nil
+		return
+	}
+	team.DisableContentLogging = new(req.DisableContentLogging.Value)
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
@@ -2957,6 +2978,8 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:            req.Name,
 			CustomerID:      req.CustomerID,
 			CalendarAligned: req.CalendarAligned,
+			// Stored as given: nil is inherit, so no defaulting here.
+			DisableContentLogging: req.DisableContentLogging,
 		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
@@ -3124,6 +3147,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			alignmentSwitchedOn = !team.CalendarAligned && *req.CalendarAligned
 			team.CalendarAligned = *req.CalendarAligned
 		}
+		applyTeamContentLoggingUpdate(team, &req)
 		// Snap-to-calendar-period happens after budget/rate-limit reconciliation
 		// below, so combined `calendar_aligned + budgets/rate_limit` updates see
 		// the final persisted state.

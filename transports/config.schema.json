@@ -933,6 +933,10 @@
                 "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
                 "default": false
               },
+              "disable_content_logging": {
+                "type": "boolean",
+                "description": "Team-level override of content logging for requests made by or through this team. Omit to inherit. Precedence, highest first: business unit, team, user, then the credential (virtual key, provider key and access profile, where any that says true wins), then client.disable_content_logging. So a team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence for the log store."
+              },
               "virtual_key_count": {
                 "type": "integer",
                 "description": "Computed count of virtual keys associated with this team",
@@ -1123,7 +1127,7 @@
               },
               "disable_content_logging": {
                 "type": "boolean",
-                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
+                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. A decision from the key's business unit, team or user outranks this value; within the credential tier, a provider key or access profile that says true wins over false here. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
               },
               "team_id": {
                 "type": "string",

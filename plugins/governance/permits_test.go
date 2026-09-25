@@ -909,6 +909,79 @@ func TestResolveAccessMarksTraceWhenContentLoggingOff(t *testing.T) {
 	}
 }
 
+// A key under a team carries the team's content-logging decision too. The team is read from the
+// store's live team map, not the key's team pointer, so an edit to the team reaches the very next
+// request; and the team outranks the key in both directions.
+func TestResolveAccessStampsTeamContentLogging(t *testing.T) {
+	type setup struct {
+		team *bool
+		vk   *bool
+	}
+	newPlugin := func(t *testing.T, s setup) (*GovernancePlugin, *LocalGovernanceStore, configstoreTables.TableTeam) {
+		t.Helper()
+		team := configstoreTables.TableTeam{ID: "team-dcl", Name: "team-dcl", DisableContentLogging: s.team}
+		vk := buildVKForMCPStamping(nil)
+		vk.TeamID = &team.ID
+		vk.DisableContentLogging = s.vk
+		logger := NewMockLogger()
+		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			Teams:       []configstoreTables.TableTeam{team},
+		}, nil, &mockInMemoryStore{})
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		return plugin, local, team
+	}
+	resolve := func(t *testing.T, plugin *GovernancePlugin) *schemas.BifrostContext {
+		t.Helper()
+		ctx := emptyCtx()
+		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+		_, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "team-dcl", ctx.Value(schemas.BifrostContextKeyGovernanceTeamID), "precondition: the key resolved under its team")
+		return ctx
+	}
+
+	t.Run("team off outranks a key that turns content on", func(t *testing.T) {
+		plugin, _, _ := newPlugin(t, setup{team: new(true), vk: new(false)})
+		ctx := resolve(t, plugin)
+		assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging))
+		disabled, decided := schemas.ResolveAdminContentLogging(ctx)
+		assert.True(t, decided)
+		assert.True(t, disabled)
+	})
+
+	t.Run("team on outranks a key that turns content off", func(t *testing.T) {
+		plugin, _, _ := newPlugin(t, setup{team: new(false), vk: new(true)})
+		ctx := resolve(t, plugin)
+		disabled, decided := schemas.ResolveAdminContentLogging(ctx)
+		assert.True(t, decided)
+		assert.False(t, disabled)
+	})
+
+	t.Run("an inheriting team leaves the key to decide", func(t *testing.T) {
+		plugin, _, _ := newPlugin(t, setup{team: nil, vk: new(true)})
+		ctx := resolve(t, plugin)
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging), "inherit must leave the team layer absent")
+		disabled, decided := schemas.ResolveAdminContentLogging(ctx)
+		assert.True(t, decided)
+		assert.True(t, disabled)
+	})
+
+	t.Run("a team edit reaches the next request", func(t *testing.T) {
+		plugin, local, team := newPlugin(t, setup{team: nil})
+		ctx := resolve(t, plugin)
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging))
+
+		team.DisableContentLogging = new(true)
+		local.UpdateTeamInMemory(context.Background(), &team, nil)
+		ctx = resolve(t, plugin)
+		assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging), "the edited team must be read live, not off the key's stale team pointer")
+	})
+}
+
 // Resolving access is where every store stamps the caller's content-logging layers, so it marks them
 // resolved once the store has answered, whatever it answered: a key that inherits, and a request that
 // presented nothing at all, are resolved too. The logging plugin reads the mark to stop holding

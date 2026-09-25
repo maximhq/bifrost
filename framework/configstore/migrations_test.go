@@ -4158,24 +4158,41 @@ func TestMigrationAddVirtualKeyBusinessUnitColumn(t *testing.T) {
 	assert.Equal(t, stored.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
-// TestMigrationAddVirtualKeyDisableContentLoggingColumn pins the tri-state column: the migration
-// adds it and is idempotent, NULL survives a write and a read (it means "inherit"), and the config
-// hash only moves when the key actually says something, so every pre-existing key keeps the hash
-// synchronization already stored for it.
-func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
+// setupContentLoggingColumnsTestDB creates an in-memory SQLite database holding every table that
+// carries a disable_content_logging column, each in its shape before the column existed. Built by
+// hand because GORM's SQLite DropColumn reports success without dropping anything.
+func setupContentLoggingColumnsTestDB(t *testing.T) *gorm.DB {
 	db := setupVKTestDBWithoutRotationColumns(t)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE governance_teams (
+			id VARCHAR(255) PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			config_hash VARCHAR(255),
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)
+	`).Error, "Failed to create governance_teams table")
+	return db
+}
+
+// TestMigrationAddVirtualKeyDisableContentLoggingColumn pins the virtual key's tri-state column: the
+// migration adds it and is idempotent, NULL survives a write and a read (it means "inherit"), and
+// the config hash only moves when the key actually says something, so every pre-existing key keeps
+// the hash synchronization already stored for it.
+func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
 	ctx := context.Background()
 	mg := db.Migrator()
 
 	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"),
 		"disable_content_logging column must not exist before migration")
 
-	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
 	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"))
 
 	// Idempotent: a re-run with the column already present must not fail.
-	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_disable_content_logging_column").Error)
-	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_disable_content_logging_columns").Error)
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
 
 	// This fixture's table is the pre-migration skeleton; fill in the rest of the columns the
 	// struct declares so rows can be written through it.
@@ -4227,16 +4244,16 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
-// TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
-// column back is refused rather than performed. The column is the only home for a key's own
-// content-logging decision, and a nil reads as "inherit": dropping it would not merely lose
-// data, it would silently start logging content for every key that had turned it off.
-func TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable(t *testing.T) {
-	db := setupVKTestDBWithoutRotationColumns(t)
+// TestMigrationAddDisableContentLoggingColumns_NonRollbackable pins that rolling the columns back is
+// refused rather than performed. Each column is the only home for its layer's content-logging
+// decision, and a nil reads as "inherit": dropping one would not merely lose data, it would silently
+// start logging content for every row that had turned it off.
+func TestMigrationAddDisableContentLoggingColumns_NonRollbackable(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
 	ctx := context.Background()
 	mg := db.Migrator()
 
-	require.NoError(t, migrationAddVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
 	require.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"))
 	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
 
@@ -4248,6 +4265,72 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable(t *te
 	require.NoError(t, db.First(&got, "id = ?", seed.ID).Error)
 	require.NotNil(t, got.DisableContentLogging)
 	assert.True(t, *got.DisableContentLogging, "the surviving decision must be untouched")
+}
+
+// TestMigrationAddTeamDisableContentLoggingColumn pins the team's tri-state column the way the
+// virtual key's is pinned: the migration adds it and is idempotent, NULL survives a round trip as
+// inherit, and the config hash moves only when the team actually says something.
+func TestMigrationAddTeamDisableContentLoggingColumn(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableTeam{}, "disable_content_logging"),
+		"disable_content_logging column must not exist before migration")
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableTeam{}, "disable_content_logging"))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableTeam{}))
+	inherit := tables.TableTeam{ID: "team-dcl-inherit", Name: "team-dcl-inherit"}
+	off := tables.TableTeam{ID: "team-dcl-off", Name: "team-dcl-off", DisableContentLogging: new(true)}
+	on := tables.TableTeam{ID: "team-dcl-on", Name: "team-dcl-on", DisableContentLogging: new(false)}
+	for _, team := range []*tables.TableTeam{&inherit, &off, &on} {
+		hash, err := GenerateTeamHash(*team)
+		require.NoError(t, err)
+		team.ConfigHash = hash
+		require.NoError(t, db.Create(team).Error)
+	}
+	read := func(id string) tables.TableTeam {
+		var stored tables.TableTeam
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(inherit.ID).DisableContentLogging, "a team that never said anything must read back as inherit, not false")
+	storedOff := read(off.ID)
+	require.NotNil(t, storedOff.DisableContentLogging)
+	assert.True(t, *storedOff.DisableContentLogging)
+	storedOn := read(on.ID)
+	require.NotNil(t, storedOn.DisableContentLogging)
+	assert.False(t, *storedOn.DisableContentLogging, "an explicit false is a decision, not an absence")
+
+	same := tables.TableTeam{ID: inherit.ID, Name: inherit.Name}
+	hashWith := func(decision *bool) string {
+		same.DisableContentLogging = decision
+		hash, err := GenerateTeamHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	inheritHash, offHash, onHash := hashWith(nil), hashWith(new(true)), hashWith(new(false))
+	assert.Equal(t, inheritHash, inherit.ConfigHash, "inherit must hash exactly like a team from before the column existed")
+	assert.NotEqual(t, inheritHash, offHash, "forcing content off must change the hash")
+	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
+	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
+}
+
+// TestMigrationAddDisableContentLoggingColumns_AfterVirtualKeyStep pins why the combined step has an
+// ID of its own: a database that already ran the unreleased add_virtual_key_disable_content_logging_column
+// step, and so has the virtual key's column, still runs this step and gains every other column.
+func TestMigrationAddDisableContentLoggingColumns_AfterVirtualKeyStep(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+	require.NoError(t, db.Exec(`ALTER TABLE governance_virtual_keys ADD COLUMN disable_content_logging BOOLEAN`).Error)
+	require.NoError(t, db.Exec("INSERT INTO migrations (id) VALUES (?)", "add_virtual_key_disable_content_logging_column").Error)
+
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
+	for _, table := range disableContentLoggingTables {
+		assert.True(t, mg.HasColumn(table, "disable_content_logging"), "every content-logging column must exist after the step")
+	}
 }
 
 // TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable pins that rolling Warp's

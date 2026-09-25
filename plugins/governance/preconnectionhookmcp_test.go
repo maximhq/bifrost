@@ -153,6 +153,25 @@ func TestPreMCPConnectionHook_StampsContentLoggingDecision(t *testing.T) {
 	}
 }
 
+// The connect path carries the key's team's content-logging decision as well, read from the live
+// team map like the request path reads it.
+func TestPreMCPConnectionHook_StampsTeamContentLoggingDecision(t *testing.T) {
+	team := configstoreTables.TableTeam{ID: "team-connect-dcl", Name: "team-connect-dcl", DisableContentLogging: new(true)}
+	vk := buildVKForMCPStamping(nil)
+	vk.TeamID = &team.ID
+	plugin := newPluginForConnectionHook(t, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{team},
+	})
+	ctx := connectCtx(mcpTestVKValue)
+
+	_, shortCircuit, err := plugin.PreMCPConnectionHook(ctx, connectReq("sentry"))
+
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging))
+}
+
 // A key owned by a team stamps the team, and the customer that team belongs to. The customer is
 // reached through the team rather than off the key, which is the case a key holding a direct
 // customer cannot cover.

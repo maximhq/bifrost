@@ -502,7 +502,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
 	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
 	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
-	{IDs: []string{"add_virtual_key_disable_content_logging_column"}, run: migrationAddVirtualKeyDisableContentLoggingColumn},
+	{IDs: []string{"add_disable_content_logging_columns"}, run: migrationAddDisableContentLoggingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14066,29 +14066,45 @@ func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, 
 	return nil
 }
 
-// migrationAddVirtualKeyDisableContentLoggingColumn adds disable_content_logging to
-// governance_virtual_keys: the key's own tri-state say on content logging. The column is nullable
-// with no default because NULL is a meaning of its own (inherit the client setting), so every
-// existing key comes out of the migration inheriting exactly as it did before.
-func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_virtual_key_disable_content_logging_column"
+// disableContentLoggingTables are the tables that carry a tri-state disable_content_logging
+// column: each is one layer of the content-logging decision.
+var disableContentLoggingTables = []any{
+	&tables.TableVirtualKey{},
+	&tables.TableTeam{},
+}
+
+// migrationAddDisableContentLoggingColumns adds disable_content_logging to every table that carries
+// a content-logging layer. The columns are nullable with no default because NULL is a meaning of
+// its own (inherit), so every existing row comes out of the migration inheriting exactly as it did
+// before.
+//
+// It replaces the unreleased add_virtual_key_disable_content_logging_column step under a new ID, so
+// a database that already ran that step still runs this one and gains the columns added since; the
+// virtual key's column is then already there, and addColumnIfNotExists skips it.
+func migrationAddDisableContentLoggingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_disable_content_logging_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "disable_content_logging"); err != nil {
-				return fmt.Errorf("failed to add disable_content_logging column: %w", err)
+			for _, table := range disableContentLoggingTables {
+				if err := addColumnIfNotExists(tx, logger, table, "disable_content_logging"); err != nil {
+					return fmt.Errorf("failed to add disable_content_logging column: %w", err)
+				}
 			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
-			return fmt.Errorf("add_virtual_key_disable_content_logging_column is non-rollbackable: dropping disable_content_logging would permanently delete every virtual key's content-logging decision and silently revert content-off keys to logging content; the column is additive and older binaries safely ignore it")
+			return rollbackDisableContentLoggingColumns(ctx, tx, logger)
 		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running db migration: %s", err.Error())
-	}
-	return nil
+	})
+}
+
+// rollbackDisableContentLoggingColumns refuses. Each column is the only home for its layer's
+// content-logging decision, and NULL reads as inherit: dropping them would not merely lose data,
+// it would silently start logging content for every row that had turned it off.
+func rollbackDisableContentLoggingColumns(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_disable_content_logging_columns is non-rollbackable: dropping disable_content_logging would permanently delete every content-logging decision and silently revert content-off rows to logging content; the columns are additive and older binaries safely ignore them")
 }
