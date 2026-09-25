@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	ws "github.com/fasthttp/websocket"
-	"github.com/maximhq/bifrost/core/internal/proxytest"
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -366,13 +368,13 @@ func TestNewProviderHTTPClient_InvalidConfigFailsPerRequest(t *testing.T) {
 // reach those, so proxying them would break managed and workload identity.
 func TestNewProviderHTTPClient_NeverProxiesMetadataOrLoopback(t *testing.T) {
 	for _, host := range []string{"169.254.169.254", "metadata.google.internal", "100.100.100.200", "fd00:ec2::254", "localhost", "127.0.0.1", "::1"} {
-		if !isLocalOrMetadataHost(host) {
-			t.Errorf("isLocalOrMetadataHost(%q) = false, want true", host)
+		if !network.IsLocalOrMetadataHost(host) {
+			t.Errorf("network.IsLocalOrMetadataHost(%q) = false, want true", host)
 		}
 	}
 	for _, host := range []string{"login.microsoftonline.com", "oauth2.googleapis.com", "10.0.0.5", "203.0.113.10"} {
-		if isLocalOrMetadataHost(host) {
-			t.Errorf("isLocalOrMetadataHost(%q) = true, want false", host)
+		if network.IsLocalOrMetadataHost(host) {
+			t.Errorf("network.IsLocalOrMetadataHost(%q) = true, want false", host)
 		}
 	}
 
@@ -449,7 +451,7 @@ func sendProxyMatrixRequest(t *testing.T, stack string, proxyConfig *schemas.Pro
 // TestProxyRoutingMatrix pins, for every fasthttp provider stack, where a request goes
 // for every combination of proxy_config source, proxy env vars and target: which proxy
 // saw it, for which target, with which credentials, that it went direct, or that it
-// failed rather than going direct when the proxy refused it. See core/internal/proxytest
+// failed rather than going direct when the proxy refused it. See core/network/proxytest
 // for the sources, env states and targets.
 //
 // Stacks:
@@ -584,5 +586,67 @@ func TestConfigureProxy_EnvironmentNoProxyKeepsPrivateNetworkCheck(t *testing.T)
 	_, err := client.Dial("10.0.0.5:443")
 	if err == nil || !strings.Contains(err.Error(), "connection to private IP 10.0.0.5 is not allowed") {
 		t.Fatalf("expected ConfigureDialer's private-network refusal, got %v", err)
+	}
+}
+
+// TestConfigureProxy_UnresponsiveProxyDoesNotHang pins that a proxy which accepts the
+// connection and never answers CONNECT (or the SOCKS5 greeting) fails the dial once the
+// handshake bound passes, for every proxy_config type that names a proxy. fasthttp calls
+// a Dial func with no deadline and fasthttpproxy's dialers wait forever, so a black-holed
+// corporate proxy used to hang inference indefinitely.
+func TestConfigureProxy_UnresponsiveProxyDoesNotHang(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	var held []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	defer func() {
+		mu.Lock()
+		for _, c := range held {
+			c.Close()
+		}
+		mu.Unlock()
+	}()
+
+	previous := proxyHandshakeTimeout
+	proxyHandshakeTimeout = 300 * time.Millisecond
+	defer func() { proxyHandshakeTimeout = previous }()
+
+	addr := listener.Addr().String()
+	for _, name := range proxytest.EnvNames {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://"+addr)
+
+	for name, cfg := range map[string]*schemas.ProxyConfig{
+		"http":        {Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://" + addr)},
+		"socks5":      {Type: schemas.Socks5Proxy, URL: schemas.NewSecretVar("socks5://" + addr)},
+		"environment": {Type: schemas.EnvProxy},
+	} {
+		client := &fasthttp.Client{}
+		ConfigureProxy(client, cfg, testLogger{})
+		ConfigureDialer(client, false)
+		start := time.Now()
+		conn, err := client.Dial("api.bifrost.test:443")
+		if err == nil {
+			conn.Close()
+			t.Errorf("%s: dial through an unresponsive proxy succeeded", name)
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("%s: dial took %v, want it bounded by the handshake timeout", name, elapsed)
+		}
 	}
 }
