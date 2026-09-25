@@ -8,59 +8,55 @@ import (
 
 const sample = `{"error":{"message":"boom","code":1},"usage":{"total_tokens":5},"list":[10,20],"str":"x"}`
 
+// getCase pins one lookup contract of Get/GetFromString. Path elements follow
+// the sonic grammar (string keys and int indexes); invalid path types panic in
+// sonic while jsonx returns an error instead — both are usable contracts, only
+// the happy path and ErrNotExist are pinned here.
+type getCase struct {
+	name       string
+	useBytes   bool  // exercise Get([]byte) instead of GetFromString
+	path       []any // e.g. []any{"error"}, []any{"usage", "total_tokens"}, []any{"list", 1}
+	wantErr    error // nil or ast.ErrNotExist
+	wantExists bool
+	wantRaw    string // optional: expected Raw() output (nested-object case)
+}
+
+var getCases = []getCase{
+	{name: "top-level key", path: []any{"error"}, wantExists: true, wantRaw: `{"message":"boom","code":1}`},
+	{name: "missing key", path: []any{"missing"}, wantErr: ast.ErrNotExist},
+	{name: "bytes variant", useBytes: true, path: []any{"usage"}, wantExists: true},
+	{name: "multi-level", path: []any{"usage", "total_tokens"}, wantExists: true},
+	{name: "array index", path: []any{"list", 1}, wantExists: true},
+	{name: "deep string path", path: []any{"error", "message"}, wantExists: true},
+}
+
 func testGet(t *testing.T, label string) {
 	t.Helper()
 
-	// top-level key exists
-	node, err := GetFromString(sample, "error")
-	if err != nil {
-		t.Fatalf("[%s] error key: %v", label, err)
-	}
-	if !node.Exists() {
-		t.Fatalf("[%s] error key: expected exists", label)
-	}
-
-	// missing key: sonic returns (zero Node, ast.ErrNotExist)
-	node, err = GetFromString(sample, "missing")
-	if err != ast.ErrNotExist {
-		t.Fatalf("[%s] missing key: want ErrNotExist, got %v", label, err)
-	}
-	if node.Exists() {
-		t.Fatalf("[%s] missing key: expected not exists", label)
-	}
-
-	// Get variant on bytes
-	node, err = Get([]byte(sample), "usage")
-	if err != nil || !node.Exists() {
-		t.Fatalf("[%s] bytes usage: err=%v exists=%v", label, err, node.Exists())
-	}
-
-	// nested raw node is valid json
-	rawNode, err := GetFromString(sample, "error")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rawStr, rawErr := rawNode.Raw()
-	if rawErr != nil || rawStr != `{"message":"boom","code":1}` {
-		t.Fatalf("[%s] raw: got %q err=%v", label, rawStr, rawErr)
-	}
-
-	// multi-level
-	node, err = GetFromString(sample, "usage", "total_tokens")
-	if err != nil || !node.Exists() {
-		t.Fatalf("[%s] multi-level: err=%v exists=%v", label, err, node.Exists())
-	}
-
-	// array index
-	node, err = GetFromString(sample, "list", 1)
-	if err != nil || !node.Exists() {
-		t.Fatalf("[%s] array index: err=%v exists=%v", label, err, node.Exists())
-	}
-
-	// invalid path type panics like sonic? sonic panics; we return error instead — both usable
-	node, err = GetFromString(sample, "error", "message")
-	if err != nil || !node.Exists() {
-		t.Fatalf("[%s] deep string path: err=%v exists=%v", label, err, node.Exists())
+	for _, tc := range getCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				node ast.Node
+				err  error
+			)
+			if tc.useBytes {
+				node, err = Get([]byte(sample), tc.path...)
+			} else {
+				node, err = GetFromString(sample, tc.path...)
+			}
+			if err != tc.wantErr {
+				t.Fatalf("[%s] %s: want err %v, got %v", label, tc.name, tc.wantErr, err)
+			}
+			if node.Exists() != tc.wantExists {
+				t.Fatalf("[%s] %s: want exists=%v, got %v", label, tc.name, tc.wantExists, node.Exists())
+			}
+			if tc.wantRaw != "" {
+				rawStr, rawErr := node.Raw()
+				if rawErr != nil || rawStr != tc.wantRaw {
+					t.Fatalf("[%s] %s: raw: got %q err=%v, want %q", label, tc.name, rawStr, rawErr, tc.wantRaw)
+				}
+			}
+		})
 	}
 }
 
