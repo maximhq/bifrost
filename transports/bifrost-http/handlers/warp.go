@@ -69,7 +69,7 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
 	if client != nil {
-		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest))
+		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(client.ResponsesRequest))
 	}
 	if loggerPlugin != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
@@ -91,7 +91,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	return handler
 }
 
-// Shutdown releases the service's model client.
+// Shutdown stops the service's background work and log subscription.
 func (h *WarpHandler) Shutdown() {
 	if h.unsubscribeLogs != nil {
 		h.unsubscribeLogs()

@@ -51,8 +51,38 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 			base = context.WithValue(base, key, value)
 		}
 	}
+	base = warp.WithGrant(base, settleWarpGrant(ctx))
 	snapshot, cancel := context.WithTimeout(base, timeout)
 	return snapshot, cancel, nil
+}
+
+// settleWarpGrant settles who the dashboard request is, for Warp's model calls
+// to carry (see warp.WithGrant).
+//
+// It reads exactly what lib.ConvertToBifrostContext would for an inference
+// request - the user the auth middleware resolved, the credential it recorded,
+// a header virtual key - and settles it the same way, so governance sees the
+// user who asked. Built on a background context rather than the RequestCtx:
+// the grant outlives the request, and only the values are wanted from it.
+func settleWarpGrant(ctx *fasthttp.RequestCtx) schemas.Grant {
+	settle := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer settle.Cancel()
+	for _, key := range []any{
+		schemas.BifrostContextKeyUserID,
+		schemas.BifrostContextKeyUserName,
+		schemas.BifrostContextKeyUserEmail,
+		schemas.BifrostContextKeyAuthCredential,
+	} {
+		if value := ctx.UserValue(key); value != nil {
+			settle.SetValue(key, value)
+		}
+	}
+	// The virtual key is a header, never a user value.
+	if virtualKey := virtualKeyFromHeaders(ctx); virtualKey != "" {
+		settle.SetValue(schemas.BifrostContextKeyVirtualKey, virtualKey)
+	}
+	lib.SettleIdentity(settle)
+	return settle.Grant()
 }
 
 // chat is the agent endpoint.

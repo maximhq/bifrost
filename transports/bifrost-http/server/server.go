@@ -2796,9 +2796,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// exist early, but RegisterRoutes is only ever called once, later, on
 	// whichever handler is current then - so a handler built here never
 	// serves a request or gets its routes registered before being replaced.
-	// It still cost a full warp.NewService (its own dedicated Bifrost
-	// instance and worker pool) that was immediately shut down again a few
-	// lines into RegisterAPIRoutes, on every boot.
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
@@ -3215,7 +3212,8 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			// Warp first. Its indexer workers call s.Client.EmbeddingRequest, and
+			// Warp first. Its indexer workers call s.Client.EmbeddingRequest (and its
+			// chat turns s.Client.ResponsesRequest), and
 			// LogIndexer.Close waits for them - so shutting the client down first
 			// cancelled its context underneath work that was still being waited on,
 			// and pending indexing failed during an orderly shutdown.

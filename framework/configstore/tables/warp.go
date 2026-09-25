@@ -20,7 +20,6 @@ type TableWarpConfig struct {
 
 	Provider string `gorm:"type:varchar(64)" json:"provider"`
 	Model    string `gorm:"type:varchar(255)" json:"model"`
-	BaseURL  string `gorm:"type:varchar(2048)" json:"base_url,omitempty"`
 
 	// APIKeyID names one of the provider's configured keys. It is a reference,
 	// not a credential, which is why this table needs no encryption hooks: there

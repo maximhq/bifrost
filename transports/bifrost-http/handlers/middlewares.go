@@ -894,40 +894,36 @@ func isRealtimeTransportEndpoint(path string) bool {
 }
 
 func hasVirtualKeyCredential(ctx *fasthttp.RequestCtx) bool {
+	return virtualKeyFromHeaders(ctx) != ""
+}
+
+// virtualKeyFromHeaders is the virtual key the request presents in a header, or
+// "" when it presents none.
+func virtualKeyFromHeaders(ctx *fasthttp.RequestCtx) string {
 	// x-bf-vk mirrors the canonical VK parser (lib.ConvertToBifrostContext): any
 	// non-empty value is accepted, no sk-bf- prefix required — the header itself
 	// is the signal, not the value shape.
 	if vkHeader := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); vkHeader != "" {
-		return true
+		return vkHeader
 	}
 
 	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
 	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 		token := strings.TrimSpace(authHeader[7:])
 		if token != "" && strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
-			return true
+			return token
 		}
 	}
 
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return true
+	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key"} {
+		if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek(header))); apiKey != "" {
+			if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+				return apiKey
+			}
 		}
 	}
 
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return true
-		}
-	}
-
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return true
-		}
-	}
-
-	return false
+	return ""
 }
 
 // AuthMiddleware is a middleware that handles authentication for the API.
