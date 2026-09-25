@@ -729,7 +729,7 @@ func (f *HTTPClientFactory) configureFasthttpProxy(client *fasthttp.Client, purp
 		if connectDirect(DialAddrHost(addr), proxyCfg) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 		}
-		return DialViaProxy(ctx, proxyURL, addr)
+		return DialViaProxyTLS(ctx, proxyURL, addr, proxyCfg.proxyTLS())
 	}
 }
 
@@ -827,7 +827,7 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 			// connection is a tunnel the dialer opens to an address the policy checked.
 			transport.Proxy = nil
 			transport.ProxyConnectHeader = nil
-			transport.DialContext = policyProxyDial(policy, proxyURL, f.proxyConfig)
+			transport.DialContext = policyProxyDial(policy, proxyURL, f.proxyConfig, f.proxyConfig.proxyTLS())
 		}
 	}
 
@@ -845,7 +845,8 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 // header, but the proxy never resolves it, so a DNS answer that changes after the check
 // cannot redirect the connection. A proxy that refuses CONNECT to a port (squid allows
 // only 443 by default) fails the request rather than letting it through unbound.
-func policyProxyDial(policy *DialPolicy, proxyURL *url.URL, proxyCfg *GlobalProxyConfig) func(ctx context.Context, netw, addr string) (net.Conn, error) {
+// hopTLS is the TLS config for the hop to an https:// proxy (its CA, skip_tls_verify).
+func policyProxyDial(policy *DialPolicy, proxyURL *url.URL, proxyCfg *GlobalProxyConfig, hopTLS *tls.Config) func(ctx context.Context, netw, addr string) (net.Conn, error) {
 	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -860,7 +861,7 @@ func policyProxyDial(policy *DialPolicy, proxyURL *url.URL, proxyCfg *GlobalProx
 		}
 		var lastErr error
 		for _, ip := range ips {
-			conn, err := DialViaProxy(ctx, proxyURL, net.JoinHostPort(ip.String(), port))
+			conn, err := DialViaProxyTLS(ctx, proxyURL, net.JoinHostPort(ip.String(), port), hopTLS)
 			if err == nil {
 				return conn, nil
 			}
@@ -932,6 +933,13 @@ func (f *HTTPClientFactory) configureHTTPProxy(transport *http.Transport, proxyU
 	}
 }
 
+// proxyTLS is the TLS config for reaching an https:// global proxy: the system roots,
+// or no verification when skip_tls_verify is set (it already covers every TLS session
+// the global proxy carries).
+func (c *GlobalProxyConfig) proxyTLS() *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: c != nil && c.SkipTLSVerify}
+}
+
 // connectDirect reports whether a request for host skips the proxy: a no_proxy match,
 // or a local or instance-metadata target.
 func connectDirect(host string, proxyCfg *GlobalProxyConfig) bool {
@@ -991,7 +999,7 @@ func (f *HTTPClientFactory) GRPCDialer(purpose ClientPurpose) func(ctx context.C
 		if proxyURL == nil || connectDirect(DialAddrHost(addr), proxyCfg) {
 			return (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", addr)
 		}
-		return DialViaProxy(ctx, proxyURL, addr)
+		return DialViaProxyTLS(ctx, proxyURL, addr, proxyCfg.proxyTLS())
 	}
 }
 
@@ -1001,11 +1009,20 @@ func (f *HTTPClientFactory) GRPCDialer(purpose ClientPurpose) func(ctx context.C
 const ProxyHandshakeTimeout = 30 * time.Second
 
 // DialViaProxy opens a connection to addr through proxyURL: CONNECT for an http proxy,
-// the SOCKS5 handshake (with the URL's credentials, RFC 1929) for socks5 and socks5h.
-// The proxy is dialed dual-stack, so IPv6 proxies work. ctx bounds the dial and the
-// handshake, or ProxyHandshakeTimeout when ctx has no deadline; it does not govern the
-// returned connection.
+// CONNECT inside TLS for an https proxy, the SOCKS5 handshake (with the URL's
+// credentials, RFC 1929) for socks5 and socks5h. The proxy is dialed dual-stack, so IPv6
+// proxies work. ctx bounds the dial and the handshake, or ProxyHandshakeTimeout when ctx
+// has no deadline; it does not govern the returned connection. An https proxy's
+// certificate is checked against the system roots; DialViaProxyTLS takes a TLS config.
 func DialViaProxy(ctx context.Context, proxyURL *url.URL, addr string) (net.Conn, error) {
+	return DialViaProxyTLS(ctx, proxyURL, addr, nil)
+}
+
+// DialViaProxyTLS is DialViaProxy with the TLS config for an https proxy: its RootCAs
+// verify the proxy's certificate, and InsecureSkipVerify skips that check. ServerName
+// defaults to the proxy's host. nil means the system roots. It is ignored for http and
+// socks5 proxies.
+func DialViaProxyTLS(ctx context.Context, proxyURL *url.URL, addr string, proxyTLS *tls.Config) (net.Conn, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, ProxyHandshakeTimeout)
@@ -1025,17 +1042,37 @@ func DialViaProxy(ctx context.Context, proxyURL *url.URL, addr string) (net.Conn
 		}
 		return socks.(xproxy.ContextDialer).DialContext(ctx, "tcp", addr)
 	case "http", "":
-		return dialHTTPConnect(ctx, dialer, proxyURL, addr)
+		return dialHTTPConnect(ctx, dialer, proxyURL, addr, nil)
+	case "https":
+		cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		if proxyTLS != nil {
+			cfg = proxyTLS.Clone()
+		}
+		if cfg.ServerName == "" {
+			cfg.ServerName = proxyURL.Hostname()
+		}
+		// The tunnel speaks HTTP/1.1 CONNECT; never let ALPN pick h2 for the proxy hop.
+		cfg.NextProtos = []string{"http/1.1"}
+		return dialHTTPConnect(ctx, dialer, proxyURL, addr, cfg)
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme %q", proxyURL.Scheme)
 	}
 }
 
-// dialHTTPConnect opens a tunnel to addr through an HTTP proxy with CONNECT.
-func dialHTTPConnect(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL, addr string) (net.Conn, error) {
+// dialHTTPConnect opens a tunnel to addr through an HTTP proxy with CONNECT. A non-nil
+// proxyTLS wraps the proxy connection in TLS first (an https proxy).
+func dialHTTPConnect(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL, addr string, proxyTLS *tls.Config) (net.Conn, error) {
 	conn, err := dialer.DialContext(ctx, "tcp", proxyDialAddr(proxyURL))
 	if err != nil {
 		return nil, fmt.Errorf("dial proxy: %w", err)
+	}
+	if proxyTLS != nil {
+		tlsConn := tls.Client(conn, proxyTLS)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("proxy TLS handshake with %s: %w", proxyDialAddr(proxyURL), err)
+		}
+		conn = tlsConn
 	}
 	// Bound the handshake by the context (DialViaProxy always gives it a deadline),
 	// and close the socket if the context ends mid-handshake.
@@ -1075,8 +1112,18 @@ func dialHTTPConnect(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL,
 	if reader.Buffered() > 0 {
 		return &bufferedConn{Conn: conn, reader: reader}, nil
 	}
+	if proxyTLS != nil {
+		// Hide the proxy's *tls.Conn behind net.Conn: fasthttp (and any client that
+		// checks for a Handshake method) would otherwise take the tunnel for a finished
+		// TLS session with the target and send the request in plaintext, readable by
+		// the proxy. The client's own TLS to the target runs inside this tunnel.
+		return proxyTunnelConn{Conn: conn}, nil
+	}
 	return conn, nil
 }
+
+// proxyTunnelConn is a tunnel through an https:// proxy, exposing only net.Conn.
+type proxyTunnelConn struct{ net.Conn }
 
 // bufferedConn serves bytes the CONNECT response reader already buffered before
 // reading from the socket.

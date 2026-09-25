@@ -1,7 +1,11 @@
 package utils
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -117,15 +121,64 @@ func TestConfigureWebSocketProxy_HTTPProxy_WithLiteralURL_ConfiguresDialer(t *te
 	if err != nil {
 		t.Fatalf("expected no error configuring WebSocket proxy, got: %v", err)
 	}
-	if dialer.Proxy == nil {
-		t.Fatal("expected dialer.Proxy to be configured for literal HTTP proxy URL")
+	assertWebSocketDialsProxy(t, dialer, "127.0.0.1:1")
+}
+
+// TestConfigureWebSocketProxy_WSSHandshakeForcesHTTP11 pins that the wss:// TLS handshake
+// through a proxy offers only http/1.1. The websocket upgrade is an HTTP/1.1 request, so
+// if the caller's TLS config offers h2 and the upstream selects it, the upgrade would be
+// written over an HTTP/2 connection and fail.
+func TestConfigureWebSocketProxy_WSSHandshakeForcesHTTP11(t *testing.T) {
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	upstream.EnableHTTP2 = true
+	upstream.TLS = &tls.Config{NextProtos: []string{"h2", "http/1.1"}} // a real upstream offers both
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+
+	dialer := &ws.Dialer{TLSClientConfig: &tls.Config{RootCAs: roots, NextProtos: []string{"h2", "http/1.1"}}}
+	if _, err := ConfigureWebSocketProxy(dialer, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(tunnelProxy(t, upstream.Listener.Addr().String())),
+	}); err != nil {
+		t.Fatalf("configure websocket proxy: %v", err)
 	}
-	proxyURL, err := dialer.Proxy(nil)
+	_, port, _ := net.SplitHostPort(upstream.Listener.Addr().String())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := dialer.NetDialTLSContext(ctx, "tcp", "example.com:"+port)
 	if err != nil {
-		t.Fatalf("expected proxy func to resolve without error, got: %v", err)
+		t.Fatalf("wss dial through the proxy: %v", err)
 	}
-	if proxyURL == nil || proxyURL.Host != "127.0.0.1:1" {
-		t.Fatalf("expected resolved proxy URL host 127.0.0.1:1, got: %v", proxyURL)
+	defer conn.Close()
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		t.Fatalf("expected a *tls.Conn, got %T", conn)
+	}
+	if got := tlsConn.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
+		t.Fatalf("negotiated %q, want http/1.1: the websocket upgrade cannot run over h2", got)
+	}
+}
+
+// assertWebSocketDialsProxy pins that both of the dialer's ws:// and wss:// dials go to
+// the proxy at proxyAddr (nothing listens there, so the error names it).
+func assertWebSocketDialsProxy(t *testing.T, dialer *ws.Dialer, proxyAddr string) {
+	t.Helper()
+	if dialer.NetDialContext == nil || dialer.NetDialTLSContext == nil {
+		t.Fatal("expected the dialer's ws:// and wss:// dials to be routed through the proxy")
+	}
+	for name, dial := range map[string]func(context.Context, string, string) (net.Conn, error){
+		"ws": dialer.NetDialContext, "wss": dialer.NetDialTLSContext,
+	} {
+		conn, err := dial(context.Background(), "tcp", "example.com:443")
+		if err == nil {
+			conn.Close()
+			t.Fatalf("%s: dial through the unreachable proxy %s succeeded", name, proxyAddr)
+		}
+		if !strings.Contains(err.Error(), proxyAddr) {
+			t.Fatalf("%s: expected the dial to go to the proxy %s, got: %v", name, proxyAddr, err)
+		}
 	}
 }
 
@@ -142,9 +195,7 @@ func TestConfigureWebSocketProxy_HTTPProxy_WithEnvURL_ConfiguresDialer(t *testin
 	if err != nil {
 		t.Fatalf("expected no error configuring WebSocket proxy, got: %v", err)
 	}
-	if dialer.Proxy == nil {
-		t.Fatal("expected dialer.Proxy to be configured for env-backed HTTP proxy URL")
-	}
+	assertWebSocketDialsProxy(t, dialer, "127.0.0.1:1")
 }
 
 func TestConfigureWebSocketProxy_HTTPProxy_WithEmptyEnvValue_FailsFast(t *testing.T) {
@@ -176,8 +227,8 @@ func TestConfigureWebSocketProxy_HTTPProxy_WithUnsetLiteralURL_KeepsDefaultBehav
 	if err != nil {
 		t.Fatalf("expected no error when proxy URL is unset, got: %v", err)
 	}
-	if dialer.Proxy != nil {
-		t.Fatal("expected dialer.Proxy to remain unset when literal proxy URL is not provided")
+	if dialer.Proxy != nil || dialer.NetDialContext != nil || dialer.NetDialTLSContext != nil {
+		t.Fatal("expected the dialer to stay on its defaults when literal proxy URL is not provided")
 	}
 }
 
@@ -185,23 +236,14 @@ func TestConfigureWebSocketProxy_Socks5Proxy_ConfiguresDialer(t *testing.T) {
 	dialer := &ws.Dialer{}
 	cfg := &schemas.ProxyConfig{
 		Type: schemas.Socks5Proxy,
-		URL:  schemas.NewSecretVar("socks5://127.0.0.1:1080"),
+		URL:  schemas.NewSecretVar("socks5://127.0.0.1:1"),
 	}
 
 	_, err := ConfigureWebSocketProxy(dialer, cfg)
 	if err != nil {
 		t.Fatalf("expected no error configuring WebSocket proxy, got: %v", err)
 	}
-	if dialer.Proxy == nil {
-		t.Fatal("expected dialer.Proxy to be configured for SOCKS5 proxy URL")
-	}
-	proxyURL, err := dialer.Proxy(nil)
-	if err != nil {
-		t.Fatalf("expected proxy func to resolve without error, got: %v", err)
-	}
-	if proxyURL == nil || proxyURL.Scheme != "socks5" || proxyURL.Host != "127.0.0.1:1080" {
-		t.Fatalf("expected resolved socks5://127.0.0.1:1080 proxy URL, got: %v", proxyURL)
-	}
+	assertWebSocketDialsProxy(t, dialer, "127.0.0.1:1")
 }
 
 func TestConfigureWebSocketProxy_NoProxy_LeavesDialerUnset(t *testing.T) {
@@ -212,8 +254,8 @@ func TestConfigureWebSocketProxy_NoProxy_LeavesDialerUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for NoProxy type, got: %v", err)
 	}
-	if dialer.Proxy != nil {
-		t.Fatal("expected dialer.Proxy to remain unset for NoProxy type")
+	if dialer.Proxy != nil || dialer.NetDialContext != nil || dialer.NetDialTLSContext != nil {
+		t.Fatal("expected the dialer to stay on its defaults for NoProxy type")
 	}
 }
 
@@ -224,8 +266,8 @@ func TestConfigureWebSocketProxy_NilConfig_LeavesDialerUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for nil proxy config, got: %v", err)
 	}
-	if dialer.Proxy != nil {
-		t.Fatal("expected dialer.Proxy to remain unset for nil proxy config")
+	if dialer.Proxy != nil || dialer.NetDialContext != nil || dialer.NetDialTLSContext != nil {
+		t.Fatal("expected the dialer to stay on its defaults for nil proxy config")
 	}
 }
 
@@ -707,5 +749,254 @@ func TestConfigureProxy_UnresponsiveProxyDoesNotHang(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > 3*time.Second {
 			t.Errorf("%s: dial took %v, want it bounded by the handshake timeout", name, elapsed)
 		}
+	}
+}
+
+// TestConfigureProxy_EnvironmentHTTPSProxyTrustsProxyCA pins that proxy_config type
+// "environment" reaches an https:// proxy named by HTTPS_PROXY, verifying it with the
+// proxy_config CA, and that without that CA the private certificate is refused rather
+// than the target being dialed directly.
+func TestConfigureProxy_EnvironmentHTTPSProxyTrustsProxyCA(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "env-tls")
+	for _, name := range proxytest.EnvNames {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTPS_PROXY", "https://127.0.0.1:"+recorder.Port())
+	const target = "api.bifrost.test:443"
+
+	client := ConfigureProxy(&fasthttp.Client{}, &schemas.ProxyConfig{
+		Type:      schemas.EnvProxy,
+		CACertPEM: schemas.NewSecretVar(recorder.CAPEM),
+	}, testLogger{})
+	conn, err := client.Dial(target)
+	if err != nil {
+		t.Fatalf("dial through the env https proxy: %v", err)
+	}
+	conn.Close()
+	if seen := recorder.Seen(); len(seen) != 1 || seen[0].Target != target {
+		t.Fatalf("proxy saw %+v, want one CONNECT to %s", seen, target)
+	}
+
+	recorder.Reset()
+	untrusted := ConfigureProxy(&fasthttp.Client{}, &schemas.ProxyConfig{Type: schemas.EnvProxy}, testLogger{})
+	if conn, err := untrusted.Dial(target); err == nil {
+		conn.Close()
+		t.Fatal("an https proxy with a private CA was accepted without that CA")
+	} else if !strings.Contains(err.Error(), "proxy TLS handshake") {
+		t.Fatalf("want a proxy TLS handshake error, got %v", err)
+	}
+	if seen := recorder.Seen(); len(seen) != 0 {
+		t.Fatalf("an unverified proxy saw %+v", seen)
+	}
+}
+
+// tunnelProxy is a CONNECT proxy that really tunnels, so a TLS client behind it
+// handshakes with the upstream's own certificate. Every tunnel goes to upstream,
+// whatever host the CONNECT names, the way a proxy resolves names the client cannot.
+// It returns the proxy URL.
+func tunnelProxy(t *testing.T, upstreamAddr string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				req, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil || req.Method != http.MethodConnect {
+					return
+				}
+				upstream, err := net.Dial("tcp", upstreamAddr)
+				if err != nil {
+					return
+				}
+				defer upstream.Close()
+				_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+				go func() { _, _ = io.Copy(upstream, conn) }()
+				_, _ = io.Copy(conn, upstream)
+			}()
+		}
+	}()
+	return "http://" + listener.Addr().String()
+}
+
+// TestInheritedSkipTLSVerify_OnlyCoversProxiedTraffic pins what an inherited global
+// skip_tls_verify covers: TLS sessions through the proxy (a TLS-inspecting proxy
+// presents its own certificates), never a no_proxy host the provider reaches directly,
+// which must still pass certificate verification. The provider's own
+// network_config.insecure_skip_verify still turns verification off everywhere, and its
+// network_config.ca_cert_pem is trusted for direct hosts.
+func TestInheritedSkipTLSVerify_OnlyCoversProxiedTraffic(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(target.Close)
+	targetCA := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: target.Certificate().Raw}))
+	proxyURL := tunnelProxy(t, target.Listener.Addr().String())
+	_, targetPort, _ := net.SplitHostPort(target.Listener.Addr().String())
+	// Through the proxy, the target is named by a host (example.com is on the test
+	// certificate), as a provider endpoint is; directly, it is the 127.0.0.1 listener.
+	proxiedURL := "https://example.com:" + targetPort
+
+	inherited := func(noProxy string) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxyURL), NoProxy: noProxy, SkipTLSVerify: true}
+	}
+	withCA := schemas.DefaultNetworkConfig
+	withCA.CACertPEM = schemas.NewSecretVar(targetCA)
+	ownSkip := schemas.DefaultNetworkConfig
+	ownSkip.InsecureSkipVerify = true
+
+	for _, tc := range []struct {
+		name    string
+		url     string
+		proxy   *schemas.ProxyConfig
+		network schemas.NetworkConfig
+		wantErr bool
+	}{
+		{"through the proxy: skipped", proxiedURL, inherited("127.0.0.1"), schemas.DefaultNetworkConfig, false},
+		{"no_proxy host: verified", target.URL, inherited("127.0.0.1"), schemas.DefaultNetworkConfig, true},
+		{"no_proxy host with network_config CA: verified against it", target.URL, inherited("127.0.0.1"), withCA, false},
+		{"no_proxy host with the provider's own insecure_skip_verify", target.URL, inherited("127.0.0.1"), ownSkip, false},
+	} {
+		t.Run("fasthttp/"+tc.name, func(t *testing.T) {
+			client := ConfigureProxy(&fasthttp.Client{}, tc.proxy, testLogger{})
+			ConfigureDialer(client, false)
+			client = ConfigureTLS(client, tc.network, testLogger{})
+			req := fasthttp.AcquireRequest()
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			req.SetRequestURI(tc.url)
+			err := client.DoTimeout(req, resp, 5*time.Second)
+			assertCertOutcome(t, err, tc.wantErr)
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		url     string
+		proxy   *schemas.ProxyConfig
+		wantErr bool
+	}{
+		{"through the proxy: skipped", proxiedURL, inherited("127.0.0.1"), false},
+		{"no_proxy host: verified", target.URL, inherited("127.0.0.1"), true},
+	} {
+		t.Run("net/http/"+tc.name, func(t *testing.T) {
+			proxy, tlsConfig, err := NetHTTPProxy(tc.proxy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig}}
+			resp, err := client.Get(tc.url)
+			if err == nil {
+				resp.Body.Close()
+			}
+			assertCertOutcome(t, err, tc.wantErr)
+		})
+	}
+}
+
+func assertCertOutcome(t *testing.T, err error, wantCertErr bool) {
+	t.Helper()
+	if !wantCertErr {
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("a direct no_proxy host with an untrusted certificate was accepted: verification was skipped")
+	}
+	if !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("want a certificate verification error, got %v", err)
+	}
+}
+
+// TestScopeSkipVerify_ByServerName pins the hostname rule of scopeSkipVerify: a host on
+// no_proxy is verified (hostname included), any other host is the proxy's to skip.
+func TestScopeSkipVerify_ByServerName(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(server.Close)
+	selfSigned := server.Certificate()
+	scoped := scopeSkipVerify(&tls.Config{InsecureSkipVerify: true}, "direct.example, .internal.example")
+
+	for _, tc := range []struct {
+		serverName string
+		wantErr    bool
+	}{
+		{"proxied.example", false},
+		{"direct.example", true},
+		{"api.internal.example", true},
+	} {
+		err := scoped.VerifyConnection(tls.ConnectionState{ServerName: tc.serverName, PeerCertificates: []*x509.Certificate{selfSigned}})
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, want error %v", tc.serverName, err, tc.wantErr)
+		}
+	}
+	if scopeSkipVerify(&tls.Config{InsecureSkipVerify: true}, "").VerifyConnection != nil {
+		t.Error("with no no_proxy list the proxy's skip covers everything")
+	}
+}
+
+// tunnelHTTPSProxy is an https:// CONNECT proxy (httptest's certificate) that tunnels
+// every CONNECT to upstreamAddr. It returns the proxy URL and its certificate.
+func tunnelHTTPSProxy(t *testing.T, upstreamAddr string) (string, string) {
+	t.Helper()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
+			return
+		}
+		upstream, err := net.Dial("tcp", upstreamAddr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			upstream.Close()
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		go func() { _, _ = io.Copy(upstream, conn); upstream.Close() }()
+		go func() { _, _ = io.Copy(conn, upstream); conn.Close() }()
+	}))
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return "https://" + server.Listener.Addr().String(), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+}
+
+// TestConfigureProxy_HTTPSProxyKeepsTargetTLS pins that a request through an https://
+// proxy still runs its own TLS session with the target inside the tunnel. The tunnel is
+// itself a TLS connection (to the proxy), and fasthttp skips its TLS handshake for any
+// dialed connection that already has one, so returning the proxy's TLS connection
+// would send the request to the target in plaintext, readable by the proxy.
+func TestConfigureProxy_HTTPSProxyKeepsTargetTLS(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(target.Close)
+	proxyURL, caPEM := tunnelHTTPSProxy(t, target.Listener.Addr().String())
+
+	client := ConfigureProxy(&fasthttp.Client{}, &schemas.ProxyConfig{
+		Type:      schemas.HTTPProxy,
+		URL:       schemas.NewSecretVar(proxyURL),
+		CACertPEM: schemas.NewSecretVar(caPEM), // signs both the proxy and the target here
+	}, testLogger{})
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI(target.URL)
+	if err := client.DoTimeout(req, resp, 5*time.Second); err != nil {
+		t.Fatalf("request through the https proxy: %v", err)
+	}
+	if resp.StatusCode() != http.StatusOK || string(resp.Body()) != "ok" {
+		t.Fatalf("target answered %d %q: the request reached it without TLS (a TLS server rejects plaintext HTTP)", resp.StatusCode(), resp.Body())
 	}
 }
