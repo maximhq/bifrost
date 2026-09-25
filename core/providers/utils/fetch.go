@@ -174,6 +174,7 @@ type fetchClientKey struct {
 	username  string
 	password  string
 	caCertPEM string
+	noProxy   string
 	// env holds the proxy variables for type "environment": EnvProxyFunc reads them
 	// when the client is built, so the values it read are part of which client this is.
 	env string
@@ -189,6 +190,7 @@ func fetchClientKeyFor(proxyConfig *schemas.ProxyConfig) fetchClientKey {
 		username:  proxyConfig.Username.GetValue(),
 		password:  proxyConfig.Password.GetValue(),
 		caCertPEM: proxyConfig.CACertPEM.GetValue(),
+		noProxy:   proxyConfig.NoProxy,
 	}
 	if proxyConfig.Type == schemas.EnvProxy {
 		var env strings.Builder
