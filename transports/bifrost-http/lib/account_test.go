@@ -152,3 +152,105 @@ func TestSetGlobalProxyConfig_StoresWithoutClient(t *testing.T) {
 		t.Error("the global proxy must be stored")
 	}
 }
+
+// TestGetConfigForProvider_ProxySourceMatrix pins which proxy config a provider hands to
+// core for every combination of global proxy state, the provider's own proxy_config and
+// the proxy env vars. The env vars never change the resolved config: they are read later
+// by the provider's HTTP stacks (see TestProxyRoutingMatrix in core/providers/utils),
+// so each case runs with and without them and must resolve the same way. Together the
+// two matrices cover global x provider x env x stack x target end to end.
+func TestGetConfigForProvider_ProxySourceMatrix(t *testing.T) {
+	globals := []struct {
+		name     string
+		config   func() *configstoreTables.GlobalProxyConfig
+		inherits bool
+		wantType schemas.ProxyType
+	}{
+		{name: "absent", config: func() *configstoreTables.GlobalProxyConfig { return nil }},
+		{name: "disabled", config: func() *configstoreTables.GlobalProxyConfig {
+			g := enabledGlobalProxy()
+			g.Enabled = false
+			return g
+		}},
+		{name: "enabled-not-for-inference", config: func() *configstoreTables.GlobalProxyConfig {
+			g := enabledGlobalProxy()
+			g.EnableForInference = false
+			return g
+		}},
+		{name: "enabled-no-url", config: func() *configstoreTables.GlobalProxyConfig {
+			g := enabledGlobalProxy()
+			g.URL = ""
+			return g
+		}},
+		{name: "enabled-http", config: enabledGlobalProxy, inherits: true, wantType: schemas.HTTPProxy},
+		{name: "enabled-socks5", config: func() *configstoreTables.GlobalProxyConfig {
+			g := enabledGlobalProxy()
+			g.Type = network.GlobalProxyTypeSOCKS5
+			g.URL = "socks5://10.0.0.9:1080"
+			return g
+		}, inherits: true, wantType: schemas.Socks5Proxy},
+		{name: "enabled-tcp", config: func() *configstoreTables.GlobalProxyConfig {
+			g := enabledGlobalProxy()
+			g.Type = network.GlobalProxyTypeTCP
+			return g
+		}},
+	}
+	owns := []struct {
+		name   string
+		config *schemas.ProxyConfig
+		hasOwn bool
+	}{
+		{name: "unset", config: nil},
+		{name: "none", config: &schemas.ProxyConfig{Type: schemas.NoProxy}},
+		{name: "empty-type", config: &schemas.ProxyConfig{}},
+		{name: "http", config: &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://own:8080")}, hasOwn: true},
+		{name: "socks5", config: &schemas.ProxyConfig{Type: schemas.Socks5Proxy, URL: schemas.NewSecretVar("socks5://own:1080")}, hasOwn: true},
+		{name: "environment", config: &schemas.ProxyConfig{Type: schemas.EnvProxy}, hasOwn: true},
+	}
+	envs := map[string]map[string]string{
+		"no-env":   {},
+		"env-vars": {"HTTPS_PROXY": "http://10.0.0.2:3128", "HTTP_PROXY": "http://10.0.0.3:3128", "NO_PROXY": "other.example"},
+	}
+
+	for _, global := range globals {
+		for _, own := range owns {
+			for envName, vars := range envs {
+				t.Run(global.name+"/"+own.name+"/"+envName, func(t *testing.T) {
+					for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"} {
+						t.Setenv(name, "")
+					}
+					for name, value := range vars {
+						t.Setenv(name, value)
+					}
+					store := &Config{
+						Providers:   map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {ProxyConfig: own.config}},
+						ProxyConfig: global.config(),
+					}
+					config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
+					if err != nil {
+						t.Fatalf("GetConfigForProvider: %v", err)
+					}
+					got := config.ProxyConfig
+
+					switch {
+					case own.hasOwn:
+						if got != own.config {
+							t.Errorf("proxy = %+v, want the provider's own proxy", got)
+						}
+					case global.inherits:
+						if got == nil || got.Type != global.wantType || got.URL.GetValue() != store.ProxyConfig.URL {
+							t.Fatalf("proxy = %+v, want the inherited global %s proxy", got, global.wantType)
+						}
+						if got.NoProxy != store.ProxyConfig.NoProxy {
+							t.Errorf("no_proxy = %q, want the global list %q", got.NoProxy, store.ProxyConfig.NoProxy)
+						}
+					default:
+						if got != own.config {
+							t.Errorf("proxy = %+v, want the provider's config unchanged (%+v)", got, own.config)
+						}
+					}
+				})
+			}
+		}
+	}
+}

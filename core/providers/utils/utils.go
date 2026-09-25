@@ -863,6 +863,10 @@ func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.U
 //
 // Like http.ProxyFromEnvironment it picks the variable by request scheme (https ->
 // HTTPS_PROXY, http -> HTTP_PROXY) and never proxies localhost or loopback targets.
+// One difference: when both spellings of a variable are set, golang.org/x/net's
+// httpproxy (used here and by fasthttpproxy) prefers the lowercase one, while the
+// copy vendored in net/http prefers the uppercase one. Using x/net everywhere keeps
+// every provider stack on the same answer.
 func EnvProxyFunc() func(*http.Request) (*url.URL, error) {
 	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
 	return func(req *http.Request) (*url.URL, error) {

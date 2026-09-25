@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	"github.com/maximhq/bifrost/core/internal/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -887,99 +888,42 @@ func TestBedrockTransportUsesProxyConfig(t *testing.T) {
 	}
 }
 
-// TestBedrockTransportProxyMatrix pins the Bedrock runtime client's proxy choice for
-// every combination of proxy_config source, proxy env vars and target. Bedrock stays
-// on net/http for HTTP/2, so it follows net/http's rule for the environment: the
-// variable is picked by scheme (https -> HTTPS_PROXY, http -> HTTP_PROXY, no fallback
-// between them), and with no proxy_config it keeps proxying from the environment.
-// The other stacks are covered by TestProxyRoutingMatrix in core/providers/utils.
+// TestBedrockTransportProxyMatrix pins the Bedrock runtime client's route for every
+// combination of proxy_config source, proxy env vars and target, sending real requests
+// through provider.client (the net/http client Bedrock keeps for HTTP/2) and the
+// core/internal/proxytest recorders. Bedrock follows net/http's rule for the
+// environment: the variable is picked by scheme, and with no proxy_config it keeps
+// proxying from the environment. Like every stack it reads the environment through
+// golang.org/x/net's httpproxy, so the lowercase spelling wins when both are set. The
+// fasthttp stacks are covered by TestProxyRoutingMatrix in core/providers/utils.
 func TestBedrockTransportProxyMatrix(t *testing.T) {
-	const (
-		configProxy = "10.0.0.1:3128"
-		envHTTPS    = "10.0.0.2:3128"
-		envHTTP     = "10.0.0.3:3128"
-		targetHost  = "bedrock-runtime.us-east-1.amazonaws.com"
-	)
-	sources := []struct {
-		name   string
-		config *schemas.ProxyConfig
-	}{
-		{"unset", nil},
-		{"none", &schemas.ProxyConfig{Type: schemas.NoProxy}},
-		{"http", &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://" + configProxy)}},
-		{"environment", &schemas.ProxyConfig{Type: schemas.EnvProxy}},
-	}
-	envs := []struct {
-		name string
-		vars map[string]string
-	}{
-		{"no-env", map[string]string{}},
-		{"HTTPS_PROXY", map[string]string{"HTTPS_PROXY": envHTTPS}},
-		{"HTTP_PROXY", map[string]string{"HTTP_PROXY": envHTTP}},
-		{"both", map[string]string{"HTTPS_PROXY": envHTTPS, "HTTP_PROXY": envHTTP}},
-		{"both+NO_PROXY", map[string]string{"HTTPS_PROXY": envHTTPS, "HTTP_PROXY": envHTTP, "NO_PROXY": targetHost}},
-		{"https_proxy-lowercase", map[string]string{"https_proxy": envHTTPS}},
-		{"http_proxy-lowercase", map[string]string{"http_proxy": envHTTP}},
-	}
-	targets := []struct{ name, url string }{
-		{"https", "https://" + targetHost + "/model/x/converse"},
-		{"http", "http://" + targetHost + "/model/x/converse"},
-		{"https-8443", "https://" + targetHost + ":8443/model/x/converse"},
-	}
-	envPick := func(vars map[string]string, https bool) string {
-		if vars["NO_PROXY"] != "" {
-			return ""
-		}
-		if https {
-			if vars["HTTPS_PROXY"] != "" {
-				return vars["HTTPS_PROXY"]
-			}
-			return vars["https_proxy"]
-		}
-		if vars["HTTP_PROXY"] != "" {
-			return vars["HTTP_PROXY"]
-		}
-		return vars["http_proxy"]
-	}
-
-	for _, source := range sources {
-		for _, env := range envs {
-			for _, target := range targets {
-				t.Run(source.name+"/"+env.name+"/"+target.name, func(t *testing.T) {
-					for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
-						t.Setenv(name, "")
-					}
-					for name, value := range env.vars {
-						if name != "NO_PROXY" {
-							value = "http://" + value
-						}
-						t.Setenv(name, value)
-					}
+	set := proxytest.NewSet(t)
+	for _, source := range proxytest.Sources {
+		for _, env := range proxytest.Envs {
+			for _, target := range proxytest.Targets {
+				t.Run(source.Name+"/"+env.Name+"/"+target.Name, func(t *testing.T) {
+					set.Reset()
+					proxytest.SetEnv(t, set, env, proxytest.TargetHost)
+					want := proxytest.Expect(set, source, env, target, proxytest.ByScheme, true)
 
 					config := &schemas.ProviderConfig{
-						NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 300},
-						ProxyConfig:   source.config,
+						NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5},
+						ProxyConfig:   source.Config(set),
 					}
 					config.CheckAndSetDefaults()
 					provider, err := NewBedrockProvider(config, noopLogger{})
 					require.NoError(t, err)
-					transport, ok := provider.client.Transport.(*http.Transport)
-					require.True(t, ok)
 
-					req, err := http.NewRequest(http.MethodPost, target.url, nil)
+					hostPort := net.JoinHostPort(proxytest.TargetHost, target.Port)
+					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					defer cancel()
+					req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.Scheme+"://"+hostPort+"/model/x/converse", nil)
 					require.NoError(t, err)
-					got, err := transport.Proxy(req)
-					require.NoError(t, err)
-
-					want := configProxy
-					if source.name != "http" {
-						want = envPick(env.vars, strings.HasPrefix(target.url, "https://"))
+					resp, err := provider.client.Do(req)
+					if err == nil {
+						resp.Body.Close()
 					}
-					gotHost := ""
-					if got != nil {
-						gotHost = got.Host
-					}
-					assert.Equal(t, want, gotHost, "proxy for %s", target.url)
+					proxytest.AssertRoute(t, set, want, hostPort, err)
 				})
 			}
 		}

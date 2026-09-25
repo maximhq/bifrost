@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/internal/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -158,7 +159,7 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
 	var hits atomic.Int32
 	var secretHits atomic.Int32
-	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Host == "10.0.0.5" {
 			secretHits.Add(1)
 			w.WriteHeader(http.StatusOK)
@@ -285,5 +286,26 @@ func TestFetchClientFor_OneClientPerResolvedProxy(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3129")
 	if clientFor(env) == first {
 		t.Error("type environment must get a new client when the proxy variables change")
+	}
+}
+
+// TestFetchAndEncodeURL_ProxiedHostnameTargetNeedsLocalDNS pins a deliberate limit: the
+// SSRF check resolves the target on the Bifrost host even when the fetch is proxied. A
+// hostname only the proxy can resolve is refused, never sent unchecked, because a name
+// that resolves only at a corporate proxy can just as well name an intranet host.
+func TestFetchAndEncodeURL_ProxiedHostnameTargetNeedsLocalDNS(t *testing.T) {
+	var hits atomic.Int32
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1) })
+	ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	})
+
+	_, _, err := FetchAndEncodeURL(ctx, "http://only-the-proxy-resolves.test/img.png")
+	if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("expected a local DNS failure, got %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("an unchecked target reached the proxy %d times", hits.Load())
 	}
 }
