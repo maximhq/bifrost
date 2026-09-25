@@ -27,7 +27,7 @@ func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, state *ca
 	}
 
 	provider, model, _ := req.GetRequestFields()
-	directCacheID, err := plugin.generateDirectCacheID(provider, model, cacheKey, requestHash, paramsHash)
+	directCacheID, err := plugin.generateDirectCacheID(provider, model, cacheKey, requestHash, paramsHash, requestFamily(req.RequestType))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate direct cache ID: %w", err)
 	}
@@ -210,20 +210,24 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest, params ma
 }
 
 // generateDirectCacheID returns a deterministic UUIDv5 derived from the cache
-// key, request hash, params hash, and (optionally) provider/model. The same
+// key, request hash, params hash, request family, and (optionally) provider/model. The same
 // inputs always produce the same ID, which is what makes the direct path an
-// O(1) point fetch.
-func (plugin *Plugin) generateDirectCacheID(provider schemas.ModelProvider, model string, cacheKey string, requestHash string, paramsHash string) (string, error) {
+// O(1) point fetch. Schema version 2 leaves ambiguous pre-fix entries unreadable.
+func (plugin *Plugin) generateDirectCacheID(provider schemas.ModelProvider, model string, cacheKey string, requestHash string, paramsHash string, family string) (string, error) {
 	idInput := struct {
-		CacheKey    string `json:"cache_key"`
-		RequestHash string `json:"request_hash"`
-		ParamsHash  string `json:"params_hash"`
-		Provider    string `json:"provider,omitempty"`
-		Model       string `json:"model,omitempty"`
+		KeySchema     int    `json:"key_schema"`
+		CacheKey      string `json:"cache_key"`
+		RequestHash   string `json:"request_hash"`
+		ParamsHash    string `json:"params_hash"`
+		RequestFamily string `json:"request_family"`
+		Provider      string `json:"provider,omitempty"`
+		Model         string `json:"model,omitempty"`
 	}{
-		CacheKey:    cacheKey,
-		RequestHash: requestHash,
-		ParamsHash:  paramsHash,
+		KeySchema:     2,
+		CacheKey:      cacheKey,
+		RequestHash:   requestHash,
+		ParamsHash:    paramsHash,
+		RequestFamily: family,
 	}
 	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
 		idInput.Provider = string(provider)

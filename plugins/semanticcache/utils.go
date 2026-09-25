@@ -23,28 +23,31 @@ var directCacheNamespace = uuid.MustParse("b1f3c2d4-e5a6-7890-abcd-ef1234567890"
 
 // isSemanticCacheSupportedRequestType reports whether semantic cache supports
 // this request type for cache lookup and storage. Unsupported types are skipped.
-//
-// IMPORTANT: this list must stay in sync with the switch in buildRequestMetadataForCaching.
-// When adding a new case there, add it here too.
 func isSemanticCacheSupportedRequestType(requestType schemas.RequestType) bool {
+	return requestFamily(requestType) != ""
+}
+
+// requestFamily identifies the response contract rather than the transport.
+// Stream mode is already part of the parameters hash. Keep this mapping in
+// sync with buildRequestMetadataForCaching when adding supported request types.
+func requestFamily(requestType schemas.RequestType) string {
 	switch requestType {
-	case schemas.TextCompletionRequest,
-		schemas.TextCompletionStreamRequest,
-		schemas.ChatCompletionRequest,
-		schemas.ChatCompletionStreamRequest,
-		schemas.ResponsesRequest,
-		schemas.ResponsesStreamRequest,
-		schemas.WebSocketResponsesRequest,
-		schemas.SpeechRequest,
-		schemas.SpeechStreamRequest,
-		schemas.EmbeddingRequest,
-		schemas.TranscriptionRequest,
-		schemas.TranscriptionStreamRequest,
-		schemas.ImageGenerationRequest,
-		schemas.ImageGenerationStreamRequest:
-		return true
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		return "text_completions"
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return "chat_completions"
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		return "responses"
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		return "speech"
+	case schemas.EmbeddingRequest:
+		return "embeddings"
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		return "transcriptions"
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		return "image_generation"
 	default:
-		return false
+		return ""
 	}
 }
 
@@ -192,8 +195,13 @@ func flattenToFloat32Embedding(values [][]float64) []float32 {
 // changes. The returned map is fed to hashMap to derive params_hash, which
 // then anchors both direct and semantic lookups.
 func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *schemas.BifrostRequest) (map[string]interface{}, error) {
+	family := requestFamily(req.RequestType)
+	if family == "" {
+		return nil, fmt.Errorf("unsupported request type for semantic caching")
+	}
 	metadata := map[string]interface{}{
-		"stream": bifrost.IsStreamRequestType(req.RequestType),
+		"stream":         bifrost.IsStreamRequestType(req.RequestType),
+		"request_family": family,
 	}
 
 	if attachments := plugin.extractAttachmentsForCaching(state, req); len(attachments) > 0 {
