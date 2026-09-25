@@ -752,18 +752,18 @@ Virtual keys can optionally carry an expiry timestamp. Once the expiry passes, r
 - **Fail closed** — both LLM inference and MCP tool execution are blocked once the key expires.
 - **Inactive wins** — a key that is both inactive and expired is rejected as inactive.
 - **Restore anytime** — extend the expiry to a future timestamp or clear it; access resumes immediately.
-- **Delete after expire** (optional) — tick **Delete after expire** (API: `delete_after_expire: true`) and a cleanup job that runs once a day removes the key after it expires. Each run that deletes at least one key posts a notification listing the removed keys; runs that find nothing stay silent. The flag needs an expiry: setting it without one returns `400`, and clearing the expiry resets it.
+- **Delete after expire** (optional) — a cleanup job that runs once a day removes expired keys. Turn it on for the whole workspace under **Settings → Security → Delete Expired Virtual Keys** (config.json: `client.delete_expired_virtual_keys`, default `false`), or per key with the **Delete after expire** switch (API: `delete_after_expire`). A key with no value of its own follows the workspace setting; `true` or `false` on the key wins over it. Each run that deletes at least one key posts a notification listing the removed keys; runs that find nothing stay silent. The per-key value needs an expiry: setting it without one returns `400`, and clearing the expiry resets the key to inherit.
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
 1. Go to **Virtual Keys** and create or edit a key
 2. In the **Expiry** section, pick **Never**, a preset (**30 min**, **1 hour**, **24 hours**, **7 days**), or choose a custom date and time from the calendar
-3. Optionally tick **Delete after expire** to have the key removed automatically within 24 hours of expiring
+3. Optionally flip **Delete after expire**. The switch starts at the workspace setting from **Settings → Security**; leave it there to follow that setting, or flip it to decide for this key
 
 ![Virtual Key Expiry Picker](../../media/ui-virtual-key-expiry.png)
 
-Expired keys show an **Expired** badge in the virtual keys table, with **auto-delete** appended when the key is marked for cleanup.
+Expired keys show an **Expired** badge in the virtual keys table, with **auto-delete** appended when the key will be cleaned up, whether by its own setting or the workspace default.
 
 </Tab>
 <Tab title="API">
@@ -800,7 +800,7 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -d '{"expires_at": ""}'
 ```
 
-Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. On update, omitting `expires_at` leaves the current expiry unchanged. `delete_after_expire` can be sent on create or update; it is rejected with `400` when the key has no expiry.
+Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. On update, omitting `expires_at` leaves the current expiry unchanged. `delete_after_expire` can be sent on create or update: omit it to follow `client.delete_expired_virtual_keys`, send `true` or `false` to decide for this key, or send `null` on update to go back to inheriting. Any value is rejected with `400` when the key has no expiry.
 
 **Expired key rejection:**
 ```json
