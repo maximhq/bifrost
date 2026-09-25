@@ -326,34 +326,3 @@ func TestRequestFamilySeparatesParamsHash(t *testing.T) {
 		t.Fatalf("fixture does not reproduce old request_hash collision: chat=%s responses=%s", oldChatRequestHash, oldResponsesRequestHash)
 	}
 }
-
-func TestCachedResponseWithDifferentFamilyIsMiss(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore())
-	for _, stream := range []bool{false, true} {
-		name := "nonstream"
-		requestType := schemas.ResponsesRequest
-		response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
-		field := "response"
-		if stream {
-			name = "stream"
-			requestType = schemas.ResponsesStreamRequest
-			field = "stream_chunks"
-		}
-		t.Run(name, func(t *testing.T) {
-			encoded, err := json.Marshal(response)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var payload interface{} = string(encoded)
-			if stream {
-				payload = []string{string(encoded)}
-			}
-			result := vectorstore.SearchResult{ID: "wrong-family", Properties: map[string]interface{}{field: payload}}
-			req := &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: CreateBasicResponsesRequest("same", 0.5, 100)}
-			hit, err := plugin.buildResponseFromResult(newBaseTestContext(), &cacheState{}, req, result, CacheTypeDirect, nil, nil)
-			if err != nil || hit != nil {
-				t.Fatalf("wrong-family entry must miss, got hit=%v err=%v", hit, err)
-			}
-		})
-	}
-}

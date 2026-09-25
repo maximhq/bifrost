@@ -340,9 +340,6 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 	if err := json.Unmarshal([]byte(responseStr), &cachedResponse); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
 	}
-	if !plugin.isCompatibleCachedResponse(ctx, req, &cachedResponse, result.ID) {
-		return nil, nil
-	}
 
 	plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	state.ShortCircuited = true
@@ -354,16 +351,6 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 // can't leak the goroutine (and its captured chunks) for the lifetime of the
 // process.
 func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, state *cacheState, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamArray []string, cacheType CacheType, threshold *float64, similarity *float64, inputTokens *int) (*schemas.LLMPluginShortCircuit, error) {
-	// Validate one chunk before returning a hit. A response-shape mismatch must
-	// fall through to the provider before any stream bytes reach the caller.
-	var firstChunk schemas.BifrostResponse
-	if err := json.Unmarshal([]byte(streamArray[0]), &firstChunk); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal first cached stream chunk: %w", err)
-	}
-	if !plugin.isCompatibleCachedResponse(ctx, req, &firstChunk, result.ID) {
-		return nil, nil
-	}
-
 	requestedProvider, requestedModel, _ := req.GetRequestFields()
 	streamChan := make(chan *schemas.BifrostStreamChunk)
 	done := ctx.Done()
@@ -422,45 +409,6 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 
 	state.ShortCircuited = true
 	return &schemas.LLMPluginShortCircuit{Stream: streamChan}, nil
-}
-
-// isCompatibleCachedResponse is a read-side safety net for entries inserted
-// outside this plugin or corrupted in the store. The key and params hash are
-// the primary isolation; this check prevents a wrong response dialect from
-// being served if a mismatched entry nevertheless reaches the reader.
-func (plugin *Plugin) isCompatibleCachedResponse(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, response *schemas.BifrostResponse, id string) bool {
-	want := requestFamily(req.RequestType)
-	got := cachedResponseFamily(response)
-	// Some older entries and minimal test fixtures lack a typed response.
-	// The versioned key isolates old entries; reject only a positive mismatch.
-	if got == "" || got == want {
-		return true
-	}
-	msg := fmt.Sprintf("cache entry %s request family mismatch (requested=%s, stored=%s), treating as miss", id, want, got)
-	plugin.logger.Warn(msg)
-	ctx.Log(schemas.LogLevelWarn, msg)
-	return false
-}
-
-func cachedResponseFamily(response *schemas.BifrostResponse) string {
-	switch {
-	case response.TextCompletionResponse != nil:
-		return "text_completions"
-	case response.ChatResponse != nil:
-		return "chat_completions"
-	case response.ResponsesResponse != nil, response.ResponsesStreamResponse != nil:
-		return "responses"
-	case response.SpeechResponse != nil, response.SpeechStreamResponse != nil:
-		return "speech"
-	case response.EmbeddingResponse != nil:
-		return "embeddings"
-	case response.TranscriptionResponse != nil, response.TranscriptionStreamResponse != nil:
-		return "transcriptions"
-	case response.ImageGenerationResponse != nil, response.ImageGenerationStreamResponse != nil:
-		return "image_generation"
-	default:
-		return ""
-	}
 }
 
 // stampCacheMetadataForHit stamps cache-hit metadata on the response. For
