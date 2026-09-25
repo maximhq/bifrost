@@ -217,6 +217,67 @@ func TestStampContentLoggingDecisionMarksTrace(t *testing.T) {
 	}
 }
 
+// A layer that has not been stamped yet can still change the decision only when no tier above it has
+// decided and no peer in its own tier already says off (any off wins inside a tier).
+func TestContentLoggingLayerCanChange(t *testing.T) {
+	type stamp struct {
+		layer    BifrostContextKey
+		disabled bool
+	}
+	for _, tc := range []struct {
+		name   string
+		stamps []stamp
+		layer  BifrostContextKey
+		want   bool
+	}{
+		{name: "nothing stamped", layer: BifrostContextKeyProviderKeyDisableContentLogging, want: true},
+		{
+			name:   "a higher tier decided on",
+			stamps: []stamp{{BifrostContextKeyTeamDisableContentLogging, false}},
+			layer:  BifrostContextKeyProviderKeyDisableContentLogging,
+			want:   false,
+		},
+		{
+			name:   "a higher tier decided off",
+			stamps: []stamp{{BifrostContextKeyUserDisableContentLogging, true}},
+			layer:  BifrostContextKeyProviderKeyDisableContentLogging,
+			want:   false,
+		},
+		{
+			name:   "a peer already says off",
+			stamps: []stamp{{BifrostContextKeyGovernanceDisableContentLogging, true}},
+			layer:  BifrostContextKeyProviderKeyDisableContentLogging,
+			want:   false,
+		},
+		{
+			name:   "a peer says on, so an off can still win",
+			stamps: []stamp{{BifrostContextKeyGovernanceDisableContentLogging, false}},
+			layer:  BifrostContextKeyProviderKeyDisableContentLogging,
+			want:   true,
+		},
+		{
+			name:   "a lower tier decided, so a higher layer can still change it",
+			stamps: []stamp{{BifrostContextKeyGovernanceDisableContentLogging, true}},
+			layer:  BifrostContextKeyTeamDisableContentLogging,
+			want:   true,
+		},
+		{name: "not a layer", layer: BifrostContextKeySelectedKeyID, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := newContentLoggingTestContext()
+			for _, s := range tc.stamps {
+				StampContentLoggingDecision(ctx, s.layer, s.disabled)
+			}
+			if got := ContentLoggingLayerCanChange(ctx, tc.layer); got != tc.want {
+				t.Fatalf("ContentLoggingLayerCanChange = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if ContentLoggingLayerCanChange(nil, BifrostContextKeyTeamDisableContentLogging) {
+		t.Fatal("nil context reports a layer that can change")
+	}
+}
+
 // The resolved marker tells the logging plugin that governance has finished stamping the caller,
 // including the case where every layer inherits and nothing else was written.
 func TestCallerContentLoggingResolved(t *testing.T) {

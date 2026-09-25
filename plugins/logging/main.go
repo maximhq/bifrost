@@ -257,20 +257,52 @@ func dropCapturedInput(entry *logstore.Log) {
 	entry.PassthroughRequestBody = ""
 }
 
-// virtualKeyStampPending reports whether the request presented a virtual key that governance has
-// not resolved onto the context yet, so the key's own content-logging decision is still unknown.
-// The presented key is read the way governance reads it: off the settled identity first, then off
-// the transport's context key.
-func virtualKeyStampPending(ctx *schemas.BifrostContext) bool {
+// contentDecisionScope says which layers can still be stamped after a pre-hook runs.
+type contentDecisionScope int
+
+const (
+	// contentScopeMCP: only the caller's layers, which governance stamps in its own PreMCPHook.
+	contentScopeMCP contentDecisionScope = iota
+	// contentScopeLLM: the caller's layers, plus the provider key, which core picks after every
+	// PreLLMHook.
+	contentScopeLLM
+)
+
+// contentDecisionPending reports whether a layer stamped after our pre-hook could still change this
+// request's content decision, so whatever the pre-hook captures is provisional and the post-hook's
+// final policy keeps or drops it.
+//
+//   - An allowed x-bf-disable-content-logging header outranks every layer, so nothing stamped later
+//     can change the decision.
+//   - The caller's layers (business unit, team, user, virtual key, access profile) are pending while
+//     the request presented a caller governance has not marked resolved yet.
+//   - On the LLM path the provider key is pending unless a layer already stamped leaves it nothing to
+//     change (a higher tier decided, or a peer in its tier already turned content off).
+func contentDecisionPending(ctx *schemas.BifrostContext, scope contentDecisionScope) bool {
 	if ctx == nil {
 		return false
 	}
-	if stamped, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); stamped != "" {
-		return false
+	if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
+		if _, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+			return false
+		}
 	}
+	if callerPresented(ctx) && !schemas.CallerContentLoggingResolved(ctx) {
+		return true
+	}
+	if scope == contentScopeLLM {
+		return schemas.ContentLoggingLayerCanChange(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging)
+	}
+	return false
+}
+
+// callerPresented reports whether the request presented a caller governance will resolve: any
+// credential or user the transport settled on the identity, or, for a context nothing settled an
+// identity on, a virtual key stamped on the context directly.
+func callerPresented(ctx *schemas.BifrostContext) bool {
 	if grant := ctx.Grant(); grant != nil {
-		if identity := grant.Identity(); identity != nil && identity.Credential().Kind == string(schemas.EntityVirtualKey) {
-			return true
+		if identity := grant.Identity(); identity != nil {
+			return identity.Credential().Kind != "" || identity.User() != nil
 		}
 	}
 	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
@@ -1726,11 +1758,11 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
-	// Capture while content is on, and also while the presented virtual key is still unresolved:
-	// governance may stamp a decision that turns content on after ours runs (the passthrough path).
-	// PostLLMHook applies the final policy and drops whatever it does not allow, and the processing
-	// notification below never carries input captured this way.
-	captureProvisional := virtualKeyStampPending(ctx)
+	// Capture while content is on, and also while a layer stamped after ours could still turn it on:
+	// governance resolves some callers after this hook (the passthrough path), and core stamps the
+	// provider key only once it picks one. PostLLMHook applies the final policy and drops whatever it
+	// does not allow, and the processing notification below never carries input captured this way.
+	captureProvisional := contentDecisionPending(ctx, contentScopeLLM)
 	if p.contentLoggingEnabled(ctx) || captureProvisional {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
 		initialData.InputHistory = inputHistory
@@ -2911,13 +2943,13 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
-	// request that presents a virtual key governance has not stamped yet has no final content
-	// decision: hold the arguments aside instead of putting them on the pending entry, where the
-	// pre-hook callback and the stale-entry reaper would expose them. PostMCPHook attaches them once
-	// the policy is final; a stale entry never gets them.
-	// The hold does not depend on the current policy: a key that turns content on over a disabled
+	// request whose caller (a virtual key, or a user who authenticated without one) governance has
+	// not resolved yet has no final content decision: hold the arguments aside instead of putting
+	// them on the pending entry, where the pre-hook callback and the stale-entry reaper would expose
+	// them. PostMCPHook attaches them once the policy is final; a stale entry never gets them.
+	// The hold does not depend on the current policy: a caller that turns content on over a disabled
 	// client flag is entitled to its arguments once PostMCPHook sees the final decision.
-	if virtualKeyStampPending(ctx) {
+	if contentDecisionPending(ctx, contentScopeMCP) {
 		p.provisionalMCPArguments.Store(mcpLogID, arguments)
 	} else if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
