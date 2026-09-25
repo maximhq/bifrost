@@ -499,6 +499,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
 	{IDs: []string{"add_mcp_server_instructions_mode_column"}, run: migrationAddMCPServerInstructionsModeColumn},
 	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
+	{IDs: []string{"add_mcp_instruction_cap_columns"}, run: migrationAddMCPInstructionCapColumns},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
@@ -14142,6 +14143,40 @@ func migrationAddMCPDiscoveredInstructionsColumn(ctx context.Context, db *gorm.D
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp discovered instructions migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPInstructionCapColumns adds the two byte bounds on forwarded MCP instructions to
+// the client config table. Both default to 0, which the core reads as "use the built-in default",
+// so existing rows keep exactly the limits they ran with before.
+func migrationAddMCPInstructionCapColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_instruction_cap_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"mcp_max_instructions_per_client", "mcp_max_instructions_total"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"mcp_max_instructions_per_client", "mcp_max_instructions_total"} {
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp instruction cap migration: %s", err.Error())
 	}
 	return nil
 }

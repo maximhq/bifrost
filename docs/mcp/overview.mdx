@@ -164,6 +164,71 @@ graph TD
 
 ---
 
+### Server Instructions
+
+Per the MCP spec, a server may return an `instructions` string from `initialize` describing how
+its tools should be used. Servers like GitHub's, Grafana's and Outline's use it to carry workflow
+rules and workspace policy.
+
+By default Bifrost does not forward these. Turn it on with `mcp.tool_manager_config.server_instructions_mode`:
+
+| Mode | Behavior |
+|------|----------|
+| `off` (default) | Upstream instructions are dropped. |
+| `gateway` | Forwarded on the `/mcp` `initialize` response, aggregated and labeled per source server. |
+| `all` | As `gateway`, plus injected into chat and responses requests as a system message. |
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "server_instructions_mode": "gateway"
+    }
+  }
+}
+```
+
+Each upstream's text is wrapped in a tagged block naming the server it came from:
+
+```
+<mcp_server name="github">
+Always call get_me first to understand current user permissions.
+</mcp_server>
+
+<mcp_server name="deepwiki">
+DeepWiki MCP provides AI-powered documentation…
+</mcp_server>
+```
+
+Tagged rather than markdown-headed because upstream instructions are usually markdown and often
+contain their own headings — a heading delimiter would be indistinguishable from the content it
+wraps. Text containing the block tag is neutralized, so one server cannot forge a boundary and
+attribute its guidance to another.
+
+The aggregate is scoped to what the caller may see: a request narrowed by `x-bf-mcp-include-clients`,
+or served from a `/mcp/<slug>` Virtual MCP endpoint, only receives the instructions of the servers it
+can actually reach. Each server's contribution is capped at 4096 bytes and the whole aggregate at
+16384 bytes, with an explicit marker when anything is trimmed. Both bounds are configurable via
+`mcp.tool_manager_config.max_instructions_per_client` and `max_instructions_total` (or the
+**MCP** settings page); `0` keeps the default. A per-server cap above the total is rejected.
+
+<Warning>
+`all` adds tokens to **every** MCP-bearing LLM request and changes the prompt prefix, which can
+invalidate provider-side prompt caching. `gateway` only affects the `/mcp` handshake.
+</Warning>
+
+Verify what a client receives:
+
+```bash
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0.0.1"}}}' \
+  | jq -r '.result.instructions // "«none»"'
+```
+
+---
+
 ### Endpoints
 
 | Endpoint | Method | Purpose |

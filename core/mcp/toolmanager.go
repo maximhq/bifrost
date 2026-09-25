@@ -82,9 +82,12 @@ type ToolsManager struct {
 	toolExecutionTimeout  atomic.Value
 	maxAgentDepth         atomic.Int32
 	disableAutoToolInject atomic.Bool
-	clientManager         ClientManager
-	logger                schemas.Logger
-	agentModeExecutor     *AgentModeExecutor
+	// Byte bounds on forwarded instructions; 0 means the built-in default.
+	maxInstructionsPerClient atomic.Int64
+	maxInstructionsTotal     atomic.Int64
+	clientManager            ClientManager
+	logger                   schemas.Logger
+	agentModeExecutor        *AgentModeExecutor
 
 	// CredentialStore resolves per-call credentials (headers, Bearer tokens)
 	// and signals whether a client needs an ephemeral upstream connection.
@@ -197,6 +200,8 @@ func NewToolsManagerWithCodeMode(
 	manager.toolExecutionTimeout.Store(time.Duration(config.ToolExecutionTimeout))
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	manager.disableAutoToolInject.Store(config.DisableAutoToolInject)
+	manager.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
+	manager.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
 
 	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 	return manager
@@ -1200,8 +1205,18 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	}
 
 	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
+	m.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
+	m.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
 
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
+}
+
+// instructionCaps reports the configured byte bounds; zero fields fall back to the defaults.
+func (m *ToolsManager) instructionCaps() InstructionCaps {
+	return InstructionCaps{
+		PerClient: int(m.maxInstructionsPerClient.Load()),
+		Total:     int(m.maxInstructionsTotal.Load()),
+	}
 }
 
 // GetCodeModeBindingLevel returns the current code mode binding level.

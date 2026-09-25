@@ -67,6 +67,11 @@ func (p *reloadVirtualKeyPlugin) GetGovernanceStore() governance.GovernanceStore
 // reloadVirtualKeyToolManager provides an empty MCP tool set.
 type reloadVirtualKeyToolManager struct{}
 
+// GetMCPServerInstructions returns no instructions.
+func (reloadVirtualKeyToolManager) GetMCPServerInstructions(context.Context) string {
+	return ""
+}
+
 // GetAvailableMCPTools returns no tools.
 func (reloadVirtualKeyToolManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
 	return nil

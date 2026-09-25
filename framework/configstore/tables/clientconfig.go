@@ -47,6 +47,8 @@ type TableClientConfig struct {
 	MCPToolSyncInterval                   int                            `gorm:"default:10" json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = built-in default)
 	MCPDisableAutoToolInject              bool                           `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`               // When true, MCP tools are not injected into requests by default
 	MCPServerInstructionsMode             string                         `gorm:"default:off" json:"mcp_server_instructions_mode"`                 // How far upstream MCP instructions travel: "off", "gateway", or "all"
+	MCPMaxInstructionsPerClient           int                            `gorm:"default:0" json:"mcp_max_instructions_per_client"`                // Byte bound on one server's forwarded instructions; 0 is the default
+	MCPMaxInstructionsTotal               int                            `gorm:"default:0" json:"mcp_max_instructions_total"`                     // Byte bound on the whole aggregate; 0 is the default
 	MCPEnableTempTokenAuth                bool                           `gorm:"default:false" json:"mcp_enable_temp_token_auth"`                 // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	AsyncJobResultTTL                     int                            `gorm:"default:3600" json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeadersJSON                   string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string

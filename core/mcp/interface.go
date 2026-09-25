@@ -20,6 +20,10 @@ type MCPManagerInterface interface {
 	// GetAvailableTools returns all available MCP tools for the given context
 	GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool
 
+	// GetAggregatedServerInstructions returns the upstream `instructions` of every client
+	// the context may see, aggregated into one labeled, size-bounded block.
+	GetAggregatedServerInstructions(ctx context.Context) string
+
 	// UpdateToolManagerConfig updates the configuration for the tool manager.
 	// DisableAutoToolInject in the config controls auto injection — pass the
 	// current value whenever only other fields change so it is never silently reset.
