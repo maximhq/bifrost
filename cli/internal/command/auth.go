@@ -226,11 +226,6 @@ func (r *Runner) authBrowserLogin(ctx context.Context, env *environment, noBrows
 	return nil
 }
 
-// ensureAgentDeviceID returns a stable opaque installation ID without reading a machine identifier.
-func (r *Runner) ensureAgentDeviceID() (string, error) {
-	return sessionauth.EnsureDeviceID(r.Secrets)
-}
-
 // assignedVirtualKeyLabel returns a readable name and ID without key material.
 func assignedVirtualKeyLabel(name, id string) string {
 	name = strings.TrimSpace(name)

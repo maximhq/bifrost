@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	clientID               = "bifrost-agent"
+	clientID               = "bifrost-cli"
 	callbackPath           = "/callback"
 	defaultLoginWait       = 5 * time.Minute
 	defaultExchangeTimeout = 30 * time.Second
@@ -93,7 +93,6 @@ type Client struct {
 	UserAgent       string
 	Version         string
 	DeviceName      string
-	HardwareID      string
 	CallbackWait    time.Duration
 	exchangeTimeout time.Duration
 	shutdownTimeout time.Duration
@@ -154,7 +153,6 @@ func (c *Client) SignIn(ctx context.Context, noBrowser bool) (TokenResponse, err
 		payload := map[string]string{
 			"code": code, "code_verifier": verifier, "redirect_uri": redirectURI,
 			"platform": runtime.GOOS, "agent_version": c.Version, "device_name": deviceName,
-			"hardware_id": strings.TrimSpace(c.HardwareID),
 		}
 		var exchanged TokenResponse
 		exchangeTimeout := c.exchangeTimeout

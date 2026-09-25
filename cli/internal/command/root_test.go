@@ -397,32 +397,6 @@ func TestSubcommandHelpReturnsSuccess(t *testing.T) {
 	}
 }
 
-// TestAgentDeviceIDIsInstallationScoped verifies contexts share a stable,
-// opaque identity without deriving it from machine identifiers.
-func TestAgentDeviceIDIsInstallationScoped(t *testing.T) {
-	runner, _, secretStore := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Fatalf("device ID generation unexpectedly called %s", request.URL)
-		return nil, nil
-	}))
-	first, err := runner.ensureAgentDeviceID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := runner.ensureAgentDeviceID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != second {
-		t.Fatalf("device IDs differ across contexts: %q != %q", first, second)
-	}
-	if !strings.HasPrefix(first, "cli-") || len(first) < 40 {
-		t.Fatalf("device ID is not an opaque CLI identifier: %q", first)
-	}
-	if got := secretStore["installation:agent-device-id"]; got != first {
-		t.Fatalf("installation device ID = %q, want %q", got, first)
-	}
-}
-
 // TestResourceDryRunRequiresNoNetwork verifies mutations can be inspected offline.
 func TestResourceDryRunRequiresNoNetwork(t *testing.T) {
 	runner, outputBuffer, _ := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
