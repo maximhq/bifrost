@@ -712,7 +712,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 			proxyURL = parsedURL.String()
 		}
-		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
+		dialFunc = fasthttpproxy.FasthttpHTTPDialerDualStack(proxyURL)
 	case schemas.Socks5Proxy:
 		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
 			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
@@ -739,10 +739,10 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 			proxyURL = parsedURL.String()
 		}
-		dialFunc = fasthttpproxy.FasthttpSocksDialer(proxyURL)
+		dialFunc = fasthttpproxy.FasthttpSocksDialerDualStack(proxyURL)
 	case schemas.EnvProxy:
 		// Use environment variables for proxy configuration
-		dialFunc = fasthttpproxy.FasthttpProxyHTTPDialer()
+		dialFunc = envProxyDialFunc()
 	default:
 		getLogger().Warn("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
 		return client
@@ -856,7 +856,7 @@ func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.U
 // NO_PROXY (upper- or lower-case), read when EnvProxyFunc is called.
 //
 // http.ProxyFromEnvironment reads the environment once per process and caches it,
-// while fasthttp's env dialer (fasthttpproxy.FasthttpProxyHTTPDialer, used by
+// while fasthttp's env dialer (envProxyDialFunc, used by
 // ConfigureProxy for type "environment") reads it each time a client is built.
 // Reading at client build here keeps a provider's net/http and fasthttp stacks on
 // the same values across provider rebuilds.
@@ -1047,6 +1047,20 @@ func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, log
 	}
 
 	return tlsConfig, nil
+}
+
+// envProxyDialFunc is fasthttpproxy.FasthttpProxyHTTPDialer with dual-stack
+// dialing. The fasthttpproxy constructors without "DualStack" dial the proxy over
+// tcp4 only, so a proxy given as an IPv6 literal, or a hostname with only AAAA
+// records, fails with "couldn't find dns entries" while the net/http stacks reach
+// it. The environment is read when the client is built, as before.
+func envProxyDialFunc() fasthttp.DialFunc {
+	dialer := fasthttpproxy.Dialer{DialDualStack: true}
+	dialFunc, err := dialer.GetDialFunc(true)
+	if err != nil {
+		return dialErrorFunc(fmt.Sprintf("invalid proxy configuration: %v", err))
+	}
+	return dialFunc
 }
 
 // errBypassProxy is returned by the proxy dialer ConfigureProxy installs when the
