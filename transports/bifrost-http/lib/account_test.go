@@ -76,6 +76,8 @@ func TestInheritGlobalProxy(t *testing.T) {
 	socks.URL = "socks5://10.0.0.9:1080"
 	skipTLS := enabledGlobalProxy()
 	skipTLS.SkipTLSVerify = true
+	withCA := enabledGlobalProxy()
+	withCA.CACertPEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
 
 	tests := []struct {
 		name     string
@@ -84,6 +86,7 @@ func TestInheritGlobalProxy(t *testing.T) {
 		wantOK   bool
 		wantType schemas.ProxyType
 		wantSkip bool
+		wantCA   string
 	}{
 		{name: "no global proxy", global: nil},
 		{name: "global disabled", global: disabled},
@@ -96,6 +99,7 @@ func TestInheritGlobalProxy(t *testing.T) {
 		{name: "empty type inherits", own: &schemas.ProxyConfig{}, global: enabledGlobalProxy(), wantOK: true, wantType: schemas.HTTPProxy},
 		{name: "socks5 maps across", global: socks, wantOK: true, wantType: schemas.Socks5Proxy},
 		{name: "skip_tls_verify carries over", global: skipTLS, wantOK: true, wantType: schemas.HTTPProxy, wantSkip: true},
+		{name: "ca_cert_pem carries over", global: withCA, wantOK: true, wantType: schemas.HTTPProxy, wantCA: withCA.CACertPEM},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -113,6 +117,11 @@ func TestInheritGlobalProxy(t *testing.T) {
 			// https:// proxy, which NetworkConfig never reaches.
 			if got.proxy.SkipTLSVerify != tt.wantSkip {
 				t.Errorf("proxy.SkipTLSVerify = %v, want %v", got.proxy.SkipTLSVerify, tt.wantSkip)
+			}
+			// The provider stacks trust the global proxy's CA for the https:// proxy hop
+			// and for TLS through a TLS-inspecting proxy.
+			if gotCA := got.proxy.CACertPEM.GetValue(); gotCA != tt.wantCA {
+				t.Errorf("proxy.CACertPEM = %q, want %q", gotCA, tt.wantCA)
 			}
 		})
 	}
