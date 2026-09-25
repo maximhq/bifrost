@@ -64,6 +64,23 @@ test.describe('Governance - Teams', () => {
     expect(exists).toBe(true)
   })
 
+  test('should set and clear content logging for a team', async ({ governancePage }) => {
+    const teamData = createTeamData({ name: `E2E Content Logging Team ${Date.now()}`, contentLogging: 'disabled' })
+    createdTeams.push(teamData.name)
+    await governancePage.createTeam(teamData)
+
+    // The choice made on create is what the editor shows when the team is reopened.
+    expect(await governancePage.getTeamContentLogging(teamData.name)).toBe('disabled')
+
+    // Back to inherit: the update sends null, and the editor must not read that as "off".
+    await governancePage.editTeam(teamData.name, { contentLogging: 'inherit' })
+    expect(await governancePage.getTeamContentLogging(teamData.name)).toBe('inherit')
+
+    // And the third state is a decision of its own, distinct from inherit.
+    await governancePage.editTeam(teamData.name, { contentLogging: 'enabled' })
+    expect(await governancePage.getTeamContentLogging(teamData.name)).toBe('enabled')
+  })
+
   test('should create team with customer assignment', async ({ governancePage }) => {
     // 1. Create a customer (UI)
     const customerData = createCustomerData({ name: `E2E Customer For Team ${Date.now()}` })

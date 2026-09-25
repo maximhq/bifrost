@@ -274,6 +274,8 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
+	// The key's own content-logging decision: absent/null inherits, true forces content off, false forces it on.
+	disable_content_logging?: boolean | null;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
 	aliases?: Record<string, AliasConfig>;
