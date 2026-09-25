@@ -1,5 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
-import { virtualKeysApi } from '../../core/actions/api'
+import { coreConfigApi, virtualKeysApi } from '../../core/actions/api'
 import type { VirtualKeysPage } from './pages/virtual-keys.page'
 import {
     createVirtualKeyData,
@@ -335,6 +335,60 @@ test.describe('Virtual Keys', () => {
           name: `API No Expiry VK ${Date.now()}`,
           delete_after_expire: true,
         },
+      })
+      expect(response.status()).toBe(400)
+      expect(await response.text()).toContain('delete_after_expire requires expires_at')
+    })
+
+    test('should follow the client default and store only explicit overrides', async ({ virtualKeysPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { delete_expired_virtual_keys: true })
+      try {
+        // Reload so the sheet reads the new default.
+        await virtualKeysPage.goto()
+
+        // With the default on, a fresh key with an expiry starts with the switch on.
+        await virtualKeysPage.createBtn.click()
+        await expect(virtualKeysPage.sheet).toBeVisible()
+        await virtualKeysPage.page.getByTestId('vk-expiry-preset-24-hours').click()
+        await expect(virtualKeysPage.deleteAfterExpireCheckbox).toHaveAttribute('data-state', 'checked')
+        await virtualKeysPage.cancelBtn.click()
+
+        // Leaving the switch at the default stores no per-key value: the key inherits.
+        const inherits = createVirtualKeyData({ name: `Inherit Delete VK ${Date.now()}`, expiryPreset: '24 hours' })
+        createdVKs.push(inherits.name)
+        await virtualKeysPage.createVirtualKey(inherits)
+        const inheritsVK = await findVirtualKeyByName(request, inherits.name)
+        expect(inheritsVK.expires_at).toBeTruthy()
+        expect(inheritsVK.delete_after_expire ?? null).toBeNull()
+
+        // Turning the switch off against the default stores an explicit false.
+        await virtualKeysPage.editVirtualKey(inherits.name, { deleteAfterExpire: false })
+        expect((await findVirtualKeyByName(request, inherits.name)).delete_after_expire).toBe(false)
+
+        // Turning it back on matches the default again, so the override is cleared.
+        await virtualKeysPage.editVirtualKey(inherits.name, { deleteAfterExpire: true })
+        expect((await findVirtualKeyByName(request, inherits.name)).delete_after_expire ?? null).toBeNull()
+      } finally {
+        await coreConfigApi.updateClientConfig(request, { delete_expired_virtual_keys: false })
+      }
+    })
+
+    test('should accept null to reset delete_after_expire to inherit through the API', async ({ request }) => {
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+      const name = `API Inherit Reset VK ${Date.now()}`
+      const created = (await virtualKeysApi.create(request, {
+        name,
+        expires_at: expiresAt,
+        delete_after_expire: false,
+      })) as VirtualKeyApiResponse
+      createdVKs.push(name)
+      expect((await findVirtualKeyByName(request, name)).delete_after_expire).toBe(false)
+
+      await virtualKeysApi.update(request, created.virtual_key.id, { delete_after_expire: null })
+      expect((await findVirtualKeyByName(request, name)).delete_after_expire ?? null).toBeNull()
+
+      const response = await request.put(`/api/governance/virtual-keys/${created.virtual_key.id}`, {
+        data: { expires_at: '', delete_after_expire: true },
       })
       expect(response.status()).toBe(400)
       expect(await response.text()).toContain('delete_after_expire requires expires_at')

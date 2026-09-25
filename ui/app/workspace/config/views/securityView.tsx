@@ -113,6 +113,7 @@ export default function SecurityView() {
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
+		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -125,6 +126,7 @@ export default function SecurityView() {
 			authChanged ||
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged ||
+			deleteExpiredVirtualKeysChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged
 		);
@@ -456,6 +458,25 @@ export default function SecurityView() {
 						placeholder="5m"
 						value={localValues.vk_rotation_cooldown}
 						onChange={(e) => handleVkRotationCooldownChange(e.target.value)}
+					/>
+				</div>
+				{/* Delete Expired Virtual Keys */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="delete-expired-virtual-keys" className="text-sm font-medium">
+							Delete Expired Virtual Keys
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, a daily cleanup job deletes every virtual key whose expiry has passed and posts a notification listing the
+							removed keys. Each key can override this from its <b>Delete after expire</b> switch: a key set to off is kept, and a key
+							set to on is deleted even while this is disabled.
+						</p>
+					</div>
+					<Switch
+						id="delete-expired-virtual-keys"
+						data-testid="security-delete-expired-virtual-keys-switch"
+						checked={localConfig.delete_expired_virtual_keys}
+						onCheckedChange={(checked) => handleConfigChange("delete_expired_virtual_keys", checked)}
 					/>
 				</div>
 				{/* Allowed Origins */}

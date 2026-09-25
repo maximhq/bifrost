@@ -20,7 +20,6 @@ import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
@@ -43,6 +42,7 @@ import {
 	useCreateVirtualKeyMutation,
 	useDetachVirtualMCPVirtualKeyMutation,
 	useGetAllKeysQuery,
+	useGetCoreConfigQuery,
 	useGetProvidersQuery,
 	useGetTeamQuery,
 	useGetVirtualKeyQuery,
@@ -255,9 +255,12 @@ interface ExpiryFieldProps {
 	onChange: (v: string | null) => void;
 	deleteAfterExpire: boolean;
 	onDeleteAfterExpireChange: (v: boolean) => void;
+	// The client-wide delete_expired_virtual_keys setting; the switch starts there and a
+	// matching value is sent as inherit.
+	deleteExpiredByDefault: boolean;
 }
 
-function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterExpireChange }: ExpiryFieldProps) {
+function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterExpireChange, deleteExpiredByDefault }: ExpiryFieldProps) {
 	// Preset timestamps are computed from Date.now() at click time, so the picked
 	// preset can't be derived back from the value; track it for highlighting.
 	const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
@@ -277,7 +280,7 @@ function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterEx
 					onClick={() => {
 						setSelectedPreset(null);
 						onChange(null);
-						onDeleteAfterExpireChange(false);
+						onDeleteAfterExpireChange(deleteExpiredByDefault);
 					}}
 				>
 					Never
@@ -309,19 +312,24 @@ function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterEx
 				/>
 			</div>
 			{value && (
-				<div className="flex items-start gap-2 pt-1">
-					<Checkbox
-						id="vk-delete-after-expire"
-						checked={deleteAfterExpire}
-						onCheckedChange={(checked) => onDeleteAfterExpireChange(checked === true)}
-						data-testid="vk-delete-after-expire"
-					/>
+				<div className="flex items-center justify-between gap-4 pt-1">
 					<div className="grid gap-0.5 leading-none">
 						<Label htmlFor="vk-delete-after-expire" className="text-sm font-normal">
 							Delete after expire
 						</Label>
-						<p className="text-muted-foreground text-xs">The key is removed automatically within 24 hours of expiring.</p>
+						<p className="text-muted-foreground text-xs">
+							The key is removed automatically within about a day of expiring.{" "}
+							{deleteAfterExpire === deleteExpiredByDefault
+								? `Follows the workspace default (${deleteExpiredByDefault ? "on" : "off"}), set under Settings → Security.`
+								: "Overrides the workspace default for this key."}
+						</p>
 					</div>
+					<Switch
+						id="vk-delete-after-expire"
+						checked={deleteAfterExpire}
+						onCheckedChange={onDeleteAfterExpireChange}
+						data-testid="vk-delete-after-expire"
+					/>
 				</div>
 			)}
 			<FormMessage />
@@ -373,6 +381,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
+	// The delete-after-expire switch starts at the client-wide default; a key stores a value only
+	// when it differs, so flipping the default later still reaches keys that never overrode it.
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const deleteExpiredByDefault = coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
@@ -571,7 +583,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			userId: "",
 			isActive: virtualKey?.is_active ?? true,
 			contentLogging: contentLoggingChoice(virtualKey?.disable_content_logging),
-			deleteAfterExpire: virtualKey?.delete_after_expire ?? false,
+			deleteAfterExpire: virtualKey?.delete_after_expire ?? deleteExpiredByDefault,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
 						const d = new Date(virtualKey.expires_at);
@@ -647,6 +659,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		form.setValue("entityType", "user");
 		form.setValue("userId", assignedUserId);
 	}, [assignedUserId, isEditing, form]);
+
+	// The client config can arrive after the form was seeded; follow it while the user hasn't
+	// touched the switch and the key has no override of its own.
+	useEffect(() => {
+		if (form.formState.dirtyFields.deleteAfterExpire) return;
+		if (virtualKey?.delete_after_expire != null) return;
+		form.setValue("deleteAfterExpire", deleteExpiredByDefault);
+	}, [deleteExpiredByDefault, virtualKey?.delete_after_expire, form]);
 
 	// Get current provider configs from form
 	const providerConfigs = form.watch("providerConfigs") || [];
@@ -1083,10 +1103,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 							? { expires_at: "" }
 							: {}
 					: {};
-				// Send the flag whenever it or the expiry changed, so clearing the expiry also clears it.
+				// Send the flag whenever it or the expiry changed. A value matching the workspace
+				// default goes as null (inherit); clearing the expiry resets it server-side too.
 				const deleteAfterExpirePayload =
 					expiryChanged || form.formState.dirtyFields.deleteAfterExpire
-						? { delete_after_expire: !!data.expiresAt && data.deleteAfterExpire }
+						? {
+								delete_after_expire:
+									data.expiresAt && data.deleteAfterExpire !== deleteExpiredByDefault ? data.deleteAfterExpire : null,
+							}
 						: {};
 
 				const updateData: UpdateVirtualKeyRequest = {
@@ -1194,8 +1218,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
 					allow_all_providers: data.allowAllProviders,
-					// Optional expiry: send as UTC ISO string, or omit for no expiry
-					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString(), delete_after_expire: data.deleteAfterExpire } : {}),
+					// Optional expiry: send as UTC ISO string, or omit for no expiry. The flag is sent only
+					// when it differs from the workspace default; omitted means inherit.
+					...(data.expiresAt
+						? {
+								expires_at: new Date(data.expiresAt).toISOString(),
+								...(data.deleteAfterExpire !== deleteExpiredByDefault ? { delete_after_expire: data.deleteAfterExpire } : {}),
+							}
+						: {}),
 					// Omitted means inherit on create.
 					...(data.contentLogging !== "inherit" ? { disable_content_logging: data.contentLogging === "disabled" } : {}),
 				};
@@ -1444,6 +1474,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 													onChange={field.onChange}
 													deleteAfterExpire={form.watch("deleteAfterExpire")}
 													onDeleteAfterExpireChange={(v) => form.setValue("deleteAfterExpire", v, { shouldDirty: true })}
+													deleteExpiredByDefault={deleteExpiredByDefault}
 												/>
 											)}
 										/>

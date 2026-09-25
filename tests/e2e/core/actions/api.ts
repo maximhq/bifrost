@@ -133,6 +133,30 @@ export const virtualKeysApi = {
 }
 
 /**
+ * Core config API helpers
+ */
+export const coreConfigApi = {
+  /**
+   * Get the core config as stored in the DB
+   */
+  async get(request: APIRequestContext) {
+    const response = await request.get(`${API_BASE}/config?from_db=true`)
+    return handleResponse<{ client_config: Record<string, unknown> }>(response, 'Get core config')
+  },
+
+  /**
+   * Update client config fields, sending the current config back with the changes applied
+   */
+  async updateClientConfig(request: APIRequestContext, changes: Record<string, unknown>) {
+    const current = await coreConfigApi.get(request)
+    const response = await request.put(`${API_BASE}/config`, {
+      data: { client_config: { ...current.client_config, ...changes } },
+    })
+    return handleResponse(response, 'Update core config')
+  },
+}
+
+/**
  * Teams API helpers
  */
 export const teamsApi = {
