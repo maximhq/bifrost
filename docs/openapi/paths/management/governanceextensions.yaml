@@ -8,6 +8,14 @@ virtual-key-users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List users attached to a virtual key
     tags: [Virtual Keys, Users]
     parameters:
@@ -41,6 +49,14 @@ virtual-key-users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach users to a virtual key
     tags: [Virtual Keys, Users]
     parameters:
@@ -81,6 +97,14 @@ virtual-key-user:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a user from a virtual key
     tags: [Virtual Keys, Users]
     parameters:
@@ -113,6 +137,14 @@ user-virtual-keys:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List virtual keys available to a user
     description: |
       Returns every virtual key assigned to the user, independent of access profiles, so
@@ -156,6 +188,14 @@ user-virtual-keys:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Mint an extra virtual key for a user
     description: |
       Issues an additional virtual key for the user.
@@ -204,6 +244,14 @@ user-vk-creation-policy:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get the calling user's virtual-key creation policy
     description: |
       Resolves the access profile that would govern a virtual key the **calling** user creates,
@@ -245,6 +293,14 @@ team-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List customers attached to a team
     tags: [Teams, Customers]
     parameters:
@@ -279,6 +335,14 @@ team-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach a customer to a team
     tags: [Teams, Customers]
     parameters:
@@ -316,6 +380,14 @@ team-customer:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a customer from a team
     tags: [Teams, Customers]
     parameters:
@@ -348,6 +420,14 @@ customer-teams:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List teams attached to a customer
     tags: [Customers, Teams]
     parameters:
@@ -384,6 +464,14 @@ business-unit-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List customers attached to a business unit
     tags: [Business Units, Customers]
     parameters:
@@ -428,6 +516,14 @@ business-unit-customers:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach customers to a business unit
     tags: [Business Units, Customers]
     parameters:
@@ -467,6 +563,14 @@ business-unit-customer:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a customer from a business unit
     tags: [Business Units, Customers]
     parameters:
@@ -499,6 +603,14 @@ customer-business-units:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List business units attached to a customer
     tags: [Customers, Business Units]
     parameters:

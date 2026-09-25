@@ -9,8 +9,18 @@
 rules:
   get:
     operationId: listRoutingRules
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List routing rules
-    description: Returns a list of all routing rules configured for intelligent request routing across providers.
+    description: |
+      Returns a list of all routing rules configured for intelligent request routing across providers.
     tags:
       - Routing
     parameters:
@@ -39,8 +49,18 @@ rules:
 
   post:
     operationId: createRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create routing rule
-    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
+    description: |
+      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
     tags:
       - Routing
     requestBody:
@@ -67,8 +87,18 @@ rules:
 rules-by-id:
   get:
     operationId: getRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get routing rule
-    description: Returns a specific routing rule by ID.
+    description: |
+      Returns a specific routing rule by ID.
     tags:
       - Routing
     parameters:
@@ -102,8 +132,18 @@ rules-by-id:
 
   put:
     operationId: updateRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update routing rule
-    description: Updates an existing routing rule's configuration.
+    description: |
+      Updates an existing routing rule's configuration.
     tags:
       - Routing
     parameters:
@@ -142,8 +182,18 @@ rules-by-id:
 
   delete:
     operationId: deleteRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete routing rule
-    description: Deletes a routing rule.
+    description: |
+      Deletes a routing rule.
     tags:
       - Routing
     parameters:
@@ -177,8 +227,18 @@ rules-by-id:
 complexity:
   get:
     operationId: getComplexityAnalyzerConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
+    description: |
+      Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
     tags:
       - Routing
     security:
@@ -198,8 +258,18 @@ complexity:
 
   put:
     operationId: updateComplexityAnalyzerConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present.
+    description: |
+      Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present.
     tags:
       - Routing
     requestBody:
@@ -228,8 +298,18 @@ complexity:
 complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reset complexity analyzer config
-    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved.
+    description: |
+      Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved.
     tags:
       - Routing
     security:
@@ -250,9 +330,19 @@ complexity-reset:
 rules-legacy:
   get:
     operationId: listRoutingRulesLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: List routing rules (deprecated path)
-    description: Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     parameters:
@@ -281,9 +371,19 @@ rules-legacy:
 
   post:
     operationId: createRoutingRuleLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: Create routing rule (deprecated path)
-    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     requestBody:
@@ -310,9 +410,19 @@ rules-legacy:
 rules-by-id-legacy:
   get:
     operationId: getRoutingRuleLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: Get routing rule (deprecated path)
-    description: Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     parameters:
@@ -346,9 +456,19 @@ rules-by-id-legacy:
 
   put:
     operationId: updateRoutingRuleLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: Update routing rule (deprecated path)
-    description: Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     parameters:
@@ -387,9 +507,19 @@ rules-by-id-legacy:
 
   delete:
     operationId: deleteRoutingRuleLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: Delete routing rule (deprecated path)
-    description: Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     parameters:
@@ -423,8 +553,18 @@ rules-by-id-legacy:
 complexity-status:
   get:
     operationId: getComplexityAnalyzerStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get complexity classifier status
-    description: Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
+    description: |
+      Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
     tags:
       - Routing
     responses:
@@ -442,8 +582,18 @@ complexity-status:
 complexity-status-retry:
   post:
     operationId: retryComplexityAnalyzerWarmup
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Retry failed complexity classifier warmup
-    description: Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
+    description: |
+      Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
     tags:
       - Routing
     responses:
@@ -465,8 +615,18 @@ complexity-status-retry:
 complexity-generations:
   get:
     operationId: listComplexityGenerations
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List complexity classifier generations
-    description: Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.
+    description: |
+      Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.
     tags:
       - Routing
     security:
@@ -488,8 +648,18 @@ complexity-generations:
 complexity-generation-delete:
   delete:
     operationId: deleteComplexityGeneration
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a retired complexity generation
-    description: Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.
+    description: |
+      Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.
     tags:
       - Routing
     security:
@@ -537,9 +707,19 @@ complexity-generation-delete:
 complexity-legacy:
   get:
     operationId: getComplexityAnalyzerConfigLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: Get complexity analyzer config (deprecated path)
-    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:
@@ -559,9 +739,19 @@ complexity-legacy:
 
   put:
     operationId: updateComplexityAnalyzerConfigLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: Update complexity analyzer config (deprecated path)
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     requestBody:
@@ -590,9 +780,19 @@ complexity-legacy:
 complexity-reset-legacy:
   post:
     operationId: resetComplexityAnalyzerConfigLegacy
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     deprecated: true
     summary: Reset complexity analyzer config (deprecated path)
-    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:

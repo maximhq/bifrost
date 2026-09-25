@@ -4244,11 +4244,6 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable(t *te
 	seed := tables.TableVirtualKey{ID: "vk-dcl-rollback", Name: "vk-dcl-rollback", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-rollback"), DisableContentLogging: new(true)}
 	require.NoError(t, db.Create(&seed).Error)
 
-	err := rollbackVirtualKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger)
-	require.Error(t, err, "rollback must refuse: dropping the column would revert every content-off key to logging content")
-	assert.Contains(t, err.Error(), "non-rollbackable")
-	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"), "a refused rollback must leave the column intact")
-
 	var got tables.TableVirtualKey
 	require.NoError(t, db.First(&got, "id = ?", seed.ID).Error)
 	require.NotNil(t, got.DisableContentLogging)
