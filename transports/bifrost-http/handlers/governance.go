@@ -315,6 +315,10 @@ type CreateVirtualKeyRequest struct {
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
 	ExpiresAt         *time.Time              `json:"expires_at,omitempty"`          // Optional expiry; nil means never expires
+	// DisableContentLogging is the key's own content-logging decision. Omit to inherit
+	// client.disable_content_logging; true forces content off for this key's traffic, false forces
+	// it on for the log store.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -363,6 +367,9 @@ type UpdateVirtualKeyRequest struct {
 	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
 	ResetBudgetUsage  *bool                        `json:"reset_budget_usage,omitempty"`
 	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
+	// clears it back to inheriting client.disable_content_logging, true/false set it.
+	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -400,6 +407,21 @@ func namedVirtualKeyOwners(req *UpdateVirtualKeyRequest) int {
 
 // applyVirtualKeyOwnershipUpdate applies presence-aware team/customer/business-unit ownership
 // changes. Naming one owner clears the other two, because a key belongs to at most one.
+// applyVirtualKeyContentLoggingUpdate applies the tri-state disable_content_logging field of an
+// update: omitted leaves the key's decision as it is, null clears it back to inheriting the client
+// setting, true or false set it. Kept apart from the field-by-field block in updateVirtualKey
+// because "omitted" and "null" must not collapse into one.
+func applyVirtualKeyContentLoggingUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) {
+	if !req.DisableContentLogging.Set {
+		return
+	}
+	if req.DisableContentLogging.Null {
+		vk.DisableContentLogging = nil
+		return
+	}
+	vk.DisableContentLogging = new(req.DisableContentLogging.Value)
+}
+
 func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
 	if namedVirtualKeyOwners(req) > 1 {
 		return errVirtualKeyDualAssociation
@@ -1907,6 +1929,8 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			CalendarAligned:   req.CalendarAligned,
 			AllowAllProviders: req.AllowAllProviders,
 			ExpiresAt:         req.ExpiresAt,
+			// Stored as given: nil is inherit, so no defaulting here.
+			DisableContentLogging: req.DisableContentLogging,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -2306,6 +2330,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.AllowAllProviders != nil {
 			vk.AllowAllProviders = *req.AllowAllProviders
 		}
+		applyVirtualKeyContentLoggingUpdate(vk, &req)
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
 		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
 		// below. Per-provider desired state is accumulated while reconciling provider config rows.

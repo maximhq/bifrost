@@ -1,7 +1,6 @@
 import { WarpIcon } from "@/components/ui/icons";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWarp } from "@/lib/contexts/warpContext";
-import { cn } from "@/lib/utils";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useEffect, useRef } from "react";
 
@@ -56,12 +55,9 @@ export default function WarpLauncher() {
 	// shells that have no dock to open.
 	if (!warp) return null;
 
-	// Hidden while the dock is open. The panel has its own close button, and two
-	// controls for one thing sitting inches apart is just a second way to get it
-	// wrong. The keyboard shortcut above still toggles either way, which is why
-	// the hotkey is registered before this return.
-	if (warp.isOpen) return null;
-
+	// Stays visible while the dock is open and shows as selected, like the other
+	// topbar triggers. data-state is set by hand so this button can share their
+	// Radix data-[state=open] classes, even though it opens no Radix surface.
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
@@ -70,12 +66,10 @@ export default function WarpLauncher() {
 					type="button"
 					aria-label="Ask Warp"
 					aria-pressed={warp.isOpen}
+					data-state={warp.isOpen ? "open" : "closed"}
 					data-testid="topbar-warp-btn"
 					onClick={warp.toggle}
-					className={cn(
-						"flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors",
-						warp.isOpen ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-					)}
+					className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border"
 				>
 					<WarpIcon className="size-5" />
 				</button>

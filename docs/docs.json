@@ -1346,7 +1346,7 @@
               {
                 "group": "Warp",
                 "expanded": false,
-                "pages": ["GET /api/warp/config", "PUT /api/warp/config", "POST /api/warp/log-index/backfill", "GET /api/warp/log-index/backfill/status", "POST /api/warp/log-index/backfill/cancel", "POST /api/warp/chat"]
+                "pages": ["GET /api/warp/config", "PUT /api/warp/config", "POST /api/warp/log-index/backfill", "GET /api/warp/log-index/backfill/status", "POST /api/warp/log-index/backfill/cancel", "POST /api/warp/chat", "GET /api/warp/log-index/status", "GET /api/warp/conversations", "GET /api/warp/conversations/{id}", "DELETE /api/warp/conversations/{id}"]
               }
             ]
           },
@@ -1753,6 +1753,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.3",
               "changelogs/v2.2.2",
               "changelogs/v2.2.1",
               "changelogs/v2.2.0",
@@ -1972,6 +1973,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.3",
               "changelogs/ent-v2.2.2",
               "changelogs/ent-v2.2.1",
               "changelogs/ent-v2.2.0",

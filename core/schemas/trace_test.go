@@ -24,6 +24,40 @@ func TestTraceGetSpanNilSafe(t *testing.T) {
 	}
 }
 
+// ContentLoggingDisabledForTrace is the one place connectors learn that a virtual key turned
+// content off, so it has to read exactly the root-span bool and nothing else: no trace, no root
+// span, an absent attribute or a non-bool value all mean "not disabled".
+func TestContentLoggingDisabledForTrace(t *testing.T) {
+	if ContentLoggingDisabledForTrace(nil) {
+		t.Fatal("nil trace must not read as disabled")
+	}
+	if ContentLoggingDisabledForTrace(&Trace{}) {
+		t.Fatal("trace without a root span must not read as disabled")
+	}
+	root := &Span{SpanID: "root"}
+	trace := &Trace{RootSpan: root, Spans: []*Span{root}}
+	if ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("absent attribute must not read as disabled")
+	}
+	root.Attributes = map[string]any{AttrBifrostContentLoggingDisabled: "true"}
+	if ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("a non-bool value must not read as disabled")
+	}
+	root.Attributes[AttrBifrostContentLoggingDisabled] = false
+	if ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("false must not read as disabled")
+	}
+	root.Attributes[AttrBifrostContentLoggingDisabled] = true
+	if !ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("true on the root span must read as disabled")
+	}
+	// The attribute lives on the root span only; a child span carrying it says nothing.
+	child := &Span{SpanID: "child", Attributes: map[string]any{AttrBifrostContentLoggingDisabled: true}}
+	if ContentLoggingDisabledForTrace(&Trace{RootSpan: &Span{SpanID: "root"}, Spans: []*Span{child}}) {
+		t.Fatal("a child span attribute must not read as disabled")
+	}
+}
+
 func TestTraceAndSpanNilMutatorsNoop(t *testing.T) {
 	trace := &Trace{}
 	trace.AddSpan(nil)

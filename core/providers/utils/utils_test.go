@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/cespare/xxhash/v2"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -3208,7 +3209,7 @@ func TestResponsesNamespaceToolsSupported_RowCannotEnableAWireWithoutNamespaces(
 }
 
 // A datasheet row cannot make the hashed alias form impossible. The over-limit
-// alias is "<8-hex hash>_<function>", so any row below 10 leaves no room for a
+// alias is "t<8-hex hash>_<function>", so any row below 11 leaves no room for a
 // readable tail (and a negative slice window). Such a row is ignored in favour of
 // the provider default; a hand-built limit still never panics or exceeds itself.
 func TestResolveToolNameLimit_RowBelowHashFloorKeepsDefault(t *testing.T) {
@@ -3240,6 +3241,35 @@ func TestNamespaceToolAlias_TinyLimitNeverPanicsOrExceeds(t *testing.T) {
 		if got == "" || len(got) > max {
 			t.Errorf("limit %d: alias %q (len %d) must be non-empty and within the limit", max, got, len(got))
 		}
+	}
+}
+
+// moonshotai.kimi-k3 on Bedrock answers a request carrying any tool whose name starts
+// with a digit with HTTP 200 and an empty stream, and a bare 8-hex hash starts with a
+// digit 10 times in 16. Codex's long MCP namespaces land on the hashed form, so every
+// hashed alias must start with a letter, at every limit including the tiny ones.
+func TestNamespaceToolAlias_HashedFormStartsWithLetter(t *testing.T) {
+	letterFirst := regexp.MustCompile(`^[A-Za-z]`)
+	sawDigitHash := false
+	for i := range 64 {
+		namespace := fmt.Sprintf("mcp__codex_apps__codex_document_control_%02d_with_a_long_suffix", i)
+		function := "execute_document_command"
+		if full := namespace + namespaceToolSeparator + function; fmt.Sprintf("%08x", uint32(xxhash.Sum64String(full)))[0] <= '9' {
+			sawDigitHash = true
+		}
+		for _, max := range []int{64, 128, 12, 10, 9, 1} {
+			limit := ToolNameLimit{MaxLength: max, unsafe: toolNameUnsafeStrict}
+			got := namespaceToolAlias(namespace, function, limit)
+			if len(namespace)+len(namespaceToolSeparator)+len(function) <= max {
+				continue
+			}
+			if !letterFirst.MatchString(got) {
+				t.Errorf("limit %d: hashed alias %q must start with a letter", max, got)
+			}
+		}
+	}
+	if !sawDigitHash {
+		t.Fatal("sweep never produced a digit-leading raw hash, so it cannot prove the prefix")
 	}
 }
 

@@ -574,6 +574,80 @@ func TestWarpLogIndexStatusHidesProviderErrorFromNonAdmins(t *testing.T) {
 	require.Contains(t, string(adminRequest.Response.Body()), "connection refused")
 }
 
+// rbacAdminCtx builds a request context the way enterprise's RBAC middleware
+// leaves it for an SSO caller it authorized: a user and role ID, and no
+// local-admin marker.
+func rbacAdminCtx(body string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "sso-admin")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, uint(1))
+	ctx.Request.SetBodyString(body)
+	return ctx
+}
+
+// An SSO admin never carries the local-admin marker, because enterprise turns the
+// password login off once SSO is on. Enterprise RBAC has already checked the
+// Warp permission by the time these handlers run, so its role ID has to be
+// enough, or no SSO user can ever configure Warp or run a backfill.
+func TestWarpAdminRoutesAdmitRBACAuthorizedCaller(t *testing.T) {
+	store := &recordingWarpStore{}
+	putCtx := rbacAdminCtx(validWarpConfigJSON)
+	(&WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}).putConfig(putCtx)
+	require.NotEqual(t, fasthttp.StatusForbidden, putCtx.Response.StatusCode(), string(putCtx.Response.Body()))
+
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	startCtx := rbacAdminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startBackfill(startCtx)
+	require.Equal(t, fasthttp.StatusAccepted, startCtx.Response.StatusCode(), string(startCtx.Response.Body()))
+	require.Equal(t, 1, jobs.createdCount())
+
+	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	jobs.jobs[job.ID] = job
+	jobs.inFlight = job
+
+	statusCtx := rbacAdminCtx("")
+	statusCtx.QueryArgs().Set("id", job.ID)
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode(), string(statusCtx.Response.Body()))
+
+	cancelCtx := rbacAdminCtx(`{"id":"job-1"}`)
+	handler.cancelBackfill(cancelCtx)
+	require.Equal(t, fasthttp.StatusOK, cancelCtx.Response.StatusCode(), string(cancelCtx.Response.Body()))
+}
+
+// A zero role ID is what an unhydrated context carries. It must not count as
+// authorization.
+func TestWarpAdminRoutesRejectZeroRoleID(t *testing.T) {
+	handler, _, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	calls := []func(*fasthttp.RequestCtx){handler.startBackfill, handler.backfillStatus, handler.cancelBackfill, newTestWarpHandler(&recordingWarpStore{}).putConfig}
+	for _, call := range calls {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "someone")
+		ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, uint(0))
+		call(ctx)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	}
+}
+
+// The index summary only needs Warp View in enterprise, so a role ID on its
+// context says nothing about admin. The provider's error text stays local-admin
+// only there.
+func TestWarpLogIndexStatusHidesProviderErrorFromRBACCaller(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed,
+		LastError: "dial tcp 10.0.3.7:6333: connect: connection refused",
+		Metadata:  `{"scanned":100,"failed":100,"total":5000}`,
+	}
+	ctx := rbacAdminCtx("")
+	handler.logIndexStatus(ctx)
+	require.NotContains(t, string(ctx.Response.Body()), "connection refused")
+}
+
 func TestWarpJobMatchesNamespace(t *testing.T) {
 	job := func(metadata string) *tables.TableSidekiqJob {
 		return &tables.TableSidekiqJob{Metadata: metadata}

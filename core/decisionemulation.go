@@ -57,12 +57,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 
 	instructions := decisionSystemPrompt
 	userRole := schemas.ResponsesInputMessageRoleUser
-	// Force a tool call with the "required" mode rather than a named-function
-	// choice: emit_decision is the only tool, so "required" obliges the model to
-	// call it, and the string mode is accepted by every provider (OpenAI,
-	// Anthropic, and OpenAI-compatible ones like Perplexity that reject the
-	// named-function tool_choice object).
-	requiredChoice := string(schemas.ResponsesToolChoiceTypeRequired)
+	toolChoice := decisionToolChoice(ctx, req.Provider, req.Model)
 	responsesReq := &schemas.BifrostResponsesRequest{
 		Provider: req.Provider,
 		Model:    req.Model,
@@ -75,7 +70,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		Params: &schemas.ResponsesParameters{
 			Instructions: &instructions,
 			Tools:        []schemas.ResponsesTool{*tool},
-			ToolChoice:   &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &requiredChoice},
+			ToolChoice:   &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &toolChoice},
 		},
 	}
 
@@ -116,6 +111,21 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	decision.ExtraFields.Provider = req.Provider
 	decision.ExtraFields.OriginalModelRequested = req.Model
 	return decision, nil
+}
+
+// decisionToolChoice picks the tool_choice that forces the emit_decision call.
+// It prefers the "required" mode over a named-function choice: emit_decision is
+// the only tool, so "required" obliges the model to call it, and the string mode
+// is accepted by OpenAI, Anthropic, and OpenAI-compatible providers like
+// Perplexity that reject the named-function object. Bedrock Mantle's
+// OpenAI-compatible surface is the exception: it accepts only "auto" for gpt-oss
+// ("Supported options: [auto]"), so the call there rests on the system prompt,
+// and extraction already accepts a lone call or a JSON text body.
+func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) string {
+	if provider == schemas.BedrockMantle && !schemas.IsAnthropicModelFamily(ctx, model) {
+		return string(schemas.ResponsesToolChoiceTypeAuto)
+	}
+	return string(schemas.ResponsesToolChoiceTypeRequired)
 }
 
 // decisionStateText renders the state into a message body.
