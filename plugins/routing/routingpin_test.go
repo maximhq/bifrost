@@ -117,6 +117,56 @@ func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
 	assert.Empty(t, fallbacks[1].KeyID)
 }
 
+// TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart covers #7538. At boot the routing
+// plugin loads rules from the config store before bifrost.Init registers custom providers, so a
+// stored "backup/m" fallback is decoded while "backup" is still unknown. The fallback must still
+// route to the custom provider once it is registered, as it did before fallbacks gained key pins.
+func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
+	const customProvider = schemas.ModelProvider("custom-backup-7538")
+	schemas.UnregisterKnownProvider(customProvider)
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(customProvider) })
+
+	// Decode the rule the way the config store does at boot: AfterFind on the stored JSON column,
+	// while the custom provider is not yet registered.
+	stored := &configstoreTables.TableRoutingRule{
+		ID:            "custom-fb-1",
+		Name:          "Custom Provider Fallback Rule",
+		CelExpression: "model == 'm'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Fallbacks: bifrost.Ptr(`["` + string(customProvider) + `/m"]`),
+		Enabled:   bifrost.Ptr(true),
+		Scope:     "global",
+		Priority:  0,
+	}
+	require.NoError(t, stored.AfterFind(nil))
+
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+
+	// bifrost.Init now registers the custom provider, after the rules were loaded.
+	schemas.RegisterKnownProvider(customProvider)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m"},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	decision, err := plugin.applyRoutingRules(ctx, req, rules.GovernanceScope{})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+
+	require.Len(t, req.ChatRequest.Fallbacks, 1,
+		"a stored fallback naming a custom provider must not be dropped when rules load before the provider is registered")
+	assert.Equal(t, customProvider, req.ChatRequest.Fallbacks[0].Provider)
+	assert.Equal(t, "m", req.ChatRequest.Fallbacks[0].Model)
+}
+
 // TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules pins the ordering this plugin
 // exists to guarantee: a matched rule rewrites the model, and both the provider allowlist and
 // the load balancer must then run against the rewritten model, not the one the caller sent.

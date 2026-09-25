@@ -170646,6 +170646,125 @@
           }
         }
       ]
+    },
+    {
+      "name": "116. Routing custom provider fallback loaded at boot (#7538)",
+      "description": "Pins #7538: a routing rule's legacy 'provider/model' fallback naming a custom provider must survive a restart. Rules are decoded from the config store and config.json before bifrost.Init registers custom providers, so since the fallback key-pin change (#7379) the prefix was not recognised at decode time, the fallback was frozen with an empty provider, and the routing plugin skipped it: the primary's error went straight back to the client while GET /api/routing/rules still listed the fallback. The static rule harness-custom-provider-fallback-boot in tests/integrations/python/config.json (behind x-harness-custom-fallback: boot) targets OpenAI on a model OpenAI rejects and falls back to 'openai_pc_auto/gpt-4o-mini'. Because the rule is loaded at boot, every run exercises the restart path without restarting. Pre-fix the request fails with the OpenAI primary's error; post-fix the custom provider serves it as fallback 1.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini custom provider fallback after boot non-streaming - #7538",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('boot-loaded custom provider fallback serves the request', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'is-fallback header: ' + pm.response.text()).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'fallback-index header: ' + pm.response.text()).to.equal('1');",
+                  "});",
+                  "pm.test('served by the custom provider named in the legacy fallback string', function () {",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.extra_fields && json.extra_fields.provider, pm.response.text()).to.eql('openai_pc_auto');",
+                  "  pm.expect(json.choices).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-custom-fallback",
+                "value": "boot"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini custom provider fallback after boot streaming - #7538",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('boot-loaded custom provider fallback serves the stream', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'stream carried an error: ' + text).to.not.include('\"error\"');",
+                  "  pm.expect(text, 'stream never finished: ' + text).to.include('[DONE]');",
+                  "});",
+                  "pm.test('stream served by the custom provider named in the legacy fallback string, as fallback 1', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header: ' + text).to.equal('openai_pc_auto');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'is-fallback header: ' + text).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'fallback-index header: ' + text).to.equal('1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-custom-fallback",
+                "value": "boot"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
