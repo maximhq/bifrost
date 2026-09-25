@@ -8,6 +8,10 @@
 // send real requests through a Set of recorders and assert the outcome with AssertRoute,
 // so a stack that picks the wrong proxy, leaks or drops credentials, or falls back to a
 // direct connection when its proxy refuses it fails the same way everywhere.
+//
+// It lives outside internal/ so bifrost-enterprise can reuse it for its own outbound
+// clients (identity providers, guardrails, plugins). It is test scaffolding: only test
+// code imports it.
 package proxytest
 
 import (
@@ -84,7 +88,8 @@ func (r *Recorder) Port() string {
 }
 
 // NewHTTPRecorder listens on network ("tcp4" or "tcp6") loopback. CONNECT gets a 200 and
-// a closed tunnel; an absolute-URI request gets an empty 200.
+// a tunnel that answers one plain HTTP request with an empty 200 (see answerOneRequest);
+// an absolute-URI request gets an empty 200.
 func NewHTTPRecorder(t *testing.T, name, network string) *Recorder {
 	t.Helper()
 	addr := "127.0.0.1:0"
@@ -100,8 +105,9 @@ func NewHTTPRecorder(t *testing.T, name, network string) *Recorder {
 		auth := req.Header.Get("Proxy-Authorization")
 		if req.Method == http.MethodConnect {
 			r.record(Hit{Target: req.Host, Auth: auth})
-			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			if conn, buffered, err := w.(http.Hijacker).Hijack(); err == nil {
 				_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+				answerOneRequest(conn, buffered.Reader)
 				conn.Close()
 			}
 			return
@@ -214,6 +220,22 @@ func serveSOCKS5(conn net.Conn, record func(Hit)) {
 	hit.Target = net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(port))))
 	record(hit)
 	_, _ = conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+	answerOneRequest(conn, conn)
+}
+
+// answerOneRequest answers one plain HTTP request arriving through an open tunnel with an
+// empty 200, the way a working upstream would. Closing the tunnel instead would make a
+// client that retries on a closed connection (fasthttp's stale-connection policy) dial
+// again and show up as several hits for one request. A TLS client sends a handshake
+// instead, which does not parse as a request, so its tunnel just closes.
+func answerOneRequest(conn net.Conn, reader io.Reader) {
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	request, err := http.ReadRequest(bufio.NewReader(reader))
+	if err != nil {
+		return
+	}
+	request.Body.Close()
+	_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
 }
 
 // readUserPass reads an RFC 1929 username/password request.
