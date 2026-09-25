@@ -1716,6 +1716,502 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
 }
 
+// TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate pins the MCP hook ordering hole: logging's
+// PreMCPHook runs before governance's, so a virtual key that turns content off is not yet on the
+// context when the tool arguments are captured. PostMCPHook re-resolves the policy and must drop
+// the arguments it captured too early, not only the result.
+func TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-late-off")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-late-off")
+
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &toolName,
+				Arguments: `{"query":"find this"}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+	pendingValue, ok := plugin.pendingMCPLogsToInject.Load("mcp-late-off")
+	if !ok {
+		t.Fatal("expected pending MCP log entry")
+	}
+	if pendingValue.(*logstore.MCPToolLog).ArgumentsParsed == nil {
+		t.Fatal("arguments are captured in PreMCPHook while nothing has turned content off yet")
+	}
+
+	// Governance's PreMCPHook runs after ours and stamps the key's decision.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+
+	result := `{"answer":"done"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: &result},
+		},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "docs",
+			ToolName:       "search",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-late-off")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if logEntry.Status != "success" {
+		t.Fatalf("expected status success, got %q", logEntry.Status)
+	}
+	if logEntry.ResultParsed != nil {
+		t.Fatalf("expected the result to be dropped, got %#v", logEntry.ResultParsed)
+	}
+	if logEntry.ArgumentsParsed != nil {
+		t.Fatalf("expected the arguments captured before the key was stamped to be dropped, got %#v", logEntry.ArgumentsParsed)
+	}
+}
+
+// TestPostLLMHookDropsCapturedInputWhenContentIsDisabledLate pins the passthrough ordering hole:
+// governance skips PreRequestHook for passthrough and stamps the key's decision in its own
+// PreLLMHook, which runs after ours, so the passthrough body is captured while nothing has turned
+// content off yet. PostLLMHook must resolve the final policy and drop every captured input, not
+// only mark the row content_hidden.
+func TestPostLLMHookDropsCapturedInputWhenContentIsDisabledLate(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-passthrough-late-off")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI,
+			Method:   "POST",
+			Path:     "/v1/fine-tuning/jobs",
+			Body:     []byte(`{"training_file":"file-secret"}`),
+			// The body is captured only for JSON requests.
+			SafeHeaders: map[string]string{"content-type": "application/json"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	pendingValue, ok := plugin.pendingLogsEntries.Load("req-passthrough-late-off")
+	if !ok {
+		t.Fatal("expected pending log entry")
+	}
+	if pendingValue.(*PendingLogData).InitialData.PassthroughRequestBody == "" {
+		t.Fatal("the body is captured in PreLLMHook while nothing has turned content off yet")
+	}
+
+	// Governance's PreLLMHook runs after ours and stamps the key's decision.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			Body:       []byte(`{"id":"ftjob-1"}`),
+			Path:       "/v1/fine-tuning/jobs",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.PassthroughRequest,
+				Provider:    schemas.OpenAI,
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-passthrough-late-off")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if !logEntry.ContentHidden {
+		t.Fatal("expected the row to be content_hidden")
+	}
+	if logEntry.PassthroughRequestBody != "" {
+		t.Fatalf("expected the passthrough body captured before the key was stamped to be dropped, got %q", logEntry.PassthroughRequestBody)
+	}
+	if logEntry.PassthroughResponseBody != "" {
+		t.Fatalf("expected no passthrough response body, got %q", logEntry.PassthroughResponseBody)
+	}
+}
+
+// TestPostMCPHookSkipsRedactionMappingsWhenContentIsHidden pins that reveal mappings are attached
+// only when the MCP log's content is visible. With object-storage retention on, a key that turned
+// content off yields storeContent=true but visible=false: the arguments and result are removed, so
+// the mappings that would reveal redactions in them must not be kept either.
+func TestPostMCPHookSkipsRedactionMappingsWhenContentIsHidden(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{RetainContentInObjectStorage: new(true), ObjectStorageEnabled: true}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-hidden-redaction")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-hidden-redaction")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		ReversibleMappings: schemas.RedactionMapsByPhase{
+			Input: map[string]string{"EMAIL-1": "private@example.com"},
+		},
+	})
+
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+	pendingValue, ok := plugin.pendingMCPLogsToInject.Load("mcp-hidden-redaction")
+	if !ok {
+		t.Fatal("expected pending MCP log entry")
+	}
+	pendingEntry := pendingValue.(*logstore.MCPToolLog)
+
+	result := `{"answer":"done"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+	if pendingEntry.ResultParsed != nil || pendingEntry.ArgumentsParsed != nil {
+		t.Fatalf("hidden content must be removed, got args=%#v result=%#v", pendingEntry.ArgumentsParsed, pendingEntry.ResultParsed)
+	}
+	if pendingEntry.RedactionData != nil {
+		t.Fatalf("expected no redaction mappings on an entry whose content is hidden, got %#v", pendingEntry.RedactionData)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+}
+
+// TestPreMCPHookHoldsArgumentsUntilGovernanceStampsTheKey pins the MCP hook ordering hole on the
+// path PostMCPHook cannot cover: a request that presents a virtual key governance has not stamped
+// yet is captured while its content decision is still unknown. The arguments must not sit on the
+// pending entry, where the pre-hook callback and the stale-entry cleanup would expose them; they
+// are held aside and attached in PostMCPHook only once the final policy says content is visible.
+func TestPreMCPHookHoldsArgumentsUntilGovernanceStampsTheKey(t *testing.T) {
+	newCtx := func(requestID, mcpLogID string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, mcpLogID)
+		// The transport settled a presented key; governance has not resolved it yet.
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+		return ctx
+	}
+	toolName := "docs-search"
+	preHook := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext) *logstore.MCPToolLog {
+		t.Helper()
+		_, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+			RequestType: schemas.MCPRequestTypeChatToolCall,
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreMCPHook() error = %v", err)
+		}
+		pendingValue, ok := plugin.pendingMCPLogsToInject.Load(ctx.Value(schemas.BifrostContextKeyMCPLogID).(string))
+		if !ok {
+			t.Fatal("expected pending MCP log entry")
+		}
+		return pendingValue.(*logstore.MCPToolLog)
+	}
+	postHook := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext) {
+		t.Helper()
+		result := `{"answer":"done"}`
+		_, _, err := plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostMCPHook() error = %v", err)
+		}
+	}
+
+	t.Run("stale cleanup persists no arguments for an unresolved key", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-mcp-provisional-stale", "mcp-provisional-stale")
+		pending := preHook(t, plugin, ctx)
+		if pending.ArgumentsParsed != nil {
+			t.Fatalf("arguments must be held aside while the key's decision is unknown, got %#v", pending.ArgumentsParsed)
+		}
+
+		// PostMCPHook never fires; the reaper persists what the pending entry holds.
+		pending.CreatedAt = time.Now().Add(-pendingLogTTL - time.Minute)
+		plugin.cleanupStalePendingLogs()
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-provisional-stale")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.Status != "error" {
+			t.Fatalf("expected the stale status, got %q", logEntry.Status)
+		}
+		if logEntry.ArgumentsParsed != nil {
+			t.Fatalf("a stale entry captured before the key was stamped must not persist arguments, got %#v", logEntry.ArgumentsParsed)
+		}
+	})
+
+	t.Run("arguments are attached once the resolved key keeps content on", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-mcp-provisional-on", "mcp-provisional-on")
+		preHook(t, plugin, ctx)
+		// Governance resolved the key and it inherits: content stays on.
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		postHook(t, plugin, ctx)
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-provisional-on")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.ArgumentsParsed == nil {
+			t.Fatal("arguments held aside must be attached once the final policy keeps content on")
+		}
+	})
+
+	t.Run("arguments are dropped once the resolved key turns content off", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-mcp-provisional-off", "mcp-provisional-off")
+		preHook(t, plugin, ctx)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		postHook(t, plugin, ctx)
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-provisional-off")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.ArgumentsParsed != nil || logEntry.ResultParsed != nil {
+			t.Fatalf("content-off key must persist no arguments or result, got args=%#v result=%#v", logEntry.ArgumentsParsed, logEntry.ResultParsed)
+		}
+	})
+}
+
+// TestPreLLMHookNotificationCarriesNoInputWhileKeyIsUnresolved pins that the live "processing"
+// notification PreLLMHook sends to log subscribers never carries captured input for a request
+// whose virtual key governance has not stamped yet: the key may turn content off once it does.
+func TestPreLLMHookNotificationCarriesNoInputWhileKeyIsUnresolved(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	var notified []*logstore.Log
+	plugin.SetLogCallback(func(_ context.Context, logEntry *logstore.Log) { notified = append(notified, logEntry) })
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-notify-unresolved")
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider:    schemas.OpenAI,
+			Method:      "POST",
+			Path:        "/v1/fine-tuning/jobs",
+			Body:        []byte(`{"training_file":"file-secret"}`),
+			SafeHeaders: map[string]string{"content-type": "application/json"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if len(notified) == 0 {
+		t.Fatal("expected the processing notification")
+	}
+	if body := notified[0].PassthroughRequestBody; body != "" {
+		t.Fatalf("the notification went out before the key was stamped and must carry no input, got %q", body)
+	}
+}
+
+// TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent pins the other direction of the
+// hook ordering hole: with the client flag off, a key that turns content on is still unstamped when
+// PreLLMHook and PreMCPHook capture, so they must capture provisionally and let the final policy in
+// the post-hooks decide, instead of dropping content the key is entitled to keep.
+func TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent(t *testing.T) {
+	newCtx := func(requestID string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+		return ctx
+	}
+	stampKeyOn := func(ctx *schemas.BifrostContext) {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
+	}
+
+	t.Run("passthrough body", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-key-on-passthrough")
+		_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider:    schemas.OpenAI,
+				Method:      "POST",
+				Path:        "/v1/fine-tuning/jobs",
+				Body:        []byte(`{"training_file":"file-kept"}`),
+				SafeHeaders: map[string]string{"content-type": "application/json"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreLLMHook() error = %v", err)
+		}
+		stampKeyOn(ctx)
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode:  200,
+				Body:        []byte(`{"id":"ftjob-1"}`),
+				Path:        "/v1/fine-tuning/jobs",
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostLLMHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindByID(context.Background(), "req-key-on-passthrough")
+		if err != nil {
+			t.Fatalf("FindByID() error = %v", err)
+		}
+		if logEntry.ContentHidden {
+			t.Fatal("a key that turns content on must leave the row visible")
+		}
+		if logEntry.PassthroughRequestBody != `{"training_file":"file-kept"}` {
+			t.Fatalf("expected the passthrough body kept for a content-on key, got %q", logEntry.PassthroughRequestBody)
+		}
+	})
+
+	t.Run("mcp arguments", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-key-on-mcp")
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-key-on")
+		toolName := "docs-search"
+		_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+			RequestType: schemas.MCPRequestTypeChatToolCall,
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreMCPHook() error = %v", err)
+		}
+		stampKeyOn(ctx)
+		result := `{"answer":"done"}`
+		_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostMCPHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-key-on")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.ResultParsed == nil {
+			t.Fatal("precondition: a content-on key stores the result")
+		}
+		if logEntry.ArgumentsParsed == nil {
+			t.Fatal("expected the arguments kept for a content-on key, alongside its result")
+		}
+	})
+}
+
+// TestClaimStaleMCPEntryLeavesHeldArgumentsWhenPostHookWon pins the TTL-boundary race: when
+// PostMCPHook claims the pending entry first, the reaper's claim fails and must leave the held
+// arguments for PostMCPHook to attach, not delete them out from under it.
+func TestClaimStaleMCPEntryLeavesHeldArgumentsWhenPostHookWon(t *testing.T) {
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	// PostMCPHook already took the pending entry; its held arguments are still waiting.
+	plugin.provisionalMCPArguments.Store("mcp-race", `{"query":"find this"}`)
+
+	if _, ok := plugin.claimStaleMCPEntry("mcp-race"); ok {
+		t.Fatal("the reaper must not claim an entry PostMCPHook already took")
+	}
+	if _, ok := plugin.provisionalMCPArguments.Load("mcp-race"); !ok {
+		t.Fatal("a failed claim must leave the held arguments for PostMCPHook")
+	}
+
+	// And a claim that wins takes the held arguments with the entry.
+	plugin.pendingMCPLogsToInject.Store("mcp-won", &logstore.MCPToolLog{ID: "mcp-won"})
+	plugin.provisionalMCPArguments.Store("mcp-won", `{"query":"find this"}`)
+	if _, ok := plugin.claimStaleMCPEntry("mcp-won"); !ok {
+		t.Fatal("the reaper must claim a pending entry nobody else took")
+	}
+	if _, ok := plugin.provisionalMCPArguments.Load("mcp-won"); ok {
+		t.Fatal("a winning claim must drop the held arguments; a stale entry never gets them")
+	}
+}
+
 // TestPostMCPHookFallbackStampsGovernanceFields verifies fallback MCP logs
 // created without a pending pre-hook entry still carry DAC ownership fields.
 func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {

@@ -255,6 +255,12 @@ const (
 	MCPContextKeyIncludeClients BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
 	MCPContextKeyIncludeTools   BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 
+	// BifrostContextKeyGovernanceDisableContentLogging is the resolved virtual key's own content-logging
+	// decision (bool): true forces content off, false forces it on for the log store, absent means inherit
+	// client.disable_content_logging. It sits between the client flag and the x-bf-disable-content-logging
+	// header in precedence. Set by the bifrost governance plugin - DO NOT SET THIS MANUALLY.
+	BifrostContextKeyGovernanceDisableContentLogging BifrostContextKey = "bifrost-governance-disable-content-logging"
+
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                 // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"               // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"       // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
@@ -493,10 +499,23 @@ const (
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.
 //
-// FailReason is populated on every failed attempt (retryable or terminal) and is nil only on a
-// successful attempt. Status-derived values are: `rate_limit_error` (429), `authentication_error`
-// (401/403), `billing_error` (402); otherwise the provider's error Type is used, falling back to
-// `unknown`. Use it to inspect what went wrong on a given try.
+// FailureClass and StatusCode are set on every failed attempt the provider answered (retryable or
+// terminal) and are empty on a successful attempt, on a cancelled one, and on an internal Bifrost
+// error. FailureClass is what the retry loop acted on; StatusCode is the raw status it was derived
+// from, kept so a consumer can tell a 401 from a 403 within the same class.
+//
+// FailReason is populated on the same attempts and is nil on the others. For the classes that
+// name what the provider refused it is the class's label: `rate_limit_error`, `authentication_error`,
+// `billing_error`, `model_access_error`, `model_retired_error`, `region_blocked_error`; otherwise the
+// provider's error Type is used, falling back to `unknown`. Use it to inspect what went wrong on a
+// given try.
+//
+// RetryAfter is the provider's own hint for how long to wait before trying this key again, in
+// milliseconds, carried from the error's ExtraFields.RetryAfter (see the retry hint sources in
+// providers/utils). It is zero when the provider gave none, which is most failures: only a
+// Retry-After or retry-after-ms header, or a google.rpc.RetryInfo error detail, produces one.
+// Kept per attempt because a request that rotated away from a rate-limited key still knows how
+// long that key asked for, which the request's final error no longer says.
 //
 // TriggeredRotation is true iff this attempt's per-key failure caused the next attempt to actually
 // rotate to a *different* key. It is false on:
@@ -508,11 +527,14 @@ const (
 //
 // Use this (not FailReason) to count actual key rotations.
 type KeyAttemptRecord struct {
-	Attempt           int     `json:"attempt"`
-	KeyID             string  `json:"key_id"`
-	KeyName           string  `json:"key_name"`
-	FailReason        *string `json:"fail_reason,omitempty"`
-	TriggeredRotation bool    `json:"triggered_rotation"`
+	Attempt           int          `json:"attempt"`
+	KeyID             string       `json:"key_id"`
+	KeyName           string       `json:"key_name"`
+	FailReason        *string      `json:"fail_reason,omitempty"`
+	FailureClass      FailureClass `json:"failure_class,omitempty"`
+	StatusCode        *int         `json:"status_code,omitempty"`
+	RetryAfter        int64        `json:"retry_after_ms,omitempty"`
+	TriggeredRotation bool         `json:"triggered_rotation"`
 }
 
 // RoutingEngineLogEntry represents a log entry from a routing engine
@@ -2158,7 +2180,8 @@ type BifrostErrorExtraFields struct {
 	RawResponse               interface{}           `json:"raw_response,omitempty"`
 	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
-	Latency                   int64                 `json:"latency,omitempty"` // in milliseconds
+	Latency                   int64                 `json:"latency,omitempty"`        // in milliseconds
+	RetryAfter                int64                 `json:"retry_after_ms,omitempty"` // provider's retry hint in milliseconds, clamped to 1s..5m; zero when it gave none
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 	// BilledUsage carries provider-reported token usage that was consumed even

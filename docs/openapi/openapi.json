@@ -1406,11 +1406,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -5659,11 +5669,21 @@
                                 }
                               ]
                             },
+                            "async": {
+                              "type": "boolean"
+                            },
                             "action": {
                               "type": "object"
                             },
                             "error": {
-                              "type": "string"
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
                             },
                             "queries": {
                               "type": "array",
@@ -6171,11 +6191,21 @@
                               }
                             ]
                           },
+                          "async": {
+                            "type": "boolean"
+                          },
                           "action": {
                             "type": "object"
                           },
                           "error": {
-                            "type": "string"
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object"
+                              }
+                            ]
                           },
                           "queries": {
                             "type": "array",
@@ -6880,11 +6910,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -13773,11 +13813,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -14717,11 +14767,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -15698,11 +15758,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -16794,11 +16864,21 @@
                                 }
                               ]
                             },
+                            "async": {
+                              "type": "boolean"
+                            },
                             "action": {
                               "type": "object"
                             },
                             "error": {
-                              "type": "string"
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object"
+                                }
+                              ]
                             },
                             "queries": {
                               "type": "array",
@@ -17306,11 +17386,21 @@
                               }
                             ]
                           },
+                          "async": {
+                            "type": "boolean"
+                          },
                           "action": {
                             "type": "object"
                           },
                           "error": {
-                            "type": "string"
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object"
+                              }
+                            ]
                           },
                           "queries": {
                             "type": "array",
@@ -30769,11 +30859,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -33857,11 +33957,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -37056,11 +37166,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -44260,11 +44380,21 @@
                             }
                           ]
                         },
+                        "async": {
+                          "type": "boolean"
+                        },
                         "action": {
                           "type": "object"
                         },
                         "error": {
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "queries": {
                           "type": "array",
@@ -97911,6 +98041,13 @@
           "error_type": {
             "type": "string",
             "description": "Normalized, low-cardinality classification of why the request failed, declared by whichever component refused it. Prefixed by fault domain (caller_, policy_, provider_, bifrost_). Absent on failures that were not classified at source."
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "The provider's hint for how long to wait before retrying, in milliseconds, read from its retry-after-ms or Retry-After header or its google.rpc.RetryInfo error detail, and clamped to between 1000 and 300000. Absent when the provider gave no explicit hint."
           }
         }
       },
@@ -100103,11 +100240,21 @@
                         }
                       ]
                     },
+                    "async": {
+                      "type": "boolean"
+                    },
                     "action": {
                       "type": "object"
                     },
                     "error": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
                     },
                     "queries": {
                       "type": "array",
@@ -100164,7 +100311,19 @@
             "type": "boolean"
           },
           "conversation": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
           },
           "context_management": {
             "$ref": "#/components/schemas/ContextManagement"
@@ -100396,6 +100555,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -100431,6 +100593,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -100471,8 +100636,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -101008,11 +101186,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -101270,6 +101458,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -101305,6 +101496,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -101345,8 +101539,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -101931,11 +102138,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -103185,11 +103402,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -103268,6 +103495,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -103303,6 +103533,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -103343,8 +103576,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -105409,11 +105655,21 @@
                         }
                       ]
                     },
+                    "async": {
+                      "type": "boolean"
+                    },
                     "action": {
                       "type": "object"
                     },
                     "error": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
                     },
                     "queries": {
                       "type": "array",
@@ -105659,6 +105915,9 @@
                 "description": {
                   "type": "string"
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "cache_control": {
                   "$ref": "#/components/schemas/CacheControl"
                 },
@@ -105694,6 +105953,9 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "output_schema": {
+                  "type": "object"
                 },
                 "vector_store_ids": {
                   "type": "array",
@@ -105734,8 +105996,21 @@
                 "server_url": {
                   "type": "string"
                 },
+                "tunnel_id": {
+                  "type": "string"
+                },
                 "allowed_tools": {
-                  "type": "object"
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "authorization": {
                   "type": "string"
@@ -112865,6 +113140,13 @@
             "type": "boolean",
             "description": "When true, this virtual key may use every configured provider. provider_configs still apply as optional per-provider overrides (budgets, rate limits, model allow/blacklists, key selection); a provider without a config gets all models, all keys, and no per-provider limits.\n"
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The key's own content-logging decision. Absent or null inherits client.disable_content_logging. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence over this value for the log store.\n"
+          },
           "team": {
             "$ref": "#/components/schemas/Team"
           },
@@ -113372,6 +113654,13 @@
             "default": false,
             "description": "When true, this virtual key may use every configured provider. provider_configs remain optional per-provider overrides for budgets, rate limits, model allow/blacklists, and key selection.\n"
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The key's own content-logging decision. Omit or set null to inherit client.disable_content_logging. true keeps content out of the log store and out of OpenTelemetry export for this key's traffic (other observability connectors follow their own disable_content_logging until they adopt the trace mark); false forces content into the log store even when the client setting is true. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence over this value for the log store.\n"
+          },
           "expires_at": {
             "type": "string",
             "format": "date-time",
@@ -113514,6 +113803,13 @@
           "allow_all_providers": {
             "type": "boolean",
             "description": "When true, this virtual key may use every configured provider. provider_configs remain optional per-provider overrides. Omit to leave the current setting unchanged.\n"
+          },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Tri-state. Omit to leave the current decision unchanged, null to clear it back to inheriting client.disable_content_logging, true to keep content out of the log store and out of OpenTelemetry export (other observability connectors follow their own disable_content_logging until they adopt the trace mark), false to force content into the log store. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence over this value for the log store.\n"
           },
           "reset_budget_usage": {
             "type": "boolean",
@@ -117282,11 +117578,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",
@@ -117743,11 +118049,21 @@
                     }
                   ]
                 },
+                "async": {
+                  "type": "boolean"
+                },
                 "action": {
                   "type": "object"
                 },
                 "error": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
                 },
                 "queries": {
                   "type": "array",

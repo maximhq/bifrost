@@ -1167,6 +1167,21 @@
             "weight": 1.0
           }
         ]
+      },
+      {
+        "name": "Test Key (content logging off)",
+        "id": "vk-test-nocontent",
+        "value": "sk-bf-test-key-nocontent",
+        "is_active": true,
+        "disable_content_logging": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
+        ]
       }
     ]
   },

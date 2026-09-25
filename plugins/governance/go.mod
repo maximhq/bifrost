@@ -4,8 +4,8 @@ go 1.27.0
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.10.1
-	github.com/maximhq/bifrost/framework v1.7.3
+	github.com/maximhq/bifrost/core v1.10.2
+	github.com/maximhq/bifrost/framework v1.7.4
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.74.0
 	gorm.io/gorm v1.31.1

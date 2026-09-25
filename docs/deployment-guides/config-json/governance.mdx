@@ -88,6 +88,7 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 | `rate_limit_id` | No | Attach a rate limit |
 | `calendar_aligned` | No | Snap budget resets to day/week/month/year boundaries |
 | `allow_all_providers` | No | Default `false`. When `true`, the key can use every provider, including ones added later. Listed `provider_configs` retain their per-provider model/key/budget/rate-limit rules. Providers without an entry get all models, all keys, and no per-provider limits |
+| `disable_content_logging` | No | Tri-state. Omit to inherit `client.disable_content_logging`. `true` keeps this key's request and response content out of the log store (unless an allowed `x-bf-disable-content-logging: false` header re-enables it for one request) and out of OpenTelemetry export. `false` stores content for this key even when the client setting is `true`. See [Content Logging](/features/observability/content-logging) |
 | `provider_configs` | No | Allowed provider/model/key combinations (empty = deny all, unless `allow_all_providers` is `true`) |
 
 ### Provider Config Fields

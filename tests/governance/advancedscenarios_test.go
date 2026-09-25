@@ -1823,3 +1823,97 @@ func TestVKWithoutAllowAllProvidersDeniesUnlisted(t *testing.T) {
 	}
 	t.Logf("deny-by-default denied the unlisted provider ✓")
 }
+
+// TestVKContentLoggingOffHidesLogContent creates a key with disable_content_logging via the
+// management API, sends a request through it, and reads the request's log row back: the row must
+// be content_hidden with no input_history, while a key that inherits keeps its content. This is the
+// end-to-end pin for the whole path (API -> store -> governance stamp -> logging plugin).
+func TestVKContentLoggingOffHidesLogContent(t *testing.T) {
+	t.Parallel()
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	createVK := func(t *testing.T, name string, decision *bool) string {
+		t.Helper()
+		resp := MakeRequest(t, APIRequest{
+			Method: "POST",
+			Path:   "/api/governance/virtual-keys",
+			Body: CreateVirtualKeyRequest{
+				Name:                  name + "-" + generateRandomID(),
+				DisableContentLogging: decision,
+				ProviderConfigs: []ProviderConfigRequest{{
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+				}},
+			},
+		})
+		if resp.StatusCode != 200 {
+			t.Fatalf("Failed to create VK: status %d, body %v", resp.StatusCode, resp.Body)
+		}
+		testData.AddVirtualKey(ExtractIDFromResponse(t, resp))
+		return resp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+	}
+
+	// Poll the chat route until the key is live in the governance store, then keep the request id
+	// of the first successful call: that is the log row we read back.
+	chatThrough := func(t *testing.T, vkValue string) string {
+		t.Helper()
+		for i := 0; i < 20; i++ {
+			resp := MakeRequest(t, APIRequest{
+				Method: "POST",
+				Path:   "/v1/chat/completions",
+				Body: ChatCompletionRequest{
+					Model:    "openai/gpt-4o-mini",
+					Messages: []ChatMessage{{Role: "user", Content: "content logging probe"}},
+				},
+				VKHeader: &vkValue,
+			})
+			if resp.StatusCode == 200 {
+				requestID := resp.Headers.Get("x-request-id")
+				if requestID == "" {
+					t.Fatalf("chat response carried no x-request-id header")
+				}
+				return requestID
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		t.Fatalf("chat through the VK never succeeded")
+		return ""
+	}
+
+	// The log row is written by the batching writer, so poll for it.
+	readLog := func(t *testing.T, requestID string) map[string]interface{} {
+		t.Helper()
+		for i := 0; i < 20; i++ {
+			resp := MakeRequest(t, APIRequest{Method: "GET", Path: "/api/logs/" + requestID})
+			if resp.StatusCode == 200 {
+				return resp.Body
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		t.Fatalf("log %s never appeared", requestID)
+		return nil
+	}
+
+	offKey := createVK(t, "test-vk-content-off", new(true))
+	offLog := readLog(t, chatThrough(t, offKey))
+	if hidden, _ := offLog["content_hidden"].(bool); !hidden {
+		t.Fatalf("expected content_hidden=true for the content-off key, got %v", offLog)
+	}
+	if history, ok := offLog["input_history"].([]interface{}); ok && len(history) > 0 {
+		t.Fatalf("expected no input_history for the content-off key, got %v", history)
+	}
+	t.Logf("content-off key hid the log content ✓")
+
+	inheritKey := createVK(t, "test-vk-content-inherit", nil)
+	inheritLog := readLog(t, chatThrough(t, inheritKey))
+	if hidden, _ := inheritLog["content_hidden"].(bool); hidden {
+		t.Fatalf("expected content_hidden=false for the inheriting key, got %v", inheritLog)
+	}
+	if history, _ := inheritLog["input_history"].([]interface{}); len(history) == 0 {
+		t.Fatalf("expected input_history for the inheriting key, got %v", inheritLog)
+	}
+	t.Logf("inheriting key kept the log content ✓")
+}

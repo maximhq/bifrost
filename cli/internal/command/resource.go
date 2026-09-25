@@ -644,6 +644,7 @@ func (r *Runner) generateVirtualKey(ctx context.Context, env *environment, args 
 	var providers repeatedValue
 	var allowedModels repeatedValue
 	var allowAllProviders bool
+	var disableContentLogging bool
 	var inactive bool
 	var dryRun bool
 	fs.StringVar(&name, "name", "", "virtual-key name")
@@ -654,6 +655,7 @@ func (r *Runner) generateVirtualKey(ctx context.Context, env *environment, args 
 	fs.Var(&providers, "provider", "allowed provider; repeatable")
 	fs.Var(&allowedModels, "allowed-model", "allowed model for every supplied provider; repeatable")
 	fs.BoolVar(&allowAllProviders, "allow-all-providers", false, "allow every configured provider")
+	fs.BoolVar(&disableContentLogging, "disable-content-logging", false, "keep this key's request and response content out of logs and observability exports")
 	fs.BoolVar(&inactive, "inactive", false, "create the key disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "print the request plan without creating the key")
 	if err := fs.Parse(args); err != nil {
@@ -674,6 +676,10 @@ func (r *Runner) generateVirtualKey(ctx context.Context, env *environment, args 
 	payload := map[string]any{
 		"name": strings.TrimSpace(name), "description": description,
 		"allow_all_providers": allowAllProviders, "is_active": !inactive,
+	}
+	if disableContentLogging {
+		// Only the "off" decision is a flag: the key otherwise inherits the client setting.
+		payload["disable_content_logging"] = true
 	}
 	if strings.TrimSpace(teamID) != "" {
 		payload["team_id"] = strings.TrimSpace(teamID)
