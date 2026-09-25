@@ -3392,6 +3392,13 @@ func getImageURLFromBlock(block AnthropicContentBlock) string {
 // parseJSONInput returns a json.RawMessage that preserves the original key ordering
 // of the JSON input. This is critical for prompt caching, which relies on exact
 // byte-for-byte matching of the request prefix sent to providers.
+//
+// The returned json.RawMessage is always valid JSON: when jsonStr is not a valid
+// JSON object (e.g. a tool-call arguments string truncated mid-generation by the
+// upstream model and replayed from conversation history), an empty object is
+// returned instead of the raw bytes. Embedding invalid JSON in a json.RawMessage
+// would make the surrounding request body fail to marshal, poisoning the whole
+// request with a 500.
 func parseJSONInput(jsonStr string) json.RawMessage {
 	if jsonStr == "" || jsonStr == "{}" {
 		return json.RawMessage("{}")
@@ -3403,8 +3410,10 @@ func parseJSONInput(jsonStr string) json.RawMessage {
 		return json.RawMessage(compacted)
 	}
 
-	// If compaction fails (invalid JSON), return json.RawMessage of the raw string
-	return json.RawMessage(jsonStr)
+	// jsonStr is not valid JSON. Return a valid empty object so the request body
+	// still marshals; the malformed arguments belong to a historical tool call and
+	// must not fail the entire request.
+	return json.RawMessage("{}")
 }
 
 // compactJSONBytes compacts JSON bytes, removing insignificant whitespace while

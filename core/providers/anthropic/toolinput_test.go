@@ -24,6 +24,12 @@ func TestConvertBifrostFunctionCallToAnthropicToolUse_Input(t *testing.T) {
 		{name: "nil arguments", arguments: nil, wantInput: "{}"},
 		{name: "empty arguments", arguments: schemas.Ptr(""), wantInput: "{}"},
 		{name: "populated arguments", arguments: schemas.Ptr(`{"foo":"bar"}`), wantInput: `{"foo":"bar"}`},
+		// Malformed (non-JSON) arguments must degrade to a valid empty object
+		// instead of poisoning the whole request with a marshal failure. See
+		// doc/2026-09-23-bifrost-malformed-arguments-500.md.
+		{name: "malformed arguments", arguments: schemas.Ptr(`{"cmd": "not valid json`), wantInput: "{}"},
+		{name: "truncated arguments", arguments: schemas.Ptr(`{"a":1, "b":`), wantInput: "{}"},
+		{name: "non-json text arguments", arguments: schemas.Ptr(`not-json{`), wantInput: "{}"},
 	}
 
 	for _, tt := range tests {
@@ -70,6 +76,7 @@ func TestConvertBifrostMCPCallToAnthropicToolUse_Input(t *testing.T) {
 		{name: "nil arguments", arguments: nil, wantInput: "{}"},
 		{name: "empty arguments", arguments: schemas.Ptr(""), wantInput: "{}"},
 		{name: "populated arguments", arguments: schemas.Ptr(`{"foo":"bar"}`), wantInput: `{"foo":"bar"}`},
+		{name: "malformed arguments", arguments: schemas.Ptr(`{"cmd": "not valid json`), wantInput: "{}"},
 	}
 
 	for _, tt := range tests {
@@ -119,6 +126,7 @@ func TestConvertBifrostMCPApprovalToAnthropicToolUse_Input(t *testing.T) {
 		{name: "nil arguments", arguments: nil, wantInput: "{}"},
 		{name: "empty arguments", arguments: schemas.Ptr(""), wantInput: "{}"},
 		{name: "populated arguments", arguments: schemas.Ptr(`{"foo":"bar"}`), wantInput: `{"foo":"bar"}`},
+		{name: "malformed arguments", arguments: schemas.Ptr(`{"cmd": "not valid json`), wantInput: "{}"},
 	}
 
 	for _, tt := range tests {
