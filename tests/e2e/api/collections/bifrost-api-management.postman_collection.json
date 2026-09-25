@@ -122,6 +122,12 @@
           "  pass = true;",
           "}",
           "",
+          "// Rows tagged [EXPECT-400] and the like send a deliberately invalid request; that status is their success path (same tag the runners' expected-status policy reads).",
+          "var expectTag = requestName.match(/\\[EXPECT-(\\d{3})\\]/);",
+          "if (expectTag && code === Number(expectTag[1])) {",
+          "  pass = true;",
+          "}",
+          "",
           "pm.test('Status is 2xx or expected 4xx', function() { pm.expect(pass).to.be.true; });",
           "// Handler response structure assertions",
           "function parseJSONOrNull() {",
@@ -5022,7 +5028,12 @@
                   "  if (jsonData && jsonData.rule && jsonData.rule.id) {",
                   "    pm.collectionVariables.set('rule_id', jsonData.rule.id);",
                   "  }",
-                  "}"
+                  "}",
+                  "pm.test('create returns legacy strings, normalised unpinned object and pinned object as sent', function () {",
+                  "  var body = pm.response.json();",
+                  "  var rule = body.rule || body;",
+                  "  pm.expect(JSON.stringify(rule.fallbacks)).to.eql(JSON.stringify([\"anthropic/claude-sonnet-4\",\"groq/llama-3.1-8b-instant\",{\"provider\":\"vertex\",\"model\":\"gemini-2.5-pro\",\"key_id\":\"e2e-fallback-key\"},\"azure/\"]));",
+                  "});"
                 ],
                 "type": "text/javascript"
               }
@@ -5038,7 +5049,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"TestRoutingRule\",\"description\":\"E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
+              "raw": "{\"name\":\"TestRoutingRule\",\"description\":\"E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0,\"fallbacks\":[\"anthropic/claude-sonnet-4\",{\"provider\":\"groq\",\"model\":\"llama-3.1-8b-instant\"},{\"provider\":\"vertex\",\"model\":\"gemini-2.5-pro\",\"key_id\":\"e2e-fallback-key\"},\"azure/\"]}"
             },
             "url": {
               "raw": "{{base_url}}/api/routing/rules",
@@ -5070,7 +5081,22 @@
                 "{{rule_id}}"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('GET returns the stored fallbacks unchanged', function () {",
+                  "  var body = pm.response.json();",
+                  "  var rule = body.rule || body;",
+                  "  pm.expect(JSON.stringify(rule.fallbacks)).to.eql(JSON.stringify([\"anthropic/claude-sonnet-4\",\"groq/llama-3.1-8b-instant\",{\"provider\":\"vertex\",\"model\":\"gemini-2.5-pro\",\"key_id\":\"e2e-fallback-key\"},\"azure/\"]));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
           "name": "Update Routing Rule",
@@ -5084,7 +5110,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"UpdatedRoutingRule\",\"description\":\"Updated E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
+              "raw": "{\"name\":\"UpdatedRoutingRule\",\"description\":\"Updated E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0,\"fallbacks\":[{\"provider\":\"anthropic\",\"model\":\"claude-sonnet-4\",\"key_id\":\"e2e-updated-key\"},\"openai/gpt-4o-mini\"]}"
             },
             "url": {
               "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
@@ -5098,7 +5124,63 @@
                 "{{rule_id}}"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('PUT replaces fallbacks and keeps the key pin', function () {",
+                  "  var body = pm.response.json();",
+                  "  var rule = body.rule || body;",
+                  "  pm.expect(JSON.stringify(rule.fallbacks)).to.eql(JSON.stringify([{\"provider\":\"anthropic\",\"model\":\"claude-sonnet-4\",\"key_id\":\"e2e-updated-key\"},\"openai/gpt-4o-mini\"]));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] Create Routing Rule with an unknown fallback provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"InvalidFallbackRule\",\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":7,\"fallbacks\":[{\"provider\":\"not-a-provider\",\"model\":\"x\",\"key_id\":\"k\"}]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/routing/rules",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "rules"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a fallback naming an unknown provider is rejected', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.text()).to.include('known provider');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
           "name": "Delete Routing Rule",
