@@ -64,7 +64,7 @@ Sources:
 - [ ] **Input as messages array** (Responses also accepts messages-shape input)
 - [ ] **Stream events** (Responses streams structured event types: response.output_item.added, etc.)
 - [ ] **Multimodal input items** (text + image_url + input_file in one request)
-- [ ] **PDF input** (`input_file` with PDF data)
+- [x] **PDF input** (`input_file` with PDF data) — folder 117 (#7539): raw `input_file.file_data` + `file_type` reaches OpenAI as a data URL
 - [ ] **include array** (`include: ["file_search_call.results", "message.input_image.image_url"]`)
 - [ ] **Custom tool** (`tools: [{ type: "custom", name, description, input_schema }]`)
 - [ ] **Token counting endpoint** (`POST /v1/responses/input_tokens`)

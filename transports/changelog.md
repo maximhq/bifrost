@@ -7,6 +7,7 @@
 
 ## 🐞 Fixed
 
+- **OpenAI-Compatible File Data URLs** - Raw base64 `file_data` with `file_type` now reaches OpenAI-compatible providers (OpenAI, Azure, Databricks and others) as a data URL instead of being rejected [@Ethanol-E85](https://github.com/Ethanol-E85)
 - **Anthropic Bedrock Request Metadata** - Cover Anthropic and PydanticAI request metadata passthrough to Bedrock [@wangrat](https://github.com/wangrat)
 - **Kimi and DeepSeek with Claude Code** - Tool-schema regex patterns are rewritten (`\0` to `\x00`, lookaround assertions stripped) for Moonshot and DeepSeek models only. kimi-k3 on Bedrock no longer returns an empty stream, and every other model gets byte-identical schemas (#7430)
 - **Anthropic Billing Header Leak** - Claude Code's `x-anthropic-billing-header` system block is removed at Messages ingress and restored only for Anthropic-family attempts, including fallbacks and alias targets, so it no longer pollutes GPT or Gemini prompts (#7431)

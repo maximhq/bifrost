@@ -504,3 +504,138 @@ func TestStripCompactionItemSummary_AllocationScaling(t *testing.T) {
 		stripCompactionItemSummary(body, itemsByLen[len(body)])
 	})
 }
+
+// TestOpenAIChatRequest_MarshalJSON_FoldsFileTypeIntoDataURL pins that file_type, a Bifrost
+// extension the OpenAI wire format lacks, is carried into file_data rather than dropped.
+// OpenAI-compatible upstreams accept file_data only as a data URL, so raw base64 (Bifrost's
+// canonical file shape) with its media type stripped was rejected with a 400 (#7539).
+func TestOpenAIChatRequest_MarshalJSON_FoldsFileTypeIntoDataURL(t *testing.T) {
+	const pdfBase64 = "JVBERi0xLjQK"
+	tests := []struct {
+		name         string
+		fileData     string
+		fileType     *string
+		wantFileData string
+	}{
+		{"raw base64 is folded into a data URL", pdfBase64, schemas.Ptr("application/pdf"), "data:application/pdf;base64," + pdfBase64},
+		{"existing data URL is unchanged", "data:application/pdf;base64," + pdfBase64, schemas.Ptr("application/pdf"), "data:application/pdf;base64," + pdfBase64},
+		{"literal text is base64-encoded", "hello", schemas.Ptr("text/plain"), "data:text/plain;base64,aGVsbG8="},
+		{"no file_type leaves file_data unchanged", pdfBase64, nil, pdfBase64},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file := &schemas.ChatInputFile{FileData: schemas.Ptr(tt.fileData), FileType: tt.fileType}
+			req := &OpenAIChatRequest{
+				Model: "gpt-4o-mini",
+				Messages: []OpenAIMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeFile, File: file},
+					}},
+				}},
+			}
+
+			jsonBytes, err := req.MarshalJSON()
+			if err != nil {
+				t.Fatalf("Failed to marshal: %v", err)
+			}
+			var wire struct {
+				Messages []struct {
+					Content []struct {
+						File map[string]interface{} `json:"file"`
+					} `json:"content"`
+				} `json:"messages"`
+			}
+			if err := sonic.Unmarshal(jsonBytes, &wire); err != nil {
+				t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+			}
+			if len(wire.Messages) != 1 || len(wire.Messages[0].Content) != 1 {
+				t.Fatalf("Expected one message with one content block; raw=%s", string(jsonBytes))
+			}
+			wireFile := wire.Messages[0].Content[0].File
+			if wireFile["file_data"] != tt.wantFileData {
+				t.Errorf("Expected file_data %q, got %v", tt.wantFileData, wireFile["file_data"])
+			}
+			if _, ok := wireFile["file_type"]; ok {
+				t.Errorf("file_type must not reach the OpenAI wire; raw=%s", string(jsonBytes))
+			}
+			if *file.FileData != tt.fileData {
+				t.Errorf("Original request was mutated: file_data %q", *file.FileData)
+			}
+		})
+	}
+}
+
+// TestOpenAIResponsesRequestInput_MarshalJSON_FoldsFileTypeIntoDataURL is the Responses
+// counterpart: input_file blocks in message content and in function_call_output blocks.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FoldsFileTypeIntoDataURL(t *testing.T) {
+	const pdfBase64 = "JVBERi0xLjQK"
+	newFileBlock := func() schemas.ResponsesMessageContentBlock {
+		return schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+			ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+				Filename: schemas.Ptr("marker.pdf"),
+				FileData: schemas.Ptr(pdfBase64),
+				FileType: schemas.Ptr("application/pdf"),
+			},
+		}
+	}
+	tests := []struct {
+		name     string
+		message  schemas.ResponsesMessage
+		blockKey string
+	}{
+		{
+			name: "input message content block",
+			message: schemas.ResponsesMessage{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{newFileBlock()}},
+			},
+			blockKey: "content",
+		},
+		{
+			name: "function_call_output block",
+			message: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_file"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{newFileBlock()},
+					},
+				},
+			},
+			blockKey: "output",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{tt.message}}
+
+			jsonBytes, err := input.MarshalJSON()
+			if err != nil {
+				t.Fatalf("Failed to marshal: %v", err)
+			}
+			var messages []map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+				t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+			}
+			blocks, ok := messages[0][tt.blockKey].([]interface{})
+			if !ok || len(blocks) != 1 {
+				t.Fatalf("Expected one %s block; raw=%s", tt.blockKey, string(jsonBytes))
+			}
+			block, ok := blocks[0].(map[string]interface{})
+			if !ok {
+				t.Fatalf("Expected an object block; raw=%s", string(jsonBytes))
+			}
+			if want := "data:application/pdf;base64," + pdfBase64; block["file_data"] != want {
+				t.Errorf("Expected file_data %q, got %v", want, block["file_data"])
+			}
+			if _, ok := block["file_type"]; ok {
+				t.Errorf("file_type must not reach the OpenAI wire; raw=%s", string(jsonBytes))
+			}
+		})
+	}
+}

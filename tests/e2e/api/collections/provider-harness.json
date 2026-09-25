@@ -171480,6 +171480,176 @@
           }
         }
       ]
+    },
+    {
+      "name": "117. OpenAI-compatible file_type folded into data URL (#7539)",
+      "description": "Pins #7539. The OpenAI-shaped marshaller (core/providers/openai/types.go) stripped file_type, a Bifrost extension, and forwarded file_data unchanged, so raw base64 - the canonical shape ChatContentBlock.UnmarshalJSON produces from Anthropic document blocks - reached OpenAI-compatible upstreams with no media type and was rejected (\"Expected a base64-encoded data URL ... without the 'data:' prefix\"; Databricks: \"Invalid base64 data URL format\"). 117.01 pins a raw file.file_data + file_type block on /v1/chat/completions, 117.02 the Anthropic document block that the normalizer rewrites to that shape, and 117.03 a raw input_file.file_data + file_type block on /v1/responses. Each asserts a 200, the marker reply, and via x-bf-send-back-raw-request that the wire carries file_data as a data URL with no file_type.",
+      "item": [
+        {
+          "name": "117.01 openai/gpt-4o-mini /v1/chat/completions file.file_data raw base64 + file_type PDF - #7539",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('117.01: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('117.01: no data URL rejection', function () { pm.expect(pm.response.text()).to.not.include(\"without the 'data:' prefix\"); pm.expect(pm.response.text()).to.not.include('Invalid base64 data URL format'); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('117.01: marker indigo-418 found in reply', function () { pm.expect(pm.response.text()).to.include('indigo-418'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('117.01: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var file = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'file' && b.file) { file = b.file; } }); });",
+                  "pm.test('117.01: file block reached the wire', function () { pm.expect(file, 'wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!file) { return; }",
+                  "pm.test('117.01: wire file_data is a PDF data URL', function () { var d = String(file.file_data || ''); pm.expect(d.indexOf('data:application/pdf;base64,JVBERi0'), 'file_data head: ' + d.slice(0, 48)).to.eql(0); });",
+                  "pm.test('117.01: file_type does not reach the wire', function () { pm.expect(file, 'file: ' + JSON.stringify(file).slice(0, 200)).to.not.have.property('file_type'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"marker.pdf\",\n            \"file_data\": \"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBpbmRpZ28tNDE4LikgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjYKJSVFT0YK\",\n            \"file_type\": \"application/pdf\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "117.02 openai/gpt-4o-mini /v1/chat/completions Anthropic document block base64 PDF - #7539",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('117.02: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('117.02: no data URL rejection', function () { pm.expect(pm.response.text()).to.not.include(\"without the 'data:' prefix\"); pm.expect(pm.response.text()).to.not.include('Invalid base64 data URL format'); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('117.02: marker indigo-418 found in reply', function () { pm.expect(pm.response.text()).to.include('indigo-418'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('117.02: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var file = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'file' && b.file) { file = b.file; } }); });",
+                  "pm.test('117.02: file block reached the wire', function () { pm.expect(file, 'wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!file) { return; }",
+                  "pm.test('117.02: wire file_data is a PDF data URL', function () { var d = String(file.file_data || ''); pm.expect(d.indexOf('data:application/pdf;base64,JVBERi0'), 'file_data head: ' + d.slice(0, 48)).to.eql(0); });",
+                  "pm.test('117.02: file_type does not reach the wire', function () { pm.expect(file, 'file: ' + JSON.stringify(file).slice(0, 200)).to.not.have.property('file_type'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBpbmRpZ28tNDE4LikgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjYKJSVFT0YK\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "117.03 openai/gpt-4o-mini /v1/responses input_file raw base64 + file_type PDF - #7539",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('117.03: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('117.03: no data URL rejection', function () { pm.expect(pm.response.text()).to.not.include(\"without the 'data:' prefix\"); pm.expect(pm.response.text()).to.not.include('Invalid base64 data URL format'); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('117.03: marker indigo-418 found in reply', function () { pm.expect(pm.response.text()).to.include('indigo-418'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('117.03: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var file = null; (Array.isArray(rr.input) ? rr.input : []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'input_file') { file = b; } }); });",
+                  "pm.test('117.03: input_file block reached the wire', function () { pm.expect(file, 'wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!file) { return; }",
+                  "pm.test('117.03: wire file_data is a PDF data URL', function () { var d = String(file.file_data || ''); pm.expect(d.indexOf('data:application/pdf;base64,JVBERi0'), 'file_data head: ' + d.slice(0, 48)).to.eql(0); });",
+                  "pm.test('117.03: file_type does not reach the wire', function () { pm.expect(file, 'file: ' + JSON.stringify(file).slice(0, 200)).to.not.have.property('file_type'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"marker.pdf\",\n          \"file_data\": \"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBpbmRpZ28tNDE4LikgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjYKJSVFT0YK\",\n          \"file_type\": \"application/pdf\"\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -267,6 +268,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						// keeps working without a Bifrost change.
 						if blockCopy.File != nil && blockCopy.File.FileType != nil {
 							fileCopy := *blockCopy.File
+							fileCopy.FileData = fileDataURL(fileCopy.FileData, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.File = &fileCopy
 						}
@@ -510,6 +512,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						// Strip FileType from file block
 						if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
 							fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+							fileCopy.FileData = fileDataURL(fileCopy.FileData, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 						}
@@ -600,6 +603,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 								// Strip FileType from file block
 								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
 									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+									fileCopy.FileData = fileDataURL(fileCopy.FileData, fileCopy.FileType)
 									fileCopy.FileType = nil
 									blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 								}
@@ -881,6 +885,24 @@ func filterSupportedAnnotations(annotations []schemas.ResponsesOutputMessageCont
 	}
 
 	return supportedAnnotations
+}
+
+// fileDataURL carries file_type into file_data for the OpenAI-shaped wire, which takes a
+// media type only inside a data URL. Without it, stripping file_type sends raw base64 (the
+// canonical Bifrost file shape) with no media type, and OpenAI-compatible upstreams reject
+// it. Text file_data arrives as literal text and binary file_data is already base64, the
+// same convention materializeBedrockDocument follows.
+func fileDataURL(fileData, fileType *string) *string {
+	if fileData == nil || fileType == nil || *fileType == "" ||
+		strings.HasPrefix(strings.ToLower(*fileData), "data:") {
+		return fileData
+	}
+	payload := *fileData
+	if strings.HasPrefix(strings.ToLower(*fileType), "text/") {
+		payload = base64.StdEncoding.EncodeToString([]byte(payload))
+	}
+	dataURL := "data:" + *fileType + ";base64," + payload
+	return &dataURL
 }
 
 // GetExtraParams implements the ExtraParamsGetter interface
