@@ -1,3 +1,4 @@
+- fix: read `context_length` from OpenAI-compatible list models envelopes, as returned by OpenRouter-style providers
 - [fix]: preserve opted-in Anthropic extra params through Responses conversion [@wangrat](https://github.com/wangrat)
 - feat: pinned provider keys on routing fallbacks via key_id on each fallback (#7470)
 - feat: forward OpenAI async tools, output_schema and tunnel_id on Responses, stripping async for unsupported models with a SupportsAsyncTools datasheet override (#7242)

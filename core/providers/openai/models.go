@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"cmp"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -37,7 +38,7 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 				ID:            string(providerKey) + "/" + result.ResolvedID,
 				Created:       model.Created,
 				OwnedBy:       schemas.Ptr(model.OwnedBy),
-				ContextLength: model.ContextWindow,
+				ContextLength: cmp.Or(model.ContextWindow, model.ContextLength),
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
