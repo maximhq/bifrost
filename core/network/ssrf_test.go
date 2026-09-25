@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -879,62 +878,37 @@ func (h hostResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, err
 	return nil, errors.New("no such host")
 }
 
-// roundTripFunc adapts a function to http.RoundTripper.
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
-func TestTargetCheckingTransport_PublicTargetReachesNext(t *testing.T) {
-	var called atomic.Int32
-	rt := &targetCheckingTransport{
-		resolver: hostResolver{"files.example": {net.ParseIP("203.0.113.10")}},
-		next: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			called.Add(1)
-			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
-		}),
-	}
-	resp, err := (&http.Client{Transport: rt}).Get("http://files.example/doc.pdf")
+func TestPublicTargetCheck_PublicTargetReturnsItsAddresses(t *testing.T) {
+	ips, err := publicTargetCheck(hostResolver{"files.example": {net.ParseIP("203.0.113.10")}}, nil)(context.Background(), "files.example")
 	if err != nil {
 		t.Fatalf("public target refused: %v", err)
 	}
-	resp.Body.Close()
-	if called.Load() != 1 {
-		t.Fatalf("next transport called %d times, want 1", called.Load())
+	if len(ips) != 1 || !ips[0].Equal(net.ParseIP("203.0.113.10")) {
+		t.Fatalf("checked addresses = %v, want [203.0.113.10]: the caller tunnels to these", ips)
 	}
 }
 
-func TestTargetCheckingTransport_RefusesNonPublicTargets(t *testing.T) {
+func TestPublicTargetCheck_RefusesNonPublicTargets(t *testing.T) {
 	tests := map[string]hostResolver{
 		// One public and one private record: the private one blocks, as on the direct path.
-		"http://internal.example/": {"internal.example": {net.ParseIP("203.0.113.10"), net.ParseIP("10.0.0.5")}},
-		"http://127.0.0.1:8080/":   {},
-		"http://169.254.169.254/":  {},
-		"http://[fd00:ec2::254]/":  {},
+		"internal.example": {"internal.example": {net.ParseIP("203.0.113.10"), net.ParseIP("10.0.0.5")}},
+		"127.0.0.1":        {},
+		"169.254.169.254":  {},
+		"fd00:ec2::254":    {},
 	}
-	for target, resolver := range tests {
-		rt := &targetCheckingTransport{
-			resolver: resolver,
-			next: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				t.Errorf("%s: a refused target must never reach the next transport", target)
-				return nil, errors.New("unreachable")
-			}),
-		}
-		_, err := (&http.Client{Transport: rt}).Get(target)
+	for host, resolver := range tests {
+		ips, err := publicTargetCheck(resolver, nil)(context.Background(), host)
 		if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
-			t.Errorf("%s: expected a non-public address error, got %v", target, err)
+			t.Errorf("%s: expected a non-public address error, got %v", host, err)
+		}
+		if ips != nil {
+			t.Errorf("%s: a refused target must return no addresses to dial, got %v", host, ips)
 		}
 	}
 }
 
-func TestTargetCheckingTransport_UnresolvableTargetIsRefused(t *testing.T) {
-	rt := &targetCheckingTransport{
-		resolver: hostResolver{},
-		next: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			t.Error("an unresolvable target must not be sent unchecked")
-			return nil, errors.New("unreachable")
-		}),
-	}
-	_, err := (&http.Client{Transport: rt}).Get("http://only-the-proxy-knows.example/")
+func TestPublicTargetCheck_UnresolvableTargetIsRefused(t *testing.T) {
+	_, err := publicTargetCheck(hostResolver{}, nil)(context.Background(), "only-the-proxy-knows.example")
 	if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
 		t.Fatalf("expected a DNS failure, got %v", err)
 	}

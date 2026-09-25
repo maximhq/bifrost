@@ -204,52 +204,32 @@ func ssrfSafeDialContext(resolver ipLookuper, dial func(ctx context.Context, net
 	}
 }
 
-// NewTargetCheckingTransport wraps next so a request whose target host resolves to
-// any non-public address is refused before it is sent. It is for fetching
-// user-controlled URLs through a proxy: once the dial goes to the proxy rather than
-// the target, SSRFSafeDialContext can no longer see the target, so the check moves
-// here. http.Client calls RoundTrip once per redirect hop, so redirects are judged
-// the same way as the original request.
-//
-// The proxy resolves the target again on its own, so a DNS answer that changes
-// between this check and the proxy's lookup is not caught. Past that point the
-// proxy's egress policy governs, as for any other traffic routed through it. The
-// check also needs the target to resolve locally: on a host with no external DNS,
-// proxied fetches are refused rather than sent unchecked.
-func NewTargetCheckingTransport(next http.RoundTripper) http.RoundTripper {
-	return &targetCheckingTransport{resolver: net.DefaultResolver, next: next}
+// ResolvePublicTarget resolves host and returns its addresses when every one is public,
+// or an error naming the first that is not. It is the check for a user-controlled URL
+// fetched through a proxy: the caller tunnels to one of the returned addresses, so the
+// proxy never resolves the name again. It needs the target to resolve locally: on a
+// host with no external DNS, proxied fetches are refused rather than sent unchecked.
+func ResolvePublicTarget(ctx context.Context, host string) ([]net.IP, error) {
+	return publicTargetCheck(net.DefaultResolver, nil)(ctx, host)
 }
 
-// targetCheckingTransport is the RoundTripper behind NewTargetCheckingTransport,
-// with an injectable resolver for tests.
-type targetCheckingTransport struct {
-	resolver ipLookuper
-	allow    *Allowlist // hosts permitted past the check; nil permits none
-	next     http.RoundTripper
-}
-
-func (t *targetCheckingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Hostname()
-	ips, err := t.resolver.LookupIP(req.Context(), "ip", host)
-	if err != nil {
-		return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
-	}
-	for _, ip := range ips {
-		if !IsPublicIP(ip) && !t.allow.Permits(host, ip) {
-			return nil, fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+// publicTargetCheck resolves host and refuses it unless every address is public or
+// permitted by allow (nil permits none). It returns the checked addresses.
+func publicTargetCheck(resolver ipLookuper, allow *Allowlist) func(ctx context.Context, host string) ([]net.IP, error) {
+	return func(ctx context.Context, host string) ([]net.IP, error) {
+		ips, err := resolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
 		}
-	}
-	return t.next.RoundTrip(req)
-}
-
-// CloseIdleConnections lets http.Client.CloseIdleConnections reach the wrapped
-// transport's pool.
-func (t *targetCheckingTransport) CloseIdleConnections() {
-	if closer, ok := t.next.(interface{ CloseIdleConnections() }); ok {
-		closer.CloseIdleConnections()
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
+		}
+		for _, ip := range ips {
+			if !IsPublicIP(ip) && !allow.Permits(host, ip) {
+				return nil, fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+			}
+		}
+		return ips, nil
 	}
 }
 

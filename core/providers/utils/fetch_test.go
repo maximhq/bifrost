@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -309,5 +312,45 @@ func TestFetchAndEncodeURL_ProxiedHostnameTargetNeedsLocalDNS(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("an unchecked target reached the proxy %d times", hits.Load())
+	}
+}
+
+// TestFetchAndEncodeURL_ProxiedTunnelIsBoundToTheCheckedAddress pins that a proxied
+// fetch opens its tunnel to the address the SSRF check approved, not to the hostname.
+// The proxy would otherwise resolve the name itself, so a DNS answer that changed after
+// the check could send the fetch to an internal address.
+func TestFetchAndEncodeURL_ProxiedTunnelIsBoundToTheCheckedAddress(t *testing.T) {
+	prev := fetchResolveTarget
+	fetchResolveTarget = func(_ context.Context, host string) ([]net.IP, error) {
+		if host == "pinned.example" {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		}
+		return nil, fmt.Errorf("DNS lookup failed for %s", host)
+	}
+	t.Cleanup(func() { fetchResolveTarget = prev })
+
+	var targets []string
+	var mu sync.Mutex
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		targets = append(targets, r.URL.Host)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("PNGDATA"))
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	})
+
+	if _, _, err := FetchAndEncodeURL(ctx, "http://pinned.example/img.png"); err != nil {
+		t.Fatalf("fetch through proxy failed: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(targets) != 1 || targets[0] != "203.0.113.10" {
+		t.Fatalf("proxy was asked for %v, want exactly the checked address [203.0.113.10]", targets)
 	}
 }
