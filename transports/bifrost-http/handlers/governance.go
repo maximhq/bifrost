@@ -22,6 +22,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -232,6 +233,12 @@ type GovernanceHandler struct {
 	// assigned to (enterprise: the enterprise_virtual_key_users link). Injected at
 	// construction; nil on OSS builds, which have no user directory.
 	virtualKeyAssigneeResolver VirtualKeyAssigneeResolver
+	// sidekiq and notify back the daily expired-key cleanup job; see virtualkeyexpiry.go.
+	sidekiq           *sidekiq.Runner
+	notify            schemas.NotificationPublisher
+	expiryCleanupStop context.CancelFunc
+	// now is the clock, overridden in tests.
+	now func() time.Time
 }
 
 // GovernanceRouteRegistrar registers one replaceable governance route family.
@@ -315,6 +322,7 @@ type CreateVirtualKeyRequest struct {
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
 	ExpiresAt         *time.Time              `json:"expires_at,omitempty"`          // Optional expiry; nil means never expires
+	DeleteAfterExpire *bool                   `json:"delete_after_expire,omitempty"` // Omit to inherit client.delete_expired_virtual_keys; true/false override it. Requires expires_at
 	// DisableContentLogging is the key's own content-logging decision. Omit to inherit
 	// client.disable_content_logging; true forces content off for this key's traffic, false forces
 	// it on for the log store.
@@ -366,7 +374,11 @@ type UpdateVirtualKeyRequest struct {
 	CalendarAligned   *bool                        `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
 	ResetBudgetUsage  *bool                        `json:"reset_budget_usage,omitempty"`
-	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	ExpiresAt         *string                      `json:"expires_at,omitempty"`          // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	// DeleteAfterExpire is tri-state on the wire: omitted leaves the current value, null
+	// clears it back to inheriting client.delete_expired_virtual_keys, true/false set it.
+	// A value requires an expiry.
+	DeleteAfterExpire schemas.OptionalJSON[bool] `json:"delete_after_expire,omitempty"`
 	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
 	// clears it back to inheriting client.disable_content_logging, true/false set it.
 	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
@@ -420,6 +432,26 @@ func applyVirtualKeyContentLoggingUpdate(vk *configstoreTables.TableVirtualKey, 
 		return
 	}
 	vk.DisableContentLogging = new(req.DisableContentLogging.Value)
+}
+
+// applyVirtualKeyDeleteAfterExpireUpdate applies the tri-state delete_after_expire field.
+// A value needs an expiry, and clearing the expiry resets the flag to inherit, since it
+// means nothing without one.
+func applyVirtualKeyDeleteAfterExpireUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
+	if req.DeleteAfterExpire.Set {
+		if req.DeleteAfterExpire.Null {
+			vk.DeleteAfterExpire = nil
+		} else {
+			if vk.ExpiresAt == nil {
+				return errors.New("delete_after_expire requires expires_at")
+			}
+			vk.DeleteAfterExpire = new(req.DeleteAfterExpire.Value)
+		}
+	}
+	if vk.ExpiresAt == nil {
+		vk.DeleteAfterExpire = nil
+	}
+	return nil
 }
 
 func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
@@ -1900,6 +1932,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	if req.DeleteAfterExpire != nil && req.ExpiresAt == nil {
+		SendError(ctx, 400, "delete_after_expire requires expires_at")
+		return
+	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
@@ -1929,6 +1965,8 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			CalendarAligned:   req.CalendarAligned,
 			AllowAllProviders: req.AllowAllProviders,
 			ExpiresAt:         req.ExpiresAt,
+			// Stored as given: nil inherits client.delete_expired_virtual_keys.
+			DeleteAfterExpire: req.DeleteAfterExpire,
 			// Stored as given: nil is inherit, so no defaulting here.
 			DisableContentLogging: req.DisableContentLogging,
 		}
@@ -2322,6 +2360,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.ExpiresAt != nil {
 			vk.ExpiresAt = newExpiresAt
+		}
+		if err := applyVirtualKeyDeleteAfterExpireUpdate(vk, &req); err != nil {
+			return &badRequestError{err: err}
 		}
 		if req.CalendarAligned != nil {
 			alignmentSwitchedOn = !vk.CalendarAligned && *req.CalendarAligned

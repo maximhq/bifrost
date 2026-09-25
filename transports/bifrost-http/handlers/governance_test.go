@@ -4687,3 +4687,370 @@ func TestUpdateVirtualKey_PutWithoutKeyIDsPreservesKeyAssociations(t *testing.T)
 	require.Len(t, got4.Keys, 1)
 	require.Equal(t, "key-a", got4.Keys[0].KeyID)
 }
+
+// expiryCleanupTestStore backs the cleanup job tests with in-memory keys and
+// records which ones were deleted.
+type expiryCleanupTestStore struct {
+	configstore.ConfigStore
+	keys    map[string]*configstoreTables.TableVirtualKey
+	listErr error
+	// deleteExpiredByDefault is the client-wide delete_expired_virtual_keys setting.
+	deleteExpiredByDefault bool
+	clientConfigErr        error
+	// scanOverride, when set, replaces the scan result so a test can present a
+	// stale candidate list.
+	scanOverride []configstoreTables.TableVirtualKey
+	deleted      []string
+	inFlight     *configstoreTables.TableSidekiqJob
+}
+
+func (s *expiryCleanupTestStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
+	if s.clientConfigErr != nil {
+		return nil, s.clientConfigErr
+	}
+	return &configstore.ClientConfig{DeleteExpiredVirtualKeys: s.deleteExpiredByDefault}, nil
+}
+
+func (s *expiryCleanupTestStore) ListExpiredVirtualKeysForDeletion(_ context.Context, now time.Time, includeUnset bool) ([]configstoreTables.TableVirtualKey, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	if s.scanOverride != nil {
+		return s.scanOverride, nil
+	}
+	var out []configstoreTables.TableVirtualKey
+	for _, vk := range s.keys {
+		if !vk.IsExpiredAt(now) {
+			continue
+		}
+		if vk.DeletesAfterExpire(includeUnset) {
+			out = append(out, configstoreTables.TableVirtualKey{ID: vk.ID, Name: vk.Name, ExpiresAt: vk.ExpiresAt, DeleteAfterExpire: vk.DeleteAfterExpire})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (s *expiryCleanupTestStore) GetVirtualKey(_ context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
+	vk, ok := s.keys[id]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	copied := *vk
+	return &copied, nil
+}
+
+func (s *expiryCleanupTestStore) DeleteVirtualKey(_ context.Context, id string, _ ...*gorm.DB) error {
+	if _, ok := s.keys[id]; !ok {
+		return configstore.ErrNotFound
+	}
+	delete(s.keys, id)
+	s.deleted = append(s.deleted, id)
+	return nil
+}
+
+func (s *expiryCleanupTestStore) GetInFlightSidekiqJobByKind(_ context.Context, _ string) (*configstoreTables.TableSidekiqJob, error) {
+	return s.inFlight, nil
+}
+
+// expiryCleanupTestManager records in-memory removals.
+type expiryCleanupTestManager struct {
+	GovernanceManager
+	removed []string
+}
+
+func (m *expiryCleanupTestManager) RemoveVirtualKey(_ context.Context, id string) error {
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+func newExpiryCleanupHandler(now time.Time, keys ...*configstoreTables.TableVirtualKey) (*GovernanceHandler, *expiryCleanupTestStore, *expiryCleanupTestManager, *[]schemas.NotificationInput) {
+	store := &expiryCleanupTestStore{keys: map[string]*configstoreTables.TableVirtualKey{}}
+	for _, vk := range keys {
+		store.keys[vk.ID] = vk
+	}
+	manager := &expiryCleanupTestManager{}
+	published := &[]schemas.NotificationInput{}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+		now:               func() time.Time { return now },
+		notify: func(_ context.Context, input schemas.NotificationInput) (*schemas.Notification, error) {
+			*published = append(*published, input)
+			return &schemas.Notification{}, nil
+		},
+	}
+	return h, store, manager, published
+}
+
+func TestVKExpiryCleanupJobID_OnePerUTCDay(t *testing.T) {
+	morning := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
+	evening := time.Date(2026, 9, 24, 23, 59, 0, 0, time.UTC)
+	nextDay := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	assert.Equal(t, vkExpiryCleanupJobID(morning), vkExpiryCleanupJobID(evening))
+	assert.NotEqual(t, vkExpiryCleanupJobID(morning), vkExpiryCleanupJobID(nextDay))
+	// Local zones must not shift the bucket.
+	ist := time.FixedZone("IST", 5*3600+1800)
+	assert.Equal(t, vkExpiryCleanupJobID(morning), vkExpiryCleanupJobID(morning.In(ist)))
+}
+
+func TestRunVKExpiryCleanupJob_DeletesFlaggedExpiredKeysAndNotifiesOnce(t *testing.T) {
+	SetLogger(&mockLogger{})
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+	inactive := false
+	h, store, manager, published := newExpiryCleanupHandler(now,
+		&configstoreTables.TableVirtualKey{ID: "vk-a", Name: "alpha", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+		&configstoreTables.TableVirtualKey{ID: "vk-b", Name: "beta", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true), IsActive: &inactive},
+		&configstoreTables.TableVirtualKey{ID: "vk-c", Name: "gamma", ExpiresAt: &past},
+		&configstoreTables.TableVirtualKey{ID: "vk-d", Name: "delta", ExpiresAt: &future, DeleteAfterExpire: schemas.Ptr(true)},
+	)
+
+	var checkpoints []string
+	meta, err := h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{Metadata: "{}"}, func(m string) error {
+		checkpoints = append(checkpoints, m)
+		return nil
+	})
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{"vk-a", "vk-b"}, store.deleted)
+	assert.ElementsMatch(t, []string{"vk-a", "vk-b"}, manager.removed)
+	assert.Len(t, checkpoints, 2, "one checkpoint per handled key")
+
+	var final vkExpiryCleanupMeta
+	require.NoError(t, json.Unmarshal([]byte(meta), &final))
+	assert.ElementsMatch(t, []string{"alpha", "beta"}, final.Deleted)
+	assert.Empty(t, final.Failed)
+	assert.ElementsMatch(t, []string{"vk-a", "vk-b"}, final.HandledIDs)
+
+	require.Len(t, *published, 1)
+	n := (*published)[0]
+	assert.Equal(t, schemas.NotificationSeveritySuccess, n.Severity)
+	assert.Equal(t, schemas.NotificationAudienceAll, n.Audience)
+	assert.Equal(t, "Expired virtual keys deleted", n.Title)
+	assert.Contains(t, n.Message, "Deleted 2 expired virtual keys")
+	assert.Contains(t, n.Message, "alpha")
+	assert.Contains(t, n.Message, "beta")
+	assert.Equal(t, vkExpiryCleanupActionPath, n.ActionPath)
+	assert.NotEmpty(t, n.ActionLabel)
+}
+
+func TestRunVKExpiryCleanupJob_NothingToDeleteStaysSilent(t *testing.T) {
+	SetLogger(&mockLogger{})
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	h, store, manager, published := newExpiryCleanupHandler(now,
+		&configstoreTables.TableVirtualKey{ID: "vk-unflagged", Name: "unflagged", ExpiresAt: &past},
+	)
+
+	_, err := h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{}, func(string) error { return nil })
+	require.NoError(t, err)
+	assert.Empty(t, store.deleted)
+	assert.Empty(t, manager.removed)
+	assert.Empty(t, *published, "no notification when nothing was deleted")
+}
+
+func TestRunVKExpiryCleanupJob_SkipsKeysChangedSinceScan(t *testing.T) {
+	SetLogger(&mockLogger{})
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+	h, store, manager, published := newExpiryCleanupHandler(now,
+		&configstoreTables.TableVirtualKey{ID: "vk-extended", Name: "extended", ExpiresAt: &future, DeleteAfterExpire: schemas.Ptr(true)},
+		&configstoreTables.TableVirtualKey{ID: "vk-unflagged", Name: "unflagged", ExpiresAt: &past},
+	)
+	// The scan ran before the user extended one key and cleared the other's flag.
+	store.scanOverride = []configstoreTables.TableVirtualKey{
+		{ID: "vk-extended", Name: "extended", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+		{ID: "vk-unflagged", Name: "unflagged", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+		{ID: "vk-gone", Name: "gone", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+	}
+
+	_, err := h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{}, func(string) error { return nil })
+	require.NoError(t, err)
+	assert.Empty(t, store.deleted)
+	assert.Empty(t, manager.removed)
+	assert.Empty(t, *published)
+}
+
+func TestRunVKExpiryCleanupJob_ResumesWithoutRepeatingHandledKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	h, store, manager, published := newExpiryCleanupHandler(now,
+		&configstoreTables.TableVirtualKey{ID: "vk-done", Name: "done", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+		&configstoreTables.TableVirtualKey{ID: "vk-todo", Name: "todo", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+	)
+	// A re-claimed job carries the cursor from the crashed attempt.
+	resume := vkExpiryCleanupMeta{Deleted: []string{"done"}, HandledIDs: []string{"vk-done"}}
+	metaJSON, err := json.Marshal(resume)
+	require.NoError(t, err)
+
+	meta, err := h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{Metadata: string(metaJSON)}, func(string) error { return nil })
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vk-todo"}, store.deleted, "already handled key must not be deleted again")
+	assert.Equal(t, []string{"vk-todo"}, manager.removed)
+
+	var final vkExpiryCleanupMeta
+	require.NoError(t, json.Unmarshal([]byte(meta), &final))
+	assert.Equal(t, []string{"done", "todo"}, final.Deleted)
+	require.Len(t, *published, 1)
+	assert.Contains(t, (*published)[0].Message, "Deleted 2 expired virtual keys")
+}
+
+func TestRunVKExpiryCleanupJob_ListErrorFailsJob(t *testing.T) {
+	SetLogger(&mockLogger{})
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	h, store, _, published := newExpiryCleanupHandler(now)
+	store.listErr = errors.New("db down")
+
+	_, err := h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{}, func(string) error { return nil })
+	require.Error(t, err)
+	assert.Empty(t, *published)
+}
+
+func TestVKExpiryCleanupNotification_TruncatesLongNameLists(t *testing.T) {
+	names := make([]string, vkExpiryCleanupMaxNamesInNotification+5)
+	for i := range names {
+		names[i] = fmt.Sprintf("key-%d", i)
+	}
+	n := vkExpiryCleanupNotification(vkExpiryCleanupMeta{Deleted: names, Failed: []string{"stuck"}})
+	assert.Equal(t, schemas.NotificationSeverityWarning, n.Severity)
+	assert.Contains(t, n.Message, "and 5 more")
+	assert.Contains(t, n.Message, "1 could not be deleted: stuck")
+	assert.NotContains(t, n.Message, fmt.Sprintf("key-%d,", vkExpiryCleanupMaxNamesInNotification))
+}
+
+func TestVirtualKeyDeleteAfterExpire_APIValidation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	// Create: the flag without an expiry is rejected.
+	postCtx := newTestRequestCtx(`{"name":"no-expiry","delete_after_expire":true}`)
+	handler.createVirtualKey(postCtx)
+	require.Equal(t, fasthttp.StatusBadRequest, postCtx.Response.StatusCode(), "body=%s", postCtx.Response.Body())
+	assert.Contains(t, string(postCtx.Response.Body()), "delete_after_expire requires expires_at")
+
+	// Create: the flag with an expiry is persisted.
+	future := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+	postCtx = newTestRequestCtx(fmt.Sprintf(`{"name":"with-expiry","expires_at":%q,"delete_after_expire":true}`, future))
+	handler.createVirtualKey(postCtx)
+	require.Equal(t, fasthttp.StatusOK, postCtx.Response.StatusCode(), "body=%s", postCtx.Response.Body())
+	var created struct {
+		VirtualKey configstoreTables.TableVirtualKey `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(postCtx.Response.Body(), &created))
+	require.NotEmpty(t, created.VirtualKey.ID)
+	stored, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.DeleteAfterExpire)
+	assert.True(t, *stored.DeleteAfterExpire)
+
+	// Update: clearing the expiry resets the flag to inherit.
+	putCtx := newTestRequestCtx(`{"expires_at":""}`)
+	putCtx.SetUserValue("vk_id", stored.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "body=%s", putCtx.Response.Body())
+	stored, err = store.GetVirtualKey(ctx, stored.ID)
+	require.NoError(t, err)
+	assert.Nil(t, stored.ExpiresAt)
+	assert.Nil(t, stored.DeleteAfterExpire)
+
+	// Update: setting the flag on a key without an expiry is rejected, false included.
+	for _, body := range []string{`{"delete_after_expire":true}`, `{"delete_after_expire":false}`} {
+		putCtx = newTestRequestCtx(body)
+		putCtx.SetUserValue("vk_id", stored.ID)
+		handler.updateVirtualKey(putCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, putCtx.Response.StatusCode(), "body=%s", putCtx.Response.Body())
+	}
+
+	// Update: setting expiry and an explicit false together works and is stored as false.
+	putCtx = newTestRequestCtx(fmt.Sprintf(`{"expires_at":%q,"delete_after_expire":false}`, future))
+	putCtx.SetUserValue("vk_id", stored.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "body=%s", putCtx.Response.Body())
+	stored, err = store.GetVirtualKey(ctx, stored.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.DeleteAfterExpire)
+	assert.False(t, *stored.DeleteAfterExpire)
+
+	// Update: null clears the override back to inherit while keeping the expiry.
+	putCtx = newTestRequestCtx(`{"delete_after_expire":null}`)
+	putCtx.SetUserValue("vk_id", stored.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "body=%s", putCtx.Response.Body())
+	stored, err = store.GetVirtualKey(ctx, stored.ID)
+	require.NoError(t, err)
+	assert.NotNil(t, stored.ExpiresAt)
+	assert.Nil(t, stored.DeleteAfterExpire)
+
+	// Update: omitting the field leaves an explicit value alone.
+	putCtx = newTestRequestCtx(`{"delete_after_expire":true}`)
+	putCtx.SetUserValue("vk_id", stored.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "body=%s", putCtx.Response.Body())
+	putCtx = newTestRequestCtx(`{"description":"touched"}`)
+	putCtx.SetUserValue("vk_id", stored.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "body=%s", putCtx.Response.Body())
+	stored, err = store.GetVirtualKey(ctx, stored.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.DeleteAfterExpire)
+	assert.True(t, *stored.DeleteAfterExpire)
+
+	// Create: omitting the flag stores nil, which inherits the client default.
+	postCtx = newTestRequestCtx(fmt.Sprintf(`{"name":"inherits","expires_at":%q}`, future))
+	handler.createVirtualKey(postCtx)
+	require.Equal(t, fasthttp.StatusOK, postCtx.Response.StatusCode(), "body=%s", postCtx.Response.Body())
+	require.NoError(t, json.Unmarshal(postCtx.Response.Body(), &created))
+	stored, err = store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Nil(t, stored.DeleteAfterExpire)
+}
+
+func TestRunVKExpiryCleanupJob_ClientDefaultAppliesToUnsetKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	keys := func() []*configstoreTables.TableVirtualKey {
+		return []*configstoreTables.TableVirtualKey{
+			{ID: "vk-unset", Name: "unset", ExpiresAt: &past},
+			{ID: "vk-opt-out", Name: "opt out", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(false)},
+			{ID: "vk-opt-in", Name: "opt in", ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+			{ID: "vk-unset-future", Name: "unset future", ExpiresAt: schemas.Ptr(now.Add(time.Hour))},
+		}
+	}
+
+	// Client default on: unset keys go, explicit false stays.
+	h, store, manager, published := newExpiryCleanupHandler(now, keys()...)
+	store.deleteExpiredByDefault = true
+	_, err := h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{}, func(string) error { return nil })
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"vk-unset", "vk-opt-in"}, store.deleted)
+	assert.ElementsMatch(t, []string{"vk-unset", "vk-opt-in"}, manager.removed)
+	require.Len(t, *published, 1)
+
+	// Client default off: only explicit true goes.
+	h, store, manager, published = newExpiryCleanupHandler(now, keys()...)
+	_, err = h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{}, func(string) error { return nil })
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vk-opt-in"}, store.deleted)
+	assert.Equal(t, []string{"vk-opt-in"}, manager.removed)
+	require.Len(t, *published, 1)
+}
+
+func TestRunVKExpiryCleanupJob_ClientConfigErrorFailsJob(t *testing.T) {
+	SetLogger(&mockLogger{})
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	h, store, _, published := newExpiryCleanupHandler(now)
+	store.clientConfigErr = errors.New("db down")
+
+	_, err := h.runVKExpiryCleanupJob(context.Background(), configstoreTables.TableSidekiqJob{}, func(string) error { return nil })
+	require.Error(t, err)
+	assert.Empty(t, store.deleted)
+	assert.Empty(t, *published)
+}

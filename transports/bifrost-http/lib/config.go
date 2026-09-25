@@ -696,6 +696,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
 	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
+	DeleteExpiredVirtualKeys:        false,
 	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
 }
 

@@ -677,6 +677,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Toggle allowing direct key bypass via x-bf-direct-key header
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+	// Read by the daily expired-key cleanup job from the store, so no restart is needed.
+	updatedConfig.DeleteExpiredVirtualKeys = payload.ClientConfig.DeleteExpiredVirtualKeys
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.

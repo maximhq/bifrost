@@ -1035,6 +1035,10 @@ func (m *MockConfigStore) GetVirtualKeysPaginated(ctx context.Context, params co
 	return nil, 0, nil
 }
 
+func (m *MockConfigStore) ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) {
 	return nil, nil
 }
