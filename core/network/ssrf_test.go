@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -529,6 +533,122 @@ func TestPrivateNetworkDialContextBlocksMetadataEndpoints(t *testing.T) {
 	for _, addr := range []string{"100.100.100.200:80", "[fd00:ec2::254]:80"} {
 		if _, err := dial(context.Background(), "tcp", addr); err == nil || !strings.Contains(err.Error(), "blocked connection to cloud metadata endpoint") {
 			t.Fatalf("%s: expected blocked metadata endpoint error, got %v", addr, err)
+		}
+	}
+}
+
+// hostResolver answers per hostname, so a test can make the target public and
+// everything else unreachable. IP literals resolve to themselves, like net.Resolver.
+type hostResolver map[string][]net.IP
+
+func (h hostResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	if ips, ok := h[host]; ok {
+		return ips, nil
+	}
+	return nil, errors.New("no such host")
+}
+
+func TestNewSSRFSafeTransport_NoProxyKeepsDialTimeCheck(t *testing.T) {
+	rt := newSSRFSafeTransport(hostResolver{}, (&net.Dialer{}).DialContext, nil, nil)
+	transport, ok := rt.(*http.Transport)
+	if !ok {
+		t.Fatalf("with no proxy the transport must be a plain *http.Transport, got %T", rt)
+	}
+	if transport.Proxy != nil {
+		t.Fatal("with no proxy the transport must not proxy (not even from the environment)")
+	}
+	_, err := (&http.Client{Transport: rt}).Get("http://127.0.0.1:1/")
+	if err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("expected a direct loopback target to be refused, got %v", err)
+	}
+}
+
+func TestNewSSRFSafeTransport_ProxiedRequestReachesLoopbackProxy(t *testing.T) {
+	var hits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "files.example" {
+			http.Error(w, "unexpected target "+r.URL.Host, http.StatusBadGateway)
+			return
+		}
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+
+	resolver := hostResolver{"files.example": {net.ParseIP("203.0.113.10")}}
+	rt := newSSRFSafeTransport(resolver, (&net.Dialer{}).DialContext, http.ProxyURL(proxyURL), nil)
+
+	resp, err := (&http.Client{Transport: rt}).Get("http://files.example/doc.pdf")
+	if err != nil {
+		t.Fatalf("proxied request failed: %v", err)
+	}
+	resp.Body.Close()
+	if hits.Load() != 1 {
+		t.Fatalf("proxy saw %d requests, want 1", hits.Load())
+	}
+}
+
+func TestNewSSRFSafeTransport_ProxiedRequestToPrivateTargetIsRefused(t *testing.T) {
+	var hits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+
+	// One public and one private record: the private one blocks, as on the direct path.
+	resolver := hostResolver{"internal.example": {net.ParseIP("203.0.113.10"), net.ParseIP("10.0.0.5")}}
+	rt := newSSRFSafeTransport(resolver, (&net.Dialer{}).DialContext, http.ProxyURL(proxyURL), nil)
+
+	_, err := (&http.Client{Transport: rt}).Get("http://internal.example/")
+	if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address 10.0.0.5") {
+		t.Fatalf("expected the private target to be refused, got %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("a refused target must never reach the proxy, saw %d requests", hits.Load())
+	}
+}
+
+func TestNewSSRFSafeTransport_UnproxiedDialStillGoesThroughSSRFDialer(t *testing.T) {
+	// The proxy func declines this request (a NO_PROXY match). Its dial is not the
+	// proxy's, so it must go through the SSRF dialer, which dials the validated IP.
+	resolver := hostResolver{"files.example": {net.ParseIP("203.0.113.10")}}
+	var dialed string
+	stop := errors.New("stop before real network")
+	rt := newSSRFSafeTransport(resolver, func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = addr
+		return nil, stop
+	}, func(*http.Request) (*url.URL, error) { return nil, nil }, nil)
+
+	_, err := (&http.Client{Transport: rt}).Get("http://files.example/")
+	if !errors.Is(err, stop) {
+		t.Fatalf("expected the sentinel dial error, got %v", err)
+	}
+	if dialed != "203.0.113.10:80" {
+		t.Fatalf("dialed %q, want the SSRF dialer's validated IP 203.0.113.10:80", dialed)
+	}
+}
+
+func TestProxyDialAddr(t *testing.T) {
+	tests := map[string]string{
+		"http://proxy.corp:3128":  "proxy.corp:3128",
+		"http://proxy.corp":       "proxy.corp:80",
+		"https://proxy.corp":      "proxy.corp:443",
+		"socks5://127.0.0.1":      "127.0.0.1:1080",
+		"socks5h://[::1]":         "[::1]:1080",
+		"http://user:pw@10.1.2.3": "10.1.2.3:80",
+	}
+	for raw, want := range tests {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if got := proxyDialAddr(u); got != want {
+			t.Errorf("proxyDialAddr(%q) = %q, want %q", raw, got, want)
 		}
 	}
 }
