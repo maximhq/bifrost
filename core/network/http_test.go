@@ -574,3 +574,55 @@ func TestCreateFasthttpClientPoolSettings(t *testing.T) {
 		t.Errorf("MaxConnsPerHost = %d, want %d", client.MaxConnsPerHost, DefaultClientConfig.MaxConnsPerHost)
 	}
 }
+
+// TestFactoryFasthttpProxyReachesIPv6ProxyAndHonoursNoProxyList pins two things on the
+// factory's fasthttp proxy dialer (SCIM, guardrails and other API clients):
+//   - a proxy given as an IPv6 literal is reachable. The non-DualStack fasthttpproxy
+//     constructors dial the proxy over tcp4 only and fail with "couldn't find dns entries".
+//   - every entry of a comma-separated no_proxy list is honoured, not just a
+//     single-entry list.
+func TestFactoryFasthttpProxyReachesIPv6ProxyAndHonoursNoProxyList(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("listen on IPv6 loopback: %v", err)
+	}
+	var mu sync.Mutex
+	var targets []string
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		targets = append(targets, r.Host)
+		mu.Unlock()
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+			conn.Close()
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	defer server.Close()
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+
+	factory := NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled:      true,
+		Type:         GlobalProxyTypeHTTP,
+		URL:          "http://[::1]:" + port,
+		NoProxy:      "other.test, bypass.bifrost.test",
+		EnableForAPI: true,
+	}, nil)
+	client := factory.GetFasthttpClient(ClientPurposeAPI)
+
+	conn, err := client.Dial("api.bifrost.test:443")
+	if err != nil {
+		t.Fatalf("dial through the IPv6 proxy failed: %v", err)
+	}
+	conn.Close()
+
+	// The second no_proxy entry must bypass the proxy. The direct dial to a .test
+	// name has nowhere to go, so only the proxy's log tells the two apart.
+	_, _ = client.Dial("bypass.bifrost.test:443")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(targets) != 1 || targets[0] != "api.bifrost.test:443" {
+		t.Fatalf("proxy saw %v, want exactly [api.bifrost.test:443]", targets)
+	}
+}
