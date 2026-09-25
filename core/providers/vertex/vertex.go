@@ -1889,6 +1889,11 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 	bifrostResponse.Model = request.Model
 
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonBody)
+	}
+
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponseMap map[string]interface{}
