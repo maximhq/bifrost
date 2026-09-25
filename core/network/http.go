@@ -358,9 +358,9 @@ func (f *HTTPClientFactory) configureFasthttpProxy(client *fasthttp.Client) {
 
 	switch f.proxyConfig.Type {
 	case GlobalProxyTypeHTTP:
-		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
+		dialFunc = fasthttpproxy.FasthttpHTTPDialerDualStack(proxyURL)
 	case GlobalProxyTypeSOCKS5:
-		dialFunc = fasthttpproxy.FasthttpSocksDialer(proxyURL)
+		dialFunc = fasthttpproxy.FasthttpSocksDialerDualStack(proxyURL)
 	}
 
 	proxyCfg := f.proxyConfig
