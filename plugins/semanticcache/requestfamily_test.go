@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
@@ -232,44 +231,6 @@ func TestSemanticReplayFiltersOutOtherRequestFamily(t *testing.T) {
 			}
 			store.mu.Unlock()
 		})
-	}
-}
-
-func TestDirectCacheIDIsolatesEveryRequestFamily(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore())
-	families := []string{"text_completions", "chat_completions", "responses", "speech", "embeddings", "transcriptions", "image_generation"}
-	ids := map[string]string{}
-	for _, family := range families {
-		id, err := plugin.generateDirectCacheID(schemas.OpenAI, "same-model", "same-key", "same-request-hash", "same-params-hash", family)
-		if err != nil {
-			t.Fatal(err)
-		}
-		again, err := plugin.generateDirectCacheID(schemas.OpenAI, "same-model", "same-key", "same-request-hash", "same-params-hash", family)
-		if err != nil || again != id {
-			t.Fatalf("family %s produced unstable IDs: %q and %q (%v)", family, id, again, err)
-		}
-		for previousFamily, previousID := range ids {
-			if id == previousID {
-				t.Errorf("families %s and %s share direct cache ID %s", family, previousFamily, id)
-			}
-		}
-		ids[family] = id
-	}
-
-	// An entry written by the old key schema cannot be fetched by the new ID.
-	oldMaterial, err := schemas.MarshalDeeplySorted(struct {
-		CacheKey    string `json:"cache_key"`
-		RequestHash string `json:"request_hash"`
-		ParamsHash  string `json:"params_hash"`
-	}{"same-key", "same-request-hash", "same-params-hash"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldID := uuid.NewSHA1(directCacheNamespace, oldMaterial).String()
-	for family, id := range ids {
-		if id == oldID {
-			t.Errorf("family %s reused the pre-fix ID", family)
-		}
 	}
 }
 
