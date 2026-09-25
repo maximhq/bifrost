@@ -313,6 +313,28 @@ func TestResolveContentPolicyRetainAppliesToStaticDisable(t *testing.T) {
 	assert.True(t, policy.hidden)
 }
 
+// An admin layer that turns content off is still "disabled" for retention: with
+// retain_content_in_object_storage on, the payload is kept hidden in object storage, which the
+// API docs for every layer's disable_content_logging warn about.
+func TestResolveContentPolicyRetainAppliesToAdminLayers(t *testing.T) {
+	for _, layer := range []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyBusinessUnitDisableContentLogging,
+		schemas.BifrostContextKeyTeamDisableContentLogging,
+		schemas.BifrostContextKeyUserDisableContentLogging,
+		schemas.BifrostContextKeyProviderKeyDisableContentLogging,
+		schemas.BifrostContextKeyGovernanceDisableContentLogging,
+		schemas.BifrostContextKeyAccessProfileDisableContentLogging,
+	} {
+		t.Run(string(layer), func(t *testing.T) {
+			p := policyTestPlugin(new(false), new(true), true)
+			policy := p.resolveContentPolicy(policyCtx(false, map[schemas.BifrostContextKey]bool{layer: true}))
+			assert.True(t, policy.storeContent, "the payload is kept for object storage")
+			assert.True(t, policy.hidden, "the payload is never served back")
+			assert.False(t, policy.visible())
+		})
+	}
+}
+
 func TestResolveContentPolicyRetainWithoutObjectStorageDrops(t *testing.T) {
 	p := policyTestPlugin(nil, boolPtr(true), false)
 
