@@ -909,6 +909,39 @@ func TestResolveAccessMarksTraceWhenContentLoggingOff(t *testing.T) {
 	}
 }
 
+// Resolving access is where every store stamps the caller's content-logging layers, so it marks them
+// resolved once the store has answered, whatever it answered: a key that inherits, and a request that
+// presented nothing at all, are resolved too. The logging plugin reads the mark to stop holding
+// content back for a decision that is no longer coming.
+func TestResolveAccessMarksCallerContentLoggingResolved(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	t.Run("a resolved key", func(t *testing.T) {
+		ctx := emptyCtx()
+		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+		require.False(t, schemas.CallerContentLoggingResolved(ctx), "precondition: nothing resolved yet")
+		_, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		assert.True(t, schemas.CallerContentLoggingResolved(ctx))
+	})
+
+	t.Run("a request that presented nothing", func(t *testing.T) {
+		ctx := emptyCtx()
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		require.Nil(t, access, "precondition: nothing granted this request anything")
+		assert.True(t, schemas.CallerContentLoggingResolved(ctx))
+	})
+}
+
 // The key a request presented is read off the identity the transport settled, and only falls back
 // to the context key for a context nothing settled an identity on.
 func TestPresentedVirtualKey(t *testing.T) {

@@ -992,6 +992,9 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 		return access, nil
 	}
 	bases, scoping, mode := p.store.ResolvePermits(ctx)
+	// The store stamps the caller's content-logging layers while it resolves permits, so they are
+	// final now whatever it answered; the logging plugin stops holding content back for them.
+	schemas.MarkCallerContentLoggingResolved(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
