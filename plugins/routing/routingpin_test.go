@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -419,6 +420,71 @@ func TestApplyRoutingRules_RuleFallbacksVersusCallerFallbacks(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, decision)
 			assert.Equal(t, tc.want, req.ChatRequest.Fallbacks)
+		})
+	}
+}
+
+// TestApplyRoutingRules_SkippedFallbackIsLogged pins that a rule fallback dropped for naming no
+// known provider is reported on the request's routing log, naming the rule and the entry as
+// configured; fallbacks that resolve produce no warning.
+func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
+	cases := []struct {
+		name        string
+		stored      string
+		wantSkipped []string
+		wantKept    []schemas.Fallback
+	}{
+		{
+			name:        "unknown prefix and bare model are reported",
+			stored:      `["unknown-prefix/m","anthropic/claude-sonnet-4","bare-model"]`,
+			wantSkipped: []string{`"unknown-prefix/m"`, `"bare-model"`},
+			wantKept:    []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4"}},
+		},
+		{
+			name:     "resolvable fallbacks are not reported",
+			stored:   `["anthropic/claude-sonnet-4",{"provider":"vertex","key_id":"k-1"}]`,
+			wantKept: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4"}, {Provider: schemas.Vertex, Model: "m", KeyID: "k-1"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := &configstoreTables.TableRoutingRule{
+				ID:            "fb-skip-log",
+				Name:          "Skip Log Rule",
+				CelExpression: "model == 'm'",
+				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Weight: 1.0}},
+				Fallbacks:     bifrost.Ptr(tc.stored),
+				Enabled:       bifrost.Ptr(true),
+				Scope:         "global",
+			}
+			require.NoError(t, stored.AfterFind(nil))
+			store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+			require.NoError(t, err)
+			require.NoError(t, store.UpsertRule(context.Background(), stored))
+			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+			require.NoError(t, err)
+
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m"},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+			decision, err := plugin.applyRoutingRules(ctx, req, rules.GovernanceScope{})
+			require.NoError(t, err)
+			require.NotNil(t, decision)
+			assert.Equal(t, tc.wantKept, req.ChatRequest.Fallbacks)
+
+			var routingWarnings []string
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if entry.Level == schemas.LogLevelWarn && strings.Contains(entry.Message, "fallback") {
+					routingWarnings = append(routingWarnings, entry.Message)
+				}
+			}
+			require.Len(t, routingWarnings, len(tc.wantSkipped), "routing log warnings: %v", routingWarnings)
+			for i, entry := range tc.wantSkipped {
+				assert.Contains(t, routingWarnings[i], "Skip Log Rule", "warning must name the rule")
+				assert.Contains(t, routingWarnings[i], entry, "warning must name the skipped entry as configured")
+			}
 		})
 	}
 }
