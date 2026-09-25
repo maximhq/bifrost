@@ -220,6 +220,7 @@ func NewTargetCheckingTransport(next http.RoundTripper) http.RoundTripper {
 // with an injectable resolver for tests.
 type targetCheckingTransport struct {
 	resolver ipLookuper
+	allow    *Allowlist // hosts permitted past the check; nil permits none
 	next     http.RoundTripper
 }
 
@@ -233,7 +234,7 @@ func (t *targetCheckingTransport) RoundTrip(req *http.Request) (*http.Response, 
 		return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
 	}
 	for _, ip := range ips {
-		if !IsPublicIP(ip) {
+		if !IsPublicIP(ip) && !t.allow.Permits(host, ip) {
 			return nil, fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
 		}
 	}

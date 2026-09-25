@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
-	"github.com/maximhq/bifrost/core/internal/proxytest"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -891,7 +891,7 @@ func TestBedrockTransportUsesProxyConfig(t *testing.T) {
 // TestBedrockTransportProxyMatrix pins the Bedrock runtime client's route for every
 // combination of proxy_config source, proxy env vars and target, sending real requests
 // through provider.client (the net/http client Bedrock keeps for HTTP/2) and the
-// core/internal/proxytest recorders. Bedrock follows net/http's rule for the
+// core/network/proxytest recorders. Bedrock follows net/http's rule for the
 // environment: the variable is picked by scheme, and with no proxy_config it keeps
 // proxying from the environment. Like every stack it reads the environment through
 // golang.org/x/net's httpproxy, so the lowercase spelling wins when both are set. The
