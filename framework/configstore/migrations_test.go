@@ -4369,6 +4369,22 @@ func TestMigrationAddWarpLogEmbeddingColumnsBackfillsExistingRows(t *testing.T) 
 	require.Zero(t, nulls, "these columns are scanned into plain strings, so NULL breaks the read on Postgres")
 }
 
+func TestMigrationAddClientConfigDeleteExpiredVirtualKeysColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "delete_expired_virtual_keys"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "delete_expired_virtual_keys"))
+
+	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "delete_expired_virtual_keys"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_delete_expired_virtual_keys_column").Error)
+	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

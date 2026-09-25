@@ -282,6 +282,11 @@
           "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and the provider's raw API key in an Authorization (Bearer), x-api-key, or x-goog-api-key header.",
           "default": false
         },
+        "delete_expired_virtual_keys": {
+          "type": "boolean",
+          "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless.",
+          "default": false
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
@@ -1113,8 +1118,7 @@
               },
               "delete_after_expire": {
                 "type": "boolean",
-                "description": "Delete this virtual key automatically once expires_at has passed. A daily cleanup job removes it and posts a notification. Requires expires_at.",
-                "default": false
+                "description": "Delete this virtual key automatically once expires_at has passed. A daily cleanup job removes it and posts a notification. Omit to follow client.delete_expired_virtual_keys; true or false override it for this key. Requires expires_at."
               },
               "calendar_aligned": {
                 "type": "boolean",

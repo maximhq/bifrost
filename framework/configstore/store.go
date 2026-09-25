@@ -367,8 +367,9 @@ type ConfigStore interface {
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
 	GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
-	// ListExpiredVirtualKeysForDeletion returns keys whose expiry has passed and that opted in to auto-delete.
-	ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time) ([]tables.TableVirtualKey, error)
+	// ListExpiredVirtualKeysForDeletion returns keys whose expiry has passed and whose
+	// delete_after_expire is true, or unset when includeUnset is true.
+	ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error)
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)

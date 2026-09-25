@@ -295,6 +295,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		LoggingHeaders:                        config.LoggingHeaders,
 		WhitelistedRoutes:                     config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
+		DeleteExpiredVirtualKeys:              config.DeleteExpiredVirtualKeys,
 		HiddenRequestTypes:                    config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
@@ -591,6 +592,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		LoggingHeaders:                        dbConfig.LoggingHeaders,
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
+		DeleteExpiredVirtualKeys:              dbConfig.DeleteExpiredVirtualKeys,
 		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
@@ -3543,13 +3545,20 @@ const virtualKeyInternalPageSize = 1000
 const modelConfigInternalPageSize = 1000
 
 // ListExpiredVirtualKeysForDeletion returns the keys the daily cleanup job may delete:
-// expires_at has passed and delete_after_expire is set. Only the columns the job
-// needs are selected; it re-fetches each key before deleting it.
-func (s *RDBConfigStore) ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time) ([]tables.TableVirtualKey, error) {
+// expires_at has passed and delete_after_expire is true, or unset when the client-wide
+// default (includeUnset) says expired keys are deleted. Only the columns the job needs
+// are selected; it re-fetches each key before deleting it.
+func (s *RDBConfigStore) ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error) {
 	var keys []tables.TableVirtualKey
-	err := s.DB().WithContext(ctx).
+	query := s.DB().WithContext(ctx).
 		Select("id", "name", "expires_at", "delete_after_expire").
-		Where("expires_at IS NOT NULL AND expires_at <= ? AND delete_after_expire = ?", now.UTC(), true).
+		Where("expires_at IS NOT NULL AND expires_at <= ?", now.UTC())
+	if includeUnset {
+		query = query.Where("delete_after_expire = ? OR delete_after_expire IS NULL", true)
+	} else {
+		query = query.Where("delete_after_expire = ?", true)
+	}
+	err := query.
 		Order("expires_at ASC, id ASC").
 		Find(&keys).Error
 	if err != nil {
