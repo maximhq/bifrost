@@ -1771,7 +1771,7 @@ In practice this means: you can roll out a new Bifrost version one pod at a time
 
 ### Leader-Coordinated Tasks
 
-A small number of cluster-wide tasks run only on the elected leader, with results broadcast over gRPC so followers stay in sync without each one independently doing the work. The clearest example is **pricing sync**: only the leader fetches the upstream pricing URL on the configured interval and then broadcasts a database reload message; followers reload from the local store rather than each making the upstream HTTP call. Region-scoped variants of this pattern run on the regional leader.
+A small number of cluster-wide tasks run only on the elected leader, with results broadcast over gRPC so followers stay in sync without each one independently doing the work. The clearest example is **pricing sync**: only the leader fetches the upstream pricing URL on the configured interval and then broadcasts a database reload message; followers reload from the local store rather than each making the upstream HTTP call. Region-scoped variants of this pattern run on the regional leader: each regional leader writes its region's load balancer snapshot, and the cluster's [held keys](/enterprise/adaptive-load-balancing#across-the-cluster), to the config store every 30 seconds, so a node that starts restores them instead of relearning every refused key.
 
 There is no configuration to enable this - leader-coordinated tasks engage automatically when clustering is enabled. If the leader fails, the next election (within ~30 seconds) hands the responsibility to a new node.
 

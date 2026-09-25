@@ -29,6 +29,10 @@ Every request that matches a circuit breaker policy passes through two hooks:
 
 The circuit closes automatically once the cooldown expires. The next request to the primary is a probe — if the signal fires again, the circuit reopens; otherwise it stays closed.
 
+<Note>
+Circuit breaker policies act on response headers you choose, per provider and model. Separately, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing#held-keys) holds a key on its own when the provider refuses it (a rejected credential, an exhausted quota, no model access, a retired model, a blocked region, or a rate limit). The two work side by side and need no configuration between them.
+</Note>
+
 ---
 
 ## Configuration

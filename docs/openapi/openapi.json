@@ -46009,6 +46009,89 @@
         }
       }
     },
+    "/api/mcp/client/{id}/refresh-tools": {
+      "post": {
+        "operationId": "refreshMCPClientTools",
+        "summary": "Refresh MCP client tools",
+        "description": "Re-discovers an MCP client's tools from its upstream server immediately,\ninstead of waiting for the periodic connection checker's next tick (the\nclient's tool_sync_interval, or the global mcp_tool_sync_interval —\n10 minutes by default).\n\nUse it after adding, removing, or re-describing a tool on the upstream\nMCP server. Unlike reconnect, this applies to every client type,\nincluding per-call clients (any per-user auth type, and any shared http\nclient with needs_session_stickiness false/omitted), which hold no\npersistent connection and so have no other on-demand refresh path.\n\nHow the refresh runs depends on the client: a sticky client with a live\nconnection is re-listed over it; a per-call client goes through an\nephemeral connect-discover-close cycle; a sticky client whose connection\nis currently down is reconnected, which re-discovers as part of the dial.\n\nThe freshly discovered set is persisted and the hosted /mcp surface is\nre-synced automatically, exactly as for every other discovery path.\nRejected with 400 when the client is not in a state where discovery\nmeans anything: disabled (enable it first), needs_reauth (reauthorize\nit first), or still pending_verification (complete the one-time admin\nverification instead — refreshing a client awaiting that flow would\nbypass it). 404 if no client is registered under the given ID.\n",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP client tools refreshed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "success"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "MCP client tools refreshed successfully"
+                    },
+                    "tool_count": {
+                      "type": "integer",
+                      "description": "Number of tools the client is serving after the refresh",
+                      "example": 12
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp/client/{id}/complete-oauth": {
       "post": {
         "operationId": "completeMCPClientOAuth",
@@ -46244,6 +46327,88 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{id}/reregister": {
+      "post": {
+        "operationId": "reregisterMCPClient",
+        "summary": "Reauthorize an MCP client against a newly registered OAuth client",
+        "description": "Registers a replacement OAuth client (RFC 7591 Dynamic Client\nRegistration) at the config's registration_url, writes it over the\nstored credentials, and then runs the same consent flow\nPOST /api/mcp/client/{id}/reauthorize runs, against the new client.\n\nThis exists for a provider that no longer recognises the client_id it\nissued, which is common with Dynamic Client Registration because the\nprovider's client registry is often in memory and does not survive a\nrestart. Once that happens the stored client_id is rejected at the token\nendpoint on every refresh and at the authorize endpoint on every\nreauthorization, so plain reauthorize cannot recover the connection.\n\nReplacing the client_id marks every credential stored under the OAuth\nconfig needs_reauth and stops using it, since none of them can be\nrefreshed against a client the provider no longer associates them\nwith. It does not revoke access tokens the provider already issued\n(Bifrost never calls the provider's revocation endpoint), so those can\nstay valid at the provider until they expire. For auth_type\n\"per_user_oauth\" that includes every end-user credential, not just the\nretained admin one, and each user must authenticate again. Plain\nreauthorize leaves end-user credentials untouched; this endpoint does\nnot.\n\nComplete the returned flow exactly like reauthorize's: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "tags": [
+          "MCP",
+          "OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reauthorization flow initiated against the newly registered client.\nCarries the same fields as reauthorize, plus registered_client_id\nand previous_client_id so the caller can confirm which client the\nconsent it is about to run belongs to.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthFlowInitiation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Client is not an OAuth-based auth type (oauth, per_user_oauth), has never completed initial OAuth authorization (use initiate-verification instead), the OAuth config has no registration_url, or the provider refused the registration request (answered it with a 4xx). Nothing is changed in any of these cases. A provider that could not be reached, or that answered with a 5xx, is a 500 instead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "MCP client not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "OAuth provider not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure. The message tells two cases apart, and they call\nfor opposite responses.\n\nNothing was changed in Bifrost: the stored client_id is what it was\nand no token was invalidated, whether the OAuth config could not be\nloaded, the provider's registration endpoint could not be reached or\nanswered with a 5xx, or the replacement client could not be stored.\nSafe to retry. One of these leaves something behind at the provider: a\nmessage starting \"failed to persist the newly registered oauth client\"\nmeans the provider did register a replacement and only storing it\nlocally failed, so the provider now holds a registration Bifrost will\nnever use, and each retry adds one more. Bifrost cannot delete those\n(it implements no RFC 7592 client management); remove them at the\nprovider if it lists registered clients. Every other message here\nmeans nothing was registered anywhere.\n\nThe replacement was installed, but consent could not be started:\nregistration and rotation are committed before the consent flow is\nopened, and the registration made at the provider cannot be undone.\nThe new client_id is stored and every token bound to the config is\nalready needs_reauth. The message says so and names both\nclient_ids. Do NOT retry this endpoint, which would register yet\nanother client: call POST /api/mcp/client/{id}/reauthorize, which\nruns consent against whatever client is stored, now the\nreplacement.\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -47133,7 +47298,7 @@
       "get": {
         "operationId": "getOAuthConfigStatus",
         "summary": "Get OAuth config status",
-        "description": "Retrieves the current status of an OAuth configuration.\nShows whether the OAuth flow is pending, authorized, or failed,\nand includes token expiration and scopes if authorized.\n",
+        "description": "Retrieves the current status of an OAuth configuration.\nShows whether the OAuth flow is pending, authorized, or failed,\nand includes token expiration and scopes if authorized.\n\nFor a reauthorize flow (POST /api/mcp/client/{id}/reauthorize) pass the\nreturned flow_id: the config's own status has been \"authorized\" since the\nclient was first verified and never regresses, so only the flow row can\nsay whether this particular consent has completed. With flow_id the\nstatus is pending until the provider redirects back, then authorized,\nfailed, or expired.\n",
         "tags": [
           "OAuth"
         ],
@@ -47143,6 +47308,15 @@
             "in": "path",
             "required": true,
             "description": "OAuth config ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "flow_id",
+            "in": "query",
+            "required": false,
+            "description": "Flow ID from the reauthorize response; resolves the status from that flow row",
             "schema": {
               "type": "string"
             }
@@ -47168,7 +47342,7 @@
             }
           },
           "404": {
-            "description": "OAuth config not found",
+            "description": "OAuth config not found, or flow_id does not belong to this OAuth config",
             "content": {
               "application/json": {
                 "schema": {
@@ -112563,6 +112737,10 @@
             "type": "string",
             "description": "ID of the OAuth config created for this flow"
           },
+          "flow_id": {
+            "type": "string",
+            "description": "ID of the flow row driving this consent. Returned by\nPOST /api/mcp/client/{id}/reauthorize, whose OAuth config has been\n\"authorized\" since the client was first verified; pass it as the\nflow_id query parameter on status polls so they report this flow's\nown state rather than that stale bootstrap status. Create-time flows\ndo not need it (their config starts \"pending\").\n"
+          },
           "authorize_url": {
             "type": "string",
             "description": "URL to redirect the user to for authorization"
@@ -112582,7 +112760,7 @@
           },
           "status_url": {
             "type": "string",
-            "description": "Relative URL to poll for the flow status\n(/api/oauth/config/{oauth_config_id}/status). Wait for\nstatus \"authorized\" before calling complete_url.\n"
+            "description": "Relative URL to poll for the flow status\n(/api/oauth/config/{oauth_config_id}/status, with ?flow_id=\nappended for reauthorize flows). Wait for status \"authorized\"\nbefore calling complete_url.\n"
           },
           "next_steps": {
             "type": "array",
@@ -112590,6 +112768,14 @@
               "type": "string"
             },
             "description": "Human-readable steps to complete the flow (authorize, poll, complete)"
+          },
+          "registered_client_id": {
+            "type": "string",
+            "description": "The OAuth client_id the provider issued for the replacement client,\nwhich is the one authorize_url runs consent against. Returned only by\nPOST /api/mcp/client/{id}/reregister. This is the provider's OAuth\nclient_id, not the MCP client ID in mcp_client_id.\n"
+          },
+          "previous_client_id": {
+            "type": "string",
+            "description": "The OAuth client_id that registered_client_id replaced. Returned only\nby POST /api/mcp/client/{id}/reregister. Equal to\nregistered_client_id when the provider answered the registration with\nthe client it already held, in which case nothing was replaced and no\ntoken was invalidated.\n"
           }
         }
       },
@@ -112606,14 +112792,23 @@
             "enum": [
               "pending",
               "authorized",
-              "failed"
+              "failed",
+              "expired"
             ],
-            "description": "Current status of the OAuth flow:\n- pending: User has not yet authorized\n- authorized: User authorized and token is stored\n- failed: Authorization failed\n"
+            "description": "Current status of the OAuth flow:\n- pending: User has not yet authorized\n- authorized: User authorized and token is stored\n- failed: Authorization failed\n- expired: The flow's deadline passed before the provider redirected back (only with flow_id)\n"
           },
           "created_at": {
             "type": "string",
             "format": "date-time",
             "description": "When this OAuth config was created"
+          },
+          "flow_id": {
+            "type": "string",
+            "description": "Echo of the flow_id query parameter, when one was given"
+          },
+          "flow_status": {
+            "type": "string",
+            "description": "Raw status of the flow row (pending, claiming, failed) when flow_id was given and the row still exists"
           },
           "token_id": {
             "type": "string",
