@@ -4,14 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -398,6 +403,102 @@ func TestWarpBackfillCursorStaysBehindACancelledIndex(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
 	require.Zero(t, final.Scanned, "a log whose indexing was cancelled was not scanned")
 	require.Nil(t, final.CursorTime, "the cursor must not have moved past it, so the resume retries it")
+}
+
+// usageBackfillEmbeddingExecutor answers like backfillEmbeddingExecutor and
+// reports 5 prompt tokens per call, the way a real provider bills an embed.
+func usageBackfillEmbeddingExecutor(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	response, bifrostErr := backfillEmbeddingExecutor(ctx, request)
+	response.Usage = &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5}
+	return response, bifrostErr
+}
+
+// embeddingPricedCatalog prices text-embedding-3-small at $0.02 / 1M tokens -
+// the model validWarpConfigRow embeds with - from a local datasheet, so the
+// real pricing path runs without reaching the network.
+func embeddingPricedCatalog(t *testing.T) *modelcatalog.ModelCatalog {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"text-embedding-3-small":{"input_cost_per_token":2e-08,"provider":"openai","mode":"embedding"}}`), 0o600))
+	store := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + path})
+	require.NoError(t, store.LoadFromURLIntoMemory(context.Background()))
+	return modelcatalog.NewTestCatalogWithDatasheet(store)
+}
+
+func runBackfillToEnd(t *testing.T, service *Service, start time.Time) (BackfillJobMeta, error) {
+	t.Helper()
+	metaJSON, err := service.BuildBackfillJobMeta(context.Background(), start, start.Add(24*time.Hour), false)
+	require.NoError(t, err)
+	finalJSON, runErr := service.RunBackfillJob(context.Background(), tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
+	var final BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	return final, runErr
+}
+
+// The backfill's embedding calls skip the plugin pipeline, so they never reach
+// the logs - the job's own checkpoint is the only place their spend shows up.
+func TestWarpBackfillTotalsEmbeddingSpend(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	reader := &backfillLogReader{logs: backfillLogsForAbort(start, 3)}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(usageBackfillEmbeddingExecutor),
+		WithModelCatalog(embeddingPricedCatalog(t)),
+	)
+	defer service.Shutdown()
+
+	final, err := runBackfillToEnd(t, service, start)
+	require.NoError(t, err)
+	require.Equal(t, 3, final.Indexed)
+	require.Equal(t, int64(15), final.EmbeddingTokens)
+	require.NotNil(t, final.EmbeddingCost)
+	require.InDelta(t, 15*2e-08, *final.EmbeddingCost, 1e-15)
+}
+
+// Without a catalog the cost is unknown, not free: it stays absent so the UI
+// does not render $0, while tokens are still counted.
+func TestWarpBackfillLeavesCostUnsetWithoutCatalog(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	reader := &backfillLogReader{logs: backfillLogsForAbort(start, 2)}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(usageBackfillEmbeddingExecutor),
+	)
+	defer service.Shutdown()
+
+	final, err := runBackfillToEnd(t, service, start)
+	require.NoError(t, err)
+	require.Equal(t, int64(10), final.EmbeddingTokens)
+	require.Nil(t, final.EmbeddingCost)
+}
+
+// A page the failure breaker rolls back out of the progress counters was still
+// billed call by call, so its spend must survive the rollback.
+func TestWarpBackfillKeepsSpendOfRolledBackPage(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	reader := &backfillLogReader{logs: backfillLogsForAbort(start, backfillMaxConsecutiveFailures)}
+	// Answers, and bills, but with a vector of the wrong size - so every log
+	// fails after the provider has already charged for it.
+	wrongDimension := func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 3)}}},
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5},
+		}, nil
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(wrongDimension),
+		WithModelCatalog(embeddingPricedCatalog(t)),
+	)
+	defer service.Shutdown()
+
+	final, err := runBackfillToEnd(t, service, start)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "consecutive")
+	require.Zero(t, final.Scanned, "the page is rolled back out of progress")
+	require.Equal(t, int64(5*backfillMaxConsecutiveFailures), final.EmbeddingTokens)
+	require.NotNil(t, final.EmbeddingCost)
+	require.InDelta(t, float64(5*backfillMaxConsecutiveFailures)*2e-08, *final.EmbeddingCost, 1e-15)
 }
 
 func failingBackfillEmbeddingExecutor(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {

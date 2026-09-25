@@ -334,6 +334,7 @@ func queryMetricsTool() Tool {
       "description": "'summary' returns overall totals and is usually the right starting point."
     },
     "group_by": {"type": "string", "enum": ["none", "provider"]},
+    "interval": {"type": "string", "enum": ["hour", "day"], "description": "Return each requested series bucket by bucket - one row per UTC hour or day - instead of one summary. The call for 'per day' or 'per hour' breakdowns: one call returns the whole series, never count bucket by bucket. The first and last buckets can be partial at the window's edges. At most 200 buckets (hour covers about 8 days); not with group_by provider."},
     "compare_to_previous": {"type": "boolean", "description": "Requires 'summary' in metrics. Also fetches the immediately preceding period of equal length and returns a trend block (has_previous_period, requests_trend, tokens_trend, cost_trend as percent change; tokens_trend or cost_trend is null when that metric was zero in the previous period and nonzero now) alongside summary."}
   },
   "required": ["filters", "metrics"]
@@ -369,6 +370,16 @@ func queryMetricsTool() Tool {
 			if byProvider && slices.Contains(metrics, "requests") {
 				return nil, fmt.Errorf(`group_by "provider" is not supported for the "requests" metric; drop "requests" from metrics or query without group_by`)
 			}
+			// interval hands back the buckets themselves. Without it a daily
+			// breakdown had no single call and was assembled from one count per
+			// day - seven calls for a week's table.
+			interval, err := enumArg(args, "interval", "", []string{"hour", "day"})
+			if err != nil {
+				return nil, err
+			}
+			if interval != "" && byProvider {
+				return nil, fmt.Errorf(`interval cannot be combined with group_by "provider"; per-provider series come back as coarse buckets already, or filter to one provider and use interval`)
+			}
 
 			// Every non-grouped series below is reduced to a seriesSummary and the
 			// buckets discarded, so a finer bucket only improves the summary's
@@ -383,6 +394,15 @@ func queryMetricsTool() Tool {
 			if slices.ContainsFunc(metrics, func(metric string) bool { return metric != "summary" }) {
 				if bucket, err = bucketSize(filters); err != nil {
 					return nil, err
+				}
+			}
+			if interval != "" {
+				bucket = 3600
+				if interval == "day" {
+					bucket = 86400
+				}
+				if span := filters.EndTime.Sub(*filters.StartTime).Seconds(); span/float64(bucket) > MaxHistogramBuckets {
+					return nil, fmt.Errorf(`interval %q over this range produces more than %d buckets; use interval "day" or a shorter range`, interval, MaxHistogramBuckets)
 				}
 			}
 			// A summary-only grouped call still needs the coarse bucket: the
@@ -428,6 +448,10 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("request histogram failed: %w", err)
 					}
+					if interval != "" {
+						out["requests"] = result
+						continue
+					}
 					out["requests"] = summarizeRequestsHistogram(result)
 				case "tokens":
 					if byProvider {
@@ -442,6 +466,10 @@ func queryMetricsTool() Tool {
 					result, err := deps.logManager.GetTokenHistogram(ctx, filters, bucket)
 					if err != nil {
 						return nil, fmt.Errorf("token histogram failed: %w", err)
+					}
+					if interval != "" {
+						out["tokens"] = result
+						continue
 					}
 					out["tokens"] = summarizeTokensHistogram(result)
 				case "cost":
@@ -458,6 +486,10 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("cost histogram failed: %w", err)
 					}
+					if interval != "" {
+						out["cost"] = result
+						continue
+					}
 					out["cost"] = summarizeCostHistogram(result)
 				case "latency":
 					if byProvider {
@@ -473,6 +505,10 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("latency histogram failed: %w", err)
 					}
+					if interval != "" {
+						out["latency"] = result
+						continue
+					}
 					out["latency"] = summarizeLatencyHistogram(result)
 				case "throughput":
 					if byProvider {
@@ -487,6 +523,10 @@ func queryMetricsTool() Tool {
 					result, err := deps.logManager.GetThroughputHistogram(ctx, filters, bucket)
 					if err != nil {
 						return nil, fmt.Errorf("throughput histogram failed: %w", err)
+					}
+					if interval != "" {
+						out["throughput"] = result
+						continue
 					}
 					out["throughput"] = summarizeThroughputHistogram(result)
 				default:
@@ -852,8 +892,8 @@ var rankingDimensions = []struct {
 	{logstore.RankingDimensionUserAgent, "the raw User-Agent string"},
 	{logstore.RankingDimensionRoutingRule, "the routing rule that handled the request, by name - requests no rule handled are left out, so compare against count_logs for the share"},
 	{logstore.RankingDimensionRoutingEngine, "the routing engines a request passed through, e.g. routing-rule, governance, loadbalancing - one request can pass through several, so totals can exceed the request count"},
-	{logstore.RankingDimensionSelectedKey, "the provider API key Bifrost sent the request with, by name - not a virtual key; pair with status error to find a failing key"},
-	{logstore.RankingDimensionAlias, "the model alias the request was addressed to before Bifrost resolved it"},
+	{logstore.RankingDimensionSelectedKey, "the provider API key Bifrost sent the request with, by name - not the provider and not a virtual key; pair with status error to find a failing key"},
+	{logstore.RankingDimensionAlias, "the model alias the request was addressed to before Bifrost resolved it - empty when a request named its model directly - never a stand-in for the model; for which models were involved use query_model_performance"},
 	{logstore.RankingDimensionComplexityTier, "the tier the complexity router assigned: SIMPLE, MEDIUM or COMPLEX - only requests it saw"},
 	{logstore.RankingDimensionComplexityMechanism, "how the complexity tier was decided, e.g. semantic, llm, session"},
 	{logstore.RankingDimensionToolCallName, "the function names responses called - one request can call several, so totals can exceed the request count"},
@@ -883,6 +923,7 @@ func queryUsageByTool() Tool {
 			"Answers 'who is spending the most', 'which team spends the most', 'which key is burning the budget', 'is X up or down'. " +
 			"It is also the failure breakdown: dimension error_type, status_code or error_code with filters.status [\"error\"] counts every failed request by kind, exactly rather than from a sample of rows - the tool for 'what errors are we seeing', 'why are requests failing', 'what caused the failure spike'. To fetch the requests behind one row, pass that row's id to query_logs as error_types, status_codes or error_codes. " +
 			"Each ranking row already carries a trend block (has_previous_period, requests_trend, tokens_trend, cost_trend); read it rather than calling this twice to check direction. " +
+			"There is no provider or model dimension: a per-provider breakdown is query_metrics with group_by provider, and a per-model one is query_model_performance. " +
 			"Dimensions: " + strings.Join(describedValues, "; ") + ". " +
 			"Note: a per-entity time series is not available for any dimension; to see one, filter by the relevant id(s) and call query_metrics, which returns one combined series.",
 		schemaJSON: `{
@@ -898,6 +939,15 @@ func queryUsageByTool() Tool {
 			raw, _ := args["dimension"].(string)
 			dimension, ok := validRankingDimension(raw)
 			if !ok {
+				// Model and provider are the two splits models most often reach for
+				// here. The generic list sent them to the nearest-sounding dimension
+				// (alias) instead of the tool that owns the split, so the error names it.
+				switch strings.ToLower(strings.TrimSpace(raw)) {
+				case "model", "models", "model_name":
+					return nil, fmt.Errorf("query_usage_by has no %q dimension. For which models were involved, call query_model_performance with the same filters - it returns one row per model with requests, errors, latency and cost. Do not substitute alias: it is empty when a request named its model directly", raw)
+				case "provider", "providers":
+					return nil, fmt.Errorf("query_usage_by has no %q dimension. For a per-provider breakdown, call query_metrics with group_by provider and the same filters, and read provider_totals", raw)
+				}
 				return nil, fmt.Errorf("unknown dimension %q; supported: %s", raw, strings.Join(enumValues, ", "))
 			}
 
@@ -1046,7 +1096,7 @@ func describeFilterSpaceTool() Tool {
 		schemaJSON: `{
   "type": "object",
   "properties": {
-    "search": {"type": "string", "description": "Optional substring to narrow the returned values."}
+    "search": {"type": "string", "description": "Optional part of a value's name to narrow the returned values, e.g. \"Platform\" or \"sonnet\" - never a category such as \"team\" or \"customer\", which only matches values whose own names contain that word. Omit it to list every kind of value."}
   }
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
@@ -1183,6 +1233,19 @@ func describeFilterSpaceTool() Tool {
 					continue
 				}
 				out[entry.key] = keyPairLabels(results[index])
+			}
+			// A search that matched nothing reads like "nothing exists" unless it
+			// says otherwise - a live run searched "team", got no teams whose
+			// names contain the word, and reported that no team had traffic.
+			if query != "" {
+				found := len(models) + len(apps) + len(stopReasons) + len(routingRules) + len(providerKeys) +
+					len(aliases) + len(routingEngines) + len(toolCallNames) + len(metadata)
+				for _, values := range results {
+					found += len(values)
+				}
+				if found == 0 {
+					out["guidance"] = fmt.Sprintf("Nothing matched search %q. search matches part of a value's name, not a kind of value; call describe_filter_space again without search to list every team, customer, model and key before concluding none exist.", query)
+				}
 			}
 			return out, nil
 		},

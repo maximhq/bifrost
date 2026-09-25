@@ -4,6 +4,7 @@ import {
 	isInternalWarpLink,
 	isPlainLeftClick,
 	splitWarpAnswer,
+	splitWarpCharts,
 	warpErrorDetail,
 	warpToolLabel,
 	warpToolStatusLabel,
@@ -13,11 +14,15 @@ import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Brain, Check, ChevronDown, Info, Loader2 } from "lucide-react";
-import { lazy, memo, Suspense, useMemo, useState, type AnchorHTMLAttributes } from "react";
+import { lazy, memo, Suspense, useMemo, useState, type AnchorHTMLAttributes, type ReactNode } from "react";
 
 // Shiki is heavy and most Warp answers are prose, so the renderer is loaded on
 // demand. This mirrors how the prompt playground handles the same component.
 const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((module) => ({ default: module.Markdown })));
+// recharts, likewise, is only loaded once an answer actually carries a chart.
+const LazyWarpChart = lazy(() => import("@/components/warp/warpChart"));
+
+const renderChartLink = (href: string, children: ReactNode) => <WarpAnswerLink href={href}>{children}</WarpAnswerLink>;
 
 /**
  * One completed turn in the transcript.
@@ -155,23 +160,54 @@ function WarpTimeline({
 					return <WarpToolCallList key={`tools-${item.calls[0].id}`} calls={item.calls} />;
 				}
 				const isLast = index === items.length - 1;
-				return (
-					// Keyed by position: text items never reorder, and a key taken
-					// from the text would remount the block on every streamed change.
-					<Suspense key={`text-${index}`} fallback={<div className="text-muted-foreground text-sm">{item.text}</div>}>
-						<LazyMarkdown
-							content={item.text}
-							components={{ a: WarpAnswerLink }}
-							className={item.final ? undefined : "text-muted-foreground text-[13px]"}
-							isStreaming={isStreaming && isLast}
-							caret={isStreaming && isLast ? "block" : undefined}
-						/>
-					</Suspense>
-				);
+				// Charts render as charts, not as the JSON their block carries. Only
+				// the item still streaming can have a chart on its way.
+				const segments = splitWarpCharts(item.text, isStreaming && isLast);
+				return segments.map((segment, segmentIndex) => {
+					// Keyed by position: segments never reorder, and a key taken from
+					// the text would remount the block on every streamed change.
+					const key = `text-${index}-${segmentIndex}`;
+					const isLastSegment = isLast && segmentIndex === segments.length - 1;
+					if (segment.kind === "chart") {
+						return (
+							<Suspense key={key} fallback={<WarpChartPlaceholder />}>
+								<LazyWarpChart spec={segment.spec} renderLink={renderChartLink} />
+							</Suspense>
+						);
+					}
+					if (segment.kind === "chart-pending") return <WarpChartPlaceholder key={key} />;
+					if (segment.kind === "chart-invalid") {
+						return (
+							<div
+								key={key}
+								className="text-muted-foreground my-3 rounded-sm border border-dashed p-3 text-xs"
+								data-testid="warp-chart-invalid"
+							>
+								Chart unavailable.
+							</div>
+						);
+					}
+					return (
+						<Suspense key={key} fallback={<div className="text-muted-foreground text-sm">{segment.text}</div>}>
+							<LazyMarkdown
+								content={segment.text}
+								components={{ a: WarpAnswerLink }}
+								className={item.final ? undefined : "text-muted-foreground text-[13px]"}
+								isStreaming={isStreaming && isLastSegment}
+								caret={isStreaming && isLastSegment ? "block" : undefined}
+							/>
+						</Suspense>
+					);
+				});
 			})}
 			{isWaitingOnModel && <WarpThinking />}
 		</>
 	);
+}
+
+/** Holds a chart's place while it loads or streams in. */
+function WarpChartPlaceholder() {
+	return <div className="bg-muted/40 my-3 h-[240px] animate-pulse rounded-sm border" data-testid="warp-chart-pending" />;
 }
 
 /**
