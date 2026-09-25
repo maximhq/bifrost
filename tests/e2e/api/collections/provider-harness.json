@@ -171496,7 +171496,8 @@
                   "if (!pm.variables.get('mcpAdminSession')) { throw new Error('Set mcpAdminSession to an authenticated local admin session'); }",
                   "pm.collectionVariables.set('mcpStdioClientId', pm.variables.replaceIn('{{$guid}}').replace(/-/g, ''));",
                   "pm.collectionVariables.set('mcpStdioCreated', '0');",
-                  "if (!pm.variables.get('mcpStdioNodeCommand')) { pm.collectionVariables.set('mcpStdioNodeCommand', 'node'); }"
+                  "if (!pm.variables.get('mcpStdioNodeCommand')) { pm.collectionVariables.set('mcpStdioNodeCommand', 'node'); }",
+                  "pm.collectionVariables.set('mcpStdioNodeCommandJson', JSON.stringify(pm.variables.get('mcpStdioNodeCommand')));"
                 ]
               }
             },
@@ -171528,7 +171529,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"client_id\": \"{{mcpStdioClientId}}\",\n  \"name\": \"stdio_env_{{mcpStdioClientId}}\",\n  \"connection_type\": \"stdio\",\n  \"auth_type\": \"none\",\n  \"stdio_config\": {\n    \"command\": \"{{mcpStdioNodeCommand}}\",\n    \"args\": [\n      \"-e\",\n      \"const r=require('readline').createInterface({input:process.stdin});r.on('line',line=>{const q=JSON.parse(line);if(q.id===undefined)return;let result={};if(q.method==='initialize')result={protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'stdio-env-fixture',version:'1.0.0'}};else if(q.method==='tools/list')result={tools:[{name:'env_probe',description:process.env.PATH&&process.env.BIFROST_STDIO_HARNESS_VALUE==='inline=value'&&process.env.BIFROST_STDIO_HARNESS_EMPTY===''?'env-ok':'env-invalid',inputSchema:{type:'object',properties:{}}}]};else if(q.method!=='ping'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,error:{code:-32601,message:'Method not found'}})+'\\\\n');return;}process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\\\n');});\"\n    ],\n    \"envs\": [\n      \"PATH\",\n      \"BIFROST_STDIO_HARNESS_VALUE=inline=value\",\n      \"BIFROST_STDIO_HARNESS_EMPTY=\"\n    ]\n  },\n  \"tools_to_execute\": [\n    \"*\"\n  ]\n}",
+              "raw": "{\n  \"client_id\": \"{{mcpStdioClientId}}\",\n  \"name\": \"stdio_env_{{mcpStdioClientId}}\",\n  \"connection_type\": \"stdio\",\n  \"auth_type\": \"none\",\n  \"stdio_config\": {\n    \"command\": {{mcpStdioNodeCommandJson}},\n    \"args\": [\n      \"-e\",\n      \"const r=require('readline').createInterface({input:process.stdin});r.on('line',line=>{const q=JSON.parse(line);if(q.id===undefined)return;let result={};if(q.method==='initialize')result={protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'stdio-env-fixture',version:'1.0.0'}};else if(q.method==='tools/list')result={tools:[{name:'env_probe',description:process.env.PATH&&process.env.BIFROST_STDIO_HARNESS_VALUE==='inline=value'&&process.env.BIFROST_STDIO_HARNESS_EMPTY===''?'env-ok':'env-invalid',inputSchema:{type:'object',properties:{}}}]};else if(q.method!=='ping'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,error:{code:-32601,message:'Method not found'}})+'\\\\n');return;}process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\\\n');});\"\n    ],\n    \"envs\": [\n      \"PATH\",\n      \"BIFROST_STDIO_HARNESS_VALUE=inline=value\",\n      \"BIFROST_STDIO_HARNESS_EMPTY=\"\n    ]\n  },\n  \"tools_to_execute\": [\n    \"*\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
