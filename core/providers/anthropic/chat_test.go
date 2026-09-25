@@ -2788,14 +2788,22 @@ func TestToAnthropicChatRequest_UnconvertibleUserContentNotReplacedByPlaceholder
 // prompt-cache marker; clients often put cache_control on the final user turn,
 // and dropping it would silently lose the cache breakpoint (#7276).
 func TestToAnthropicChatRequest_BlankUserTurnPlaceholderKeepsCacheControl(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	result := emptyUserTurnRequest(t, ctx, `[{"type": "text", "text": " ", "cache_control": {"type": "ephemeral"}}]`)
-	if len(result.Messages) != 3 {
-		t.Fatalf("messages = %d, want 3", len(result.Messages))
+	cases := map[string]string{
+		"whitespace text": `[{"type": "text", "text": " ", "cache_control": {"type": "ephemeral"}}]`,
+		"empty text":      `[{"type": "text", "text": "", "cache_control": {"type": "ephemeral"}}]`,
 	}
-	assertSinglePlaceholderUserMessage(t, result.Messages[2], "trailing user")
-	if cc := result.Messages[2].Content.ContentBlocks[0].CacheControl; cc == nil || cc.Type != "ephemeral" {
-		raw, _ := json.Marshal(result.Messages[2].Content)
-		t.Fatalf("placeholder content = %s, want cache_control ephemeral carried over", raw)
+	for name, rawContent := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result := emptyUserTurnRequest(t, ctx, rawContent)
+			if len(result.Messages) != 3 {
+				t.Fatalf("messages = %d, want 3", len(result.Messages))
+			}
+			assertSinglePlaceholderUserMessage(t, result.Messages[2], "trailing user")
+			if cc := result.Messages[2].Content.ContentBlocks[0].CacheControl; cc == nil || cc.Type != "ephemeral" {
+				raw, _ := json.Marshal(result.Messages[2].Content)
+				t.Fatalf("placeholder content = %s, want cache_control ephemeral carried over", raw)
+			}
+		})
 	}
 }
