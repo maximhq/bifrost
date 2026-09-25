@@ -463,3 +463,145 @@ func TestRoutingRoutesServeCanonicalAndLegacyPaths(t *testing.T) {
 		}
 	}
 }
+
+// reloadRecordingRoutingManager accepts rule reloads so the CRUD handlers can run end to end.
+type reloadRecordingRoutingManager struct {
+	RoutingManager
+	reloaded []string
+}
+
+func (m *reloadRecordingRoutingManager) ReloadRoutingRule(_ context.Context, id string) error {
+	m.reloaded = append(m.reloaded, id)
+	return nil
+}
+
+// ruleFallbacksJSON returns the "fallbacks" array of a handler response exactly as the client sees it.
+func ruleFallbacksJSON(t *testing.T, ctx *fasthttp.RequestCtx) string {
+	t.Helper()
+	require.Less(t, ctx.Response.StatusCode(), 300, "unexpected status: %s", string(ctx.Response.Body()))
+	var resp struct {
+		Rule struct {
+			ID        string          `json:"id"`
+			Fallbacks json.RawMessage `json:"fallbacks"`
+		} `json:"rule"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	if len(resp.Rule.Fallbacks) == 0 {
+		return ""
+	}
+	return string(resp.Rule.Fallbacks)
+}
+
+// TestRoutingRuleFallbacksRoundTrip pins the fallbacks a client sends, reads back and edits through
+// the routing rule API: both forms survive create, GET and the stored column; a PUT without
+// fallbacks keeps them, a PUT with fallbacks replaces them, an empty list clears them, and an
+// invalid PUT leaves them untouched.
+func TestRoutingRuleFallbacksRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &reloadRecordingRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	created := `["anthropic/claude-sonnet-4","azure/",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-1"},{"provider":"groq","model":"llama-3.1-8b-instant"},{"provider":"bedrock","model":"","key_id":"k-2"}]`
+	// An unpinned object is normalized to its legacy string; everything else comes back as sent.
+	wantCreated := `["anthropic/claude-sonnet-4","azure/",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-1"},"groq/llama-3.1-8b-instant",{"provider":"bedrock","model":"","key_id":"k-2"}]`
+
+	createCtx := newTestRequestCtx(`{"name":"fb-roundtrip","cel_expression":"model == \"gpt-4o\"","targets":[{"provider":"openai","weight":1}],"fallbacks":` + created + `}`)
+	handler.createRoutingRule(createCtx)
+	require.JSONEq(t, wantCreated, ruleFallbacksJSON(t, createCtx))
+	var createResp struct {
+		Rule struct {
+			ID string `json:"id"`
+		} `json:"rule"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &createResp))
+	ruleID := createResp.Rule.ID
+	require.Equal(t, []string{ruleID}, manager.reloaded)
+
+	get := func() string {
+		ctx := newTestRequestCtx("")
+		ctx.SetUserValue("rule_id", ruleID)
+		handler.getRoutingRule(ctx)
+		return ruleFallbacksJSON(t, ctx)
+	}
+	put := func(body string) *fasthttp.RequestCtx {
+		ctx := newTestRequestCtx(body)
+		ctx.SetUserValue("rule_id", ruleID)
+		handler.updateRoutingRule(ctx)
+		return ctx
+	}
+	storedColumn := func() string {
+		rule, err := store.GetRoutingRule(context.Background(), ruleID)
+		require.NoError(t, err)
+		if rule.Fallbacks == nil {
+			return ""
+		}
+		return *rule.Fallbacks
+	}
+
+	require.Equal(t, wantCreated, get(), "GET must return the fallbacks byte-for-byte")
+	require.Equal(t, wantCreated, storedColumn(), "the stored column must hold the same bytes")
+
+	t.Run("PUT without fallbacks keeps them", func(t *testing.T) {
+		ctx := put(`{"description":"renamed"}`)
+		require.Equal(t, wantCreated, ruleFallbacksJSON(t, ctx))
+		require.Equal(t, wantCreated, get())
+	})
+
+	t.Run("invalid PUT is rejected and leaves them untouched", func(t *testing.T) {
+		for _, body := range []string{
+			`{"fallbacks":["gpt-4o"]}`,
+			`{"fallbacks":[{"key_id":"k-1"}]}`,
+			`{"fallbacks":[{"provider":"vertex","provider_key_name":"prod"}]}`,
+			`{"fallbacks":[""]}`,
+			`{"fallbacks":[null]}`,
+		} {
+			ctx := put(body)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: %s", body, string(ctx.Response.Body()))
+			require.Equal(t, wantCreated, get(), "%s changed the stored fallbacks", body)
+		}
+	})
+
+	t.Run("PUT with fallbacks replaces them", func(t *testing.T) {
+		replaced := `[{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-3"},"openai/gpt-4o-mini"]`
+		ctx := put(`{"fallbacks":` + replaced + `}`)
+		require.Equal(t, replaced, ruleFallbacksJSON(t, ctx))
+		require.Equal(t, replaced, get())
+		require.Equal(t, replaced, storedColumn())
+	})
+
+	t.Run("PUT with an empty list clears them", func(t *testing.T) {
+		ctx := put(`{"fallbacks":[]}`)
+		require.Equal(t, "", ruleFallbacksJSON(t, ctx))
+		require.Equal(t, "", get())
+		require.Equal(t, "", storedColumn())
+	})
+}
+
+// TestCreateRoutingRuleRejectsInvalidFallbacks pins that a create with a bad fallback returns 400
+// and stores nothing.
+func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &reloadRecordingRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	for _, fallbacks := range []string{
+		`["gpt-4o"]`,
+		`["meta-llama/Llama-3.1-8B"]`,
+		`[""]`,
+		`[{"key_id":"k-1"}]`,
+		`[{"provider":"vertex","provider_key_name":"prod"}]`,
+		`[1]`,
+	} {
+		t.Run(fallbacks, func(t *testing.T) {
+			ctx := newTestRequestCtx(`{"name":"bad-fb","cel_expression":"true","targets":[{"provider":"openai","weight":1}],"fallbacks":` + fallbacks + `}`)
+			handler.createRoutingRule(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		})
+	}
+	rules, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, rules, "a rejected create must not store a rule")
+	require.Empty(t, manager.reloaded)
+}

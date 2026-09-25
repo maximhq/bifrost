@@ -187,3 +187,51 @@ func TestRoutingFallback_ObjectFormTrimsFieldsAcrossRestart(t *testing.T) {
 		}
 	}
 }
+
+// TestRoutingFallback_MalformedEntries pins how entries that are neither a string nor a valid
+// object decode: wrong types fail loudly (the API returns 400 and AfterFind surfaces the error),
+// while null and unknown object fields decode to something the routing plugin already handles.
+func TestRoutingFallback_MalformedEntries(t *testing.T) {
+	for _, input := range []string{`[1]`, `[true]`, `[["openai/gpt-4o"]]`, `[{"provider":1}]`, `[{"key_id":["k"]}]`} {
+		t.Run("rejects "+input, func(t *testing.T) {
+			var decoded []RoutingFallback
+			if err := sonic.Unmarshal([]byte(input), &decoded); err == nil {
+				t.Fatalf("expected a decode error, got %+v", decoded)
+			}
+			rule := TableRoutingRule{Fallbacks: &input}
+			if err := rule.AfterFind(nil); err == nil {
+				t.Fatal("AfterFind must surface a malformed fallbacks column")
+			}
+		})
+	}
+
+	t.Run("null entry decodes to an empty fallback", func(t *testing.T) {
+		var decoded []RoutingFallback
+		if err := sonic.Unmarshal([]byte(`[null]`), &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(decoded) != 1 || decoded[0].Resolved() != (schemas.Fallback{}) {
+			t.Fatalf("got %+v, want one empty fallback (dropped by the plugin for its empty provider)", decoded)
+		}
+	})
+
+	t.Run("unknown object fields are ignored", func(t *testing.T) {
+		var decoded []RoutingFallback
+		if err := sonic.Unmarshal([]byte(`[{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k1","weight":2}]`), &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		want := schemas.Fallback{Provider: "vertex", Model: "gemini-2.5-pro", KeyID: "k1"}
+		if len(decoded) != 1 || decoded[0].Resolved() != want {
+			t.Fatalf("got %+v, want %+v", decoded, want)
+		}
+	})
+
+	t.Run("empty and whitespace columns decode to no fallbacks", func(t *testing.T) {
+		for _, column := range []string{"", "   "} {
+			rule := TableRoutingRule{Fallbacks: &column}
+			if err := rule.AfterFind(nil); err != nil || len(rule.ParsedFallbacks) != 0 {
+				t.Fatalf("column %q: err=%v fallbacks=%+v", column, err, rule.ParsedFallbacks)
+			}
+		}
+	})
+}

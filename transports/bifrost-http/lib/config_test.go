@@ -22493,3 +22493,88 @@ func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
 	require.Len(t, vmcps, 1, "duplicate name with a different ID must be deduped")
 	require.Equal(t, "Dup", vmcps[0].Name)
 }
+
+// governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
+// fallback goes through RoutingFallback.UnmarshalJSON.
+func governanceWithRoutingFallbacks(t *testing.T, fallbacksJSON string) *configstore.GovernanceConfig {
+	t.Helper()
+	var governance configstore.GovernanceConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"routing_rules":[{"id":"rr-1","name":"rr","cel_expression":"true","scope":"global",`+
+		`"targets":[{"provider":"openai","weight":1}],"fallbacks":`+fallbacksJSON+`}]}`), &governance))
+	return &governance
+}
+
+// TestResolveGovernanceKeyReferences_RoutingFallbacks pins config.json provider_key_name resolution
+// for routing-rule fallbacks: a name resolves to that provider's key_id and the alias is dropped,
+// other entries are untouched, and every invalid combination fails the load.
+func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	// Key names are unique across providers; the lookup still checks the name belongs to the fallback's provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Vertex, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-vertex-prod", Name: "Vertex Prod", Value: *schemas.NewSecretVar("sk-v"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	config := &Config{ConfigStore: store}
+
+	t.Run("resolves names per provider and leaves other entries alone", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",`+
+			`{"provider":"vertex","model":"gemini-2.5-pro","provider_key_name":"Vertex Prod"},`+
+			`{"provider":"anthropic","provider_key_name":" Anthropic Prod "},`+
+			`{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, config, governance))
+
+		got := governance.RoutingRules[0].ParsedFallbacks
+		require.Len(t, got, 4)
+		want := []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			{Provider: schemas.Vertex, Model: "gemini-2.5-pro", KeyID: "k-vertex-prod"},
+			{Provider: schemas.Anthropic, KeyID: "k-anthropic-prod"},
+			{Provider: schemas.Anthropic, Model: "claude-sonnet-4", KeyID: "k-explicit"},
+		}
+		for i, fb := range got {
+			assert.Equal(t, want[i], fb.Resolved(), "fallback %d", i)
+			assert.Nil(t, fb.ProviderKeyName, "fallback %d kept its config-only alias", i)
+		}
+
+		// What gets stored: the resolved key_id, never the alias, and legacy strings untouched.
+		data, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.Equal(t, `["openai/gpt-4o",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-vertex-prod"},`+
+			`{"provider":"anthropic","model":"","key_id":"k-anthropic-prod"},{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`, string(data))
+	})
+
+	errorCases := []struct {
+		name      string
+		fallbacks string
+		wantErr   string
+	}{
+		{name: "unknown key name", fallbacks: `[{"provider":"vertex","provider_key_name":"Missing"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key name that belongs to another provider", fallbacks: `[{"provider":"anthropic","provider_key_name":"Vertex Prod"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key_id together with provider_key_name", fallbacks: `[{"provider":"vertex","key_id":"k","provider_key_name":"Vertex Prod"}]`, wantErr: "cannot set key_id together with provider_key_name"},
+		{name: "provider_key_name without a provider", fallbacks: `[{"provider_key_name":"Vertex Prod"}]`, wantErr: "requires provider to be set"},
+	}
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := resolveGovernanceKeyReferences(ctx, config, governanceWithRoutingFallbacks(t, tc.fallbacks))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), `"rr-1"`, "the error must name the rule")
+		})
+	}
+
+	t.Run("a name reference without a config store fails the load", func(t *testing.T) {
+		err := resolveGovernanceKeyReferences(ctx, &Config{}, governanceWithRoutingFallbacks(t, `[{"provider":"vertex","provider_key_name":"Vertex Prod"}]`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "require config store")
+	})
+
+	t.Run("rules without name references need no config store", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",{"provider":"vertex","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, &Config{}, governance))
+		assert.Equal(t, schemas.Fallback{Provider: schemas.Vertex, KeyID: "k-explicit"}, governance.RoutingRules[0].ParsedFallbacks[1].Resolved())
+	})
+}
