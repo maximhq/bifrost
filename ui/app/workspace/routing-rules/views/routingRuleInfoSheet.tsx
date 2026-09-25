@@ -385,6 +385,14 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 								)}
 							</div>
 
+							{/* TTFT cutoff */}
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+								<span className="text-muted-foreground text-sm">Time to first token cutoff</span>
+								<span className="col-span-2 text-sm" data-testid="routing-rule-info-ttft-timeout">
+									{rule.ttft_timeout_ms ? `${rule.ttft_timeout_ms} ms (streaming)` : "Off"}
+								</span>
+							</div>
+
 							<DottedSeparator />
 
 							{/* Timestamps */}
