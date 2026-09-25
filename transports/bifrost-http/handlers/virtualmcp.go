@@ -45,24 +45,28 @@ func (h *VirtualMCPHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 // VirtualMCPRequest is the create/update body. EndpointSlug is honored only on create (immutable
 // after); Enabled is a pointer so a false is not lost to the column default.
 type VirtualMCPRequest struct {
-	Name         string                          `json:"name"`
-	EndpointSlug string                          `json:"endpoint_slug,omitempty"`
-	Description  *string                         `json:"description,omitempty"`
-	Enabled      *bool                           `json:"enabled,omitempty"`
-	Tools        []configstoreTables.MCPToolSpec `json:"tools"`
+	Name             string                          `json:"name"`
+	EndpointSlug     string                          `json:"endpoint_slug,omitempty"`
+	Description      *string                         `json:"description,omitempty"`
+	Enabled          *bool                           `json:"enabled,omitempty"`
+	Instructions     *string                         `json:"instructions,omitempty"`
+	InstructionsMode string                          `json:"instructions_mode,omitempty"`
+	Tools            []configstoreTables.MCPToolSpec `json:"tools"`
 }
 
 // VirtualMCPResponse is a Virtual MCP with its VK assignments.
 type VirtualMCPResponse struct {
-	ID            uint                            `json:"id"`
-	Name          string                          `json:"name"`
-	EndpointSlug  string                          `json:"endpoint_slug"`
-	Description   *string                         `json:"description,omitempty"`
-	Enabled       bool                            `json:"enabled"`
-	Tools         []configstoreTables.MCPToolSpec `json:"tools"`
-	VirtualKeyIDs []string                        `json:"virtual_key_ids"`
-	CreatedAt     string                          `json:"created_at"`
-	UpdatedAt     string                          `json:"updated_at"`
+	ID               uint                            `json:"id"`
+	Name             string                          `json:"name"`
+	EndpointSlug     string                          `json:"endpoint_slug"`
+	Description      *string                         `json:"description,omitempty"`
+	Instructions     *string                         `json:"instructions,omitempty"`
+	InstructionsMode string                          `json:"instructions_mode,omitempty"`
+	Enabled          bool                            `json:"enabled"`
+	Tools            []configstoreTables.MCPToolSpec `json:"tools"`
+	VirtualKeyIDs    []string                        `json:"virtual_key_ids"`
+	CreatedAt        string                          `json:"created_at"`
+	UpdatedAt        string                          `json:"updated_at"`
 }
 
 // toResponse builds the API shape from a definition and its assigned virtual keys. vkIDs are passed in
@@ -77,15 +81,17 @@ func (h *VirtualMCPHandler) toResponse(def *configstoreTables.TableVirtualMCP, v
 		vkIDs = []string{}
 	}
 	return VirtualMCPResponse{
-		ID:            def.ID,
-		Name:          def.Name,
-		EndpointSlug:  def.EndpointSlug,
-		Description:   def.Description,
-		Enabled:       def.Enabled,
-		Tools:         tools,
-		VirtualKeyIDs: vkIDs,
-		CreatedAt:     def.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:     def.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ID:               def.ID,
+		Name:             def.Name,
+		EndpointSlug:     def.EndpointSlug,
+		Description:      def.Description,
+		Instructions:     def.Instructions,
+		InstructionsMode: def.InstructionsMode,
+		Enabled:          def.Enabled,
+		Tools:            tools,
+		VirtualKeyIDs:    vkIDs,
+		CreatedAt:        def.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:        def.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
@@ -209,12 +215,21 @@ func (h *VirtualMCPHandler) createVirtualMCP(ctx *fasthttp.RequestCtx) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	mode := req.InstructionsMode
+	if mode == "" {
+		mode = string(schemas.MCPVirtualInstructionsModeAppend)
+	} else if !validVirtualInstructionsMode(mode) {
+		SendError(ctx, fasthttp.StatusBadRequest, "instructions_mode must be \"append\" or \"replace\"")
+		return
+	}
 	def := &configstoreTables.TableVirtualMCP{
-		Name:         req.Name,
-		EndpointSlug: req.EndpointSlug,
-		Description:  req.Description,
-		Enabled:      enabled,
-		ParsedTools:  req.Tools,
+		Name:             req.Name,
+		EndpointSlug:     req.EndpointSlug,
+		Description:      req.Description,
+		Instructions:     req.Instructions,
+		InstructionsMode: mode,
+		Enabled:          enabled,
+		ParsedTools:      req.Tools,
 	}
 	if err := h.store.ConfigStore.CreateVirtualMCP(ctx, def); err != nil {
 		if code, msg, ok := virtualMCPConflict(err); ok {
@@ -257,6 +272,16 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 	}
 	if req.Description != nil {
 		def.Description = req.Description
+	}
+	if req.Instructions != nil {
+		def.Instructions = req.Instructions
+	}
+	if req.InstructionsMode != "" {
+		if !validVirtualInstructionsMode(req.InstructionsMode) {
+			SendError(ctx, fasthttp.StatusBadRequest, "instructions_mode must be \"append\" or \"replace\"")
+			return
+		}
+		def.InstructionsMode = req.InstructionsMode
 	}
 	if req.Enabled != nil {
 		def.Enabled = *req.Enabled
@@ -423,4 +448,15 @@ func (h *VirtualMCPHandler) sendLookupError(ctx *fasthttp.RequestCtx, err error)
 	}
 	h.logger.Error("failed to load virtual MCP: %v", err)
 	SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+}
+
+// validVirtualInstructionsMode rejects an unrecognized mode; stored, it would read as
+// "append" at runtime and look like the setting was ignored.
+func validVirtualInstructionsMode(mode string) bool {
+	switch schemas.MCPVirtualInstructionsMode(mode) {
+	case schemas.MCPVirtualInstructionsModeAppend, schemas.MCPVirtualInstructionsModeReplace:
+		return true
+	default:
+		return false
+	}
 }

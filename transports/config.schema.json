@@ -7756,6 +7756,19 @@
           "type": "string",
           "description": "Virtual MCP description"
         },
+          "instructions": {
+            "type": "string",
+            "description": "Model-facing guidance served with this Virtual MCP's tools, unlike description which is operator-facing. Empty inherits only what the source MCP servers advertise."
+          },
+          "instructions_mode": {
+            "type": "string",
+            "enum": [
+              "append",
+              "replace"
+            ],
+            "description": "How instructions combine with the ones inherited from the source MCP servers. \"append\" (default) keeps theirs and adds these after; \"replace\" serves only these, for a Virtual MCP exposing a subset of a server's tools where the inherited text describes tools it withheld.",
+            "default": "append"
+          },
         "enabled": {
           "type": "boolean",
           "description": "Whether the Virtual MCP is enabled. A disabled Virtual MCP is not served.",

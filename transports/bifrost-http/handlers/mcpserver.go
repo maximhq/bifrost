@@ -14,6 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
+	mcp_core "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -58,9 +59,14 @@ type MCPGatewayAdmitter interface {
 // Satisfied by the same admitter that resolves gateway access. Absent (or nil) means there is no
 // governance store to resolve against, so /mcp/<slug> is refused.
 type mcpSlugResolver interface {
-	// VirtualMCPToolAccess returns the served tool include-list and whether the slug's Virtual MCP is
-	// assigned to the request's key (assigned=false → 403). Tools are narrowed to the request's access.
-	VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool)
+	// VirtualMCPToolAccess returns the served tool include-list, the Virtual MCP's own
+	// instructions, and whether the slug's Virtual MCP is assigned to the request's key
+	// (assigned=false → 403). Tools are narrowed to the request's access.
+	//
+	// Widened rather than given a second method: this interface is reached by type assertion,
+	// so an implementation missing a new method silently 403s every /mcp/<slug>. Changing an
+	// existing signature fails to compile instead.
+	VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, instructions schemas.MCPVirtualInstructions, assigned bool)
 	// MCPClientToolAccess is the same for a single MCP client the slug names (ok=false → 403).
 	MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool)
 }
@@ -472,8 +478,26 @@ func (h *MCPServerHandler) forwardServerInstructions(ctx context.Context, _ any,
 	if result == nil || h.instructionsMode() == schemas.MCPServerInstructionsModeOff {
 		return
 	}
-	if instructions := h.toolManager.GetMCPServerInstructions(ctx); instructions != "" {
+	instructions := h.toolManager.GetMCPServerInstructions(ctx)
+	if virtual, ok := ctx.Value(schemas.BifrostContextKeyMCPVirtualInstructions).(schemas.MCPVirtualInstructions); ok {
+		instructions = mcp_core.ApplyVirtualMCPInstructions(instructions, virtual, h.instructionCaps())
+	}
+	if instructions != "" {
 		result.Instructions = instructions
+	}
+}
+
+// instructionCaps reads the configured byte bounds under the config lock. Zero fields fall back
+// to the built-in defaults, so a Virtual MCP's own text is bounded exactly like an upstream's.
+func (h *MCPServerHandler) instructionCaps() mcp_core.InstructionCaps {
+	h.config.Mu.RLock()
+	defer h.config.Mu.RUnlock()
+	if h.config.ClientConfig == nil {
+		return mcp_core.InstructionCaps{}
+	}
+	return mcp_core.InstructionCaps{
+		PerClient: h.config.ClientConfig.MCPMaxInstructionsPerClient,
+		Total:     h.config.ClientConfig.MCPMaxInstructionsTotal,
 	}
 }
 
@@ -599,8 +623,11 @@ func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug 
 		return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
 	}
 	// Slugs are unique across both namespaces, so try the Virtual MCP first, then a single client.
-	if served, assigned := resolver.VirtualMCPToolAccess(bifrostCtx, slug, access); assigned {
+	if served, instructions, assigned := resolver.VirtualMCPToolAccess(bifrostCtx, slug, access); assigned {
 		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
+		if instructions.Text != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPVirtualInstructions, instructions)
+		}
 		return nil
 	}
 	if served, ok := resolver.MCPClientToolAccess(bifrostCtx, slug, access); ok {

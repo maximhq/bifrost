@@ -13,7 +13,7 @@ import {
 	useGetCoreConfigQuery,
 	useGetMCPClientsQuery,
 } from "@/lib/store";
-import { VirtualMCPToolSpec } from "@/lib/types/virtualMcps";
+import { type VirtualMCPInstructionsMode, VirtualMCPToolSpec } from "@/lib/types/virtualMcps";
 import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Link2, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import VirtualMCPAccessTab from "./virtualMcpAccessTab";
@@ -44,6 +44,8 @@ export default function VirtualMCPWizard({ onCancel, onDone }: VirtualMCPWizardP
 	const [name, setName] = useState("");
 	const [endpointSlug, setEndpointSlug] = useState("");
 	const [description, setDescription] = useState("");
+	const [instructions, setInstructions] = useState("");
+	const [instructionsMode, setInstructionsMode] = useState<VirtualMCPInstructionsMode>("append");
 	const [enabled, setEnabled] = useState(true);
 	const [tools, setTools] = useState<VirtualMCPToolSpec[]>([]);
 	const [assignedVkIds, setAssignedVkIds] = useState<string[]>([]);
@@ -72,6 +74,8 @@ export default function VirtualMCPWizard({ onCancel, onDone }: VirtualMCPWizardP
 					name: name.trim(),
 					endpoint_slug: endpointSlug.trim() || undefined,
 					description: description.trim() || undefined,
+					instructions: instructions.trim() || undefined,
+					instructions_mode: instructions.trim() ? instructionsMode : undefined,
 					enabled,
 					tools,
 				}).unwrap();
@@ -156,6 +160,10 @@ export default function VirtualMCPWizard({ onCancel, onDone }: VirtualMCPWizardP
 								endpointSlug={endpointSlug}
 								setEndpointSlug={setEndpointSlug}
 								description={description}
+								instructions={instructions}
+								setInstructions={setInstructions}
+								instructionsMode={instructionsMode}
+								setInstructionsMode={setInstructionsMode}
 								setDescription={setDescription}
 								enabled={enabled}
 								setEnabled={setEnabled}

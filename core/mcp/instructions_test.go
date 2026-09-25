@@ -250,6 +250,70 @@ func TestAggregateServerInstructionsPerClientCapAboveTotalIsClamped(t *testing.T
 	assert.LessOrEqual(t, len(got), 4096)
 }
 
+// A Virtual MCP's block counts against the same total as the inherited ones.
+func TestApplyVirtualMCPInstructionsRespectsTotalCap(t *testing.T) {
+	caps := InstructionCaps{PerClient: 4096, Total: 2048}
+	base := AggregateServerInstructions([]schemas.MCPServerInstructions{
+		{ClientName: "up", Instructions: strings.Repeat("a", 3000)},
+	}, caps)
+	require.Len(t, base, caps.Total, "the base must already fill the budget for this to be a real test")
+
+	appended := ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{
+		Name: "v", Text: strings.Repeat("b", 500), Mode: schemas.MCPVirtualInstructionsModeAppend,
+	}, caps)
+	assert.True(t, strings.HasPrefix(appended, base), "the inherited blocks survive")
+	assert.Contains(t, appended, "omitted: instruction size limit reached", "a dropped block must say so")
+
+	replaced := ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{
+		Name: "v", Text: strings.Repeat("b", 500), Mode: schemas.MCPVirtualInstructionsModeReplace,
+	}, caps)
+	assert.LessOrEqual(t, len(replaced), caps.Total)
+	assert.NotContains(t, replaced, "<mcp_server", "replace drops the inherited blocks")
+}
+
+// Room for the block but not the whole text: truncate it, keeping the block well formed.
+func TestApplyVirtualMCPInstructionsTruncatesToFitRemainingTotal(t *testing.T) {
+	caps := InstructionCaps{PerClient: 4096, Total: 1200}
+	base := AggregateServerInstructions([]schemas.MCPServerInstructions{
+		{ClientName: "up", Instructions: strings.Repeat("a", 500)},
+	}, caps)
+
+	got := ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{
+		Name: "v", Text: strings.Repeat("b", 4000), Mode: schemas.MCPVirtualInstructionsModeAppend,
+	}, caps)
+
+	assert.LessOrEqual(t, len(got), caps.Total)
+	assert.Contains(t, got, "[truncated:")
+	assert.LessOrEqual(t, len(got), caps.Total, "the notice must fit inside the total too")
+}
+
+// A total too small to hold any of the text must not panic, and replace must not fall back
+// to the inherited blocks it was asked to drop.
+func TestApplyVirtualMCPInstructionsTinyTotal(t *testing.T) {
+	base := `<mcp_server name="up">` + "\ninherited\n</mcp_server>"
+	long := strings.Repeat("b", 1000)
+
+	replaced := ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{
+		Name: "v", Text: long, Mode: schemas.MCPVirtualInstructionsModeReplace,
+	}, InstructionCaps{Total: 20})
+	assert.NotContains(t, replaced, "inherited", "replace must not resurrect the inherited text")
+	assert.Contains(t, replaced, "omitted: instruction size limit reached")
+
+	appended := ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{
+		Name: "v", Text: long, Mode: schemas.MCPVirtualInstructionsModeAppend,
+	}, InstructionCaps{Total: 20})
+	assert.Contains(t, appended, "inherited", "append keeps what it inherited")
+	assert.Contains(t, appended, "omitted: instruction size limit reached")
+}
+
+// A short text under a small total needs no notice reserved, so it survives whole.
+func TestApplyVirtualMCPInstructionsShortTextFitsSmallTotal(t *testing.T) {
+	got := ApplyVirtualMCPInstructions("", schemas.MCPVirtualInstructions{
+		Name: "v", Text: "ok", Mode: schemas.MCPVirtualInstructionsModeAppend,
+	}, InstructionCaps{Total: 64})
+	assert.Equal(t, "ok", got)
+}
+
 // The tag name in prose cannot delimit anything, so the server's own words stay verbatim.
 func TestAggregateServerInstructionsKeepsBareTagNameInProse(t *testing.T) {
 	got := AggregateServerInstructions([]schemas.MCPServerInstructions{
@@ -344,4 +408,51 @@ func TestRefreshServerInstructionsSkipsNonRemoteTransports(t *testing.T) {
 			assert.False(t, ok, "must not attempt a handshake for %s", connType)
 		})
 	}
+}
+
+// A Virtual MCP's own instructions: added to, or substituted for, what it inherits.
+
+func TestApplyVirtualMCPInstructionsAppendsAfterInheritedBlocks(t *testing.T) {
+	base := AggregateServerInstructions([]schemas.MCPServerInstructions{
+		{ClientName: "github", Instructions: "Call get_me first."},
+	}, InstructionCaps{})
+
+	got := ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{
+		Name: "finance", Text: "Never touch production.", Mode: schemas.MCPVirtualInstructionsModeAppend,
+	}, InstructionCaps{})
+
+	assert.Equal(t,
+		"<mcp_server name=\"github\">\nCall get_me first.\n</mcp_server>\n\nNever touch production.", got)
+}
+
+func TestApplyVirtualMCPInstructionsReplaceDropsInherited(t *testing.T) {
+	base := AggregateServerInstructions([]schemas.MCPServerInstructions{
+		{ClientName: "bigclient", Instructions: "Use dangerous ONLY with approval."},
+	}, InstructionCaps{})
+
+	got := ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{
+		Name: "safe-only", Text: "Read-only lookups.", Mode: schemas.MCPVirtualInstructionsModeReplace,
+	}, InstructionCaps{})
+
+	assert.Equal(t, "Read-only lookups.", got)
+	assert.NotContains(t, got, "dangerous")
+}
+
+func TestApplyVirtualMCPInstructionsEmptyInheritsOnly(t *testing.T) {
+	base := "<mcp_server name=\"github\">\nCall get_me first.\n</mcp_server>"
+	for _, mode := range []schemas.MCPVirtualInstructionsMode{
+		schemas.MCPVirtualInstructionsModeAppend,
+		schemas.MCPVirtualInstructionsModeReplace,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			assert.Equal(t, base, ApplyVirtualMCPInstructions(base, schemas.MCPVirtualInstructions{Name: "v", Mode: mode}, InstructionCaps{}))
+		})
+	}
+}
+
+func TestApplyVirtualMCPInstructionsAppendWithNoInherited(t *testing.T) {
+	got := ApplyVirtualMCPInstructions("", schemas.MCPVirtualInstructions{
+		Name: "solo", Text: "Only rule.", Mode: schemas.MCPVirtualInstructionsModeAppend,
+	}, InstructionCaps{})
+	assert.Equal(t, "Only rule.", got)
 }

@@ -66,7 +66,9 @@ type fakeInstructionsToolManager struct {
 	seenCtx      context.Context
 }
 
-func (f *fakeInstructionsToolManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool { return nil }
+func (f *fakeInstructionsToolManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
+	return nil
+}
 
 func (f *fakeInstructionsToolManager) GetMCPServerInstructions(ctx context.Context) string {
 	f.seenCtx = ctx
@@ -171,4 +173,104 @@ func TestInitializeForwardsInstructionsWhenModeIsAll(t *testing.T) {
 	result := initializeResult(t, schemas.MCPServerInstructionsModeAll, tm, context.Background())
 
 	assert.Equal(t, "<mcp_server name=\"github\">\ntext\n</mcp_server>", result["instructions"])
+}
+
+func TestInitializeAppendsVirtualMCPInstructions(t *testing.T) {
+	tm := &fakeInstructionsToolManager{instructions: "<mcp_server name=\"github\">\ninherited\n</mcp_server>"}
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPVirtualInstructions,
+		schemas.MCPVirtualInstructions{Name: "finance", Text: "Never touch production.", Mode: schemas.MCPVirtualInstructionsModeAppend})
+
+	result := initializeResult(t, schemas.MCPServerInstructionsModeGateway, tm, ctx)
+
+	assert.Equal(t,
+		"<mcp_server name=\"github\">\ninherited\n</mcp_server>\n\nNever touch production.", result["instructions"])
+}
+
+func TestInitializeReplacesInheritedInstructionsForVirtualMCP(t *testing.T) {
+	tm := &fakeInstructionsToolManager{instructions: "<mcp_server name=\"big\">\nuse dangerous with approval\n</mcp_server>"}
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPVirtualInstructions,
+		schemas.MCPVirtualInstructions{Name: "safe", Text: "Read-only.", Mode: schemas.MCPVirtualInstructionsModeReplace})
+
+	result := initializeResult(t, schemas.MCPServerInstructionsModeGateway, tm, ctx)
+
+	assert.Equal(t, "Read-only.", result["instructions"])
+	assert.NotContains(t, result["instructions"], "dangerous")
+}
+
+func TestInitializeOmitsVirtualMCPInstructionsWhenModeIsOff(t *testing.T) {
+	tm := &fakeInstructionsToolManager{instructions: ""}
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPVirtualInstructions,
+		schemas.MCPVirtualInstructions{Name: "v", Text: "should not appear", Mode: schemas.MCPVirtualInstructionsModeReplace})
+
+	result := initializeResult(t, schemas.MCPServerInstructionsModeOff, tm, ctx)
+
+	_, present := result["instructions"]
+	assert.False(t, present)
+}
+
+// fakeSlugResolver drives admitBySlug directly, and guards mcpSlugResolver: a method added
+// there without every implementation gaining it 403s every /mcp/<slug> at runtime. This
+// failing to compile is the early warning.
+type fakeSlugResolver struct {
+	fakeAdmitter
+	served       []string
+	instructions schemas.MCPVirtualInstructions
+	assigned     bool
+}
+
+func (f *fakeSlugResolver) VirtualMCPToolAccess(_ *schemas.BifrostContext, _ string, _ schemas.Access) ([]string, schemas.MCPVirtualInstructions, bool) {
+	return f.served, f.instructions, f.assigned
+}
+
+func (f *fakeSlugResolver) MCPClientToolAccess(_ *schemas.BifrostContext, _ string, _ schemas.Access) ([]string, bool) {
+	return nil, false
+}
+
+func TestAdmitBySlugStampsVirtualMCPInstructions(t *testing.T) {
+	for _, mode := range []schemas.MCPVirtualInstructionsMode{
+		schemas.MCPVirtualInstructionsModeAppend,
+		schemas.MCPVirtualInstructionsModeReplace,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			resolver := &fakeSlugResolver{
+				served:       []string{"alpha-echo"},
+				instructions: schemas.MCPVirtualInstructions{Name: "finance", Text: "Never touch production.", Mode: mode},
+				assigned:     true,
+			}
+			h := &MCPServerHandler{admitter: resolver}
+			_, bifrostCtx := newRequestCtx()
+
+			require.Nil(t, h.admitBySlug(bifrostCtx, "finance", nil))
+
+			assert.Equal(t, []string{"alpha-echo"}, bifrostCtx.Value(schemas.MCPContextKeyIncludeTools))
+			got, ok := bifrostCtx.Value(schemas.BifrostContextKeyMCPVirtualInstructions).(schemas.MCPVirtualInstructions)
+			require.True(t, ok, "the hook reads this key; without it the vMCP's text never reaches initialize")
+			assert.Equal(t, "Never touch production.", got.Text)
+			assert.Equal(t, mode, got.Mode)
+		})
+	}
+}
+
+// Unset, not empty: the hook must fall through to the inherited aggregate.
+func TestAdmitBySlugLeavesKeyUnsetWithoutVirtualInstructions(t *testing.T) {
+	resolver := &fakeSlugResolver{served: []string{"alpha-echo"}, assigned: true}
+	h := &MCPServerHandler{admitter: resolver}
+	_, bifrostCtx := newRequestCtx()
+
+	require.Nil(t, h.admitBySlug(bifrostCtx, "plain", nil))
+
+	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyMCPVirtualInstructions))
+}
+
+func TestAdmitBySlugRefusesUnassignedSlugWithoutStamping(t *testing.T) {
+	resolver := &fakeSlugResolver{
+		instructions: schemas.MCPVirtualInstructions{Name: "secret", Text: "should not leak"},
+	}
+	h := &MCPServerHandler{admitter: resolver}
+	_, bifrostCtx := newRequestCtx()
+
+	refusal := h.admitBySlug(bifrostCtx, "secret", nil)
+
+	require.NotNil(t, refusal)
+	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyMCPVirtualInstructions))
 }
