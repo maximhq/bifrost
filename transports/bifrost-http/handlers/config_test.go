@@ -18,6 +18,7 @@ import (
 	"github.com/valyala/fasthttp"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -421,6 +422,31 @@ func TestCheckURLAccessibility_RejectsFileURLs(t *testing.T) {
 		err := checkURLAccessibility(raw)
 		require.Error(t, err, raw)
 		assert.Contains(t, err.Error(), "config.json", raw)
+	}
+}
+
+// TestCheckURLAccessibility_ReachesConfiguredPrivateProxy pins that the URL check works
+// behind a global API proxy on a private or loopback address. The proxy is dialed with
+// the private-network policy; a direct dial keeps the public-only check, so saving a
+// URL override does not fail just because the proxy is self-hosted.
+func TestCheckURLAccessibility_ReachesConfiguredPrivateProxy(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var seen atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.URL.Host)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer proxy.Close()
+	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: proxy.URL, EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	if err := checkURLAccessibility("http://203.0.113.10/pricing.json"); err != nil {
+		t.Fatalf("a loopback API proxy must be usable for the URL check, got %v", err)
+	}
+	if got, _ := seen.Load().(string); got != "203.0.113.10" {
+		t.Fatalf("proxy saw target %q, want 203.0.113.10", got)
 	}
 }
 
