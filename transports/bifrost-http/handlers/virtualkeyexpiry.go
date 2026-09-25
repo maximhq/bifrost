@@ -124,7 +124,8 @@ func (h *GovernanceHandler) enqueueExpiryCleanup(ctx context.Context) {
 	logger.Info("vk expiry cleanup: enqueued job %s", jobID)
 }
 
-// runVKExpiryCleanupJob deletes every expired key that opted in to auto-delete,
+// runVKExpiryCleanupJob deletes every expired key whose effective delete_after_expire is
+// true (the key's own flag, or the client default when the key has none),
 // checkpointing after each one so a re-claimed job never handles a key twice, and
 // posts one notification when at least one key was removed.
 func (h *GovernanceHandler) runVKExpiryCleanupJob(ctx context.Context, job configstoreTables.TableSidekiqJob, progress sidekiq.ProgressFunc) (string, error) {
@@ -139,7 +140,13 @@ func (h *GovernanceHandler) runVKExpiryCleanupJob(ctx context.Context, job confi
 		handled[id] = struct{}{}
 	}
 	now := h.clock()
-	candidates, err := h.configStore.ListExpiredVirtualKeysForDeletion(ctx, now)
+	// Keys without an explicit flag follow the client-wide default, read from the store
+	// so every node agrees and a settings change applies to the next run.
+	deleteByDefault, err := h.deleteExpiredVirtualKeysByDefault(ctx)
+	if err != nil {
+		return job.Metadata, fmt.Errorf("failed to load client config: %w", err)
+	}
+	candidates, err := h.configStore.ListExpiredVirtualKeysForDeletion(ctx, now, deleteByDefault)
 	if err != nil {
 		return job.Metadata, fmt.Errorf("failed to list expired virtual keys: %w", err)
 	}
@@ -172,17 +179,9 @@ func (h *GovernanceHandler) runVKExpiryCleanupJob(ctx context.Context, job confi
 			logger.Error("vk expiry cleanup: failed to delete virtual key %s: %v", candidate.ID, err)
 			meta.Failed = append(meta.Failed, candidate.Name)
 			meta.HandledIDs = append(meta.HandledIDs, candidate.ID)
-			checkpoint()
-			continue
-		}
-		if !vk.DeleteAfterExpire || !vk.IsExpiredAt(now) {
-			continue
-		}
-		if err := h.configStore.DeleteVirtualKey(ctx, vk.ID); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-			logger.Error("vk expiry cleanup: failed to delete virtual key %s: %v", vk.ID, err)
-			meta.Failed = append(meta.Failed, vk.Name)
-			meta.HandledIDs = append(meta.HandledIDs, vk.ID)
-			checkpoint()
+			if err := checkpoint(); err != nil {
+				return marshalVKExpiryCleanupMeta(meta), err
+			}
 			continue
 		}
 		// The row is gone, so the key counts as deleted even if the in-memory eviction
@@ -201,6 +200,16 @@ func (h *GovernanceHandler) runVKExpiryCleanupJob(ctx context.Context, job confi
 		h.publishExpiryCleanupNotification(ctx, meta)
 	}
 	return marshalVKExpiryCleanupMeta(meta), nil
+}
+
+// deleteExpiredVirtualKeysByDefault reads client.delete_expired_virtual_keys from the store.
+// No client config row means the default, false.
+func (h *GovernanceHandler) deleteExpiredVirtualKeysByDefault(ctx context.Context) (bool, error) {
+	cfg, err := h.configStore.GetClientConfig(ctx)
+	if err != nil {
+		return false, err
+	}
+	return cfg != nil && cfg.DeleteExpiredVirtualKeys, nil
 }
 
 // marshalVKExpiryCleanupMeta encodes the metadata, falling back to "{}" so the job

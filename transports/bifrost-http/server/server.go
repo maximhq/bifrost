@@ -2411,6 +2411,19 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	return nil
 }
 
+// notificationPublisher returns a publisher that reads s.Config.NotificationPublisher at
+// call time, so a handler registered before the notification service exists (RegisterAPIRoutes
+// without Bootstrap) still reaches it. Publishing is a no-op while none is set.
+func (s *BifrostHTTPServer) notificationPublisher() schemas.NotificationPublisher {
+	return func(ctx context.Context, input schemas.NotificationInput) (*schemas.Notification, error) {
+		publish := s.Config.NotificationPublisher
+		if publish == nil {
+			return nil, nil
+		}
+		return publish(ctx, input)
+	}
+}
+
 // RegisterAPIRoutes initializes the routes for the Bifrost HTTP server.
 func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	var err error
