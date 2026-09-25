@@ -3158,6 +3158,21 @@ func TestGetPricing_BedrockAddsXAIPrefix(t *testing.T) {
 	assert.Equal(t, 0.00000125, derefF(p.InputCostPerToken))
 }
 
+func TestGetPricing_BedrockAddsMoonshotPrefix(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("moonshotai.kimi-k3", "bedrock", "chat"): chatPricing(0.0000033, 0.0000165),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "kimi-k3"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000033, derefF(p.InputCostPerToken))
+
+	// Alias to an application inference profile id, tagged with the bare canonical name.
+	name := "kimi-k3"
+	p = s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "kimi-k3-alias", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "5903baaqsr6z", ModelName: &name}}, schemas.ResponsesStreamRequest, LookupScopes{Provider: "bedrock"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000033, derefF(p.InputCostPerToken))
+}
+
 func TestGetPricing_BedrockMantleFallsBackToBedrock(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("openai.gpt-oss-120b", "bedrock", "chat"): chatPricing(0.00000015, 0.0000006),

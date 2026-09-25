@@ -2176,7 +2176,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //
 //   - Gemini: retries under the "vertex" provider, then falls back to the counterpart chat/responses mode.
 //   - Vertex: strips the "provider/model" prefix and retries, then falls back to the counterpart chat/responses mode.
-//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
+//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.", "moonshotai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
@@ -2251,7 +2251,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 
 	if provider == string(schemas.Bedrock) {
 		// Bedrock model IDs carry a vendor namespace ("anthropic.claude-*",
-		// "openai.gpt-oss-*", "google.gemma-*", "xai.grok-*"). When the caller
+		// "openai.gpt-oss-*", "google.gemma-*", "xai.grok-*", "moonshotai.kimi-*"). When the caller
 		// sends the bare model name, retry with the namespace inferred from
 		// the model family.
 		var vendorPrefix string
@@ -2264,6 +2264,8 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			vendorPrefix = "google."
 		case !strings.Contains(model, "xai.") && schemas.IsGrokModel(model):
 			vendorPrefix = "xai."
+		case !strings.Contains(model, "moonshotai.") && schemas.IsMoonshotModel(model):
+			vendorPrefix = "moonshotai."
 		}
 		if vendorPrefix != "" {
 			s.logger.Debug("primary lookup failed, trying with %s prefix for the same model", vendorPrefix)
