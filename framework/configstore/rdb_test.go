@@ -2527,6 +2527,24 @@ func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
 	assert.Equal(t, time.Duration(0), cfgAbsent.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_PreservesMetadataAcrossSync(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{EnableLogging: new(true), LogRetentionDays: 30}))
+	require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true, "onboarding_skipped": []any{"scim"}}))
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{EnableLogging: new(false), LogRetentionDays: 7}))
+
+	metadata, err := store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
+	assert.Equal(t, []any{"scim"}, metadata["onboarding_skipped"])
+	cfg, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.LogRetentionDays)
+}
+
 func TestUpdateClientMetadata(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

@@ -22648,3 +22648,24 @@ func TestRegisterFeatureFlags_WarpIsRegisteredOffAndIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, store.IsEnabled(FeatureFlagWarp))
 }
+
+func TestSnapshotClientMetadataRestoresDroppedKeys(t *testing.T) {
+	SetLogger(&testLogger{})
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.UpdateClientConfig(ctx, &configstore.ClientConfig{LogRetentionDays: 30}))
+	require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true, "theme": "dark"}))
+
+	restore := snapshotClientMetadata(ctx, store)
+	// Simulate a reconciliation that lost the blob while an admin changed another key concurrently.
+	require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": nil, "theme": "light"}))
+	restore()
+
+	metadata, err := store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"], "dropped key must be restored")
+	assert.Equal(t, "light", metadata["theme"], "a key changed concurrently must not be overwritten")
+
+	// No-op when the store is absent or nothing was captured.
+	snapshotClientMetadata(ctx, nil)()
+}
