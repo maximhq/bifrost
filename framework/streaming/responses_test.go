@@ -575,3 +575,113 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
 }
+
+// TestBuildResponsesMessageKeepsShellCallPayload covers a streamed shell turn.
+// The item deep copy lists every action variant by hand, so a missing shell
+// branch left the assembled log row with an empty action and no commands.
+func TestBuildResponsesMessageKeepsShellCallPayload(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	chunks := []*ResponsesStreamChunk{
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("shc_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					Status: schemas.Ptr("in_progress"),
+				},
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeShellCallCommandDone,
+				Command:      schemas.Ptr("ls -la"),
+				CommandIndex: schemas.Ptr(0),
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("shc_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"),
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+								Commands:  []string{"ls -la"},
+								TimeoutMS: schemas.Ptr(5000),
+							},
+						},
+						CreatedBy: schemas.Ptr("asst_1"),
+						ResponsesShellCall: &schemas.ResponsesShellCall{
+							Environment: &schemas.ResponsesShellCallEnvironment{
+								Type:        "container_reference",
+								ContainerID: schemas.Ptr("cntr_1"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for i, c := range chunks {
+		c.ChunkIndex = i
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].ResponsesToolMessage)
+	action := msgs[0].ResponsesToolMessage.Action
+	require.NotNil(t, action)
+	require.NotNil(t, action.ResponsesShellToolCallAction)
+	require.Equal(t, []string{"ls -la"}, action.ResponsesShellToolCallAction.Commands)
+	require.Equal(t, 5000, *action.ResponsesShellToolCallAction.TimeoutMS)
+
+	// The action must marshal — an empty action struct errors, which used to fail
+	// the whole log write for a streamed shell call.
+	_, err := schemas.Marshal(msgs[0])
+	require.NoError(t, err)
+
+	shellCall := msgs[0].ResponsesToolMessage.ResponsesShellCall
+	require.NotNil(t, shellCall)
+	require.NotNil(t, shellCall.Environment)
+	require.Equal(t, "cntr_1", *shellCall.Environment.ContainerID)
+	require.Equal(t, "asst_1", *msgs[0].ResponsesToolMessage.CreatedBy)
+}
+
+// TestBuildResponsesMessageKeepsShellCallOutput checks the client-sent output
+// items survive accumulation with their outcomes.
+func TestBuildResponsesMessageKeepsShellCallOutput(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	chunks := []*ResponsesStreamChunk{{
+		ChunkIndex: 0,
+		StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr("shco_1"),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesShellCallOutput: []schemas.ResponsesShellCallOutputContent{{
+							Stdout:  "hello\n",
+							Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: schemas.Ptr(0)},
+						}},
+					},
+					ResponsesShellCall: &schemas.ResponsesShellCall{MaxOutputLength: schemas.Ptr(1000)},
+				},
+			},
+		},
+	}}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	output := msgs[0].ResponsesToolMessage.Output
+	require.NotNil(t, output)
+	require.Len(t, output.ResponsesShellCallOutput, 1)
+	require.Equal(t, "hello\n", output.ResponsesShellCallOutput[0].Stdout)
+	require.Equal(t, 0, *output.ResponsesShellCallOutput[0].Outcome.ExitCode)
+	require.Equal(t, 1000, *msgs[0].ResponsesToolMessage.ResponsesShellCall.MaxOutputLength)
+}
