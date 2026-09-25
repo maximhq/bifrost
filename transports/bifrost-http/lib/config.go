@@ -1003,7 +1003,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		return nil, err
 	}
 	// 4. Client config (store → file → defaults)
+	restoreMetadata := snapshotClientMetadata(ctx, config.ConfigStore)
 	loadClientConfig(ctx, config, &configData)
+	restoreMetadata()
 	// Reject an out-of-range client config (e.g. auth_code_ttl above the cap)
 	// loudly at startup instead of silently correcting it, so in-memory, core,
 	// and DB state cannot diverge.
@@ -1301,6 +1303,39 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
 		client.MCPExternalClientURL = nil
+	}
+}
+
+// snapshotClientMetadata captures the UI metadata blob (onboarding_dismissed etc.) before a reconciliation write and returns a func that re-merges any keys the write dropped.
+func snapshotClientMetadata(ctx context.Context, store configstore.ConfigStore) func() {
+	if store == nil {
+		return func() {}
+	}
+	before, err := store.GetClientMetadata(ctx)
+	if err != nil || len(before) == 0 {
+		return func() {}
+	}
+	return func() {
+		after, err := store.GetClientMetadata(ctx)
+		if err != nil {
+			logger.Warn("failed to re-read client metadata after reconciliation: %v", err)
+			return
+		}
+		// Only keys that vanished are restored, so a value changed concurrently by an admin is left alone.
+		missing := make(map[string]any)
+		for k, v := range before {
+			if _, ok := after[k]; !ok {
+				missing[k] = v
+			}
+		}
+		if len(missing) == 0 {
+			return
+		}
+		if err := store.UpdateClientMetadata(ctx, missing); err != nil {
+			logger.Warn("failed to restore client metadata dropped during reconciliation: %v", err)
+			return
+		}
+		logger.Warn("restored %d client metadata key(s) dropped during client config reconciliation", len(missing))
 	}
 }
 
@@ -1895,7 +1930,9 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			}
 		}
 	}
+	restoreMetadata := snapshotClientMetadata(ctx, config.ConfigStore)
 	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP, configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("mcp"))
+	restoreMetadata()
 
 	// Reconcile Virtual MCPs declared under mcp.virtual_mcps. This runs after client configs are
 	// synced so tool specs can resolve their source MCP clients by name. forceFileSync makes
