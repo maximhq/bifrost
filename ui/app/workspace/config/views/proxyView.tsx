@@ -54,7 +54,7 @@ export default function ProxyView() {
 		}
 	};
 
-	const isTypeUnsupported = watchedType === "socks5" || watchedType === "tcp";
+	const isTypeUnsupported = watchedType === "tcp";
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -75,7 +75,7 @@ export default function ProxyView() {
 								render={({ field }) => (
 									<FormItem>
 										<FormControl>
-											<Switch checked={field.value} onCheckedChange={field.onChange} />
+											<Switch data-testid="proxy-enabled-switch" checked={field.value} onCheckedChange={field.onChange} />
 										</FormControl>
 									</FormItem>
 								)}
@@ -95,19 +95,18 @@ export default function ProxyView() {
 										<FormLabel>Proxy Type</FormLabel>
 										<Select onValueChange={field.onChange} value={field.value} disabled={!watchedEnabled}>
 											<FormControl>
-												<SelectTrigger className="w-48">
+												<SelectTrigger className="w-48" data-testid="proxy-type-select">
 													<SelectValue placeholder="Select type" />
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
-												<SelectItem value="http">HTTP / HTTPS</SelectItem>
-												<SelectItem value="socks5" disabled>
-													SOCKS5{" "}
-													<Badge variant="outline" className="ml-2 text-xs">
-														Coming soon
-													</Badge>
+												<SelectItem value="http" data-testid="proxy-type-option-http">
+													HTTP / HTTPS
 												</SelectItem>
-												<SelectItem value="tcp" disabled>
+												<SelectItem value="socks5" data-testid="proxy-type-option-socks5">
+													SOCKS5
+												</SelectItem>
+												<SelectItem value="tcp" disabled data-testid="proxy-type-option-tcp">
 													TCP{" "}
 													<Badge variant="outline" className="ml-2 text-xs">
 														Coming soon
@@ -115,7 +114,10 @@ export default function ProxyView() {
 												</SelectItem>
 											</SelectContent>
 										</Select>
-										<FormDescription>Select the proxy protocol type. Currently only HTTP proxy is supported.</FormDescription>
+										<FormDescription>
+											HTTP / HTTPS takes an http:// or https:// proxy URL (https:// encrypts the connection to the proxy). SOCKS5 takes a
+											socks5:// URL.
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -124,7 +126,9 @@ export default function ProxyView() {
 							{isTypeUnsupported && watchedEnabled && (
 								<Alert variant="destructive">
 									<AlertTriangle className="h-4 w-4" />
-									<AlertDescription>{watchedType.toUpperCase()} proxy is not yet supported. Please use HTTP proxy.</AlertDescription>
+									<AlertDescription>
+										{watchedType.toUpperCase()} proxy is not yet supported. Please use an HTTP or SOCKS5 proxy.
+									</AlertDescription>
 								</Alert>
 							)}
 
@@ -136,7 +140,12 @@ export default function ProxyView() {
 									<FormItem>
 										<FormLabel>Proxy URL</FormLabel>
 										<FormControl>
-											<Input placeholder="http://proxy.example.com:8080" disabled={!watchedEnabled} {...field} />
+											<Input
+												data-testid="proxy-url-input"
+												placeholder={watchedType === "socks5" ? "socks5://proxy.example.com:1080" : "http://proxy.example.com:8080"}
+												disabled={!watchedEnabled}
+												{...field}
+											/>
 										</FormControl>
 										<FormDescription>Full URL of the proxy server including protocol and port.</FormDescription>
 										<FormMessage />
@@ -155,7 +164,13 @@ export default function ProxyView() {
 											<FormItem>
 												<FormLabel>Username</FormLabel>
 												<FormControl>
-													<Input placeholder="Proxy username" disabled={!watchedEnabled} {...field} value={field.value || ""} />
+													<Input
+														data-testid="proxy-username-input"
+														placeholder="Proxy username"
+														disabled={!watchedEnabled}
+														{...field}
+														value={field.value || ""}
+													/>
 												</FormControl>
 												<FormMessage />
 											</FormItem>
@@ -169,6 +184,7 @@ export default function ProxyView() {
 												<FormLabel>Password</FormLabel>
 												<FormControl>
 													<Input
+														data-testid="proxy-password-input"
 														type="password"
 														placeholder="Proxy password"
 														disabled={!watchedEnabled}
@@ -308,7 +324,12 @@ export default function ProxyView() {
 										render={({ field }) => (
 											<FormItem>
 												<FormControl>
-													<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!watchedEnabled} />
+													<Switch
+														data-testid="proxy-enable-scim-switch"
+														checked={field.value}
+														onCheckedChange={field.onChange}
+														disabled={!watchedEnabled}
+													/>
 												</FormControl>
 											</FormItem>
 										)}
@@ -316,28 +337,57 @@ export default function ProxyView() {
 								</div>
 							)}
 
-							{/* Inference - Coming Soon */}
-							<div className="flex items-center justify-between rounded-sm border p-4 opacity-60">
+							{/* Inference */}
+							<div className="flex items-center justify-between rounded-sm border p-4">
 								<div className="space-y-0.5">
-									<div className="flex items-center gap-2">
-										<FormLabel className="text-sm font-medium">Inference</FormLabel>
-										<Badge variant="outline">Coming soon</Badge>
-									</div>
-									<p className="text-muted-foreground text-sm">Use proxy for LLM inference requests to model providers.</p>
+									<FormLabel className="text-sm font-medium">Inference</FormLabel>
+									<p className="text-muted-foreground text-sm">
+										Use proxy for LLM inference requests to model providers. A provider with its own proxy settings keeps them.
+									</p>
 								</div>
-								<Switch disabled checked={false} />
+								<FormField
+									control={form.control}
+									name="enable_for_inference"
+									render={({ field }) => (
+										<FormItem>
+											<FormControl>
+												<Switch
+													data-testid="proxy-enable-inference-switch"
+													checked={field.value}
+													onCheckedChange={field.onChange}
+													disabled={!watchedEnabled}
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
 							</div>
 
-							{/* API - Coming Soon */}
-							<div className="flex items-center justify-between rounded-sm border p-4 opacity-60">
+							{/* API */}
+							<div className="flex items-center justify-between rounded-sm border p-4">
 								<div className="space-y-0.5">
-									<div className="flex items-center gap-2">
-										<FormLabel className="text-sm font-medium">API</FormLabel>
-										<Badge variant="outline">Coming soon</Badge>
-									</div>
-									<p className="text-muted-foreground text-sm">Use proxy for external API calls and webhooks.</p>
+									<FormLabel className="text-sm font-medium">API</FormLabel>
+									<p className="text-muted-foreground text-sm">
+										Use proxy for outbound API calls: MCP servers, OAuth, webhooks, plugin downloads, model catalog sync and OpenTelemetry
+										export.
+									</p>
 								</div>
-								<Switch disabled checked={false} />
+								<FormField
+									control={form.control}
+									name="enable_for_api"
+									render={({ field }) => (
+										<FormItem>
+											<FormControl>
+												<Switch
+													data-testid="proxy-enable-api-switch"
+													checked={field.value}
+													onCheckedChange={field.onChange}
+													disabled={!watchedEnabled}
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
 							</div>
 
 							{!IS_ENTERPRISE && (
@@ -353,6 +403,7 @@ export default function ProxyView() {
 							<TooltipTrigger asChild>
 								<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>
 									<Button
+										data-testid="proxy-save-button"
 										type="submit"
 										disabled={!form.formState.isDirty || !form.formState.isValid || isLoading || !hasSettingsUpdateAccess}
 									>
