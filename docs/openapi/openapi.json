@@ -109967,6 +109967,11 @@
                 "default": 0,
                 "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days."
               },
+              "delete_expired_virtual_keys": {
+                "type": "boolean",
+                "default": false,
+                "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless."
+              },
               "enforce_governance_header": {
                 "type": "boolean",
                 "deprecated": true,
@@ -110312,6 +110317,11 @@
                 "maximum": 2592000000000000,
                 "default": 0,
                 "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days."
+              },
+              "delete_expired_virtual_keys": {
+                "type": "boolean",
+                "default": false,
+                "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless."
               },
               "enforce_governance_header": {
                 "type": "boolean",
@@ -113096,6 +113106,13 @@
             "format": "date-time",
             "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
           },
+          "delete_after_expire": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Per-key override for client.delete_expired_virtual_keys. Absent or null inherits the client setting; true or false decide for this key whether the daily cleanup job deletes it once expires_at has passed."
+          },
           "previous_value_expires_at": {
             "type": [
               "string",
@@ -113665,6 +113682,10 @@
             "type": "string",
             "format": "date-time",
             "description": "Optional expiry timestamp. Must be in the future. Omit for a key that never expires."
+          },
+          "delete_after_expire": {
+            "type": "boolean",
+            "description": "Override client.delete_expired_virtual_keys for this key. Omit to inherit the client setting. Rejected with 400 when expires_at is not set."
           }
         },
         "example": {
@@ -113818,6 +113839,13 @@
           "expires_at": {
             "type": "string",
             "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
+          },
+          "delete_after_expire": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Override client.delete_expired_virtual_keys for this key. true or false set it, null resets the key to inherit the client setting, omitted leaves it unchanged. A value requires an expiry; clearing expires_at resets it to inherit."
           }
         },
         "example": {
