@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy install-squid install-stunnel run-e2e-api-proxy
 
 all: help
 
@@ -176,6 +176,14 @@ http-proxy: install-tinyproxy ## Run a local HTTP proxy for testing provider pro
 	$(ECHO) "$(GREEN)Starting HTTP proxy on $$PROXY_HOST:$$PROXY_PORT (no auth, logs each connection, Ctrl+C to stop)...$(NC)"; \
 	$(ECHO) "$(YELLOW)Point a provider's proxy_config at http://$$PROXY_HOST:$$PROXY_PORT to test$(NC)"; \
 	tinyproxy -d -c "$$CONF"
+
+install-squid: ## Install squid HTTP proxy for the proxy e2e flow (if not already installed)
+	@command -v squid > /dev/null || [ -x /usr/sbin/squid ] || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing squid via Homebrew...$(NC)" && brew install squid) || ($(ECHO) "$(RED)Error: squid not found and Homebrew is unavailable. Install it with your package manager (apt install squid)$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)squid is ready$(NC)"
+
+install-stunnel: ## Install stunnel (TLS in front of squid for https:// proxies) for the proxy e2e flow (if not already installed)
+	@command -v stunnel > /dev/null || command -v stunnel4 > /dev/null || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing stunnel via Homebrew...$(NC)" && brew install stunnel) || ($(ECHO) "$(RED)Error: stunnel not found and Homebrew is unavailable. Install it with your package manager (apt install stunnel4)$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)stunnel is ready$(NC)"
 
 dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@$(EXPOSE_ENV); \
@@ -1780,8 +1788,8 @@ run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
 		cd tests/e2e && npx playwright test --headed; \
 	fi
 
-run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
-	@$(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"
+run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health). PROXY=1 runs the proxy e2e flow instead: real provider calls through squid/stunnel/microsocks for every proxy mode (Usage: make run-e2e-api PROXY=1 [PROXY_CELLS="provider-http env-socks5"] [PORT=8080])
+	@if [ -n "$(PROXY)" ]; then $(ECHO) "$(GREEN)Running proxy e2e (tests/e2e/api/runners/proxy/run-proxy-matrix.sh)...$(NC)"; else $(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"; fi
 	@BASH4="$${BIFROST_BASH:-}"; \
 	if [ -z "$$BASH4" ]; then \
 		for candidate in \
@@ -1800,7 +1808,15 @@ run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
 		$(ECHO) "$(YELLOW)Install a newer Bash with 'brew install bash', or pass BIFROST_BASH=/path/to/bash.$(NC)"; \
 		exit 1; \
 	fi; \
+	if [ -n "$(PROXY)" ]; then \
+		$(MAKE) --no-print-directory install-squid install-stunnel install-microsocks || exit 1; \
+		$(EXPOSE_ENV); \
+		exec "$$BASH4" ./tests/e2e/api/runners/proxy/run-proxy-matrix.sh; \
+	fi; \
 	cd tests/e2e/api && "$$BASH4" ./runners/run-newman-api-tests.sh --all-reports
+
+run-e2e-api-proxy: ## Proxy e2e flow, same as make run-e2e-api PROXY=1
+	@$(MAKE) run-e2e-api PROXY=1
 
 run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suite (no API keys, no paid calls). Builds tmp/bifrost-http from local code unless BINARY is given (Usage: make run-mcp-codemode-test [BINARY=path/to/bifrost-http])
 	@BINARY="$(BINARY)"; \

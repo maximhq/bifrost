@@ -171953,6 +171953,92 @@
           }
         }
       ]
+    },
+    {
+      "name": "118. Proxy egress: upstream reach for providers with no other cheap row (proxy-egress)",
+      "description": "One upstream-reaching request for each provider that no existing harness row reaches cheaply. The proxy e2e flow (tests/e2e/api/runners/proxy/) selects these through proxy-smoke-manifest.json, so every provider's egress is proven through each proxy. Each row asserts a 200 carrying the provider's own catalog, which only the live upstream can return.",
+      "item": [
+        {
+          "name": "nebius models listed through /v1/models reach api.tokenfactory.nebius.com - proxy-egress",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nebius ListModels reaches the upstream', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  var models = data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('nebius/') === 0; });",
+                  "  pm.expect(models, 'no nebius/ model in the upstream catalog: ' + body).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=nebius",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "nebius"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "elevenlabs models listed through /v1/models reach api.elevenlabs.io - proxy-egress",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('elevenlabs ListModels reaches the upstream', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  var models = data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('elevenlabs/') === 0; });",
+                  "  pm.expect(models, 'no elevenlabs/ model in the upstream catalog: ' + body).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=elevenlabs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "elevenlabs"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
