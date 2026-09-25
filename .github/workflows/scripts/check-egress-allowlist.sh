@@ -141,7 +141,7 @@ for required_input in (COLLECTION, PROVIDER_CONFIG):
         sys.exit(1)
 
 # Scripts that mean "this job runs the provider harness".
-HARNESS_MARKERS = ("test-core.sh", "test-provider-harness.sh")
+HARNESS_MARKERS = ("test-core.sh", "test-provider-harness.sh", "test-proxy-e2e.sh")
 
 # Hosts that appear in the sources scanned above but that the runner never
 # dials, each with the reason it is exempt. Anything not listed here and not
