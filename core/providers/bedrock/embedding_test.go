@@ -855,3 +855,568 @@ func TestBedrockInvokeEmbeddingRejectsInvalidInputBlocks(t *testing.T) {
 	require.Len(t, req.Input, 1)
 	assert.Len(t, req.Input[0].Content, 2)
 }
+
+// Nova is a third envelope alongside Titan's and Cohere's: a taskType plus a params
+// object holding exactly one modality, every knob of which AWS requires and none of
+// which it defaults. Probed live against amazon.nova-2-multimodal-embeddings-v1:0.
+func TestToBedrockNovaEmbeddingRequest(t *testing.T) {
+	const novaModel = "amazon.nova-2-multimodal-embeddings-v1:0"
+	redPixelPNG := "iVBORw0KGgoAAAANSUhEUg=="
+
+	textRequest := func(params *schemas.EmbeddingParameters) *schemas.BifrostEmbeddingRequest {
+		text := "alpha kestrel harbor"
+		return &schemas.BifrostEmbeddingRequest{
+			Model: novaModel,
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+			}}},
+			Params: params,
+		}
+	}
+
+	t.Run("text produces the documented wire body", func(t *testing.T) {
+		req, err := ToBedrockNovaEmbeddingRequest(textRequest(nil))
+		require.NoError(t, err)
+		wireBody, err := json.Marshal(req)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{
+			"taskType": "SINGLE_EMBEDDING",
+			"singleEmbeddingParams": {
+				"embeddingPurpose": "GENERIC_INDEX",
+				"text": {"truncationMode": "END", "value": "alpha kestrel harbor"}
+			}
+		}`, string(wireBody))
+	})
+
+	t.Run("dimensions map onto embeddingDimension", func(t *testing.T) {
+		dimensions := 1024
+		req, err := ToBedrockNovaEmbeddingRequest(textRequest(&schemas.EmbeddingParameters{Dimensions: &dimensions}))
+		require.NoError(t, err)
+		require.NotNil(t, req.SingleEmbeddingParams.EmbeddingDimension)
+		assert.Equal(t, 1024, *req.SingleEmbeddingParams.EmbeddingDimension)
+	})
+
+	// embeddingPurpose is Nova's own name for task_type and arrives only through the
+	// Bedrock integration, so it wins - the same precedence embeddingTypes has on Titan.
+	t.Run("task_type becomes embeddingPurpose and embeddingPurpose outranks it", func(t *testing.T) {
+		req, err := ToBedrockNovaEmbeddingRequest(textRequest(&schemas.EmbeddingParameters{
+			TaskType: schemas.Ptr("CLASSIFICATION"),
+		}))
+		require.NoError(t, err)
+		// Compared against the wire spelling, not the const, so a const whose value drifts
+		// from AWS's enum still fails here.
+		assert.Equal(t, BedrockNovaEmbeddingPurpose("CLASSIFICATION"), req.SingleEmbeddingParams.EmbeddingPurpose)
+
+		req, err = ToBedrockNovaEmbeddingRequest(textRequest(&schemas.EmbeddingParameters{
+			TaskType:    schemas.Ptr("CLASSIFICATION"),
+			ExtraParams: map[string]interface{}{"embeddingPurpose": "DOCUMENT_RETRIEVAL"},
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, BedrockNovaEmbeddingPurpose("DOCUMENT_RETRIEVAL"), req.SingleEmbeddingParams.EmbeddingPurpose)
+	})
+
+	t.Run("truncationMode is overridable and stays out of ExtraParams", func(t *testing.T) {
+		req, err := ToBedrockNovaEmbeddingRequest(textRequest(&schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{"truncationMode": "START", "someOtherKey": 1},
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, BedrockNovaTruncationMode("START"), req.SingleEmbeddingParams.Text.TruncationMode)
+		assert.NotContains(t, req.ExtraParams, "truncationMode")
+		assert.Contains(t, req.ExtraParams, "someOtherKey")
+	})
+
+	t.Run("several text parts join into the one value Nova accepts", func(t *testing.T) {
+		first, second := "alpha", "kestrel"
+		req, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: novaModel,
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeText, Text: &first},
+				{Type: schemas.EmbeddingContentPartTypeText, Text: &second},
+			}}},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.SingleEmbeddingParams.Text.Value)
+		assert.Equal(t, "alpha\nkestrel", *req.SingleEmbeddingParams.Text.Value)
+	})
+
+	t.Run("inline media travels as bytes with the format derived", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			part     schemas.EmbeddingContentPart
+			format   string
+			pickFrom func(*BedrockNovaSingleEmbeddingParams) (string, BedrockNovaEmbeddingSource)
+		}{
+			{
+				name: "image data uri",
+				part: schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage,
+					Image: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:image/png;base64," + redPixelPNG)}},
+				format: "png",
+				pickFrom: func(p *BedrockNovaSingleEmbeddingParams) (string, BedrockNovaEmbeddingSource) {
+					return p.Image.Format, p.Image.Source
+				},
+			},
+			{
+				name: "image bare base64 with mime_type",
+				part: schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage,
+					Image: &schemas.EmbeddingMediaPart{Data: &redPixelPNG, MIMEType: schemas.Ptr("image/jpeg")}},
+				format: "jpeg",
+				pickFrom: func(p *BedrockNovaSingleEmbeddingParams) (string, BedrockNovaEmbeddingSource) {
+					return p.Image.Format, p.Image.Source
+				},
+			},
+			{
+				name: "audio",
+				part: schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeAudio,
+					Audio: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:audio/mpeg;base64,AA==")}},
+				format: "mp3",
+				pickFrom: func(p *BedrockNovaSingleEmbeddingParams) (string, BedrockNovaEmbeddingSource) {
+					return p.Audio.Format, p.Audio.Source
+				},
+			},
+			{
+				name: "video",
+				part: schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeVideo,
+					Video: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:video/quicktime;base64,AA==")}},
+				format: "mov",
+				pickFrom: func(p *BedrockNovaSingleEmbeddingParams) (string, BedrockNovaEmbeddingSource) {
+					return p.Video.Format, p.Video.Source
+				},
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				req, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+					Model: novaModel,
+					Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{test.part}}},
+				})
+				require.NoError(t, err)
+				format, source := test.pickFrom(req.SingleEmbeddingParams)
+				assert.Equal(t, test.format, format)
+				require.NotNil(t, source.Bytes, "inline media travels as bytes")
+				assert.Nil(t, source.S3Location)
+				assert.NotContains(t, *source.Bytes, "data:", "the data URI prefix is stripped")
+			})
+		}
+	})
+
+	// Nova resolves s3:// itself, the only Bedrock embedding model that does.
+	t.Run("s3 urls become an s3Location", func(t *testing.T) {
+		req, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: novaModel,
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeImage,
+					Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("s3://my-bucket/photos/red-square.png")}},
+			}}},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.SingleEmbeddingParams.Image.Source.S3Location)
+		assert.Equal(t, "s3://my-bucket/photos/red-square.png", req.SingleEmbeddingParams.Image.Source.S3Location.URI)
+		assert.Equal(t, "png", req.SingleEmbeddingParams.Image.Format, "the key's extension names the format when no mime_type does")
+	})
+
+	// embeddingMode is required on video and has no AWS default. AUDIO_VIDEO_SEPARATE
+	// asks for an audio and a video vector instead of one covering both.
+	t.Run("video carries an embeddingMode, overridable through extra params", func(t *testing.T) {
+		videoRequest := func(params *schemas.EmbeddingParameters) *schemas.BifrostEmbeddingRequest {
+			return &schemas.BifrostEmbeddingRequest{
+				Model: novaModel,
+				Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeVideo,
+						Video: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:video/mp4;base64,AA==")}},
+				}}},
+				Params: params,
+			}
+		}
+		req, err := ToBedrockNovaEmbeddingRequest(videoRequest(nil))
+		require.NoError(t, err)
+		assert.Equal(t, BedrockNovaVideoMode("AUDIO_VIDEO_COMBINED"), req.SingleEmbeddingParams.Video.EmbeddingMode)
+
+		req, err = ToBedrockNovaEmbeddingRequest(videoRequest(&schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{"embeddingMode": "AUDIO_VIDEO_SEPARATE"},
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, BedrockNovaVideoMode("AUDIO_VIDEO_SEPARATE"), req.SingleEmbeddingParams.Video.EmbeddingMode)
+	})
+
+	t.Run("requests Nova cannot represent are refused here", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			input   []schemas.EmbeddingInputItem
+			message string
+		}{
+			{
+				name: "text and image in one item",
+				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("a red square")},
+					{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:image/png;base64," + redPixelPNG)}},
+				}}},
+				message: "one modality per request",
+			},
+			{
+				name: "two images in one item",
+				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:image/png;base64," + redPixelPNG)}},
+					{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:image/png;base64," + redPixelPNG)}},
+				}}},
+				message: "one modality per request",
+			},
+			{
+				name: "a batch of two items",
+				input: []schemas.EmbeddingInputItem{
+					{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("alpha")}}},
+					{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("kestrel")}}},
+				},
+				message: "exactly one content item per request",
+			},
+			{
+				name: "a file part, which Nova has no modality for",
+				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeFile, File: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:application/pdf;base64,AA==")}},
+				}}},
+				message: `do not support "file" parts`,
+			},
+			{
+				name: "an https url Nova will not fetch",
+				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/red.png")}},
+				}}},
+				message: "s3:// or inline base64 only",
+			},
+			{
+				name: "an s3 uri naming no object",
+				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("s3://my-bucket")}},
+				}}},
+				message: "expected s3://bucket/key",
+			},
+			{
+				name: "media whose format nothing names",
+				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &redPixelPNG}},
+				}}},
+				message: "cannot determine the image format",
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				_, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: novaModel, Input: test.input})
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), test.message)
+				assert.True(t, providerUtils.IsInvalidRequestError(err), "caller faults must be 400s, got %v", err)
+			})
+		}
+	})
+}
+
+func TestBedrockNovaEmbeddingResponse(t *testing.T) {
+	t.Run("each vector carries the modality that produced it", func(t *testing.T) {
+		var response BedrockNovaEmbeddingResponse
+		require.NoError(t, json.Unmarshal([]byte(`{"embeddings":[
+			{"embedding":[0.1,0.2],"embeddingType":"AUDIO"},
+			{"embedding":[0.3,0.4],"embeddingType":"VIDEO"}
+		]}`), &response))
+
+		converted, err := response.ToBifrostEmbeddingResponse()
+		require.NoError(t, err)
+		require.Len(t, converted.Data, 2)
+		assert.Equal(t, schemas.EmbeddingModalityAudio, converted.Data[0].Modality)
+		assert.Equal(t, 0, converted.Data[0].Index)
+		assert.Equal(t, schemas.EmbeddingModalityVideo, converted.Data[1].Modality)
+		assert.Equal(t, 1, converted.Data[1].Index)
+		assert.Equal(t, []float64{0.3, 0.4}, converted.Data[1].Embedding.EmbeddingArray)
+		// Nova reports its token count in a response header only, so Usage stays nil
+		// here and the provider backfills it from X-Amzn-Bedrock-Input-Token-Count.
+		assert.Nil(t, converted.Usage)
+	})
+
+	t.Run("a combined audio-video vector is labelled as such", func(t *testing.T) {
+		converted, err := (&BedrockNovaEmbeddingResponse{Embeddings: []BedrockNovaEmbedding{
+			{Embedding: []float64{0.1}, EmbeddingType: "AUDIO_VIDEO_COMBINED"},
+		}}).ToBifrostEmbeddingResponse()
+		require.NoError(t, err)
+		require.Len(t, converted.Data, 1)
+		assert.Equal(t, schemas.EmbeddingModalityAudioVideo, converted.Data[0].Modality)
+	})
+
+	t.Run("a label we do not know leaves the modality empty", func(t *testing.T) {
+		converted, err := (&BedrockNovaEmbeddingResponse{Embeddings: []BedrockNovaEmbedding{
+			{Embedding: []float64{0.1}, EmbeddingType: "SOMETHING_NEW"},
+		}}).ToBifrostEmbeddingResponse()
+		require.NoError(t, err)
+		require.Len(t, converted.Data, 1)
+		assert.Empty(t, converted.Data[0].Modality)
+		assert.Equal(t, []float64{0.1}, converted.Data[0].Embedding.EmbeddingArray)
+	})
+}
+
+// The Bedrock integration fronts the native invoke route, so a Nova body written for
+// AWS must survive the trip through the canonical schema and come back in its own
+// envelope rather than Titan's or Cohere's.
+func TestBedrockNovaEmbeddingInvokeRoundTrip(t *testing.T) {
+	const novaModel = "amazon.nova-2-multimodal-embeddings-v1:0"
+
+	t.Run("a SINGLE_EMBEDDING body is detected as an embedding request", func(t *testing.T) {
+		assert.Equal(t, schemas.EmbeddingRequest, DetectInvokeRequestType(
+			[]byte(`{"taskType":"SINGLE_EMBEDDING","singleEmbeddingParams":{"embeddingPurpose":"GENERIC_INDEX","text":{"truncationMode":"END","value":"hello"}}}`),
+			novaModel))
+	})
+
+	t.Run("the native text body round-trips unchanged", func(t *testing.T) {
+		var invokeRequest BedrockInvokeRequest
+		require.NoError(t, json.Unmarshal([]byte(`{
+			"taskType": "SINGLE_EMBEDDING",
+			"singleEmbeddingParams": {
+				"embeddingPurpose": "DOCUMENT_RETRIEVAL",
+				"embeddingDimension": 1024,
+				"text": {"truncationMode": "START", "value": "alpha kestrel harbor"}
+			}
+		}`), &invokeRequest))
+		invokeRequest.ModelID = "bedrock/" + novaModel
+
+		converted, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+		require.NoError(t, err)
+		require.Len(t, converted.Input, 1)
+		require.NotNil(t, converted.Params.Dimensions)
+		assert.Equal(t, 1024, *converted.Params.Dimensions)
+
+		outbound, err := ToBedrockNovaEmbeddingRequest(converted)
+		require.NoError(t, err)
+		wireBody, err := json.Marshal(outbound)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{
+			"taskType": "SINGLE_EMBEDDING",
+			"singleEmbeddingParams": {
+				"embeddingPurpose": "DOCUMENT_RETRIEVAL",
+				"embeddingDimension": 1024,
+				"text": {"truncationMode": "START", "value": "alpha kestrel harbor"}
+			}
+		}`, string(wireBody))
+	})
+
+	t.Run("an s3 video body keeps its source and embeddingMode", func(t *testing.T) {
+		var invokeRequest BedrockInvokeRequest
+		require.NoError(t, json.Unmarshal([]byte(`{
+			"taskType": "SINGLE_EMBEDDING",
+			"singleEmbeddingParams": {
+				"embeddingPurpose": "GENERIC_INDEX",
+				"video": {
+					"format": "mp4",
+					"embeddingMode": "AUDIO_VIDEO_SEPARATE",
+					"source": {"s3Location": {"uri": "s3://my-bucket/clips/counter.mp4"}}
+				}
+			}
+		}`), &invokeRequest))
+		invokeRequest.ModelID = "bedrock/" + novaModel
+
+		converted, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+		require.NoError(t, err)
+		outbound, err := ToBedrockNovaEmbeddingRequest(converted)
+		require.NoError(t, err)
+		require.NotNil(t, outbound.SingleEmbeddingParams.Video)
+		assert.Equal(t, "mp4", outbound.SingleEmbeddingParams.Video.Format)
+		assert.Equal(t, BedrockNovaVideoMode("AUDIO_VIDEO_SEPARATE"), outbound.SingleEmbeddingParams.Video.EmbeddingMode)
+		require.NotNil(t, outbound.SingleEmbeddingParams.Video.Source.S3Location)
+		assert.Equal(t, "s3://my-bucket/clips/counter.mp4", outbound.SingleEmbeddingParams.Video.Source.S3Location.URI)
+	})
+
+	t.Run("the response comes back in Nova's envelope, not Titan's", func(t *testing.T) {
+		native, err := ToBedrockEmbeddingInvokeResponse(testBedrockCtx(), &schemas.BifrostEmbeddingResponse{
+			Model: novaModel,
+			Data: []schemas.EmbeddingData{
+				{Index: 0, Object: "embedding", Modality: schemas.EmbeddingModalityAudio,
+					Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2}}},
+				{Index: 1, Object: "embedding", Modality: schemas.EmbeddingModalityVideo,
+					Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.3, 0.4}}},
+			},
+		})
+		require.NoError(t, err)
+		wireBody, err := json.Marshal(native)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"embeddings":[
+			{"embedding":[0.1,0.2],"embeddingType":"AUDIO"},
+			{"embedding":[0.3,0.4],"embeddingType":"VIDEO"}
+		]}`, string(wireBody))
+	})
+
+	t.Run("a text source Bifrost cannot carry is a caller error", func(t *testing.T) {
+		var invokeRequest BedrockInvokeRequest
+		require.NoError(t, json.Unmarshal([]byte(`{
+			"taskType": "SINGLE_EMBEDDING",
+			"singleEmbeddingParams": {
+				"embeddingPurpose": "GENERIC_INDEX",
+				"text": {"truncationMode": "END", "source": {"s3Location": {"uri": "s3://my-bucket/doc.txt"}}}
+			}
+		}`), &invokeRequest))
+		invokeRequest.ModelID = "bedrock/" + novaModel
+
+		_, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+		require.Error(t, err)
+		assert.True(t, providerUtils.IsInvalidRequestError(err))
+	})
+}
+
+func TestDetermineEmbeddingModelType(t *testing.T) {
+	ctx := testBedrockCtx()
+	tests := []struct {
+		model     string
+		modelType string
+	}{
+		{"amazon.nova-2-multimodal-embeddings-v1:0", "nova"},
+		{"amazon.titan-embed-text-v2:0", "titan"},
+		{"amazon.titan-embed-image-v1", "titan"},
+		{"cohere.embed-v4:0", "cohere"},
+	}
+	for _, test := range tests {
+		t.Run(test.model, func(t *testing.T) {
+			modelType, err := DetermineEmbeddingModelType(ctx, test.model)
+			require.NoError(t, err)
+			assert.Equal(t, test.modelType, modelType)
+		})
+	}
+
+	_, err := DetermineEmbeddingModelType(ctx, "meta.llama3-8b-instruct-v1:0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported embedding model")
+}
+
+// An empty text value is a 400 here rather than an AWS minLength complaint, and two of
+// them are still one modality - the count must not confuse "empty" with "absent".
+func TestToBedrockNovaEmbeddingRequestRejectsEmptyText(t *testing.T) {
+	for _, name := range []string{"one empty text part", "two empty text parts"} {
+		t.Run(name, func(t *testing.T) {
+			content := schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("")}}
+			if name == "two empty text parts" {
+				content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("")})
+			}
+			_, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+				Model: "amazon.nova-2-multimodal-embeddings-v1:0",
+				Input: []schemas.EmbeddingInputItem{{Content: content}},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "text part carries no text")
+			assert.True(t, providerUtils.IsInvalidRequestError(err))
+		})
+	}
+}
+
+// detailLevel selects the resolution Nova reads an image at: DOCUMENT_IMAGE is the
+// higher one, meant for text on a page. It is image-only - AWS rejects the key on an
+// audio part - and AWS defaults it, so an absent value must stay off the wire.
+func TestToBedrockNovaEmbeddingRequestDetailLevel(t *testing.T) {
+	const novaModel = "amazon.nova-2-multimodal-embeddings-v1:0"
+	imagePart := schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage,
+		Image: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==")}}
+
+	t.Run("absent by default", func(t *testing.T) {
+		req, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: novaModel,
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{imagePart}}},
+		})
+		require.NoError(t, err)
+		assert.Nil(t, req.SingleEmbeddingParams.Image.DetailLevel)
+		wireBody, err := json.Marshal(req)
+		require.NoError(t, err)
+		assert.NotContains(t, string(wireBody), "detailLevel")
+	})
+
+	t.Run("forwarded onto the image part", func(t *testing.T) {
+		req, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  novaModel,
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{imagePart}}},
+			Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{"detailLevel": "DOCUMENT_IMAGE"}},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, req.SingleEmbeddingParams.Image.DetailLevel)
+		assert.Equal(t, BedrockNovaDetailLevel("DOCUMENT_IMAGE"), *req.SingleEmbeddingParams.Image.DetailLevel)
+		assert.NotContains(t, req.ExtraParams, "detailLevel", "consumed, not also forwarded at the top level")
+	})
+
+	t.Run("never lands on an audio part, which AWS would refuse", func(t *testing.T) {
+		req, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: novaModel,
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeAudio,
+					Audio: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:audio/mpeg;base64,AA==")}},
+			}}},
+			Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{"detailLevel": "DOCUMENT_IMAGE"}},
+		})
+		require.NoError(t, err)
+		wireBody, err := json.Marshal(req)
+		require.NoError(t, err)
+		assert.NotContains(t, string(wireBody), "detailLevel")
+	})
+
+	t.Run("a native detailLevel survives the invoke round trip", func(t *testing.T) {
+		var invokeRequest BedrockInvokeRequest
+		require.NoError(t, json.Unmarshal([]byte(`{
+			"taskType": "SINGLE_EMBEDDING",
+			"singleEmbeddingParams": {
+				"embeddingPurpose": "DOCUMENT_RETRIEVAL",
+				"image": {"format": "png", "detailLevel": "DOCUMENT_IMAGE", "source": {"bytes": "iVBORw0KGgoAAAANSUhEUg=="}}
+			}
+		}`), &invokeRequest))
+		invokeRequest.ModelID = "bedrock/" + novaModel
+
+		converted, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+		require.NoError(t, err)
+		outbound, err := ToBedrockNovaEmbeddingRequest(converted)
+		require.NoError(t, err)
+		wireBody, err := json.Marshal(outbound)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{
+			"taskType": "SINGLE_EMBEDDING",
+			"singleEmbeddingParams": {
+				"embeddingPurpose": "DOCUMENT_RETRIEVAL",
+				"image": {"format": "png", "detailLevel": "DOCUMENT_IMAGE", "source": {"bytes": "iVBORw0KGgoAAAANSUhEUg=="}}
+			}
+		}`, string(wireBody))
+	})
+}
+
+// AWS's own reference documents video.format "3gp", which the API rejects in favour of
+// "three_gp" (and accepts "mpg" as a synonym for "mpeg"). A native body copied from the
+// reference must normalize to the spelling that works, and nothing may ever put "3gp" on
+// the wire.
+func TestToBedrockNovaEmbeddingRequestNormalizesVideoFormatSpelling(t *testing.T) {
+	const novaModel = "amazon.nova-2-multimodal-embeddings-v1:0"
+	for _, test := range []struct{ native, wire string }{
+		{"3gp", "three_gp"},
+		{"three_gp", "three_gp"},
+		{"mpg", "mpeg"},
+		{"mpeg", "mpeg"},
+	} {
+		t.Run(test.native, func(t *testing.T) {
+			var invokeRequest BedrockInvokeRequest
+			require.NoError(t, json.Unmarshal([]byte(`{
+				"taskType": "SINGLE_EMBEDDING",
+				"singleEmbeddingParams": {
+					"embeddingPurpose": "GENERIC_INDEX",
+					"video": {"format": "`+test.native+`", "embeddingMode": "AUDIO_VIDEO_COMBINED", "source": {"bytes": "AA=="}}
+				}
+			}`), &invokeRequest))
+			invokeRequest.ModelID = "bedrock/" + novaModel
+
+			converted, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+			require.NoError(t, err)
+			outbound, err := ToBedrockNovaEmbeddingRequest(converted)
+			require.NoError(t, err)
+			assert.Equal(t, test.wire, outbound.SingleEmbeddingParams.Video.Format)
+		})
+	}
+
+	// The canonical path derives the format itself, so a gs-style extension or a media
+	// type both land on three_gp too.
+	for _, media := range []*schemas.EmbeddingMediaPart{
+		{URL: schemas.Ptr("s3://my-bucket/clips/clip.3gp")},
+		{Data: schemas.Ptr("data:video/3gpp;base64,AA==")},
+	} {
+		req, err := ToBedrockNovaEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model: novaModel,
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeVideo, Video: media},
+			}}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "three_gp", req.SingleEmbeddingParams.Video.Format)
+	}
+}

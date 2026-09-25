@@ -338,6 +338,8 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 			return schemas.ImageVariationRequest
 		case TaskTypeInpainting, TaskTypeOutpainting, TaskTypeBackgroundRemoval:
 			return schemas.ImageEditRequest
+		case TaskTypeSingleEmbedding:
+			return schemas.EmbeddingRequest
 		}
 	}
 
@@ -539,8 +541,64 @@ func (r *BedrockInvokeRequest) ToBifrostTextCompletionRequest(ctx *schemas.Bifro
 	return textReq.ToBifrostTextCompletionRequest(ctx)
 }
 
+// novaSingleEmbeddingMediaPart maps one of Nova's native media objects back onto a
+// canonical media part. The format travels as a media type, which the outbound converter
+// turns into the same format name again.
+func novaSingleEmbeddingMediaPart(kind, format string, source BedrockNovaEmbeddingSource) (*schemas.EmbeddingMediaPart, error) {
+	media := &schemas.EmbeddingMediaPart{}
+	if mediaType, ok := novaEmbeddingMediaTypes[format]; ok {
+		media.MIMEType = &mediaType
+	}
+	switch {
+	case source.Bytes != nil:
+		bytesCopy := *source.Bytes
+		media.Data = &bytesCopy
+	case source.S3Location != nil:
+		uri := source.S3Location.URI
+		media.URL = &uri
+	default:
+		return nil, providerUtils.InvalidRequestErrorf("singleEmbeddingParams.%s.source carries neither bytes nor s3Location", kind)
+	}
+	return media, nil
+}
+
+// novaSingleEmbeddingParamsToContent maps Nova's one-modality params object onto the
+// canonical content parts.
+func novaSingleEmbeddingParamsToContent(params *BedrockNovaSingleEmbeddingParams) (schemas.EmbeddingContent, error) {
+	switch {
+	case params.Text != nil:
+		// A text source is S3-only on Nova and a canonical text part holds a string, so
+		// there is nowhere to put it; the value form is the one that round-trips.
+		if params.Text.Value == nil {
+			return nil, providerUtils.InvalidRequestErrorf("singleEmbeddingParams.text requires value; an S3 text source is not supported here")
+		}
+		value := *params.Text.Value
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &value}}, nil
+	case params.Image != nil:
+		media, err := novaSingleEmbeddingMediaPart("image", params.Image.Format, params.Image.Source)
+		if err != nil {
+			return nil, err
+		}
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: media}}, nil
+	case params.Audio != nil:
+		media, err := novaSingleEmbeddingMediaPart("audio", params.Audio.Format, params.Audio.Source)
+		if err != nil {
+			return nil, err
+		}
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeAudio, Audio: media}}, nil
+	case params.Video != nil:
+		media, err := novaSingleEmbeddingMediaPart("video", params.Video.Format, params.Video.Source)
+		if err != nil {
+			return nil, err
+		}
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeVideo, Video: media}}, nil
+	default:
+		return nil, providerUtils.InvalidRequestErrorf("singleEmbeddingParams carries no text, image, audio or video")
+	}
+}
+
 // ToBifrostEmbeddingRequest converts the invoke request to a BifrostEmbeddingRequest.
-// Handles both Titan (inputText) and Cohere (texts) embedding formats.
+// Handles the Titan (inputText), Cohere (texts) and Nova (singleEmbeddingParams) formats.
 func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) (*schemas.BifrostEmbeddingRequest, error) {
 	modelID := r.ModelID
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
@@ -553,7 +611,13 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	}
 
 	var contents []schemas.EmbeddingInputItem
-	if r.InputText != "" || r.InputImage != "" {
+	if r.SingleEmbeddingParams != nil {
+		content, err := novaSingleEmbeddingParamsToContent(r.SingleEmbeddingParams)
+		if err != nil {
+			return nil, err
+		}
+		contents = append(contents, schemas.EmbeddingInputItem{Content: content})
+	} else if r.InputText != "" || r.InputImage != "" {
 		// Titan's single-item shape: inputText and inputImage describe one input, so they
 		// aggregate into one content list rather than two separate items.
 		var content schemas.EmbeddingContent
@@ -634,6 +698,22 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	if r.MaxTokens != nil {
 		extraParams["max_tokens"] = *r.MaxTokens
 	}
+	// Nova's required knobs live inside singleEmbeddingParams, whose other fields the
+	// content conversion above already consumed.
+	if r.SingleEmbeddingParams != nil {
+		if r.SingleEmbeddingParams.EmbeddingPurpose != "" {
+			extraParams[BedrockNovaExtraParamEmbeddingPurpose] = string(r.SingleEmbeddingParams.EmbeddingPurpose)
+		}
+		if r.SingleEmbeddingParams.Text != nil && r.SingleEmbeddingParams.Text.TruncationMode != "" {
+			extraParams[BedrockNovaExtraParamTruncationMode] = string(r.SingleEmbeddingParams.Text.TruncationMode)
+		}
+		if r.SingleEmbeddingParams.Video != nil && r.SingleEmbeddingParams.Video.EmbeddingMode != "" {
+			extraParams[BedrockNovaExtraParamEmbeddingMode] = string(r.SingleEmbeddingParams.Video.EmbeddingMode)
+		}
+		if r.SingleEmbeddingParams.Image != nil && r.SingleEmbeddingParams.Image.DetailLevel != nil {
+			extraParams[BedrockNovaExtraParamDetailLevel] = string(*r.SingleEmbeddingParams.Image.DetailLevel)
+		}
+	}
 	// Merge any remaining extra params from the request
 	for k, v := range r.ExtraParams {
 		extraParams[k] = v
@@ -647,6 +727,9 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	}
 	if r.EmbeddingConfig != nil && r.EmbeddingConfig.OutputEmbeddingLength != nil {
 		dimensions = r.EmbeddingConfig.OutputEmbeddingLength
+	}
+	if r.SingleEmbeddingParams != nil && r.SingleEmbeddingParams.EmbeddingDimension != nil {
+		dimensions = r.SingleEmbeddingParams.EmbeddingDimension
 	}
 	params := &schemas.EmbeddingParameters{
 		Dimensions: dimensions,
@@ -1309,6 +1392,12 @@ func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas
 		}
 	}
 
+	// Nova labels every vector with the modality it came from, and its separate video
+	// mode returns two for one input, so neither of the other envelopes fits.
+	if schemas.IsNovaModelFamily(ctx, model) {
+		return toBedrockNovaEmbeddingInvokeResponse(resp), nil
+	}
+
 	// The Titan envelope holds a single input's vectors. A response covering several
 	// inputs — reachable when the invoke route fronts a non-Titan provider — only fits
 	// the multi-embedding envelope; forcing it into Titan's drops all but one vector.
@@ -1316,6 +1405,19 @@ func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas
 		return toBedrockCohereEmbeddingInvokeResponse(resp), nil
 	}
 	return toBedrockTitanEmbeddingInvokeResponse(resp, tokenCount), nil
+}
+
+// toBedrockNovaEmbeddingInvokeResponse rebuilds the Nova invoke envelope. Nova reports
+// its token count in a response header rather than the body, so nothing carries it here.
+func toBedrockNovaEmbeddingInvokeResponse(resp *schemas.BifrostEmbeddingResponse) *BedrockNovaEmbeddingResponse {
+	out := &BedrockNovaEmbeddingResponse{Embeddings: make([]BedrockNovaEmbedding, 0, len(resp.Data))}
+	for _, d := range resp.Data {
+		out.Embeddings = append(out.Embeddings, BedrockNovaEmbedding{
+			Embedding:     d.Embedding.EmbeddingArray,
+			EmbeddingType: novaEmbeddingTypes[d.Modality],
+		})
+	}
+	return out
 }
 
 // bedrockDistinctEmbeddingInputs counts the inputs a response covers. Titan's typed

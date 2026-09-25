@@ -2193,7 +2193,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 }
 
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
-// Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
+// Supports Titan, Cohere and Nova embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
@@ -2233,6 +2233,19 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
 				return ToBedrockCohereEmbeddingRequest(request)
+			})
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
+		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
+
+	case "nova":
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return ToBedrockNovaEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -2299,6 +2312,35 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 		if convErr != nil {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		bifrostResponse = converted
+		bifrostResponse.Model = request.Model
+
+	case "nova":
+		var novaResp BedrockNovaEmbeddingResponse
+		novaParseTracer, novaParseHandle := providerUtils.StartResponseParseSpan(ctx)
+		umErr := sonic.Unmarshal(rawResponse, &novaResp)
+		if novaParseTracer != nil {
+			if umErr != nil {
+				novaParseTracer.EndSpan(novaParseHandle, schemas.SpanStatusError, umErr.Error())
+			} else {
+				novaParseTracer.EndSpan(novaParseHandle, schemas.SpanStatusOk, "")
+			}
+		}
+		if umErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Nova embedding response", umErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		novaConvTracer, novaConvHandle := providerUtils.StartResponseConvertorSpan(ctx)
+		converted, convErr := novaResp.ToBifrostEmbeddingResponse()
+		if novaConvTracer != nil {
+			if convErr != nil {
+				novaConvTracer.EndSpan(novaConvHandle, schemas.SpanStatusError, convErr.Error())
+			} else {
+				novaConvTracer.EndSpan(novaConvHandle, schemas.SpanStatusOk, "")
+			}
+		}
+		if convErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Nova embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
