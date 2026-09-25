@@ -107076,6 +107076,13 @@
             "type": "boolean",
             "description": "Whether this key can be used for batch API operations"
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
+          },
           "config_hash": {
             "type": "string",
             "description": "Hash of config.json version, used for change detection"
@@ -109964,6 +109971,13 @@
           "use_for_batch_api": {
             "type": ["boolean", "null"],
             "default": false
+          },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
           },
           "created_at": {
             "type": "string",

@@ -718,6 +718,20 @@ func TestProviderKeyCRUD(t *testing.T) {
 	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
 	assert.Equal(t, 2.0, storedKey.Weight)
 
+	// Content logging is tri-state and every state must survive create, read and update, including
+	// clearing a decision back to inherit.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		key.DisableContentLogging = decision
+		require.NoError(t, store.UpdateProviderKey(ctx, "openai", key.ID, key))
+		storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
+		require.NoError(t, err)
+		assert.Equal(t, decision, storedKey.DisableContentLogging)
+		keys, err = store.GetProviderKeys(ctx, "openai")
+		require.NoError(t, err)
+		require.Len(t, keys, 1)
+		assert.Equal(t, decision, keys[0].DisableContentLogging, "the list path converts keys separately")
+	}
+
 	err = store.DeleteProviderKey(ctx, "openai", key.ID)
 	require.NoError(t, err)
 

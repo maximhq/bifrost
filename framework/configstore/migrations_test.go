@@ -4172,6 +4172,17 @@ func setupContentLoggingColumnsTestDB(t *testing.T) *gorm.DB {
 			updated_at DATETIME NOT NULL
 		)
 	`).Error, "Failed to create governance_teams table")
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(255) NOT NULL,
+			provider_id INTEGER NOT NULL,
+			key_id VARCHAR(255) NOT NULL,
+			value TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)
+	`).Error, "Failed to create config_keys table")
 	return db
 }
 
@@ -4331,6 +4342,32 @@ func TestMigrationAddDisableContentLoggingColumns_AfterVirtualKeyStep(t *testing
 	for _, table := range disableContentLoggingTables {
 		assert.True(t, mg.HasColumn(table, "disable_content_logging"), "every content-logging column must exist after the step")
 	}
+}
+
+// TestMigrationAddKeyDisableContentLoggingColumn pins the provider key's tri-state column: the
+// combined step adds it, and the key hash moves only when the key actually says something, so
+// config.json keys from before the field see no drift.
+func TestMigrationAddKeyDisableContentLoggingColumn(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableKey{}, "disable_content_logging"))
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableKey{}, "disable_content_logging"))
+
+	hashWith := func(decision *bool) string {
+		hash, err := GenerateKeyHash(schemas.Key{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-k1"), DisableContentLogging: decision})
+		require.NoError(t, err)
+		return hash
+	}
+	before, err := GenerateKeyHash(schemas.Key{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-k1")})
+	require.NoError(t, err)
+	inheritHash, offHash, onHash := hashWith(nil), hashWith(new(true)), hashWith(new(false))
+	assert.Equal(t, before, inheritHash, "inherit must hash exactly like a key from before the field existed")
+	assert.NotEqual(t, inheritHash, offHash, "forcing content off must change the hash")
+	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
+	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
 }
 
 // TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable pins that rolling Warp's

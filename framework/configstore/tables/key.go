@@ -94,6 +94,11 @@ type TableKey struct {
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
+	// DisableContentLogging is the key's own content-logging decision: nil inherits, true forces
+	// content off, false forces it on. No gorm default: a default tag would make GORM write the
+	// default for a nil pointer on insert and collapse "inherit" into "false".
+	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
+
 	// UseAnthropicEndpoints routes inference through the provider's Anthropic-compatible
 	// endpoints instead of its OpenAI-compatible ones.
 	UseAnthropicEndpoints *bool `gorm:"default:false" json:"use_anthropic_endpoints,omitempty"`

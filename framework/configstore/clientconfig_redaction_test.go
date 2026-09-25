@@ -89,6 +89,18 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	assert.Equal(t, out.SecretType, string(schemas.SecretTypePlainText))
 }
 
+// The redacted config is what the providers API serves and what the UI edits, and it rebuilds each
+// key field by field, so a key's content-logging decision must be carried over as is (nil stays
+// inherit, not false).
+func TestProviderConfig_Redacted_KeepsContentLoggingDecision(t *testing.T) {
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		config := ProviderConfig{Keys: []schemas.Key{{ID: "k1", Name: "test", Value: *schemas.NewSecretVar("sk-test"), DisableContentLogging: decision}}}
+		redacted := config.Redacted()
+		require.Len(t, redacted.Keys, 1)
+		assert.Equal(t, decision, redacted.Keys[0].DisableContentLogging)
+	}
+}
+
 // TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that
 // env-backed Vertex fields appear in the redacted output with the env reference
 // intact and the resolved value masked. This is the user-facing fix for the

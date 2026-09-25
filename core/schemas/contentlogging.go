@@ -128,6 +128,17 @@ func ContentLoggingLayerCanChange(ctx *BifrostContext, layer BifrostContextKey) 
 	return false
 }
 
+// ContentLoggingContextKeys lists every context key the content-logging resolution reads: each
+// layer and the caller-resolved marker. A context copied for work that outlives its request (a
+// realtime relay) copies these so it resolves content exactly as the request did.
+func ContentLoggingContextKeys() []BifrostContextKey {
+	keys := []BifrostContextKey{BifrostContextKeyCallerContentLoggingResolved}
+	for _, tier := range contentLoggingTiers {
+		keys = append(keys, tier...)
+	}
+	return keys
+}
+
 // MarkCallerContentLoggingResolved records that governance has stamped every caller-side layer it is
 // going to stamp for this request.
 func MarkCallerContentLoggingResolved(ctx *BifrostContext) {
