@@ -67,12 +67,26 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 	}
 }
 
-// TestHandleGeminiChatCompletionStream_StripsForwardedAuthorization covers the
-// streaming map path flagged by review (Greptile P2): the headers map only ever
-// holds x-goog-api-key/Accept/Cache-Control, so deleting "Authorization" from
-// that map was a no-op. SetExtraHeaders injects Authorization onto the real
+// TestHandleGeminiStreams_StripsForwardedAuthorization covers the streaming map
+// paths (chat + responses) flagged by review (Greptile P2): the headers map only
+// ever holds x-goog-api-key/Accept/Cache-Control, so deleting "Authorization"
+// from that map was a no-op. SetExtraHeaders injects Authorization onto the real
 // request, so the strip must happen on req *after* the headers are applied.
-func TestHandleGeminiChatCompletionStream_StripsForwardedAuthorization(t *testing.T) {
+func TestHandleGeminiStreams_StripsForwardedAuthorization(t *testing.T) {
+	noopPostHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	handlers := []struct {
+		name  string
+		start func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+	}{
+		{name: "chat", start: func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return HandleGeminiChatCompletionStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, extra, 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
+		}},
+		{name: "responses", start: func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return HandleGeminiResponsesStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, extra, 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
+		}},
+	}
 	cases := []struct {
 		name     string
 		apiKey   string
@@ -82,74 +96,60 @@ func TestHandleGeminiChatCompletionStream_StripsForwardedAuthorization(t *testin
 		// An empty x-goog-api-key must not cost the request its only credential.
 		{name: "empty_api_key_keeps_authorization", apiKey: "", wantAuth: "Bearer leaked-token"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gotHeaders := make(chan http.Header, 1)
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	for _, hd := range handlers {
+		for _, tc := range cases {
+			t.Run(hd.name+"/"+tc.name, func(t *testing.T) {
+				gotHeaders := make(chan http.Header, 1)
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					select {
+					case gotHeaders <- r.Header.Clone():
+					default:
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.WriteHeader(http.StatusOK)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+					_, _ = w.Write([]byte("data: {}\n\n"))
+				}))
+				defer ts.Close()
+
+				stream, bifrostErr := hd.start(
+					schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+					ts.URL+"/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+					map[string]string{
+						"x-goog-api-key": tc.apiKey,
+						"Accept":         "text/event-stream",
+						"Cache-Control":  "no-cache",
+					},
+					map[string]string{"Authorization": "Bearer leaked-token"}, // injected via SetExtraHeaders
+				)
+				require.Nil(t, bifrostErr)
+				require.NotNil(t, stream)
+
+				// Drain so the request completes and streaming resources are released.
+				drained := make(chan struct{})
+				go func() {
+					for range stream {
+					}
+					close(drained)
+				}()
+
+				var headers http.Header
 				select {
-				case gotHeaders <- r.Header.Clone():
-				default:
+				case headers = <-gotHeaders:
+				case <-time.After(5 * time.Second):
+					t.Fatal("upstream request was never received")
 				}
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.WriteHeader(http.StatusOK)
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
+				select {
+				case <-drained:
+				case <-time.After(5 * time.Second):
+					t.Fatal("stream did not close")
 				}
-				_, _ = w.Write([]byte("data: {}\n\n"))
-			}))
-			defer ts.Close()
 
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			noopPostHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return result, err
-			}
-
-			stream, bifrostErr := HandleGeminiChatCompletionStream(
-				ctx,
-				&fasthttp.Client{},
-				ts.URL+"/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
-				[]byte(`{}`),
-				map[string]string{
-					"x-goog-api-key": tc.apiKey,
-					"Accept":         "text/event-stream",
-					"Cache-Control":  "no-cache",
-				},
-				map[string]string{"Authorization": "Bearer leaked-token"}, // injected via SetExtraHeaders
-				30, // streamIdleTimeoutInSeconds
-				false,
-				false,
-				schemas.Gemini,
-				"gemini-2.5-pro",
-				noopPostHook,
-				nil,
-				testNoopLogger{},
-				func(context.Context) {},
-			)
-			require.Nil(t, bifrostErr)
-			require.NotNil(t, stream)
-
-			// Drain so the request completes and streaming resources are released.
-			drained := make(chan struct{})
-			go func() {
-				for range stream {
-				}
-				close(drained)
-			}()
-
-			var headers http.Header
-			select {
-			case headers = <-gotHeaders:
-			case <-time.After(5 * time.Second):
-				t.Fatal("upstream request was never received")
-			}
-			select {
-			case <-drained:
-			case <-time.After(5 * time.Second):
-				t.Fatal("stream did not close")
-			}
-
-			assert.Equal(t, tc.apiKey, headers.Get("x-goog-api-key"), "x-goog-api-key header")
-			assert.Equal(t, tc.wantAuth, headers.Get("Authorization"), "Authorization header")
-		})
+				assert.Equal(t, tc.apiKey, headers.Get("x-goog-api-key"), "x-goog-api-key header")
+				assert.Equal(t, tc.wantAuth, headers.Get("Authorization"), "Authorization header")
+			})
+		}
 	}
 }
