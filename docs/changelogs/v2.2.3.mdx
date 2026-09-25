@@ -20,6 +20,7 @@ description: "v2.2.3 changelog - 2026-09-24"
 ## ✨ Features
 
 - **Pinned Keys on Routing Fallbacks** - Each routing-rule fallback can pin a provider key via `key_id`, or `provider_key_name` in config.json. The UI rule editor lets you pick or clear a key per fallback. Unpinned fallbacks keep the legacy `provider/model` string, so existing rules keep their config hash (#7470, #7379, #7380, #7381)
+  <Warning>Rolling back to a version before 2.2.3 with a pinned fallback in place disables routing rules. See [Routing Stops Working After a Downgrade](/providers/routing-rules#routing-stops-working-after-a-downgrade) before downgrading.</Warning>
 - **OpenAI Async Tool Execution** - The `async` flag on Responses tools and tool calls, `output_schema` on function tools and `tunnel_id` on MCP tools are now forwarded to OpenAI. `async` is stripped for models without support, and the datasheet `supports_async_tools` field can override this (#7242)
 - **GPT-6 Prompt Cache Breakpoints** - Prompt-cache breakpoints now cover the GPT-6 family on OpenAI, Azure, Bedrock and Bedrock Mantle. The datasheet `supports_prompt_cache_breakpoint` field can override this (#7240)
 - **GPT-6 Sol and Luna Reasoning Off** - `reasoning.effort: "none"` is forwarded for `gpt-6-sol` and `gpt-6-luna`. Other GPT-6 models keep reasoning on (#7492)

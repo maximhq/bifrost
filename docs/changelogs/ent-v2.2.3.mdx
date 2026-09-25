@@ -12,6 +12,7 @@ v2.2.3 moves the enterprise gateway onto OSS transports v2.2.3. Routing-rule fal
 ## ✨ Features
 
 - **Pinned Keys Survive Load-Balanced Fallbacks** - The adaptive load balancer now keeps the `key_id` pin on each configured routing-rule fallback. Configured fallbacks are deduplicated on provider, model and key, so two fallbacks on the same provider and model with different keys both stay in the chain. Auto-appended healthy fallbacks are still deduplicated on provider and model, and a fallback that repeats the primary attempt (same provider, model and effective key) is dropped. [Docs](https://docs.getbifrost.ai/enterprise/adaptive-load-balancing)
+  <Warning>Rolling back to a version before v2.2.3 with a pinned fallback in place disables routing rules. See [Routing Stops Working After a Downgrade](/providers/routing-rules#routing-stops-working-after-a-downgrade) before downgrading.</Warning>
 
 ## 🌎 Open Source Features
 
