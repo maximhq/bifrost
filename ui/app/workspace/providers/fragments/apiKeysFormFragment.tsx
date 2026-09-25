@@ -1,4 +1,6 @@
 import { ModelAccessSelector } from "@/components/modelAccess";
+import { ContentLoggingSelect } from "@/components/contentLoggingSelect";
+import { contentLoggingChoice, contentLoggingValue } from "@/components/contentLoggingSelect.utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -447,6 +449,29 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									}
 								/>
 							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.disable_content_logging`}
+					render={({ field }) => (
+						<FormItem className="px-0.5">
+							<FormLabel>Content logging</FormLabel>
+							<FormControl>
+								<ContentLoggingSelect
+									value={contentLoggingChoice(field.value)}
+									onValueChange={(choice) => field.onChange(contentLoggingValue(choice))}
+									entityLabel="key"
+									testIdPrefix="apikey-content-logging"
+								/>
+							</FormControl>
+							<FormDescription>
+								Whether request and response content is stored in logs for traffic served by this key. The key&apos;s business unit, team
+								and user outrank it; alongside the virtual key, &quot;Off&quot; from either wins. Once a request is sent on a key set to
+								&quot;Off&quot;, a retry onto another key keeps content off.
+							</FormDescription>
 							<FormMessage />
 						</FormItem>
 					)}

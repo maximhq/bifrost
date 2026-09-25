@@ -1,5 +1,7 @@
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
+import { ContentLoggingSelect } from "@/components/contentLoggingSelect";
+import { contentLoggingChoice, contentLoggingValue } from "@/components/contentLoggingSelect.utils";
 import { MCPClientConfigsEditor } from "@/components/mcp/mcpClientConfigsEditor";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
@@ -305,27 +307,6 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 		</FormItem>
 	);
 }
-
-type ContentLoggingChoice = "inherit" | "disabled" | "enabled";
-
-// The wire field is tri-state (absent, true, false); the form shows it as three named choices.
-function contentLoggingChoice(disableContentLogging: boolean | null | undefined): ContentLoggingChoice {
-	if (disableContentLogging === true) return "disabled";
-	if (disableContentLogging === false) return "enabled";
-	return "inherit";
-}
-
-function contentLoggingValue(choice: ContentLoggingChoice): boolean | null {
-	if (choice === "disabled") return true;
-	if (choice === "enabled") return false;
-	return null;
-}
-
-const contentLoggingOptions: { value: ContentLoggingChoice; label: string }[] = [
-	{ value: "inherit", label: "Inherit gateway setting" },
-	{ value: "disabled", label: "Off for this key" },
-	{ value: "enabled", label: "On for this key" },
-];
 
 // A key owned by a profile-holding team, customer or business unit is governed by that profile: the
 // server discards the key's own providers, budgets, rate limits and MCP access. The editors for
@@ -1373,20 +1354,18 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											{/* FormControl hands the trigger the label's id and aria attributes; hideClear because the
 											choice is an enum with no empty state. */}
 											<FormControl>
-												<ComboboxSelect
-													options={contentLoggingOptions}
+												<ContentLoggingSelect
 													value={field.value}
 													onValueChange={field.onChange}
-													disableSearch
-													hideClear
-													data-testid="vk-content-logging-select"
-													optionTestId={(value) => `vk-content-logging-option-${value}`}
+													entityLabel="key"
+													testIdPrefix="vk-content-logging"
 												/>
 											</FormControl>
 											<p className="text-muted-foreground text-xs">
-												Whether request and response content is stored in logs for this key&apos;s traffic. &quot;Off&quot; also strips
-												content from OpenTelemetry export. &quot;On&quot; overrides a gateway-wide off for the log store only. The
-												per-request header still applies when per-request overrides are allowed.
+												Whether request and response content is stored in logs for this key&apos;s traffic. A setting on the key&apos;s team
+												outranks this one. &quot;Off&quot; also strips content from OpenTelemetry export. &quot;On&quot; overrides a
+												gateway-wide off for the log store only. The per-request header still applies when per-request overrides are
+												allowed.
 											</p>
 											<FormMessage />
 										</FormItem>

@@ -137,6 +137,10 @@ export class ProvidersPage extends BasePage {
     // Note: Model selection is skipped for now as it requires specific UI interaction
     // that may vary based on the provider type
 
+    if (config.contentLogging && config.contentLogging !== 'inherit') {
+      await this.setKeyContentLogging(config.contentLogging)
+    }
+
     // Save the key
     await this.keySaveBtn.click()
 
@@ -310,9 +314,40 @@ export class ProvidersPage extends BasePage {
       }
     }
 
+    if (updates.contentLogging) {
+      await this.setKeyContentLogging(updates.contentLogging)
+    }
+
     // Save
     await this.keySaveBtn.click()
     await this.waitForSuccessToast()
+  }
+
+  /**
+   * Pick the key's content-logging choice in the open key form
+   */
+  async setKeyContentLogging(choice: 'inherit' | 'disabled' | 'enabled'): Promise<void> {
+    await this.page.getByTestId('apikey-content-logging-select').click()
+    await this.page.getByTestId(`apikey-content-logging-option-${choice}`).click()
+  }
+
+  /**
+   * Open the key's editor, read its content-logging choice by the label it shows, and cancel out
+   */
+  async getKeyContentLogging(keyName: string): Promise<'inherit' | 'disabled' | 'enabled'> {
+    const keyRow = this.getKeyRow(keyName)
+    await keyRow.scrollIntoViewIfNeeded()
+    const menuBtn = keyRow.locator('button').filter({ has: this.page.locator('svg') }).last()
+    await menuBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await menuBtn.click()
+    await this.page.getByRole('menuitem', { name: /Edit/i }).click()
+    await expect(this.keyForm).toBeVisible()
+    const text = (await this.page.getByTestId('apikey-content-logging-select').textContent()) ?? ''
+    await this.keyCancelBtn.click()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    if (text.includes('Off for this key')) return 'disabled'
+    if (text.includes('On for this key')) return 'enabled'
+    return 'inherit'
   }
 
   /**

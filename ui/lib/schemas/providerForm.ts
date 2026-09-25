@@ -217,6 +217,8 @@ const KeySchema = z.object({
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
 	github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
+	// Tri-state: null/absent inherits, true forces content off, false forces it on.
+	disable_content_logging: z.boolean().nullable().optional(),
 });
 
 // Main provider form schema

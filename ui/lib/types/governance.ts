@@ -54,6 +54,9 @@ export interface Team {
 	rate_limit_id?: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendar_aligned?: boolean;
+	// The team's own content-logging decision: absent/null inherits, true forces content off, false
+	// forces it on. Outranks the virtual key and provider key.
+	disable_content_logging?: boolean | null;
 	// Number of virtual keys assigned to this team (server-computed via a
 	// correlated subquery; the list endpoints report this instead of embedding
 	// the virtual keys themselves)
@@ -279,6 +282,7 @@ export interface CreateTeamRequest {
 	budgets?: CreateBudgetRequest[]; // Multi-budget: each must have a unique reset_duration
 	rate_limit?: CreateRateLimitRequest;
 	calendar_aligned?: boolean; // Team-wide: applies to all team budgets and the team rate limit
+	disable_content_logging?: boolean; // Omit to inherit; true forces content off, false forces it on
 }
 
 export interface UpdateTeamRequest {
@@ -289,6 +293,7 @@ export interface UpdateTeamRequest {
 	calendar_aligned?: boolean;
 	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
 	reset_budget_usage?: boolean;
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 }
 
 export interface CreateCustomerRequest {
