@@ -9,6 +9,7 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1167,4 +1168,24 @@ func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testi
 
 	close(done)
 	writers.Wait()
+}
+
+// TestReloadProxyConfigUpdatesHTTPClientFactory pins that saving the global proxy reaches
+// the factory behind webhooks, skills and plugin downloads, not only provider inference.
+func TestReloadProxyConfigUpdatesHTTPClientFactory(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	factory := network.NewHTTPClientFactory(nil, nil)
+	s := &BifrostHTTPServer{Config: &lib.Config{}, HTTPClientFactory: factory}
+	proxy := &configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://10.0.0.9:3128", EnableForAPI: true}
+
+	if err := s.ReloadProxyConfig(context.Background(), proxy); err != nil {
+		t.Fatalf("ReloadProxyConfig: %v", err)
+	}
+	got := factory.GetProxyConfig()
+	if got == nil || !got.Enabled || got.URL != proxy.URL || !got.EnableForAPI {
+		t.Fatalf("factory proxy config = %+v, want the reloaded one", got)
+	}
 }

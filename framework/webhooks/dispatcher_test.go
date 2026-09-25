@@ -5,13 +5,17 @@ import (
 	"crypto/hmac"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -595,10 +599,56 @@ func TestDeliverRefusesPlaintextHTTPWithoutOptIn(t *testing.T) {
 	// and custom headers in cleartext.
 	endpoint := testEndpoint("ep-1", "http://receiver.example/hook")
 	endpoint.AllowPrivateNetwork = false
-	c := newDeliveryClient()
+	c := newDeliveryClient(nil)
 	result := c.deliver(context.Background(), endpoint, tables.WebhookEventAsyncJobCompleted, "wh-1", []byte("{}"), time.Now().UTC())
 	assert.Zero(t, result.statusCode)
 	assert.Contains(t, result.errText, "https is required")
+}
+
+// TestDeliverGoesThroughGlobalProxyKeepingPolicy pins that webhook deliveries honour
+// the global proxy when it is enabled for API traffic, and that each endpoint's SSRF
+// policy still judges the target before anything reaches the proxy. The delivery client
+// used to build its own transport with no proxy support at all, so behind a proxy-only
+// egress every webhook failed, even though the UI says the API toggle covers webhooks.
+func TestDeliverGoesThroughGlobalProxyKeepingPolicy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	factory := network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled:      true,
+		Type:         network.GlobalProxyTypeHTTP,
+		URL:          "http://127.0.0.1:" + set.Config.Port(),
+		EnableForAPI: true,
+	}, nil)
+	c := newDeliveryClient(factory)
+
+	tests := []struct {
+		name         string
+		url          string
+		allowPrivate bool
+		want         proxytest.Route
+		refused      string // non-empty: the policy must refuse the target before the proxy
+	}{
+		{name: "strict endpoint, public target", url: "https://203.0.113.10/hook", want: proxytest.Route{Proxy: "config"}},
+		{name: "strict endpoint, private target refused", url: "https://10.0.0.5/hook", refused: "non-public address"},
+		{name: "private endpoint, private target", url: "https://10.0.0.5/hook", allowPrivate: true, want: proxytest.Route{Proxy: "config"}},
+		{name: "private endpoint, metadata target refused", url: "https://169.254.169.254/hook", allowPrivate: true, refused: "link-local"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			set.Reset()
+			endpoint := testEndpoint("ep-1", tt.url)
+			endpoint.AllowPrivateNetwork = tt.allowPrivate
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			result := c.deliver(ctx, endpoint, tables.WebhookEventAsyncJobCompleted, "wh-1", []byte("{}"), time.Now().UTC())
+			if tt.refused != "" {
+				assert.Contains(t, result.errText, tt.refused)
+				proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+				return
+			}
+			parsed, _ := url.Parse(tt.url)
+			proxytest.AssertRoute(t, set, tt.want, net.JoinHostPort(parsed.Hostname(), "443"), nil)
+		})
+	}
 }
 
 func TestEndpointGoneRetiresJobWithoutCounters(t *testing.T) {

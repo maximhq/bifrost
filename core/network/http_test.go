@@ -736,7 +736,7 @@ func sendFactoryMatrixRequest(t *testing.T, factory *HTTPClientFactory, purpose 
 		case "tls":
 			client = factory.HTTPClientWithTLS(purpose, factoryMatrixTLS)
 		case "ssrf":
-			client = factory.SSRFHTTPClient(purpose, nil)
+			client = &http.Client{Transport: factory.PolicyTransport(purpose, factoryMatrixSSRFPolicy)}
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 		resp, err := client.Do(req)
@@ -748,6 +748,9 @@ func sendFactoryMatrixRequest(t *testing.T, factory *HTTPClientFactory, purpose 
 	t.Fatalf("unknown client kind %q", kind)
 	return nil
 }
+
+// factoryMatrixSSRFPolicy is the policy the "ssrf" client kind enforces.
+var factoryMatrixSSRFPolicy = SSRFPolicy(nil)
 
 // factoryMatrixTLS stands in for a caller's own TLS settings (HTTPClientWithTLS).
 var factoryMatrixTLS = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "custom.example"}
