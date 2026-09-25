@@ -1412,6 +1412,17 @@
                 ]
               },
               {
+                "group": "API Keys",
+                "expanded": false,
+                "pages": [
+                  "GET /api/api-keys",
+                  "POST /api/api-keys",
+                  "GET /api/api-keys/{id}",
+                  "PUT /api/api-keys/{id}",
+                  "DELETE /api/api-keys/{id}"
+                ]
+              },
+              {
                 "group": "Webhooks",
                 "expanded": false,
                 "pages": [

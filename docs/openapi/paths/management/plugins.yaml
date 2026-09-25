@@ -1,6 +1,15 @@
 plugins-builtins:
   get:
     operationId: listBuiltinPlugins
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List built-in plugin names
     description: |
       Returns the canonical list of built-in plugin names available in this Bifrost build.
@@ -29,6 +38,15 @@ plugins-builtins:
 plugins:
   get:
     operationId: listPlugins
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List all plugins
     description: |
       Returns a list of all plugins with their configurations and status.
@@ -52,6 +70,15 @@ plugins:
 
   post:
     operationId: createPlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create a new plugin
     description: |
       Creates a new plugin with the specified configuration.
@@ -99,6 +126,15 @@ plugins:
 /plugins/{name}:
   get:
     operationId: getPlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a specific plugin
     description: |
       Returns the configuration for a specific plugin.
@@ -137,6 +173,15 @@ plugins:
 
   put:
     operationId: updatePlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a plugin
     description: |
       Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.
@@ -192,8 +237,18 @@ plugins:
 
   delete:
     operationId: deletePlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a plugin
-    description: Removes a plugin from the configuration and stops it if running.
+    description: |
+      Removes a plugin from the configuration and stops it if running.
     tags:
       - Plugins
     parameters:
