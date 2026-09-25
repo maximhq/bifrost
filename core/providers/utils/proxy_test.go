@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -304,15 +305,14 @@ func TestNetHTTPProxy_Types(t *testing.T) {
 // client existed they used http.DefaultTransport, which only reads HTTPS_PROXY.
 func TestNewProviderHTTPClient_UsesProxyConfig(t *testing.T) {
 	var hits atomic.Int32
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Host == "oauth2.example" {
 			hits.Add(1)
 			_, _ = w.Write([]byte(`{"access_token":"t"}`))
 			return
 		}
 		http.Error(w, "unexpected target "+r.URL.Host, http.StatusBadGateway)
-	}))
-	defer proxy.Close()
+	})
 
 	client := NewProviderHTTPClient(&schemas.ProxyConfig{
 		Type: schemas.HTTPProxy,
@@ -330,19 +330,35 @@ func TestNewProviderHTTPClient_UsesProxyConfig(t *testing.T) {
 }
 
 func TestNewProviderHTTPClient_WithoutProxyConfigKeepsEnvironment(t *testing.T) {
+	var hits atomic.Int32
+	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	})
+	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTP_PROXY", proxy.URL)
+
 	for name, cfg := range map[string]*schemas.ProxyConfig{"nil": nil, "none": {Type: schemas.NoProxy}} {
+		hits.Store(0)
 		client := NewProviderHTTPClient(cfg, schemas.DefaultNetworkConfig, testLogger{})
-		transport, ok := client.Transport.(*http.Transport)
-		if !ok || transport.Proxy == nil {
-			t.Errorf("%s: want a transport that proxies from the environment, as http.DefaultTransport did", name)
+		if resp, err := client.Get("http://oauth2.example/token"); err == nil {
+			resp.Body.Close()
+		}
+		if hits.Load() != 1 {
+			t.Errorf("%s: env proxy saw %d requests, want 1 (token calls keep proxying from the environment)", name, hits.Load())
 		}
 	}
 }
 
 func TestNewProviderHTTPClient_InvalidConfigFailsPerRequest(t *testing.T) {
-	client := NewProviderHTTPClient(&schemas.ProxyConfig{Type: "carrier-pigeon"}, schemas.DefaultNetworkConfig, testLogger{})
+	t.Setenv("BIFROST_TEST_EMPTY_AUTH_PROXY", "")
+	client := NewProviderHTTPClient(&schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar("env.BIFROST_TEST_EMPTY_AUTH_PROXY"),
+	}, schemas.DefaultNetworkConfig, testLogger{})
 	_, err := client.Get("http://oauth2.example/token")
-	if err == nil || !strings.Contains(err.Error(), "unsupported proxy type") {
+	if err == nil || !strings.Contains(err.Error(), "resolved to an empty value") {
 		t.Fatalf("expected the configuration error on the request, got %v", err)
 	}
 }
@@ -352,33 +368,40 @@ func TestNewProviderHTTPClient_InvalidConfigFailsPerRequest(t *testing.T) {
 // (Azure Arc) connect directly even with a proxy configured. A corporate proxy cannot
 // reach those, so proxying them would break managed and workload identity.
 func TestNewProviderHTTPClient_NeverProxiesMetadataOrLoopback(t *testing.T) {
-	client := NewProviderHTTPClient(&schemas.ProxyConfig{
-		Type: schemas.HTTPProxy,
-		URL:  schemas.NewSecretVar("http://10.0.0.9:3128"),
-	}, schemas.DefaultNetworkConfig, testLogger{})
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	for _, host := range []string{"169.254.169.254", "metadata.google.internal", "100.100.100.200", "fd00:ec2::254", "localhost", "127.0.0.1", "::1"} {
+		if !isLocalOrMetadataHost(host) {
+			t.Errorf("isLocalOrMetadataHost(%q) = false, want true", host)
+		}
 	}
-
-	direct := []string{
-		"http://169.254.169.254/metadata/identity/oauth2/token",
-		"http://metadata.google.internal/computeMetadata/v1/",
-		"http://100.100.100.200/latest/meta-data/",
-		"http://[fd00:ec2::254]/latest/api/token",
-		"http://localhost:40342/metadata/identity/oauth2/token",
-		"http://127.0.0.1:40342/metadata/identity/oauth2/token",
-	}
-	for _, raw := range direct {
-		req, _ := http.NewRequest(http.MethodGet, raw, nil)
-		if got, err := transport.Proxy(req); err != nil || got != nil {
-			t.Errorf("%s: proxy = %v, err = %v, want a direct connection", raw, got, err)
+	for _, host := range []string{"login.microsoftonline.com", "oauth2.googleapis.com", "10.0.0.5", "203.0.113.10"} {
+		if isLocalOrMetadataHost(host) {
+			t.Errorf("isLocalOrMetadataHost(%q) = true, want false", host)
 		}
 	}
 
-	req, _ := http.NewRequest(http.MethodPost, "https://login.microsoftonline.com/tenant/oauth2/v2.0/token", nil)
-	if got, err := transport.Proxy(req); err != nil || got == nil || got.Host != "10.0.0.9:3128" {
-		t.Errorf("token endpoint: proxy = %v, err = %v, want 10.0.0.9:3128", got, err)
+	// End to end: a loopback target is reached directly, and the proxy never sees it.
+	var proxyHits atomic.Int32
+	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) { proxyHits.Add(1) })
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("imds"))
+	}))
+	defer target.Close()
+
+	client := NewProviderHTTPClient(&schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	}, schemas.DefaultNetworkConfig, testLogger{})
+	resp, err := client.Get(target.URL + "/metadata/identity/oauth2/token")
+	if err != nil {
+		t.Fatalf("direct request to a local target failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "imds" {
+		t.Errorf("body = %q, want the local target's response", body)
+	}
+	if proxyHits.Load() != 0 {
+		t.Errorf("proxy saw %d requests for a local target, want 0", proxyHits.Load())
 	}
 }
 
@@ -640,9 +663,9 @@ type proxyMatrixTarget struct {
 var proxyMatrixTargets = []proxyMatrixTarget{
 	{name: "https", scheme: "https", port: "443"},
 	{name: "http", scheme: "http", port: "80"},
-	// A TLS upstream on a non-standard port: fasthttp's env dialer sees only host:port
-	// and treats every port but 443 as plain HTTP, so it picks HTTP_PROXY here while
-	// net/http, which knows the scheme, picks HTTPS_PROXY.
+	// A TLS upstream on a non-standard port: every stack here runs on fasthttp, whose
+	// dialer sees only host:port and treats every port but 443 as plain HTTP, so it
+	// picks HTTP_PROXY. (Bedrock's net/http client picks HTTPS_PROXY; see its matrix.)
 	{name: "https-8443", scheme: "https", port: "8443"},
 }
 
@@ -664,7 +687,7 @@ func proxyMatrixExpect(stack string, source proxyMatrixSource, env proxyMatrixEn
 		// With no proxy configured, only the auth client keeps the environment
 		// default it had on http.DefaultTransport. Inference and fetch go direct.
 		if stack == "auth" {
-			return proxyMatrixEnvPick(env, target.scheme == "https")
+			return proxyMatrixFasthttpEnvPick(env, target)
 		}
 		return ""
 	case "http-ip", "http-hostname":
@@ -676,16 +699,14 @@ func proxyMatrixExpect(stack string, source proxyMatrixSource, env proxyMatrixEn
 	case "socks5":
 		return "socks"
 	case "environment":
-		if stack == "fasthttp" {
-			return proxyMatrixFasthttpEnvPick(env, target)
-		}
-		return proxyMatrixEnvPick(env, target.scheme == "https")
+		return proxyMatrixFasthttpEnvPick(env, target)
 	}
 	panic("unknown source " + source.name)
 }
 
 // proxyMatrixEnvPick is httpproxy's rule: https uses HTTPS_PROXY, http uses
 // HTTP_PROXY, with no fallback between them; a NO_PROXY match is direct.
+// proxyMatrixFasthttpEnvPick feeds it the scheme fasthttp infers from the port.
 func proxyMatrixEnvPick(env proxyMatrixEnv, https bool) string {
 	if env.vars["NO_PROXY"] != "" {
 		return ""
@@ -858,5 +879,68 @@ func TestNetHTTPProxy_NoProxyConnectsDirectly(t *testing.T) {
 	proxied, _ := http.NewRequest(http.MethodPost, "https://us-central1-aiplatform.googleapis.com/v1/x", nil)
 	if got, _ := proxy(proxied); got == nil || got.Host != "10.0.0.9:3128" {
 		t.Errorf("other host: proxy = %v, want 10.0.0.9:3128", got)
+	}
+}
+
+// newForwardProxy starts an HTTP proxy that serves handler for both proxy styles:
+// absolute-URI requests and CONNECT tunnels carrying plain HTTP requests. fasthttp's
+// proxy dialer tunnels every target with CONNECT, http:// ones included, so a test
+// proxy for the fasthttp-backed clients must speak both. handler sees r.URL.Host set
+// to the target (the port is dropped when it is 80).
+func newForwardProxy(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			handler(w, r)
+			return
+		}
+		target := strings.TrimSuffix(r.Host, ":80")
+		conn, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		reader := bufio.NewReader(io.MultiReader(buffered.Reader, conn))
+		for {
+			inner, err := http.ReadRequest(reader)
+			if err != nil {
+				return
+			}
+			inner.URL.Scheme = "http"
+			inner.URL.Host = target
+			recorder := httptest.NewRecorder()
+			handler(recorder, inner)
+			// Result leaves the length unknown, which Write turns into a
+			// close-delimited body; the tunnel stays open, so give it a length.
+			resp := recorder.Result()
+			resp.ContentLength = int64(recorder.Body.Len())
+			if err := resp.Write(conn); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestConfigureProxy_EnvironmentNoProxyKeepsPrivateNetworkCheck pins that a target the
+// environment says not to proxy is dialed by ConfigureDialer, with its private-network
+// rules. fasthttpproxy's env dialer dialed such targets itself, so with type
+// "environment" a NO_PROXY entry for a private address skipped the check entirely.
+func TestConfigureProxy_EnvironmentNoProxyKeepsPrivateNetworkCheck(t *testing.T) {
+	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "10.0.0.5")
+
+	client := &fasthttp.Client{}
+	ConfigureProxy(client, &schemas.ProxyConfig{Type: schemas.EnvProxy}, testLogger{})
+	ConfigureDialer(client, false)
+
+	_, err := client.Dial("10.0.0.5:443")
+	if err == nil || !strings.Contains(err.Error(), "connection to private IP 10.0.0.5 is not allowed") {
+		t.Fatalf("expected ConfigureDialer's private-network refusal, got %v", err)
 	}
 }
