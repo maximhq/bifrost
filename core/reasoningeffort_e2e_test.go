@@ -360,8 +360,10 @@ func TestGPT6AstraChatWithToolsServedThroughResponses(t *testing.T) {
 		t.Fatalf("response = %+v, want a chat completion with one choice", response)
 	}
 	toolCalls := response.Choices[0].Message.ToolCalls
-	if len(toolCalls) != 1 || toolCalls[0].Function.Name == nil || *toolCalls[0].Function.Name != "get_weather" {
-		t.Fatalf("tool_calls = %+v, want the upstream function_call mapped back to one chat tool call", toolCalls)
+	if len(toolCalls) != 1 || toolCalls[0].ID == nil || *toolCalls[0].ID != "call_1" ||
+		toolCalls[0].Function.Name == nil || *toolCalls[0].Function.Name != "get_weather" ||
+		toolCalls[0].Function.Arguments != `{"city":"Paris"}` {
+		t.Fatalf("tool_calls = %+v, want the upstream function_call mapped back to one chat tool call with id call_1 and its arguments", toolCalls)
 	}
 
 	assertAstraResponsesWire(t, <-requests, true)
