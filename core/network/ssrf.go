@@ -533,21 +533,38 @@ func NewPrivateNetworkHTTPClient(timeout time.Duration) *http.Client {
 // and NewPrivateNetworkHTTPClient: dial is the per-connection gate, checkIP is
 // the same policy expressed as a per-address predicate, applied to redirect
 // targets (every resolved address must pass) and, through
-// guardedProxySelector, to IP-literal destinations on the proxied path.
+// guardedProxySelector, to IP-literal destinations on the proxied path. The
+// proxy is the global proxy when it is enabled for API traffic, else the
+// environment's (DefaultProxyFunc).
 func newGuardedHTTPClient(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error) *http.Client {
-	return newGuardedHTTPClientWith(timeout, dial, checkIP, http.ProxyFromEnvironment, net.DefaultResolver)
+	return newGuardedHTTPClientWith(timeout, dial, checkIP, DefaultProxyFunc(ClientPurposeAPI), net.DefaultResolver)
 }
 
 // newGuardedHTTPClientWith is the seam behind newGuardedHTTPClient with the
 // proxy selector and resolver injectable for tests.
+//
+// A request the proxy selector sends through a proxy goes over a separate transport
+// whose dialer only ever reaches the proxy, under the private-network policy: an
+// operator's proxy on a private or loopback address is the normal self-hosted setup,
+// and the destination itself is vetted by guardedProxySelector before the proxy sees it.
 func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error, proxy func(*http.Request) (*url.URL, error), resolver ipLookuper) *http.Client {
-	transport := &http.Transport{
-		Proxy:                 guardedProxySelector(proxy, checkIP, resolver),
-		DialContext:           dial,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: time.Second,
-		ForceAttemptHTTP2:     true,
+	newTransport := func(selector func(*http.Request) (*url.URL, error), dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Transport {
+		return &http.Transport{
+			Proxy:                 selector,
+			DialContext:           dial,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+			ForceAttemptHTTP2:     true,
+		}
+	}
+	var transport http.RoundTripper = newTransport(nil, dial)
+	if proxy != nil {
+		transport = &ProxyAwareTransport{
+			Proxy:    proxy,
+			Direct:   newTransport(nil, dial),
+			ViaProxy: newTransport(guardedProxySelector(proxy, checkIP, resolver), PrivateNetworkDialContext(timeout)),
+		}
 	}
 	return &http.Client{
 		Transport: transport,

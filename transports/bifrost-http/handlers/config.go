@@ -1419,8 +1419,14 @@ func checkURLAccessibility(rawURL string) error {
 	}
 	client := &http.Client{
 		Timeout: 60 * time.Second,
-		Transport: &http.Transport{
-			DialContext: checkURLAccessibilityDialContext,
+		// The global proxy when it is enabled for API traffic, else the environment's:
+		// the sync that follows a successful check uses the same. A direct dial keeps
+		// the public-only check; a proxied request dials only the proxy, which may be
+		// on a private address, and goes to the host ValidateExternalURL just checked.
+		Transport: &network.ProxyAwareTransport{
+			Proxy:    network.DefaultProxyFunc(network.ClientPurposeAPI),
+			Direct:   &http.Transport{DialContext: checkURLAccessibilityDialContext},
+			ViaProxy: &http.Transport{Proxy: network.DefaultProxyFunc(network.ClientPurposeAPI), DialContext: network.PrivateNetworkDialContext(10 * time.Second)},
 		},
 		// The operator validated this URL, not wherever it redirects: a redirect
 		// is returned as-is and fails the 200 check below instead of being followed.

@@ -3094,9 +3094,9 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 // back to the mcp-go library's own default client, which carried no guard at
 // all - not even the link-local/metadata block applied here.
 //
-// The process's HTTP_PROXY / HTTPS_PROXY / NO_PROXY environment is honored
-// through the http.ProxyFromEnvironment selector the cloned DefaultTransport
-// carries, matching every other outbound client in the process and the
+// The proxy is network.DefaultProxyFunc's: the global proxy when it is enabled
+// for API traffic, else the process's HTTP_PROXY / HTTPS_PROXY / NO_PROXY
+// environment, matching every other outbound client in the process and the
 // behavior before core v1.8.5. See mcpProxySelector for how the destination
 // guard stays intact on the proxied path.
 //
@@ -3111,11 +3111,7 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 // check in the HTTP handler only sees one DNS answer; this is what holds when
 // the name later resolves somewhere else.
 func (m *MCPManager) buildTLSHTTPClient(config *schemas.MCPClientConfig) (*http.Client, error) {
-	baseTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		baseTransport = &http.Transport{}
-	}
-	return m.buildTLSHTTPClientWithProxy(config, baseTransport.Clone().Proxy)
+	return m.buildTLSHTTPClientWithProxy(config, network.DefaultProxyFunc(network.ClientPurposeAPI))
 }
 
 // buildTLSHTTPClientWithProxy is the seam behind buildTLSHTTPClient with the
