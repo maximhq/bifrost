@@ -264,3 +264,161 @@ func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testin
 	assert.Equal(t, "azure/azure-gpt-4o-mini-deployment", metadata.Model,
 		"the refined provider/model must be written back to the streamed metadata")
 }
+
+// fallbackMatrixPlugin loads one global rule matching model "m" whose fallbacks are decoded from
+// storedFallbacks the way the config store does at boot (AfterFind on the JSON column).
+func fallbackMatrixPlugin(t *testing.T, storedFallbacks *string) *RoutingPlugin {
+	t.Helper()
+	stored := &configstoreTables.TableRoutingRule{
+		ID:            "fb-matrix",
+		Name:          "Fallback Matrix Rule",
+		CelExpression: "model == 'm'",
+		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Weight: 1.0}},
+		Fallbacks:     storedFallbacks,
+		Enabled:       bifrost.Ptr(true),
+		Scope:         "global",
+	}
+	require.NoError(t, stored.AfterFind(nil))
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+	return plugin
+}
+
+// TestApplyRoutingRules_FallbackMatrix pins how every stored fallback form reaches the request,
+// for a standard provider, a custom provider registered before the rules load, and a custom
+// provider registered only after they load (the boot order behind #7538).
+func TestApplyRoutingRules_FallbackMatrix(t *testing.T) {
+	providers := []struct {
+		name          string
+		provider      schemas.ModelProvider
+		registerAfter bool // register after the rule is decoded, as bifrost.Init does at boot
+	}{
+		{name: "standard", provider: schemas.Anthropic},
+		{name: "custom registered before load", provider: "custom-fb-before"},
+		{name: "custom registered after load", provider: "custom-fb-after", registerAfter: true},
+	}
+	cases := []struct {
+		name   string
+		stored func(p string) string // JSON column content
+		want   func(p schemas.ModelProvider) []schemas.Fallback
+	}{
+		{
+			name:   "legacy provider/model",
+			stored: func(p string) string { return `["` + p + `/fb-model"]` },
+			want: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model"}}
+			},
+		},
+		{
+			name:   "legacy provider/ uses the incoming model",
+			stored: func(p string) string { return `["` + p + `/"]` },
+			want:   func(p schemas.ModelProvider) []schemas.Fallback { return []schemas.Fallback{{Provider: p, Model: "m"}} },
+		},
+		{
+			name:   "legacy model containing slashes",
+			stored: func(p string) string { return `["` + p + `/meta-llama/Llama-3.1-8B"]` },
+			want: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "meta-llama/Llama-3.1-8B"}}
+			},
+		},
+		{
+			name:   "pinned object",
+			stored: func(p string) string { return `[{"provider":"` + p + `","model":"fb-model","key_id":"k-1"}]` },
+			want: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model", KeyID: "k-1"}}
+			},
+		},
+		{
+			name:   "pinned object without a model uses the incoming model",
+			stored: func(p string) string { return `[{"provider":"` + p + `","model":"","key_id":"k-1"}]` },
+			want: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "m", KeyID: "k-1"}}
+			},
+		},
+		{
+			name: "mixed list keeps order and skips entries without a known provider",
+			stored: func(p string) string {
+				return `["unknown-prefix/fb-model",{"provider":"` + p + `","model":"a","key_id":"k-1"},"bare-model","` + p + `/b","openai/gpt-4o"]`
+			},
+			want: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "a", KeyID: "k-1"}, {Provider: p, Model: "b"}, {Provider: schemas.OpenAI, Model: "gpt-4o"}}
+			},
+		},
+	}
+	for _, prov := range providers {
+		for _, tc := range cases {
+			t.Run(prov.name+"/"+tc.name, func(t *testing.T) {
+				if prov.provider != schemas.Anthropic {
+					schemas.UnregisterKnownProvider(prov.provider)
+					t.Cleanup(func() { schemas.UnregisterKnownProvider(prov.provider) })
+					if !prov.registerAfter {
+						schemas.RegisterKnownProvider(prov.provider)
+					}
+				}
+				plugin := fallbackMatrixPlugin(t, bifrost.Ptr(tc.stored(string(prov.provider))))
+				if prov.registerAfter {
+					schemas.RegisterKnownProvider(prov.provider)
+				}
+
+				req := &schemas.BifrostRequest{
+					RequestType: schemas.ChatCompletionRequest,
+					ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m"},
+				}
+				decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), req, rules.GovernanceScope{})
+				require.NoError(t, err)
+				require.NotNil(t, decision)
+				assert.Equal(t, tc.want(prov.provider), req.ChatRequest.Fallbacks)
+			})
+		}
+	}
+}
+
+// TestApplyRoutingRules_FallbacksReachResponsesRequests covers a non-chat request type, since the
+// plugin writes fallbacks through BifrostRequest.SetFallbacks for every type.
+func TestApplyRoutingRules_FallbacksReachResponsesRequests(t *testing.T) {
+	plugin := fallbackMatrixPlugin(t, bifrost.Ptr(`["anthropic/fb-model",{"provider":"vertex","key_id":"k-1"}]`))
+	req := &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m"},
+	}
+	decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), req, rules.GovernanceScope{})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, []schemas.Fallback{
+		{Provider: schemas.Anthropic, Model: "fb-model"},
+		{Provider: schemas.Vertex, Model: "m", KeyID: "k-1"},
+	}, req.ResponsesRequest.Fallbacks)
+}
+
+// TestApplyRoutingRules_RuleFallbacksVersusCallerFallbacks pins how a matched rule treats the
+// fallbacks the caller sent: a rule without fallbacks leaves them alone, a rule with fallbacks
+// replaces them, and a rule whose every fallback is dropped still replaces them with an empty list.
+func TestApplyRoutingRules_RuleFallbacksVersusCallerFallbacks(t *testing.T) {
+	callerFallbacks := []schemas.Fallback{{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}
+	cases := []struct {
+		name   string
+		stored *string
+		want   []schemas.Fallback
+	}{
+		{name: "rule without fallbacks keeps the caller's", stored: nil, want: callerFallbacks},
+		{name: "rule with an empty list keeps the caller's", stored: bifrost.Ptr(`[]`), want: callerFallbacks},
+		{name: "rule fallbacks replace the caller's", stored: bifrost.Ptr(`["anthropic/fb-model"]`), want: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "fb-model"}}},
+		{name: "rule whose fallbacks all drop clears the caller's", stored: bifrost.Ptr(`["unknown-prefix/fb-model"]`), want: []schemas.Fallback{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := fallbackMatrixPlugin(t, tc.stored)
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Fallbacks: append([]schemas.Fallback(nil), callerFallbacks...)},
+			}
+			decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), req, rules.GovernanceScope{})
+			require.NoError(t, err)
+			require.NotNil(t, decision)
+			assert.Equal(t, tc.want, req.ChatRequest.Fallbacks)
+		})
+	}
+}
