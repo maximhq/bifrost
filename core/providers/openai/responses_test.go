@@ -3648,7 +3648,8 @@ func TestShellToolSerializesForOpenAI(t *testing.T) {
 		},
 		ResponsesParameters: schemas.ResponsesParameters{
 			Tools: []schemas.ResponsesTool{{
-				Type: schemas.ResponsesToolTypeShell,
+				Type:           schemas.ResponsesToolTypeShell,
+				AllowedCallers: []string{"direct"},
 				ResponsesToolShell: &schemas.ResponsesToolShell{
 					Environment: &schemas.ResponsesToolShellEnvironment{
 						Type:          "container_auto",
@@ -3668,6 +3669,7 @@ func TestShellToolSerializesForOpenAI(t *testing.T) {
 
 	for _, want := range []string{
 		`"type":"shell"`,
+		`"allowed_callers":["direct"]`,
 		`"type":"container_auto"`,
 		`"memory_limit":"4g"`,
 		`"allowed_domains":["example.com"]`,
@@ -3679,6 +3681,159 @@ func TestShellToolSerializesForOpenAI(t *testing.T) {
 	} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("missing %s in request body; raw=%s", want, raw)
+		}
+	}
+}
+
+// TestOpenAIAllowedCallersTranslation covers the caller vocabulary map: Anthropic
+// names the sandbox caller by code execution tool version, OpenAI calls it
+// "programmatic", and both know "direct". Unknown values stay put so OpenAI can
+// reject them (it answers "Supported values are: 'direct' and 'programmatic'").
+func TestOpenAIAllowedCallersTranslation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{name: "direct is shared", in: []string{"direct"}, want: []string{"direct"}},
+		{name: "programmatic passes through", in: []string{"programmatic"}, want: []string{"programmatic"}},
+		{name: "code execution caller", in: []string{"code_execution_20260120"}, want: []string{"programmatic"}},
+		{name: "older code execution caller", in: []string{"code_execution_20250825"}, want: []string{"programmatic"}},
+		{name: "newest code execution caller", in: []string{"code_execution_20260521"}, want: []string{"programmatic"}},
+		// Anthropic ships new code execution versions regularly; every one of them is
+		// "programmatic" to OpenAI, so they are matched by prefix rather than by list.
+		{name: "code execution version newer than we know of", in: []string{"code_execution_20270101"}, want: []string{"programmatic"}},
+		{name: "both callers", in: []string{"direct", "code_execution_20260120"}, want: []string{"direct", "programmatic"}},
+		{name: "collapses to one programmatic", in: []string{"code_execution_20250825", "code_execution_20260120"}, want: []string{"programmatic"}},
+		{name: "unknown value is left for OpenAI to reject", in: []string{"bogus_value"}, want: []string{"bogus_value"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := openAIAllowedCallers(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestShellToolAllowedCallersReachOpenAITranslated pins the translation to the wire.
+func TestShellToolAllowedCallersReachOpenAITranslated(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.2",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:               schemas.ResponsesToolTypeShell,
+				AllowedCallers:     []string{"direct", "code_execution_20260120"},
+				ResponsesToolShell: &schemas.ResponsesToolShell{},
+			}},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+	if !strings.Contains(raw, `"allowed_callers":["direct","programmatic"]`) {
+		t.Errorf("allowed_callers must reach OpenAI translated; raw=%s", raw)
+	}
+	if strings.Contains(raw, "code_execution") {
+		t.Errorf("Anthropic caller vocabulary must not reach OpenAI; raw=%s", raw)
+	}
+}
+
+// TestFilterUnsupportedToolsKeepsProgrammaticToolCalling locks in the bare tool type
+// that turns allowed_callers: ["programmatic"] on. It used to be stripped before the
+// request left Bifrost, so the restriction was never honoured.
+func TestFilterUnsupportedToolsKeepsProgrammaticToolCalling(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+			},
+		},
+	}
+
+	req.filterUnsupportedTools(true)
+
+	if len(req.Tools) != 1 {
+		t.Fatalf("the bare tool must survive the filter; got %+v", req.Tools)
+	}
+	if req.Tools[0].Type != schemas.ResponsesToolTypeProgrammaticToolCalling {
+		t.Fatalf("tool type changed: %+v", req.Tools)
+	}
+}
+
+// TestBareOpenAIToolsSerialize checks the wire shape: a bare type emits just its
+// discriminator, and code_interpreter keeps allowed_callers now that OpenAI accepts
+// the field there.
+func TestBareOpenAIToolsSerialize(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.1",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+				{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					AllowedCallers:               []string{"direct"},
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Container: "auto"},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	for _, want := range []string{
+		`{"type":"programmatic_tool_calling"}`,
+		`"type":"code_interpreter","allowed_callers":["direct"]`, // allowed_callers is no longer stripped here
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("missing %s in request body; raw=%s", want, raw)
+		}
+	}
+}
+
+// TestResponsesToolBareTypesRoundTrip guards the codec for tool types that have no
+// embedded struct: the discriminator and the common fields must survive.
+func TestResponsesToolBareTypesRoundTrip(t *testing.T) {
+	for _, input := range []string{
+		`{"type":"programmatic_tool_calling"}`,
+		`{"type":"programmatic_tool_calling","allowed_callers":["direct"]}`,
+	} {
+		var tool schemas.ResponsesTool
+		if err := schemas.Unmarshal([]byte(input), &tool); err != nil {
+			t.Fatalf("unmarshal %s: %v", input, err)
+		}
+		encoded, err := schemas.Marshal(tool)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", input, err)
+		}
+		if string(encoded) != input {
+			t.Errorf("round trip changed %s -> %s", input, string(encoded))
 		}
 	}
 }
