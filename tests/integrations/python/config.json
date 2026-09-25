@@ -1048,7 +1048,7 @@
         "id": "harness-custom-provider-fallback-boot",
         "priority": 909,
         "name": "Harness custom provider fallback loaded at boot",
-        "description": "Provider harness only (folder 116, #7538). Sends the request to OpenAI on a model OpenAI rejects, then falls back to the custom provider openai_pc_auto through a legacy 'provider/model' string. Rules are decoded before bifrost.Init registers custom providers, so this rule is the boot-time path that dropped the fallback. Matches nothing without x-harness-custom-fallback: boot.",
+        "description": "Provider harness only (folder 117, #7538). Sends the request to OpenAI on a model OpenAI rejects, then falls back to the custom provider openai_pc_auto through a legacy 'provider/model' string. Rules are decoded before bifrost.Init registers custom providers, so this rule is the boot-time path that dropped the fallback. Matches nothing without x-harness-custom-fallback: boot.",
         "cel_expression": "\"x-harness-custom-fallback\" in headers && headers[\"x-harness-custom-fallback\"] == \"boot\"",
         "targets": [
           {
@@ -1059,6 +1059,23 @@
         ],
         "fallbacks": [
           "openai_pc_auto/gpt-4o-mini"
+        ]
+      },
+      {
+        "id": "harness-custom-provider-fallback-boot-provider-only",
+        "priority": 910,
+        "name": "Harness custom provider-only fallback loaded at boot",
+        "description": "Provider harness only (folder 117, #7538). Same as harness-custom-provider-fallback-boot, but the fallback is the provider-only legacy form 'openai_pc_auto/', which must keep the custom provider and take the incoming model. Matches nothing without x-harness-custom-fallback: boot-provider-only.",
+        "cel_expression": "\"x-harness-custom-fallback\" in headers && headers[\"x-harness-custom-fallback\"] == \"boot-provider-only\"",
+        "targets": [
+          {
+            "provider": "openai",
+            "model": "bifrost-harness-nonexistent-primary",
+            "weight": 1
+          }
+        ],
+        "fallbacks": [
+          "openai_pc_auto/"
         ]
       }
     ],
