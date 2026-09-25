@@ -114376,7 +114376,7 @@
         "properties": {
           "configured": {
             "type": "boolean",
-            "description": "Whether Warp has everything it needs to answer a question: enabled, with\na provider and a model, and an embedding space - embedding provider,\nembedding model, a positive embedding dimension and a namespace - since\nsemantic search over the logs is part of answering. A credential is\ndeliberately not part of this test, since a provider reached over a\ntrusted network through `base_url` legitimately needs none.\n"
+            "description": "Whether Warp has everything it needs to answer a question: enabled, with\na provider and a model, and an embedding space - embedding provider,\nembedding model, a positive embedding dimension and a namespace - since\nsemantic search over the logs is part of answering. A key is\ndeliberately not part of this test, since a provider using ambient\ncredentials legitimately needs none.\n"
           },
           "enabled": {
             "type": "boolean",
@@ -114390,11 +114390,6 @@
           "model": {
             "type": "string",
             "example": "gpt-4o"
-          },
-          "base_url": {
-            "type": "string",
-            "description": "Where Warp reaches its model. Overrides the provider's default endpoint,\nwhich is what an empty value means. Required for self-hosted and proxied\ndeployments, empty otherwise.\n\nMust not contain URL userinfo. This value is stored and returned\nunredacted, so a credential embedded in it would be readable by anyone\nwho can read the configuration; a URL carrying one is rejected with\n`400`. Name a configured provider key with `api_key_id` instead.\n",
-            "example": "https://bifrost.internal.example.com"
           },
           "api_key_id": {
             "type": "string",
@@ -114535,12 +114530,6 @@
             "type": "string",
             "description": "Required when `enabled` is true.",
             "example": "gpt-4o"
-          },
-          "base_url": {
-            "type": "string",
-            "pattern": "^$|^https?://[^/?#@\\s]+([/?#]\\S*)?$",
-            "format": "uri-reference",
-            "description": "Must not contain URL userinfo: this value is stored and returned\nunredacted, so a URL carrying a credential is rejected with `400`. Use\n`api_key_id` to name a configured provider key.\n"
           },
           "api_key_id": {
             "type": "string",

@@ -590,7 +590,6 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 				cause: "The provider rejected the request or was unreachable. This is about Warp's own model, not the traffic you asked about.",
 				suggestions: [
 					"Check the provider, model and key in Warp settings.",
-					"Confirm the Base URL is right - it defaults to this Bifrost.",
 					"Try the same model from the playground to see whether it answers at all.",
 				],
 				raw,
