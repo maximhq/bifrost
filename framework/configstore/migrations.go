@@ -497,6 +497,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 	{IDs: []string{"widen_oauth2_client_controlled_columns"}, run: migrationWidenOAuth2ClientControlledColumns},
 	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
+	{IDs: []string{"add_mcp_server_instructions_mode_column"}, run: migrationAddMCPServerInstructionsModeColumn},
+	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
@@ -14089,6 +14091,57 @@ func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPServerInstructionsModeColumn adds the mcp_server_instructions_mode column to
+// the client config table. It decides how far an upstream MCP server's initialize
+// `instructions` travel: "off" (the default, and what every pre-existing deployment keeps),
+// "gateway", or "all". Defaulted rather than backfilled — "off" is both the column default and
+// the zero value, so existing rows need no write.
+func migrationAddMCPServerInstructionsModeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_server_instructions_mode_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_server_instructions_mode")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_server_instructions_mode")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp server instructions mode migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPDiscoveredInstructionsColumn adds the discovered_instructions column to the
+// MCP client table. Per-call auth types (per-user OAuth, per-user headers, token exchange) hold
+// no persistent connection, so — exactly like discovered_tools_json beside it — their
+// instructions have to survive a restart here or be lost until the next admin verification.
+func migrationAddMCPDiscoveredInstructionsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_discovered_instructions_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "discovered_instructions")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "discovered_instructions")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp discovered instructions migration: %s", err.Error())
 	}
 	return nil
 }

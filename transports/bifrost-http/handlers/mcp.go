@@ -53,14 +53,14 @@ type MCPManager interface {
 	EnableMCPClient(ctx context.Context, id string) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary access
 	// token and discovers available tools. The connection is closed after verification.
-	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error)
 	// VerifyHeadersConnection verifies an MCP server using a caller-supplied set
 	// of header values (admin sample or user-submitted) and discovers available
 	// tools. The connection is closed after verification. Mirrors
 	// VerifyPerUserOAuthConnection's role for MCPAuthTypePerUserHeaders.
-	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error)
 	// SetClientTools updates the tool map for an existing client.
-	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
 	// RequiresPerCallConnection reports whether config resolves to a
 	// per-call connection (true) or a persistent shared one (false), taking
 	// auth type, connection type, and needs_session_stickiness into account
@@ -583,7 +583,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	tools, toolNameMapping, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, clientConfig, canonUserHeaders)
+	tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, clientConfig, canonUserHeaders)
 	if verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
@@ -695,7 +695,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	// of the DB row (deployment-specific), so it must run strictly after
 	// the write above lands — otherwise a propagated update could be read
 	// back before the row it depends on was actually written.
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
+	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping, serverInstructions)
 
 	// Retain the admin's sample header values as the auth_mode='admin'
 	// credential so the periodic tool syncer (ClientToolSyncer.performSync)
@@ -796,7 +796,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	tools, toolNameMapping, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, adminResponse.AccessToken)
+	tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, adminResponse.AccessToken)
 	if verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
@@ -869,7 +869,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	// of the DB row (deployment-specific), so it must run strictly after
 	// the write above lands — otherwise a propagated update could be read
 	// back before the row it depends on was actually written.
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
+	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping, serverInstructions)
 
 	// Retain the admin credential for the periodic tool syncer and the
 	// refresh worker. Deliberately last, mirroring verify-headers: on a
@@ -2073,13 +2073,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// persist so the DB row includes them from the start — same
 		// convention as the per-user OAuth branch below. Pass the canon
 		// form so the verify path sees the same keys the schema declares.
-		tools, toolNameMapping, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, schemasConfig, canonUserHeaders)
+		tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, schemasConfig, canonUserHeaders)
 		if verifyErr != nil {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 			return
 		}
 		schemasConfig.DiscoveredTools = tools
 		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
+		schemasConfig.DiscoveredInstructions = serverInstructions
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
 			if errors.Is(err, configstore.ErrAlreadyExists) {
@@ -2206,13 +2207,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 				return
 			}
 			adminResponse = response
-			tools, toolNameMapping, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, schemasConfig, response.AccessToken)
+			tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, schemasConfig, response.AccessToken)
 			if verifyErr != nil {
 				SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 				return
 			}
 			schemasConfig.DiscoveredTools = tools
 			schemasConfig.DiscoveredToolNameMapping = toolNameMapping
+			schemasConfig.DiscoveredInstructions = serverInstructions
 		}
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
@@ -2902,7 +2904,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
-		_, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
+		_, _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
 		cancel()
 		if verifyErr != nil {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new headers were rejected by the MCP server, so nothing was changed: %v", verifyErr))
@@ -3566,7 +3568,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		return
 	}
 
-	tools, toolNameMapping, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, accessToken)
+	tools, toolNameMapping, serverInstructions, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, accessToken)
 	if err != nil {
 		// The fresh credential is unusable; revoke it so it isn't left
 		// behind as a dangling shared row. The existing admin row and the
@@ -3661,7 +3663,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 			clientConfig.ID, err,
 		))
 	}
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
+	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping, serverInstructions)
 
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
@@ -3848,7 +3850,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		defer h.oauthHandler.RemovePendingMCPClient(oauthConfigID)
 
 		// Verify connection and discover tools using admin's temp token
-		tools, toolNameMapping, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, mcpClientConfig, accessToken)
+		tools, toolNameMapping, serverInstructions, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, mcpClientConfig, accessToken)
 		if err != nil {
 			// Nothing worth retaining on a failed verification: revoke the
 			// admin's temp token immediately so it isn't left behind (it
@@ -3940,7 +3942,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Set discovered tools on the client
-		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
+		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping, serverInstructions)
 
 		// Retain the admin's bootstrap-verification token instead of
 		// discarding it via RevokeToken: promote the row CompleteOAuthFlow

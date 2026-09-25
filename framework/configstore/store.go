@@ -312,10 +312,10 @@ type ConfigStore interface {
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	// UpdateMCPClientTools is a targeted column update for
-	// discovered_tools_json/tool_name_mapping_json only — safe to call from
-	// a periodic background tool-sync without racing a concurrent full
-	// UpdateMCPClientConfig call over unrelated fields.
-	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error
+	// discovered_tools_json/tool_name_mapping_json/discovered_instructions only —
+	// safe to call from a periodic background tool-sync without racing a concurrent
+	// full UpdateMCPClientConfig call over unrelated fields.
+	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)

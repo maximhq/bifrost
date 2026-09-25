@@ -595,6 +595,9 @@ bifrost:
       maxAgentDepth: 10
       # codeModeBindingLevel: "server"  # Code mode binding level (server or tool)
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
+      # How far an upstream MCP server's initialize instructions travel:
+      # off (default, dropped), gateway (/mcp handshake only), all (also injected into LLM requests)
+      # serverInstructionsMode: "off"
 
   # Plugins configuration
   plugins:

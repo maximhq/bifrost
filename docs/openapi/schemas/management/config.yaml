@@ -99,6 +99,17 @@ ClientConfig:
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode
+    mcp_server_instructions_mode:
+      type: string
+      enum: ['off', 'gateway', 'all']
+      default: 'off'
+      description: >
+        How far an upstream MCP server's `instructions` (returned from its
+        initialize handshake) travel. `off` drops them, which is the default
+        and today's behavior. `gateway` returns them on the hosted /mcp
+        initialize response, scoped to the tools the calling client can see.
+        `all` additionally injects them into chat and responses requests that
+        carry MCP tools, which adds tokens to every such request.
     required_headers:
       type: array
       items:

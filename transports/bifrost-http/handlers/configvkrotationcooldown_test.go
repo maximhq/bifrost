@@ -24,7 +24,7 @@ func (stubConfigManager) ReloadClientConfigFromConfigStore(context.Context) erro
 func (stubConfigManager) UpdateSyncConfig(context.Context) error                          { return nil }
 func (stubConfigManager) ForceReloadPricing(context.Context) error                        { return nil }
 func (stubConfigManager) UpdateDropExcessRequests(context.Context, bool)                  {}
-func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool) error {
+func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool, string) error {
 	return nil
 }
 func (stubConfigManager) ReloadPlugin(context.Context, string, *string, any, *schemas.PluginPlacement, *int) error {
