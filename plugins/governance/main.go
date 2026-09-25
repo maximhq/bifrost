@@ -1479,6 +1479,13 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
+// teamContentLoggingStamper is a store that can stamp a team's content-logging decision from its
+// live team map. The connect path uses it when the store offers it; GovernanceStore does not
+// require it, so a store without teams stamps no team layer.
+type teamContentLoggingStamper interface {
+	StampTeamContentLogging(ctx *schemas.BifrostContext, teamID string)
+}
+
 // PreMCPConnectionHook resolves the caller's identity onto the BifrostContext
 // before the connect-plugin gate releases control to the credential-store
 // resolver. This is the only point in the MCP connect lifecycle where we can
@@ -1511,6 +1518,9 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
 	stampVirtualKeyContentLogging(ctx, vk)
+	if stamper, ok := p.store.(teamContentLoggingStamper); ok && vk.TeamID != nil {
+		stamper.StampTeamContentLogging(ctx, *vk.TeamID)
+	}
 	if vk.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)

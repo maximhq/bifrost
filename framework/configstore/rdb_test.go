@@ -2742,6 +2742,17 @@ func TestCreateTeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Test Team", result.Name)
 	assert.Equal(t, "customer-for-team", *result.CustomerID)
+	assert.Nil(t, result.DisableContentLogging, "a team created without a decision inherits")
+
+	// Content logging is tri-state and every state must survive an update, including clearing a
+	// decision back to NULL: an update that skipped nil would leave a team stuck on its old choice.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		team.DisableContentLogging = decision
+		require.NoError(t, store.UpdateTeam(ctx, team))
+		result, err = store.GetTeam(ctx, "team-test")
+		require.NoError(t, err)
+		assert.Equal(t, decision, result.DisableContentLogging)
+	}
 }
 
 // =============================================================================
