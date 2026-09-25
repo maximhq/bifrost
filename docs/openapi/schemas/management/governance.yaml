@@ -1148,6 +1148,9 @@ BusinessUnit:
       type: string
     created_by_user_id:
       type: string
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The business unit''s content-logging decision. Absent or null inherits. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     created_at:
       type: string
       format: date-time
@@ -1168,6 +1171,9 @@ BusinessUnitListItem:
       description: Number of users that belong to this business unit.
     customer_count:
       type: integer
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The business unit''s content-logging decision. Absent or null inherits. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     created_at:
       type: string
       format: date-time
@@ -1213,6 +1219,9 @@ BusinessUnitDetailResponse:
       $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The business unit''s content-logging decision. Absent or null inherits. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     created_at:
       type: string
       format: date-time
@@ -1228,6 +1237,20 @@ CreateBusinessUnitRequest:
   properties:
     name:
       type: string
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'Omit or set null to inherit. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
+
+UpdateBusinessUnitRequest:
+  type: object
+  description: Update business unit request. Renaming is refused; send the current name or omit it.
+  properties:
+    name:
+      type: string
+      description: Must equal the current name when sent.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'Tri-state. Omit to leave the decision unchanged, null to clear it back to inherit, true or false to set it. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
 
 BusinessUnitMutationResponse:
   type: object

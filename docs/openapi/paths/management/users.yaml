@@ -371,6 +371,57 @@ users-me-permissions:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+users-content-logging:
+  put:
+    operationId: setUserContentLogging
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Set a user's content-logging decision
+    description: >
+      Sets, flips or clears the user's own content-logging decision and reloads the user on every
+      node. The user sits below their business units and teams and above their virtual keys,
+      provider keys and access profiles. Requires Users (Update).
+    tags:
+      - Users
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/users.yaml#/SetUserContentLoggingRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Decision stored
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/SetUserContentLoggingResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: User not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 users-role:
   put:
     operationId: assignUserRole
