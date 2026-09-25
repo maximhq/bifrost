@@ -238,6 +238,11 @@ type BifrostHTTPServer struct {
 	Client *bifrost.Bifrost
 	Config *lib.Config
 
+	// HTTPClientFactory hands out clients for outbound traffic other than provider
+	// inference (webhooks, skills, plugin downloads, MCP, catalog sync) that honour
+	// the global proxy for their purpose and follow proxy changes live.
+	HTTPClientFactory *network.HTTPClientFactory
+
 	Server *fasthttp.Server
 	Router *router.Router
 
@@ -2125,7 +2130,11 @@ func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *table
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
-	// Store the proxy config and rebuild the providers that inherit it for inference.
+	// Point every factory client at the new proxy, then store the config and rebuild
+	// the providers that inherit it for inference.
+	if s.HTTPClientFactory != nil {
+		s.HTTPClientFactory.UpdateProxyConfig(config.ToNetwork())
+	}
 	if err := s.Config.SetGlobalProxyConfig(config); err != nil {
 		return err
 	}
@@ -2784,6 +2793,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if s.Config.KVStore != nil {
 		integrations.RegisterKVDecoders(s.Config.KVStore)
 	}
+	// Outbound clients for non-inference traffic, on the global proxy loaded with the
+	// config. Built before anything that makes outbound calls is constructed.
+	s.HTTPClientFactory = network.NewHTTPClientFactory(s.Config.ProxyConfig.ToNetwork(), logger)
+	handlers.SetSkillFetchHTTPClientFactory(s.HTTPClientFactory)
 	// Initialize WebSocket handler early so plugins can wire event broadcasters during Init.
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
 	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
@@ -2811,7 +2824,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			return fmt.Errorf("invalid server.plugin_download_private_allowlist: %w", err)
 		}
 	}
-	s.Config.PluginLoader = dynamicPlugins.NewSharedObjectPluginLoader(pluginDownloadAllowlist)
+	s.Config.PluginLoader = dynamicPlugins.NewSharedObjectPluginLoader(pluginDownloadAllowlist, dynamicPlugins.WithHTTPClientFactory(s.HTTPClientFactory))
 	// Initialize log retention cleaner if log store is configured
 	if s.Config.LogsStore != nil {
 		// If log retention days remains 0, then we wont be initializing the log retention cleaner
@@ -2857,7 +2870,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Initialize the webhook delivery dispatcher (requires both stores; the
 	// in-memory endpoint store on Config serves endpoint lookups).
 	if s.Config.LogsStore != nil && s.Config.ConfigStore != nil {
-		s.WebhookDispatcher = webhooks.NewDispatcher(ctx, "", s.Config.ClientConfig.WebhookConfig.DeliveryHistoryRetention(), s.Config.ConfigStore, s.Config.LogsStore, s.Config, logger)
+		s.WebhookDispatcher = webhooks.NewDispatcher(ctx, "", s.Config.ClientConfig.WebhookConfig.DeliveryHistoryRetention(), s.Config.ConfigStore, s.Config.LogsStore, s.Config, logger, webhooks.WithHTTPClientFactory(s.HTTPClientFactory))
 		s.WebhookDispatcher.Start()
 		logger.Info("webhook dispatcher initialized")
 	}

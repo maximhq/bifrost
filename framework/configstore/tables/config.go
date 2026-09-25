@@ -92,6 +92,27 @@ type GlobalProxyConfig struct {
 	EnableForAPI       bool `json:"enable_for_api"`       // Enable proxy for API requests
 }
 
+// ToNetwork converts the stored global proxy config into the form the HTTP client
+// factory takes. nil stays nil.
+func (c *GlobalProxyConfig) ToNetwork() *network.GlobalProxyConfig {
+	if c == nil {
+		return nil
+	}
+	return &network.GlobalProxyConfig{
+		Enabled:            c.Enabled,
+		Type:               c.Type,
+		URL:                c.URL,
+		Username:           c.Username,
+		Password:           c.Password,
+		NoProxy:            c.NoProxy,
+		Timeout:            c.Timeout,
+		SkipTLSVerify:      c.SkipTLSVerify,
+		EnableForSCIM:      c.EnableForSCIM,
+		EnableForInference: c.EnableForInference,
+		EnableForAPI:       c.EnableForAPI,
+	}
+}
+
 // GlobalHeaderFilterConfig represents global header filtering configuration
 // for headers forwarded to LLM providers via the x-bf-eh-* prefix.
 // Filter logic:

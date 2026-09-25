@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"net/url"
 	"os"
 	"os/exec"
@@ -60,12 +61,37 @@ const maxSkillGitRepoSize = 500 * 1024 * 1024 // 500 MB
 
 // skillURLClient is a dedicated HTTP client for fetching URL-sourced skill content.
 // Uses an SSRF-safe transport that blocks connections to non-public IPs, so an
-// admin-configured source_url cannot point at internal infrastructure.
+// admin-configured source_url cannot point at internal infrastructure. Once the
+// server installs its HTTP client factory (SetSkillFetchHTTPClientFactory), fetches
+// honour the global proxy for API traffic under the same SSRF policy.
 var skillURLClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext: network.SSRFSafeDialContext(10 * time.Second),
-	},
+	Timeout:   15 * time.Second,
+	Transport: skillFetchTransport{},
+}
+
+// skillURLPolicy is the SSRF policy for skill fetches, direct or proxied.
+var skillURLPolicy = network.SSRFPolicyWithDialTimeout(10*time.Second, nil)
+
+// skillDirectTransport serves skill fetches before a factory is installed.
+var skillDirectTransport = &http.Transport{DialContext: network.SSRFSafeDialContext(10 * time.Second)}
+
+// skillHTTPClients is the server's HTTP client factory, once installed.
+var skillHTTPClients atomic.Pointer[network.HTTPClientFactory]
+
+// SetSkillFetchHTTPClientFactory routes URL-sourced skill fetches through factory, so
+// they honour the global proxy for API traffic. The server calls it at startup.
+func SetSkillFetchHTTPClientFactory(factory *network.HTTPClientFactory) {
+	skillHTTPClients.Store(factory)
+}
+
+// skillFetchTransport picks the factory's policy transport when one is installed.
+type skillFetchTransport struct{}
+
+func (skillFetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if factory := skillHTTPClients.Load(); factory != nil {
+		return factory.PolicyTransport(network.ClientPurposeAPI, skillURLPolicy).RoundTrip(req)
+	}
+	return skillDirectTransport.RoundTrip(req)
 }
 
 // fetchURLSafe fetches content from a URL with SSRF protection, timeout, and size cap.

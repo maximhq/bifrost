@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
@@ -171,4 +173,31 @@ func cloneGitRepo(t *testing.T, repoURL, destination string) {
 	if err != nil {
 		t.Fatalf("git clone %s: %v: %s", repoURL, err, strings.TrimSpace(string(output)))
 	}
+}
+
+// TestFetchURLSafeGoesThroughGlobalProxy pins that URL-sourced skill fetches honour the
+// global proxy for API traffic once the server installs its factory, and keep refusing
+// non-public targets before anything reaches the proxy. The skill client used to build
+// its own transport with no proxy support.
+func TestFetchURLSafeGoesThroughGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	SetSkillFetchHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled:      true,
+		Type:         network.GlobalProxyTypeHTTP,
+		URL:          "http://127.0.0.1:" + set.Config.Port(),
+		EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { SetSkillFetchHTTPClientFactory(nil) })
+
+	if _, err := fetchURLSafe(t.Context(), "https://203.0.113.10/skill.md"); err == nil {
+		t.Fatal("expected the recorder's closed tunnel to fail the fetch")
+	}
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "203.0.113.10:443", nil)
+
+	set.Reset()
+	_, err := fetchURLSafe(t.Context(), "https://10.0.0.5/skill.md")
+	if err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("expected a private target to be refused, got %v", err)
+	}
+	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
 }

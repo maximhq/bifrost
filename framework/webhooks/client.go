@@ -25,7 +25,9 @@ const maxErrorBodyBytes = 4 * 1024
 // HTTP client per security policy: the strict client re-resolves and
 // re-validates every IP at dial time (rebinding-safe), while the private
 // client — used only for endpoints registered with allow_private_network —
-// skips only the public-IP requirement. Both refuse redirects and require
+// skips only the public-IP requirement. With an HTTP client factory, both go
+// through the global proxy when it is enabled for API traffic; the policy then
+// judges each target before the request is proxied (network.PolicyTransport). Both refuse redirects and require
 // TLS >= 1.2. The clients carry no timeout state at all — every phase (DNS,
 // dial, TLS, body) is bounded by the per-attempt context, which carries the
 // endpoint's own attempt timeout — so endpoints sharing a policy can share
@@ -35,23 +37,52 @@ type deliveryClient struct {
 	private *http.Client
 }
 
-func newDeliveryClient() *deliveryClient {
-	build := func(dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Client {
+func newDeliveryClient(factory *network.HTTPClientFactory) *deliveryClient {
+	build := func(policy *network.DialPolicy, dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Client {
+		var transport http.RoundTripper = &http.Transport{
+			DialContext:     dial,
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		}
+		if factory != nil {
+			transport = factory.PolicyTransport(network.ClientPurposeAPI, policy)
+		}
 		return &http.Client{
-			Transport: &http.Transport{
-				DialContext:     dial,
-				TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
-			},
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		}
 	}
+	// A zero dial timeout defers entirely to the per-attempt context.
+	strictDial := network.SSRFSafeDialContext(0)
+	privateDial := newPrivateDialContext()
 	return &deliveryClient{
-		// A zero dial timeout defers entirely to the per-attempt context.
-		strict:  build(network.SSRFSafeDialContext(0)),
-		private: build(newPrivateDialContext()),
+		strict:  build(network.SSRFPolicy(nil), strictDial),
+		private: build(network.NewDialPolicy(privateDial, privateTargetCheck), privateDial),
 	}
+}
+
+// privateTargetCheck is the allow_private_network rule for a proxied delivery:
+// loopback, RFC1918 and public receivers pass, unspecified and link-local
+// (cloud metadata) addresses are refused, as newPrivateDialContext refuses them
+// at dial time for a direct delivery.
+func privateTargetCheck(ctx context.Context, host string) error {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return err
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("no addresses found for %s", host)
+	}
+	for _, ip := range ips {
+		if ip.IsUnspecified() {
+			return fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+		}
+		if network.IsLinkLocal(ip) {
+			return fmt.Errorf("connection to link-local IP %s is not allowed", ip)
+		}
+	}
+	return nil
 }
 
 // newPrivateDialContext returns the dialer for allow_private_network

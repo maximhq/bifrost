@@ -213,30 +213,39 @@ func ssrfSafeDialContext(resolver ipLookuper, dial func(ctx context.Context, net
 // check also needs the target to resolve locally: on a host with no external DNS,
 // proxied fetches are refused rather than sent unchecked.
 func NewTargetCheckingTransport(next http.RoundTripper) http.RoundTripper {
-	return &targetCheckingTransport{resolver: net.DefaultResolver, next: next}
+	return &targetCheckingTransport{check: publicTargetCheck(net.DefaultResolver, nil), next: next}
 }
 
-// targetCheckingTransport is the RoundTripper behind NewTargetCheckingTransport,
-// with an injectable resolver for tests.
+// publicTargetCheck resolves host and refuses it unless every address is public or
+// permitted by allow (nil permits none).
+func publicTargetCheck(resolver ipLookuper, allow *Allowlist) func(ctx context.Context, host string) error {
+	return func(ctx context.Context, host string) error {
+		ips, err := resolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return fmt.Errorf("DNS lookup failed for %s: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return fmt.Errorf("DNS lookup for %s returned no addresses", host)
+		}
+		for _, ip := range ips {
+			if !IsPublicIP(ip) && !allow.Permits(host, ip) {
+				return fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+			}
+		}
+		return nil
+	}
+}
+
+// targetCheckingTransport judges the target host of every request with check before
+// handing it to next.
 type targetCheckingTransport struct {
-	resolver ipLookuper
-	allow    *Allowlist // hosts permitted past the check; nil permits none
-	next     http.RoundTripper
+	check func(ctx context.Context, host string) error
+	next  http.RoundTripper
 }
 
 func (t *targetCheckingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Hostname()
-	ips, err := t.resolver.LookupIP(req.Context(), "ip", host)
-	if err != nil {
-		return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
-	}
-	for _, ip := range ips {
-		if !IsPublicIP(ip) && !t.allow.Permits(host, ip) {
-			return nil, fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
-		}
+	if err := t.check(req.Context(), req.URL.Hostname()); err != nil {
+		return nil, err
 	}
 	return t.next.RoundTrip(req)
 }

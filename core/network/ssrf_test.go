@@ -557,7 +557,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 func TestTargetCheckingTransport_PublicTargetReachesNext(t *testing.T) {
 	var called atomic.Int32
 	rt := &targetCheckingTransport{
-		resolver: hostResolver{"files.example": {net.ParseIP("203.0.113.10")}},
+		check: publicTargetCheck(hostResolver{"files.example": {net.ParseIP("203.0.113.10")}}, nil),
 		next: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			called.Add(1)
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
@@ -583,7 +583,7 @@ func TestTargetCheckingTransport_RefusesNonPublicTargets(t *testing.T) {
 	}
 	for target, resolver := range tests {
 		rt := &targetCheckingTransport{
-			resolver: resolver,
+			check: publicTargetCheck(resolver, nil),
 			next: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				t.Errorf("%s: a refused target must never reach the next transport", target)
 				return nil, errors.New("unreachable")
@@ -598,7 +598,7 @@ func TestTargetCheckingTransport_RefusesNonPublicTargets(t *testing.T) {
 
 func TestTargetCheckingTransport_UnresolvableTargetIsRefused(t *testing.T) {
 	rt := &targetCheckingTransport{
-		resolver: hostResolver{},
+		check: publicTargetCheck(hostResolver{}, nil),
 		next: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			t.Error("an unresolvable target must not be sent unchecked")
 			return nil, errors.New("unreachable")
