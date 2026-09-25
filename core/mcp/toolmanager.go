@@ -23,6 +23,9 @@ type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
 	GetClientForTool(toolName string) *schemas.MCPClientState
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
+	// GetServerInstructions returns the upstream `instructions` of the clients visible to
+	// ctx, scoped by the same rules GetToolPerClient applies.
+	GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions
 	GetPluginPipeline() PluginPipeline
 	ReleasePluginPipeline(pipeline PluginPipeline)
 	// AcquireClientConn returns a live upstream MCP client connection for the
@@ -82,6 +85,9 @@ type ToolsManager struct {
 	toolExecutionTimeout  atomic.Value
 	maxAgentDepth         atomic.Int32
 	disableAutoToolInject atomic.Bool
+	// serverInstructionsMode holds a schemas.MCPServerInstructionsMode; only "all"
+	// reaches the inference path. Empty/unset reads as off.
+	serverInstructionsMode atomic.Value
 	// Byte bounds on forwarded instructions; 0 means the built-in default.
 	maxInstructionsPerClient atomic.Int64
 	maxInstructionsTotal     atomic.Int64
@@ -200,6 +206,7 @@ func NewToolsManagerWithCodeMode(
 	manager.toolExecutionTimeout.Store(time.Duration(config.ToolExecutionTimeout))
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	manager.disableAutoToolInject.Store(config.DisableAutoToolInject)
+	manager.serverInstructionsMode.Store(config.ServerInstructionsMode)
 	manager.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
 	manager.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
 
@@ -579,7 +586,58 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 			req.ResponsesRequest.Params.Tools = tools
 		}
 	}
+
+	m.addServerInstructionsToRequest(ctx, req)
 	return req
+}
+
+// addServerInstructionsToRequest carries the upstream servers' own usage guidance into the
+// prompt, so a policy set on the MCP server ("always update the doc on a relevant change")
+// reaches the model instead of having to be duplicated into every client's system prompt.
+//
+// Off unless the operator asked for it: this adds tokens to every MCP-bearing request and
+// changes the prompt prefix, which invalidates a provider-side cache prefix the caller may be
+// relying on. Both are the operator's cost to opt into, not ours to impose on upgrade.
+func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	mode, _ := m.serverInstructionsMode.Load().(schemas.MCPServerInstructionsMode)
+	if mode != schemas.MCPServerInstructionsModeAll {
+		return
+	}
+	// The agent loop re-enters this path once per turn against the same context. Without
+	// this guard the block would be prepended again on every turn, growing the prompt
+	// without bound over a long tool-calling conversation.
+	if injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsInjected).(bool); ok && injected {
+		return
+	}
+
+	instructions := AggregateServerInstructions(m.clientManager.GetServerInstructions(ctx), m.instructionCaps())
+	if instructions == "" {
+		return
+	}
+
+	switch req.RequestType {
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		// Prepended as its own message rather than merged into the caller's system
+		// message: theirs is left byte-identical, and staying ahead of it leaves the
+		// caller's own instructions last, where a conflict resolves in their favour.
+		req.ChatRequest.Input = append([]schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: &schemas.ChatMessageContent{ContentStr: &instructions},
+		}}, req.ChatRequest.Input...)
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		if req.ResponsesRequest.Params == nil {
+			req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
+		}
+		if existing := req.ResponsesRequest.Params.Instructions; existing != nil && *existing != "" {
+			combined := *existing + "\n\n" + instructions
+			req.ResponsesRequest.Params.Instructions = &combined
+		} else {
+			req.ResponsesRequest.Params.Instructions = &instructions
+		}
+	default:
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsInjected, true)
 }
 
 // ============================================================================
@@ -1205,6 +1263,7 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	}
 
 	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
+	m.serverInstructionsMode.Store(config.ServerInstructionsMode)
 	m.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
 	m.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
 
