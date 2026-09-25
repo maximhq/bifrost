@@ -154,6 +154,23 @@ AssignUserRoleRequest:
       type: integer
       description: ID of the RBAC role to assign
 
+SetUserContentLoggingRequest:
+  type: object
+  required:
+    - disable_content_logging
+  properties:
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The user''s own content-logging decision: true forces content off for the user''s traffic, false forces it on, null clears it back to inherit. The field is required, so an empty body is refused rather than read as a clear. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
+
+SetUserContentLoggingResponse:
+  type: object
+  properties:
+    user_id:
+      type: string
+    disable_content_logging:
+      type: [boolean, 'null']
+
 # ---- User Teams ----
 
 UserTeamSummaryEntry:

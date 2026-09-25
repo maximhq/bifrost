@@ -230,6 +230,9 @@ AccessProfile:
     allow_all_providers:
       type: boolean
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The profile''s content-logging decision. Absent or null inherits. A user''s own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity''s decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     auto_rotation_interval:
       type: integer
       format: int64
@@ -326,6 +329,9 @@ CreateAccessProfileRequest:
       type: boolean
       default: false
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The profile''s content-logging decision. Omit or set null to inherit. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     auto_rotation_interval:
       oneOf:
         - $ref: '#/RotationIntervalString'
@@ -400,6 +406,9 @@ UpdateAccessProfileRequest:
       type: boolean
       nullable: true
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'Tri-state. Omit to leave the decision unchanged, null to clear it back to inherit, true or false to set it. A change is written to every user and entity copy of the profile on this save, without a propagate. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     auto_rotation_interval:
       oneOf:
         - $ref: '#/RotationIntervalString'

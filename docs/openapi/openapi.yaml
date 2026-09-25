@@ -755,6 +755,8 @@ paths:
     $ref: "./paths/management/governanceextensions.yaml#/user-vk-creation-policy"
   /api/governance/users/{user_id}/role:
     $ref: "./paths/management/users.yaml#/users-role"
+  /api/governance/users/{user_id}/content-logging:
+    $ref: "./paths/management/users.yaml#/users-content-logging"
   /api/governance/users/{user_id}/teams:
     $ref: "./paths/management/users.yaml#/users-teams"
   /api/governance/users/{user_id}/governance:
