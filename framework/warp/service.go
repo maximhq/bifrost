@@ -48,14 +48,14 @@ type Service struct {
 	// narrows describe_virtual_key to reporting itself unavailable, the same
 	// pattern semantic search already uses for its own optional dependency.
 	governance GovernanceReader
-	// client owns Warp's dedicated Bifrost instance. It exists only when there is
-	// something to read; tests replace chatOverride instead, so the loop can be
-	// driven by a scripted model.
-	client *Client
+	// responses is the gateway client's responses path, which Warp chats
+	// through. Set once at construction; tests replace chatOverride instead, so
+	// the loop can be driven by a scripted model.
+	responses ResponsesExecutor
 	// chatOverride, when set, replaces the real inference path. Test seam only.
 	chatOverride ChatFunc
-	// mu guards logs, client and chatOverride - the fields that change after
-	// construction. Every reader takes it, not just the ones near SetLogReader:
+	// mu guards logs and the searcher built over it - the fields that change
+	// after construction. Every reader takes it, not just the ones near SetLogReader:
 	// an unguarded read elsewhere is the same race, just harder to find. A logging plugin enabled at runtime rebinds them while
 	// requests are already being served.
 	mu sync.RWMutex
@@ -93,9 +93,8 @@ func WithLogReader(logs LogReader) Option {
 	return func(s *Service) { s.logs = logs }
 }
 
-// WithModelCatalog lets the service price its own spend. Warp's client is
-// plugin-free, so nothing upstream computes a cost for it; its spend is
-// invisible to the gateway's budgets and has to be visible in the panel instead.
+// WithModelCatalog lets the service price its own spend, so the panel can show
+// what a turn cost as it finishes rather than only in the logs afterwards.
 func WithModelCatalog(catalog *modelcatalog.ModelCatalog) Option {
 	return func(s *Service) { s.catalog = catalog }
 }
@@ -103,6 +102,12 @@ func WithModelCatalog(catalog *modelcatalog.ModelCatalog) Option {
 // WithVectorStore connects Warp to the deployment-wide vector store.
 func WithVectorStore(store vectorstore.VectorStore) Option {
 	return func(s *Service) { s.vectorStore = store }
+}
+
+// WithResponsesExecutor supplies the main gateway responses path, which Warp's
+// chat runs on. Without one, Warp serves configuration only.
+func WithResponsesExecutor(executor ResponsesExecutor) Option {
+	return func(s *Service) { s.responses = executor }
 }
 
 // WithEmbeddingExecutor supplies the main gateway embedding path.
@@ -159,9 +164,6 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	for _, opt := range opts {
 		opt(service)
 	}
-	if service.logs != nil {
-		service.client = NewClient(service.logger)
-	}
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
 		if service.logs != nil {
@@ -189,48 +191,38 @@ func (s *Service) HasHistory() bool {
 func (s *Service) CanChat() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.logs != nil && (s.client != nil || s.chatOverride != nil)
+	return s.logs != nil && (s.responses != nil || s.chatOverride != nil)
 }
 
-// turnDeps returns the model client and the log reader as one consistent pair.
+// turnDeps returns the chat func, the log reader and the searcher for a turn.
 //
-// Taken under a single RLock, because SetLogReader replaces both and reading
-// them separately let a turn keep a usable chat func while the reader went nil
-// underneath it - RunTurn then handed nil to NewAgent, and the first log tool
-// the model reached for dereferenced it.
-func (s *Service) turnDeps(ctx context.Context, config *schemas.WarpConfig, conversationID string) (ChatFunc, LogReader, *SemanticSearcher) {
+// The reader and searcher are taken under a single RLock, because SetLogReader
+// replaces both and a turn that read them separately could search one backend
+// and hydrate from another.
+func (s *Service) turnDeps(_ context.Context, config *schemas.WarpConfig, conversationID string) (ChatFunc, LogReader, *SemanticSearcher) {
 	s.mu.RLock()
-	override, client, logs, semantic := s.chatOverride, s.client, s.logs, s.semantic
+	logs, semantic := s.logs, s.semantic
 	s.mu.RUnlock()
-	return s.chatFuncFrom(ctx, config, conversationID, override, client), logs, semantic
+	return s.chatFuncFrom(config, conversationID), logs, semantic
 }
 
 // chatFuncFor resolves the inference function for a request. The conversation
-// id travels upstream as a logging header, so it is settled before the first
-// model call rather than after the last one.
-func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig, conversationID string) ChatFunc {
-	// Copied out under the read lock rather than used in place: SetLogReader
-	// writes s.client while requests are in flight, so reading it here unguarded
-	// is a race on a pointer another goroutine is assigning. Holding the lock
-	// across the inference call itself would serialize every chat behind a
-	// settings reload, which is why only the read is guarded.
-	s.mu.RLock()
-	override, client := s.chatOverride, s.client
-	s.mu.RUnlock()
-	return s.chatFuncFrom(ctx, config, conversationID, override, client)
+// id travels with every model call as a logging label, so it is settled before
+// the first call rather than after the last one.
+func (s *Service) chatFuncFor(_ context.Context, config *schemas.WarpConfig, conversationID string) ChatFunc {
+	return s.chatFuncFrom(config, conversationID)
 }
 
-// chatFuncFrom resolves an already-snapshotted override and client. Split out so
-// turnDeps can take the client and the reader under one lock without reading
-// s.client a second time.
-func (s *Service) chatFuncFrom(ctx context.Context, config *schemas.WarpConfig, conversationID string, override ChatFunc, client *Client) ChatFunc {
-	if override != nil {
-		return override
+// chatFuncFrom prefers the test override, then the gateway client. Neither
+// changes after construction, so no lock is needed to read them.
+func (s *Service) chatFuncFrom(config *schemas.WarpConfig, conversationID string) ChatFunc {
+	if s.chatOverride != nil {
+		return s.chatOverride
 	}
-	if client == nil {
+	if s.responses == nil {
 		return nil
 	}
-	return client.Chat(ctx, config, conversationID)
+	return NewChat(s.responses, config, conversationID)
 }
 
 // costFuncFor prices usage against the model Warp is configured to run on.
@@ -254,8 +246,8 @@ func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
 	}
 }
 
-// Shutdown releases Warp's model client. Safe to call on a service that never
-// built one.
+// Shutdown stops Warp's background work. The model client is the gateway's and
+// is not Warp's to close.
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	s.closed = true
@@ -264,13 +256,7 @@ func (s *Service) Shutdown() {
 	if s.indexer != nil {
 		s.indexer.Close()
 	}
-	client := s.client
 	s.mu.Unlock()
-	// Outside the lock: the instance's own Shutdown drains queued requests, and
-	// closed is already set, so nothing can build a replacement meanwhile.
-	if client != nil {
-		client.Shutdown()
-	}
 }
 
 // SetLogReader rebinds what Warp researches through, after construction.
@@ -278,22 +264,16 @@ func (s *Service) Shutdown() {
 // Routes are registered once at startup, so a logging plugin enabled later
 // cannot be picked up by rebuilding the handler - the router still holds the
 // original one's closures. Rebinding inside the live service is what lets the
-// chat endpoint start working without a restart. Building the model client here
-// too keeps CanChat honest: a reader with no client still cannot answer.
+// chat endpoint start working without a restart.
 func (s *Service) SetLogReader(logs LogReader) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// A service constructed without a log reader has no client, so Shutdown had
-	// nothing to close and left no trace that it ran. A plugin reload landing
-	// after that would build a fresh Client outside the completed shutdown, and
-	// the next chat would stand up a Bifrost instance nobody owns.
+	// A plugin reload landing after Shutdown must not revive a service whose
+	// lifecycle is over.
 	if s.closed {
 		return
 	}
 	s.logs = logs
-	if logs != nil && s.client == nil && s.chatOverride == nil {
-		s.client = NewClient(s.logger)
-	}
 	// The searcher holds its own reference to the reader, so rebinding without
 	// rebuilding it left semantic search hydrating through the reader this
 	// service no longer uses - or absent entirely on a deployment that enabled

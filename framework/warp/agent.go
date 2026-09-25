@@ -617,16 +617,12 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: new(a.config.ReasoningEffort)}
 		}
 
+		provider, model := requestTarget(a.config)
 		response, bifrostErr := a.chat(ctx, &schemas.BifrostResponsesRequest{
-			// The wire protocol, not the provider that serves the request: the
-			// configured provider rides in the model string below. See
-			// transportProvider.
-			Provider: transportProvider(),
-			// Qualified as provider/model so the routing on the other end cannot
-			// substitute a different provider for the same model name.
-			Model:  modelForRequest(a.config),
-			Input:  conversation,
-			Params: params,
+			Provider: provider,
+			Model:    model,
+			Input:    conversation,
+			Params:   params,
 		})
 		if bifrostErr != nil {
 			code := ErrUpstream

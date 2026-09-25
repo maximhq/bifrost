@@ -3,7 +3,6 @@ package warp
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -19,7 +18,6 @@ type ConfigView struct {
 	Enabled                 bool                  `json:"enabled"`
 	Provider                schemas.ModelProvider `json:"provider"`
 	Model                   string                `json:"model"`
-	BaseURL                 string                `json:"base_url,omitempty"`
 	APIKeyID                string                `json:"api_key_id,omitempty"`
 	MaxIterations           int                   `json:"max_iterations"`
 	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds"`
@@ -42,7 +40,6 @@ type ConfigInput struct {
 	Enabled  bool                  `json:"enabled"`
 	Provider schemas.ModelProvider `json:"provider"`
 	Model    string                `json:"model"`
-	BaseURL  string                `json:"base_url,omitempty"`
 	// APIKeyID names one of the provider's configured keys, or is empty for a
 	// provider that needs none. It round-trips like any other field - no
 	// omitted-means-unchanged special case, because there is no secret to lose.
@@ -271,7 +268,6 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		Enabled:                 input.Enabled,
 		Provider:                string(input.Provider),
 		Model:                   input.Model,
-		BaseURL:                 input.BaseURL,
 		APIKeyID:                strings.TrimSpace(input.APIKeyID),
 		MaxIterations:           input.MaxIterations,
 		RequestTimeoutSeconds:   input.RequestTimeoutSeconds,
@@ -360,7 +356,6 @@ func ValidateConfigInput(input *ConfigInput) error {
 		return fmt.Errorf("%w: config input is required", ErrInvalidConfig)
 	}
 	input.Model = strings.TrimSpace(input.Model)
-	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.Provider = schemas.ModelProvider(strings.TrimSpace(string(input.Provider)))
 	input.EmbeddingProvider = schemas.ModelProvider(strings.TrimSpace(string(input.EmbeddingProvider)))
 	input.EmbeddingModel = strings.TrimSpace(input.EmbeddingModel)
@@ -374,23 +369,6 @@ func ValidateConfigInput(input *ConfigInput) error {
 	}
 	if input.SemanticSearchLimit == 0 {
 		input.SemanticSearchLimit = schemas.WarpDefaultSemanticSearchLimit
-	}
-
-	// BaseURL is handed to the Warp client's ProviderConfig verbatim, so a value
-	// that is not an absolute http(s) URL would only surface on the first
-	// outbound call - long after the operator has left the settings page.
-	if input.BaseURL != "" {
-		parsed, err := url.Parse(input.BaseURL)
-		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			return fmt.Errorf("%w: base_url must be an absolute http or https URL", ErrInvalidConfig)
-		}
-		// Userinfo is a credential. This column is stored unencrypted and read
-		// back unredacted, deliberately, because the design is that Warp holds a
-		// key reference and no secret of its own - a password in the URL would
-		// quietly undo exactly that.
-		if parsed.User != nil {
-			return fmt.Errorf("%w: base_url must not contain credentials; use api_key_id to name a configured provider key", ErrInvalidConfig)
-		}
 	}
 
 	if input.Enabled {
@@ -491,7 +469,6 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		Enabled:                 row.Enabled,
 		Provider:                schemas.ModelProvider(row.Provider),
 		Model:                   row.Model,
-		BaseURL:                 row.BaseURL,
 		APIKeyID:                row.APIKeyID,
 		MaxIterations:           config.EffectiveMaxIterations(),
 		RequestTimeoutSeconds:   config.EffectiveRequestTimeoutSeconds(),
@@ -520,7 +497,6 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 		APIKeyID:                        row.APIKeyID,
 		Provider:                        schemas.ModelProvider(row.Provider),
 		Model:                           row.Model,
-		BaseURL:                         row.BaseURL,
 		MaxIterations:                   row.MaxIterations,
 		RequestTimeoutSeconds:           row.RequestTimeoutSeconds,
 		HistoryRetentionDays:            row.HistoryRetentionDays,

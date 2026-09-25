@@ -48,30 +48,3 @@ export function validateWarpRetentionDays(value: unknown): true | string {
 	if (value < 0) return "Must be 0 or more days (0 keeps the default)";
 	return true;
 }
-
-/**
- * Checks a Warp base URL.
- *
- * A prefix test accepts "https://" with nothing after it, and the value is
- * handed to the provider config verbatim - so a scheme-only string is only
- * discovered on the first outbound call, long after the operator left this
- * page.
- */
-export function isValidBaseURL(value: string): boolean {
-	// Trimmed first, because the save path submits `form.baseURL.trim()`: the
-	// untrimmed check rejected a pasted " https://api.example.com " that the
-	// server would have accepted, and the form could not say why.
-	let parsed: URL;
-	try {
-		parsed = new URL(value.trim());
-	} catch {
-		return false;
-	}
-	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-	if (!parsed.hostname) return false;
-	// The server rejects userinfo here, and for a good reason: this column is
-	// stored unencrypted and read back unredacted, because Warp is designed to
-	// hold a key reference and no secret of its own. Accepting it in the form
-	// only to fail the save would teach operators the field takes credentials.
-	return parsed.username === "" && parsed.password === "";
-}

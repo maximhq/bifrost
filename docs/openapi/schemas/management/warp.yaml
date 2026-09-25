@@ -17,9 +17,9 @@ WarpConfig:
         Whether Warp has everything it needs to answer a question: enabled, with
         a provider and a model, and an embedding space - embedding provider,
         embedding model, a positive embedding dimension and a namespace - since
-        semantic search over the logs is part of answering. A credential is
-        deliberately not part of this test, since a provider reached over a
-        trusted network through `base_url` legitimately needs none.
+        semantic search over the logs is part of answering. A key is
+        deliberately not part of this test, since a provider using ambient
+        credentials legitimately needs none.
     enabled:
       type: boolean
       description: Whether the operator has switched Warp on.
@@ -30,18 +30,6 @@ WarpConfig:
     model:
       type: string
       example: gpt-4o
-    base_url:
-      type: string
-      description: |
-        Where Warp reaches its model. Overrides the provider's default endpoint,
-        which is what an empty value means. Required for self-hosted and proxied
-        deployments, empty otherwise.
-
-        Must not contain URL userinfo. This value is stored and returned
-        unredacted, so a credential embedded in it would be readable by anyone
-        who can read the configuration; a URL carrying one is rejected with
-        `400`. Name a configured provider key with `api_key_id` instead.
-      example: https://bifrost.internal.example.com
     api_key_id:
       type: string
       description: |
@@ -198,23 +186,6 @@ WarpConfigInput:
       type: string
       description: Required when `enabled` is true.
       example: gpt-4o
-    base_url:
-      type: string
-      # Empty is valid and means "the provider's default endpoint". A non-empty
-      # value must be an absolute http(s) URL whose authority carries no
-      # userinfo, which is what ValidateConfigInput enforces - so a client can
-      # check the payload here instead of learning it from a 400.
-      # No whitespace anywhere: url.Parse rejects a space in the authority, so a
-      # character class that allowed it described something the server refuses.
-      pattern: '^$|^https?://[^/?#@\s]+([/?#]\S*)?$'
-      # A pattern cannot express "parses as a URI" - url.Parse also rejects a
-      # malformed percent escape such as "https://%", which the character class
-      # happily admits. format carries that half of the rule.
-      format: uri-reference
-      description: |
-        Must not contain URL userinfo: this value is stored and returned
-        unredacted, so a URL carrying a credential is rejected with `400`. Use
-        `api_key_id` to name a configured provider key.
     api_key_id:
       type: string
       description: |

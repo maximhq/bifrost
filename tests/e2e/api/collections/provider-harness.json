@@ -172194,6 +172194,315 @@
           }
         }
       ]
+    },
+    {
+      "name": "119. Warp chats in-process with no base URL (warp-inprocess)",
+      "description": "Warp used to reach its model over HTTP: a private Bifrost instance whose OpenAI-transport provider pointed at base_url, which the dashboard defaulted to the page origin + /openai. Behind Tailscale, a reverse proxy or split DNS the server often cannot reach its own public origin, so Warp failed on exactly those deployments. Warp now calls the gateway client in-process and base_url is gone from the config API. These cases configure Warp with no base_url and ask one cheap question over the non-streaming chat route. Red before the change: with base_url empty the private instance called api.openai.com with a placeholder bearer, so the turn came back with error.code upstream. The log read pins that the in-process calls still carry Warp's labels (app Warp, grouped by the conversation's session id), which used to travel as HTTP headers. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-inprocess setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0];",
+                  "pm.test('warp-inprocess: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.collectionVariables.set('warpInprocessFlagWas', flag && flag.enabled ? 'true' : 'false');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-inprocess setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-inprocess setup: read current warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.set('warpInprocessConfigWas', pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-inprocess: configure Warp with no base URL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpInprocessConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpInprocessConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('warp-inprocess: config has no base_url', function () {",
+                  "  pm.expect(pm.response.json(), 'base_url should be gone: ' + pm.response.text()).to.not.have.property('base_url');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpInprocessConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-inprocess: non-streaming chat answers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-inprocess: turn succeeded without a base URL', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.answer, 'no answer: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(body.conversation_id, 'no conversation id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('warpInprocessConversation', body.conversation_id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-inprocess: model call is logged as app Warp",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: logs list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpInprocessLogTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('warpInprocessLogTries') || 0);",
+                  "if (logs.length < 1 && tries < 10) {",
+                  "  // The async log writer flushes in 1s batches.",
+                  "  pm.collectionVariables.set('warpInprocessLogTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('warpInprocessLogTries');",
+                  "pm.test('warp-inprocess: calls grouped by the conversation and labelled Warp', function () {",
+                  "  pm.expect(logs.length, 'no log rows for the conversation: ' + pm.response.text()).to.be.at.least(1);",
+                  "  logs.forEach(function (l) {",
+                  "    pm.expect(l.app, 'row not labelled Warp: ' + JSON.stringify([l.app, l.user_agent])).to.equal('Warp');",
+                  "    pm.expect(l.provider, 'row not on the configured provider: ' + l.provider).to.equal('openai');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{warpInprocessConversation}}&limit=10"
+          }
+        },
+        {
+          "name": "openai warp-inprocess cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpInprocessConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-inprocess cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('warpInprocessFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpInprocessFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-inprocess: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpInprocessFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
     }
   ]
 }

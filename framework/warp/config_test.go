@@ -237,44 +237,18 @@ func TestWarpValidateConfigInputRejectsNilInput(t *testing.T) {
 	require.Empty(t, store.upserted, "a rejected write must not reach the store")
 }
 
-// BaseURL overrides the provider's default endpoint and is handed to the Warp
-// client's ProviderConfig verbatim, so a value that is not an absolute http(s)
-// URL is otherwise only discovered on the first outbound call - long after the
-// operator has left the settings page.
-//
-// Built from validWarpConfigInput so the only thing under test is the URL: a
-// bare literal would now fail on the required embedding fields instead, and
-// pass for the wrong reason.
-func TestWarpValidateConfigInputRejectsMalformedBaseURL(t *testing.T) {
-	for name, baseURL := range map[string]string{
-		"not a url":     "notaurl",
-		"wrong scheme":  "ftp://models.example.com",
-		"no host":       "http://",
-		"scheme only":   "https://",
-		"relative path": "/v1/chat/completions",
-		// Userinfo is a credential, and this field is stored unencrypted and
-		// returned unredacted - the whole point of api_key_id is that Warp keeps
-		// no secret of its own, which a password in the URL would undo.
-		"password in url": "https://user:hunter2@models.example.com",
-		"user in url":     "https://token@models.example.com",
-	} {
-		input := validWarpConfigInput()
-		input.BaseURL = baseURL
-		require.ErrorIs(t, ValidateConfigInput(input), ErrInvalidConfig, name)
-	}
+// Warp has no base URL any more: it calls the gateway client in-process, so
+// there is no endpoint to configure. The settings view must not offer one, and
+// a write from an older dashboard that still sends base_url must neither fail
+// nor have it stick.
+func TestWarpConfigHasNoBaseURL(t *testing.T) {
+	encoded, err := sonic.Marshal(ConfigView{Configured: true, Provider: schemas.OpenAI, Model: "gpt-5.5"})
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "base_url")
 
-	// Empty stays valid: it means "use the provider's own default endpoint",
-	// which is the common case for a hosted provider.
-	for name, baseURL := range map[string]string{
-		"empty":          "",
-		"https host":     "https://models.internal.example.com",
-		"http with port": "http://localhost:11434",
-		"with path":      "https://gateway.example.com/openai/v1",
-	} {
-		input := validWarpConfigInput()
-		input.BaseURL = baseURL
-		require.NoError(t, ValidateConfigInput(input), name)
-	}
+	var input ConfigInput
+	require.NoError(t, sonic.Unmarshal([]byte(`{"enabled":true,"provider":"openai","model":"gpt-5.5","base_url":"https://gw.example.com/openai"}`), &input))
+	require.Equal(t, "gpt-5.5", input.Model)
 }
 
 func TestWarpValidateConfigInputAcceptsRegisteredCustomProvider(t *testing.T) {
