@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -3721,5 +3722,113 @@ func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
 	clean["sentinel"] = true
 	if c2, _ := updated.Properties.Get("clean"); c2.(map[string]any)["sentinel"] != true {
 		t.Fatal("an unchanged plain-map schema was copied instead of shared")
+	}
+}
+
+// newRoundTripperClient returns an *http.Client on fasthttpRoundTripper over a plain
+// fasthttp client, the way NewProviderHTTPClient and the fetch client wire it.
+func newRoundTripperClient(dial fasthttp.DialFunc) *http.Client {
+	client := &fasthttp.Client{Dial: dial, Transport: NewContextTransport()}
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}}
+}
+
+func TestFasthttpRoundTripper_MapsRequestAndResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Add("X-Echo-Method", r.Method)
+		w.Header().Add("X-Echo-Auth", r.Header.Get("Authorization"))
+		w.Header().Add("X-Multi", "a")
+		w.Header().Add("X-Multi", "b")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(append([]byte("echo:"), body...))
+	}))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/token?grant_type=client_credentials", strings.NewReader("form=1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Basic c3A6c2VjcmV0")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := newRoundTripperClient(nil).Do(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated || resp.Status != "201 Created" {
+		t.Errorf("status = %d %q, want 201 Created", resp.StatusCode, resp.Status)
+	}
+	if string(body) != "echo:form=1" {
+		t.Errorf("body = %q, want the request body echoed", body)
+	}
+	if resp.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength = %d, want %d", resp.ContentLength, len(body))
+	}
+	if got := resp.Header.Get("X-Echo-Method"); got != http.MethodPost {
+		t.Errorf("method reached the server as %q", got)
+	}
+	if got := resp.Header.Get("X-Echo-Auth"); got != "Basic c3A6c2VjcmV0" {
+		t.Errorf("Authorization reached the server as %q", got)
+	}
+	if got := resp.Header.Values("X-Multi"); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("multi-valued header = %v, want [a b]", got)
+	}
+	if resp.Request != req {
+		t.Error("resp.Request must be the original request")
+	}
+}
+
+func TestFasthttpRoundTripper_RedirectsStayWithHTTPClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("final"))
+	}))
+	defer server.Close()
+
+	var hops int
+	client := newRoundTripperClient(nil)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		hops++
+		return nil
+	}
+	resp, err := client.Get(server.URL + "/start")
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "final" || hops != 1 {
+		t.Errorf("body = %q after %d CheckRedirect calls, want \"final\" after 1", body, hops)
+	}
+}
+
+// TestFasthttpRoundTripper_ContextEndsWhileDialing pins that RoundTrip returns as soon
+// as the request context ends, even though fasthttp cannot interrupt a dial. net/http
+// cancels dials through the context, and oauth2 and azidentity rely on that.
+func TestFasthttpRoundTripper_ContextEndsWhileDialing(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	client := newRoundTripperClient(func(string) (net.Conn, error) {
+		<-release
+		return nil, fmt.Errorf("dial released")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://slow-dial.example/", nil)
+
+	start := time.Now()
+	_, err := client.Do(req)
+	if err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected the context deadline, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("RoundTrip took %v after the context ended, want it to return promptly", elapsed)
 	}
 }

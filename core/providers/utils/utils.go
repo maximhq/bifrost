@@ -889,65 +889,80 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 	return dialer, nil
 }
 
-// NewProviderHTTPClient builds the net/http client a provider uses for calls that do
-// not go to its inference endpoint, such as OAuth token exchange and credential
-// refresh (golang.org/x/oauth2, azidentity). Those libraries speak net/http, so
-// without this client they fall back to http.DefaultTransport and skip the
-// provider's proxy_config entirely.
+// NewProviderHTTPClient builds the *http.Client a provider hands to libraries that
+// only accept one, for calls that do not go to its inference endpoint: OAuth token
+// exchange and refresh (golang.org/x/oauth2 for Vertex and Databricks, azidentity for
+// Azure). Only the API is net/http. Requests run on fasthttp through
+// fasthttpRoundTripper, over a client whose proxy comes from the same ConfigureProxy
+// the inference clients use, so there is one proxy implementation for every
+// provider call except Bedrock's HTTP/2 runtime client.
 //
-// When proxy_config names a proxy, it is used. Otherwise the client keeps what
-// http.DefaultTransport did before, proxying from the environment, so a deployment
-// that relied on HTTPS_PROXY for token calls sees no change. TLS follows the
-// provider's network_config (custom CA, insecure_skip_verify), layered on the
-// proxy's CA the same way ConfigureTLS does for the fasthttp clients.
+// When proxy_config names a proxy, it is used. Otherwise the client proxies from the
+// environment (HTTP_PROXY, HTTPS_PROXY, NO_PROXY), as http.DefaultTransport did for
+// these calls before, so a deployment that relied on HTTPS_PROXY sees no change.
 //
-// An invalid proxy or TLS config does not fail provider construction: the client
-// returns the configuration error on every request, as ConfigureProxy does with
-// dialErrorFunc.
+// Local and instance-metadata targets always connect directly (see
+// isLocalOrMetadataHost), and direct connections are not held to ConfigureDialer's
+// private-network rules: managed identity must reach IMDS at 169.254.169.254, and a
+// token endpoint behind private link resolves to a private address. That is the
+// reach these calls had on http.DefaultTransport.
+//
+// TLS follows network_config (custom CA, insecure_skip_verify) layered on the proxy's
+// CA, via ConfigureTLS. An invalid proxy or TLS config does not fail provider
+// construction: every request returns the configuration error instead.
 func NewProviderHTTPClient(proxyConfig *schemas.ProxyConfig, networkConfig schemas.NetworkConfig, logger schemas.Logger) *http.Client {
 	timeout := time.Duration(networkConfig.DefaultRequestTimeoutInSeconds) * time.Second
-	proxy, proxyTLS, err := NetHTTPProxy(proxyConfig)
-	if err == nil {
-		proxyTLS, err = networkTLSConfig(proxyTLS, networkConfig, logger)
+	client := &fasthttp.Client{
+		ReadTimeout:              timeout,
+		WriteTimeout:             timeout,
+		MaxIdleConnDuration:      30 * time.Second,
+		NoDefaultUserAgentHeader: true,
 	}
-	if err != nil {
-		logger.Error("%v", err)
-		return &http.Client{Transport: errorTransport{err: err}, Timeout: timeout}
+	effective := proxyConfig
+	if !namesProxy(proxyConfig) {
+		effective = &schemas.ProxyConfig{Type: schemas.EnvProxy}
 	}
-	if proxy == nil {
-		proxy = EnvProxyFunc()
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			Proxy:                 bypassProxyForLocalTargets(proxy),
-			TLSClientConfig:       proxyTLS,
-			MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			ForceAttemptHTTP2:     true,
-		},
-		Timeout: timeout,
-	}
+	client = ConfigureProxy(client, effective, logger)
+	client = ConfigureTLS(client, networkConfig, logger)
+	client.Dial = directForLocalTargets(client.Dial, timeout)
+	client.Transport = NewContextTransport()
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}, Timeout: timeout}
 }
 
-// bypassProxyForLocalTargets wraps proxy so requests to the local host or to a
-// cloud instance-metadata service always connect directly. Credential chains reach
-// those on purpose: azidentity's managed identity calls IMDS at 169.254.169.254
-// (and Azure Arc's agent on localhost), and Google's metadata server answers at
-// metadata.google.internal. A corporate proxy cannot reach any of them, so sending
-// them through it would break workload identity the moment a proxy is configured.
-func bypassProxyForLocalTargets(proxy func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
-	return func(req *http.Request) (*url.URL, error) {
-		if isLocalOrMetadataHost(req.URL.Hostname()) {
-			return nil, nil
+// namesProxy reports whether proxyConfig names a proxy. nil, an empty type and the
+// UI's default "none" all mean "not configured".
+func namesProxy(proxyConfig *schemas.ProxyConfig) bool {
+	return proxyConfig != nil && proxyConfig.Type != "" && proxyConfig.Type != schemas.NoProxy
+}
+
+// directForLocalTargets wraps a proxy dialer for the auth client. Local and
+// instance-metadata targets, no_proxy matches (errBypassProxy) and a client with no
+// proxy dialer at all connect directly with a plain dial.
+func directForLocalTargets(proxyDial fasthttp.DialFunc, timeout time.Duration) fasthttp.DialFunc {
+	dialer := &net.Dialer{Timeout: timeout}
+	direct := func(addr string) (net.Conn, error) {
+		return dialer.Dial("tcp", addr)
+	}
+	if proxyDial == nil {
+		return direct
+	}
+	return func(addr string) (net.Conn, error) {
+		if isLocalOrMetadataHost(network.DialAddrHost(addr)) {
+			return direct(addr)
 		}
-		return proxy(req)
+		conn, err := proxyDial(addr)
+		if errors.Is(err, errBypassProxy) {
+			return direct(addr)
+		}
+		return conn, err
 	}
 }
 
 // isLocalOrMetadataHost reports whether host is loopback, link-local, or a named
-// instance-metadata endpoint.
+// instance-metadata endpoint. Credential chains reach those on purpose: azidentity's
+// managed identity calls IMDS at 169.254.169.254 (and Azure Arc's agent on
+// localhost), and Google's metadata server answers at metadata.google.internal. A
+// corporate proxy cannot reach any of them.
 func isLocalOrMetadataHost(host string) bool {
 	switch strings.ToLower(strings.TrimSuffix(host, ".")) {
 	case "localhost", "metadata.google.internal", "metadata":
@@ -960,14 +975,101 @@ func isLocalOrMetadataHost(host string) bool {
 	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || network.IsMetadataEndpoint(ip)
 }
 
-// errorTransport fails every request with a fixed configuration error. It is the
-// net/http counterpart of dialErrorFunc.
-type errorTransport struct {
-	err error
+// fasthttpRoundTripper implements http.RoundTripper on a fasthttp.Client, so
+// libraries that require an *http.Client run on the same dialer, proxy and TLS
+// setup as the rest of the provider. http.Client calls RoundTrip once per redirect
+// hop, so redirect handling and CheckRedirect keep working above it.
+//
+// The response body is buffered: these calls (token exchange, bounded URL fetches)
+// are small, and fasthttp returns the body in a pooled buffer that must be copied
+// out before the response is released anyway.
+//
+// The request context is honoured the way net/http honours it: the context
+// transport (NewContextTransport) closes the socket once the request is on the
+// wire, and RoundTrip itself returns ctx.Err() as soon as the context ends, even
+// while fasthttp is still dialing, which fasthttp cannot interrupt.
+type fasthttpRoundTripper struct {
+	client *fasthttp.Client
 }
 
-func (t errorTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, t.err
+func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil && req.Body != http.NoBody {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	freq := fasthttp.AcquireRequest()
+	fresp := fasthttp.AcquireResponse()
+	release := func() {
+		fasthttp.ReleaseRequest(freq)
+		fasthttp.ReleaseResponse(fresp)
+	}
+	freq.SetRequestURI(req.URL.String())
+	freq.Header.SetMethod(req.Method)
+	for name, values := range req.Header {
+		for _, value := range values {
+			freq.Header.Add(name, value)
+		}
+	}
+	if req.Host != "" && req.Host != req.URL.Host {
+		freq.UseHostHeader = true
+		freq.Header.SetHost(req.Host)
+	}
+	if body != nil {
+		freq.SetBody(body)
+	}
+
+	ctx := req.Context()
+	unbind := bindRequestContext(freq, ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- rt.client.Do(freq, fresp)
+	}()
+
+	var err error
+	select {
+	case err = <-done:
+		unbind()
+	case <-ctx.Done():
+		// fasthttp may still be dialing; let it finish in the background and
+		// release the pooled objects only once it has.
+		go func() {
+			<-done
+			unbind()
+			release()
+		}()
+		return nil, ctx.Err()
+	}
+	defer release()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, err
+	}
+
+	statusCode := fresp.StatusCode()
+	resp := &http.Response{
+		Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		StatusCode: statusCode,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+		Request:    req,
+	}
+	for name, value := range fresp.Header.All() {
+		resp.Header.Add(string(name), string(value))
+	}
+	respBody := append([]byte(nil), fresp.Body()...)
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	resp.ContentLength = int64(len(respBody))
+	return resp, nil
 }
 
 // createTLSConfigWithCA creates a TLS configuration with a custom CA certificate
@@ -1049,23 +1151,57 @@ func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, log
 	return tlsConfig, nil
 }
 
-// envProxyDialFunc is fasthttpproxy.FasthttpProxyHTTPDialer with dual-stack
-// dialing. The fasthttpproxy constructors without "DualStack" dial the proxy over
-// tcp4 only, so a proxy given as an IPv6 literal, or a hostname with only AAAA
-// records, fails with "couldn't find dns entries" while the net/http stacks reach
-// it. The environment is read when the client is built, as before.
+// envProxyDialFunc is the fasthttp dialer for proxy_config type "environment". It
+// reads HTTP_PROXY, HTTPS_PROXY and NO_PROXY (either case) once, when the client is
+// built, and dials each proxy dual-stack.
+//
+// It replaces fasthttpproxy.FasthttpProxyHTTPDialer for two reasons. That dialer
+// connects to the proxy over tcp4 only, so an IPv6 proxy fails. And for a target it
+// should not proxy (a NO_PROXY match, localhost, no variable set) it dials the target
+// itself, which skips the checks the caller's direct dial applies: ConfigureDialer's
+// private-network rules for inference, the SSRF dialer for URL fetches. This one
+// returns errBypassProxy instead, so every direct connection goes through the caller.
+//
+// A fasthttp dialer sees only host:port, not the scheme, so the variable is chosen by
+// port the way fasthttpproxy chooses it: 443 uses HTTPS_PROXY, any other port uses
+// HTTP_PROXY. A TLS upstream on another port therefore uses HTTP_PROXY here.
 func envProxyDialFunc() fasthttp.DialFunc {
-	dialer := fasthttpproxy.Dialer{DialDualStack: true}
-	dialFunc, err := dialer.GetDialFunc(true)
-	if err != nil {
-		return dialErrorFunc(fmt.Sprintf("invalid proxy configuration: %v", err))
+	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
+	var dialers sync.Map // proxy URL -> fasthttp.DialFunc
+	return func(addr string) (net.Conn, error) {
+		scheme := "http"
+		if strings.HasSuffix(addr, ":443") {
+			scheme = "https"
+		}
+		proxyURL, err := proxyFunc(&url.URL{Scheme: scheme, Host: addr})
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy configuration: %w", err)
+		}
+		if proxyURL == nil {
+			return nil, errBypassProxy
+		}
+		key := proxyURL.String()
+		if cached, ok := dialers.Load(key); ok {
+			return cached.(fasthttp.DialFunc)(addr)
+		}
+		var dial fasthttp.DialFunc
+		switch proxyURL.Scheme {
+		case "http":
+			dial = fasthttpproxy.FasthttpHTTPDialerDualStack(key)
+		case "socks5", "socks5h":
+			dial = fasthttpproxy.FasthttpSocksDialerDualStack(key)
+		default:
+			return nil, fmt.Errorf("invalid proxy configuration: unsupported proxy scheme %q in the environment", proxyURL.Scheme)
+		}
+		actual, _ := dialers.LoadOrStore(key, dial)
+		return actual.(fasthttp.DialFunc)(addr)
 	}
-	return dialFunc
 }
 
-// errBypassProxy is returned by the proxy dialer ConfigureProxy installs when the
-// target matches the proxy's no_proxy list. ConfigureDialer, which every client
-// applies right after ConfigureProxy, catches it and dials directly.
+// errBypassProxy is returned by the proxy dialers ConfigureProxy installs when the
+// target should not be proxied (a no_proxy or NO_PROXY match, or no environment
+// proxy for it). The caller's direct dial catches it: ConfigureDialer for inference
+// clients, the SSRF dialer for URL fetches, directForLocalTargets for auth clients.
 var errBypassProxy = errors.New("target matches no_proxy: dial directly")
 
 func dialErrorFunc(message string) fasthttp.DialFunc {
