@@ -2665,10 +2665,13 @@ func assertSinglePlaceholderUserMessage(t *testing.T, msg AnthropicMessage, labe
 // reject as well. Every empty representation Cursor emits is covered (#7276).
 func TestToAnthropicChatRequest_EmptyUserTurnGetsPlaceholder(t *testing.T) {
 	cases := map[string]string{
-		"empty string":     `""`,
-		"empty array":      `[]`,
-		"empty text block": `[{"type": "text", "text": ""}]`,
-		"null":             `null`,
+		"empty string":          `""`,
+		"empty array":           `[]`,
+		"empty text block":      `[{"type": "text", "text": ""}]`,
+		"null":                  `null`,
+		"whitespace string":     `" "`,
+		"newline string":        `"\n"`,
+		"whitespace text block": `[{"type": "text", "text": "  \n"}]`,
 	}
 	for name, rawContent := range cases {
 		t.Run(name, func(t *testing.T) {
