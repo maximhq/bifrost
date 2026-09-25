@@ -278,6 +278,25 @@ func TestContentLoggingLayerCanChange(t *testing.T) {
 	}
 }
 
+// A context copied for later work (a realtime relay outliving its request) must carry every key the
+// resolution reads, or the copy resolves to a different decision than the request it came from.
+func TestContentLoggingContextKeysCoverTheResolution(t *testing.T) {
+	keys := map[BifrostContextKey]bool{}
+	for _, k := range ContentLoggingContextKeys() {
+		keys[k] = true
+	}
+	for _, tier := range contentLoggingTiers {
+		for _, layer := range tier {
+			if !keys[layer] {
+				t.Errorf("layer %q missing from ContentLoggingContextKeys", layer)
+			}
+		}
+	}
+	if !keys[BifrostContextKeyCallerContentLoggingResolved] {
+		t.Error("the resolved marker is missing from ContentLoggingContextKeys")
+	}
+}
+
 // The resolved marker tells the logging plugin that governance has finished stamping the caller,
 // including the case where every layer inherits and nothing else was written.
 func TestCallerContentLoggingResolved(t *testing.T) {
