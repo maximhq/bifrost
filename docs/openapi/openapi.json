@@ -109582,6 +109582,13 @@
             },
             "description": "Ordered fallback chain, tried after the selected target fails"
           },
+          "ttft_timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests this rule routes. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. Null when unset."
+          },
           "scope": {
             "type": "string",
             "enum": ["global", "team", "customer", "virtual_key"],
@@ -109752,6 +109759,12 @@
             },
             "description": "Ordered fallback chain, tried after the selected target fails"
           },
+          "ttft_timeout_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300000,
+            "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests this rule routes. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
+          },
           "scope": {
             "type": "string",
             "enum": ["global", "team", "customer", "virtual_key"],
@@ -109880,6 +109893,12 @@
               ]
             },
             "description": "Ordered fallback chain, tried after the selected target fails"
+          },
+          "ttft_timeout_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300000,
+            "description": "Time-to-first-token (TTFT) deadline in milliseconds. Omit to keep the current value; 0 clears it."
           },
           "priority": {
             "type": "integer"

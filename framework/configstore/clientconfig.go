@@ -1581,6 +1581,11 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 		hash.Write([]byte("chain_rule:false"))
 	}
 
+	// Hash TTFTTimeoutMs only when set, so rules without it keep their hash
+	if r.TTFTTimeoutMs != nil {
+		hash.Write([]byte("ttft_timeout_ms:" + strconv.Itoa(*r.TTFTTimeoutMs)))
+	}
+
 	// Hash Scope
 	hash.Write([]byte(r.Scope))
 
