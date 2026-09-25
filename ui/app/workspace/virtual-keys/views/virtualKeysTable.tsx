@@ -33,6 +33,7 @@ import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+	useGetCoreConfigQuery,
 	useGetVirtualKeyQuery,
 	useLazyGetVirtualKeysQuery,
 	useUpdateVirtualKeyMutation,
@@ -352,6 +353,9 @@ export default function VirtualKeysTable({
 }: VirtualKeysTableProps) {
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
+	// Keys without their own delete_after_expire follow this client-wide setting.
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const deleteExpiredByDefault = coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
 	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
 	const [showExportDialog, setShowExportDialog] = useState(false);
 	const [exportScope, setExportScope] = useState<ExportScope>("current_page");
@@ -996,8 +1000,12 @@ export default function VirtualKeysTable({
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												{showExpiredBadge ? (
-													<Badge variant="destructive" className="text-xs">
-														Expired
+													<Badge
+														variant="destructive"
+														className="text-xs"
+														title={(vk.delete_after_expire ?? deleteExpiredByDefault) ? "Deleted automatically within about a day" : undefined}
+													>
+														{(vk.delete_after_expire ?? deleteExpiredByDefault) ? "Expired · auto-delete" : "Expired"}
 													</Badge>
 												) : (
 													<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
