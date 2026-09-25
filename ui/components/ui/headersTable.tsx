@@ -1,9 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SecretVar } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
+import { AUTH_SCHEMES, detectAuthScheme, stripAuthScheme } from "@/lib/utils/authScheme";
 import { Trash } from "lucide-react";
 import React, { useRef, useState } from "react";
 
@@ -231,6 +233,25 @@ export function HeadersTable<T extends HeaderValue>({
 							const isHighlighted = highlightedRow === index;
 							const isEmptyTrailingRow = index === rows.length - 1 && key === "" && isValueEmpty(headerValue);
 
+							// Offer the Bearer/Basic prefix helper for the Authorization
+							// row regardless of whether this table stores SecretVars or
+							// plain strings, and only when we're rendering the default
+							// value input (a caller-supplied renderValueInput owns its
+							// own UI instead).
+							const showAuthSchemeSelector = !renderValueInput && key.trim().toLowerCase() === "authorization";
+							const isRefValue = isHeaderSecretVar && !!(headerValue as SecretVar).ref;
+							const authScheme = showAuthSchemeSelector ? detectAuthScheme(getDisplayValue(headerValue)) : "none";
+
+							const handleAuthSchemeChange = (newScheme: string) => {
+								const stripped = stripAuthScheme(getDisplayValue(headerValue));
+								const nextValue = newScheme === "none" ? stripped : `${newScheme} ${stripped}`;
+								if (isHeaderSecretVar) {
+									handleValueChange(key, { ...(headerValue as SecretVar), value: nextValue, ref: "" }, index);
+								} else {
+									handleValueChange(key, nextValue, index);
+								}
+							};
+
 							return (
 								<TableRow
 									key={index}
@@ -285,16 +306,81 @@ export function HeadersTable<T extends HeaderValue>({
 												rowKey: key,
 											})
 										) : isHeaderSecretVar ? (
-											<SecretVarInput
-												placeholder={valuePlaceholder}
-												value={headerValue as SecretVar}
-												data-row={index}
-												data-column="value"
-												onChange={(secretVar) => handleValueChange(key, secretVar, index)}
-												onKeyDown={(e) => handleKeyDown(e, index, "value")}
-												className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-												disabled={disabled}
-											/>
+											<div className="flex items-center gap-1">
+												{showAuthSchemeSelector && (
+													<Select value={authScheme} onValueChange={handleAuthSchemeChange} disabled={disabled || isRefValue}>
+														<SelectTrigger
+															size="sm"
+															className="w-[92px] shrink-0 border-0 text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
+															data-testid={`header-auth-scheme-${index}`}
+														>
+															<SelectValue />
+														</SelectTrigger>
+														<SelectContent>
+															<SelectItem value="none">Raw</SelectItem>
+															{AUTH_SCHEMES.map((scheme) => (
+																<SelectItem key={scheme} value={scheme}>
+																	{scheme}
+																</SelectItem>
+															))}
+														</SelectContent>
+													</Select>
+												)}
+												<SecretVarInput
+													placeholder={showAuthSchemeSelector && authScheme !== "none" ? "Token" : valuePlaceholder}
+													value={
+														showAuthSchemeSelector && authScheme !== "none"
+															? { ...(headerValue as SecretVar), value: stripAuthScheme(getDisplayValue(headerValue)) }
+															: (headerValue as SecretVar)
+													}
+													data-row={index}
+													data-column="value"
+													onChange={(secretVar) =>
+														handleValueChange(
+															key,
+															showAuthSchemeSelector && authScheme !== "none" && !secretVar.ref
+																? { ...secretVar, value: `${authScheme} ${secretVar.value}` }
+																: secretVar,
+															index,
+														)
+													}
+													onKeyDown={(e) => handleKeyDown(e, index, "value")}
+													className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+													disabled={disabled}
+												/>
+											</div>
+										) : showAuthSchemeSelector ? (
+											<div className="flex items-center gap-1">
+												<Select value={authScheme} onValueChange={handleAuthSchemeChange} disabled={disabled}>
+													<SelectTrigger
+														size="sm"
+														className="w-[92px] shrink-0 border-0 text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
+														data-testid={`header-auth-scheme-${index}`}
+													>
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="none">Raw</SelectItem>
+														{AUTH_SCHEMES.map((scheme) => (
+															<SelectItem key={scheme} value={scheme}>
+																{scheme}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+												<Input
+													placeholder={authScheme !== "none" ? "Token" : valuePlaceholder}
+													value={authScheme !== "none" ? stripAuthScheme(getDisplayValue(headerValue)) : getDisplayValue(headerValue)}
+													data-row={index}
+													data-column="value"
+													onChange={(e) =>
+														handleValueChange(key, authScheme !== "none" ? `${authScheme} ${e.target.value}` : e.target.value, index)
+													}
+													onKeyDown={(e) => handleKeyDown(e, index, "value")}
+													className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+													disabled={disabled}
+												/>
+											</div>
 										) : (
 											<Input
 												placeholder={valuePlaceholder}
