@@ -4,10 +4,12 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 type testLogger struct{}
@@ -649,5 +651,52 @@ func TestBulkUpdateCostSQLiteFallback(t *testing.T) {
 			t.Fatalf("split mismatch for %s: got in=%v out=%v add=%v want in=%v out=%v add=%v",
 				id, logEntry.InputCost, logEntry.OutputCost, logEntry.AdditionalCost, want.Input, want.Output, want.Additional)
 		}
+	}
+}
+
+// A failed request has no cost and, when it never reached a provider, no
+// latency. Sorted by either, those rows are "no value", not "the largest" or
+// "the smallest": Postgres puts NULLs first under DESC, so "most expensive
+// requests" led with zero-cost failures and Warp named a failed call as the
+// week's most expensive; SQLite puts them first under ASC instead. Both
+// directions, both backends: rows with the value come first.
+func TestSearchLogsSortsMissingCostAndLatencyLast(t *testing.T) {
+	stores := map[string]func(t *testing.T) *RDBLogStore{
+		"sqlite":   newTestSQLiteStore,
+		"postgres": func(t *testing.T) *RDBLogStore { store, _ := setupPerfTestDB(t); return store },
+	}
+	for name, newStore := range stores {
+		t.Run(name, func(t *testing.T) {
+			store := newStore(t)
+			ctx := context.Background()
+			base := time.Date(2026, 1, 2, 3, 4, 0, 0, time.UTC)
+			cheap, dear := 0.01, 2.10
+			fast, slow := 100.0, 45000.0
+			prefix := "sort-nulls-" + name + "-"
+			entries := []*Log{
+				{ID: prefix + "failed", Timestamp: base, Object: "chat_completion", Provider: "anthropic", Model: "m", Status: "error"},
+				{ID: prefix + "cheap-fast", Timestamp: base.Add(time.Minute), Object: "chat_completion", Provider: "openai", Model: "m", Status: "success", Cost: &cheap, Latency: &fast},
+				{ID: prefix + "dear-slow", Timestamp: base.Add(2 * time.Minute), Object: "chat_completion", Provider: "anthropic", Model: "m", Status: "success", Cost: &dear, Latency: &slow},
+			}
+			for _, entry := range entries {
+				require.NoError(t, store.Create(ctx, entry))
+			}
+			filters := SearchFilters{Models: []string{"m"}, Providers: []string{"openai", "anthropic"}}
+			order := func(sortBy, direction string) []string {
+				result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 10, SortBy: sortBy, Order: direction})
+				require.NoError(t, err)
+				ids := []string{}
+				for _, log := range result.Logs {
+					if strings.HasPrefix(log.ID, prefix) {
+						ids = append(ids, strings.TrimPrefix(log.ID, prefix))
+					}
+				}
+				return ids
+			}
+			for _, sortBy := range []string{"cost", "latency"} {
+				require.Equal(t, []string{"dear-slow", "cheap-fast", "failed"}, order(sortBy, "desc"), sortBy+" desc")
+				require.Equal(t, []string{"cheap-fast", "dear-slow", "failed"}, order(sortBy, "asc"), sortBy+" asc")
+			}
+		})
 	}
 }
