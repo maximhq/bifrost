@@ -120,3 +120,70 @@ func TestRoutingFallback_ProviderOnlyObjectSurvivesPersistence(t *testing.T) {
 		t.Fatalf("provider-only fallback changed after persistence: %+v (wire %s)", restored, encoded)
 	}
 }
+
+// TestRoutingFallback_ResolvedReparsesLegacyString covers #7538: rules load before bifrost.Init
+// registers custom providers, so a legacy string must be re-parsed when it is routed on.
+func TestRoutingFallback_ResolvedReparsesLegacyString(t *testing.T) {
+	const custom = schemas.ModelProvider("custom-resolved-7538")
+	schemas.UnregisterKnownProvider(custom)
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(custom) })
+
+	var decoded []RoutingFallback
+	input := `["` + string(custom) + `/m","` + string(custom) + `/","unknown-prefix/m",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-1"}]`
+	if err := sonic.Unmarshal([]byte(input), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded[0].Provider != "" {
+		t.Fatalf("precondition: an unregistered prefix must not split at decode time, got provider=%q", decoded[0].Provider)
+	}
+
+	schemas.RegisterKnownProvider(custom)
+
+	want := []schemas.Fallback{
+		{Provider: custom, Model: "m"},
+		{Provider: custom, Model: ""},
+		{Provider: "", Model: "unknown-prefix/m"},
+		{Provider: "vertex", Model: "gemini-2.5-pro", KeyID: "k-1"},
+	}
+	for i, fb := range decoded {
+		if got := fb.Resolved(); got != want[i] {
+			t.Fatalf("fallback %d: got %+v, want %+v", i, got, want[i])
+		}
+	}
+
+	out, err := sonic.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wantOut := `["` + string(custom) + `/m","` + string(custom) + `/","unknown-prefix/m",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-1"}]`
+	if string(out) != wantOut {
+		t.Fatalf("resolving must not change the stored form: got %s, want %s", out, wantOut)
+	}
+}
+
+// TestRoutingFallback_ObjectFormTrimsFieldsAcrossRestart: an unpinned object is persisted as the
+// legacy string, so padding kept at decode time would become an unknown provider prefix after a
+// restart and silently drop the fallback (the same symptom as #7538).
+func TestRoutingFallback_ObjectFormTrimsFieldsAcrossRestart(t *testing.T) {
+	var decoded []RoutingFallback
+	if err := sonic.Unmarshal([]byte(`[{"provider":" openai ","model":" gpt-4o "},{"provider":" azure ","model":" gpt-4o ","key_id":" k-1 "}]`), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	stored, err := sonic.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var reloaded []RoutingFallback
+	if err := sonic.Unmarshal(stored, &reloaded); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	want := []schemas.Fallback{
+		{Provider: "openai", Model: "gpt-4o"},
+		{Provider: "azure", Model: "gpt-4o", KeyID: "k-1"},
+	}
+	for i, fb := range reloaded {
+		if got := fb.Resolved(); got != want[i] {
+			t.Fatalf("fallback %d after restart: got %+v, want %+v (stored %s)", i, got, want[i], stored)
+		}
+	}
+}
