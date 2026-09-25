@@ -269,3 +269,79 @@ func TestAggregateServerInstructionsEscapesClientNameAttribute(t *testing.T) {
 	assert.Contains(t, got, `<mcp_server name="we&quot;ird&amp;&lt;name&gt;">`)
 	assert.Equal(t, 1, strings.Count(got, "</mcp_server>"))
 }
+
+// Instructions write-back, used by the on-demand refresh.
+
+func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c", ToolsToExecute: []string{"*"}}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name: config.Name, ExecutionConfig: config,
+		ToolMap:            map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
+		ServerInstructions: "v1",
+	}
+	m.mu.Unlock()
+
+	var seen []string
+	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, instructions string) {
+		seen = append(seen, instructions)
+	})
+
+	m.writeBackInstructions(config.ID, 0, "v2")
+
+	m.mu.RLock()
+	got := m.clientMap[config.ID].ServerInstructions
+	m.mu.RUnlock()
+	assert.Equal(t, "v2", got)
+	assert.Equal(t, []string{"v2"}, seen, "a changed text must reach the persist seam")
+}
+
+// An operator can press refresh repeatedly; an unchanged text must not re-persist.
+func TestWriteBackInstructionsNoOpWhenUnchanged(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name: config.Name, ExecutionConfig: config,
+		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "same",
+	}
+	m.mu.Unlock()
+
+	fired := false
+	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, _ string) { fired = true })
+
+	m.writeBackInstructions(config.ID, 0, "same")
+
+	assert.False(t, fired, "an unchanged refresh must not re-trigger persist or resync")
+}
+
+// A reconnect during the read makes the result describe a connection that is gone.
+func TestWriteBackInstructionsDropsStaleGeneration(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name: config.Name, ExecutionConfig: config,
+		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "installed", ConnGeneration: 7,
+	}
+	m.mu.Unlock()
+
+	m.writeBackInstructions(config.ID, 3, "from-a-replaced-connection")
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	assert.Equal(t, "installed", m.clientMap[config.ID].ServerInstructions)
+}
+
+// A second STDIO subprocess would read the current config, not the running one's.
+func TestRefreshServerInstructionsSkipsNonRemoteTransports(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	for _, connType := range []schemas.MCPConnectionType{schemas.MCPConnectionTypeSTDIO, schemas.MCPConnectionTypeInProcess} {
+		t.Run(string(connType), func(t *testing.T) {
+			ok := m.refreshServerInstructions(context.Background(),
+				&schemas.MCPClientConfig{ID: "x", Name: "x", ConnectionType: connType}, "x", 0)
+			assert.False(t, ok, "must not attempt a handshake for %s", connType)
+		})
+	}
+}
