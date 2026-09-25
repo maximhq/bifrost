@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -56,6 +57,7 @@ type Hit struct {
 // anything, and records each request.
 type Recorder struct {
 	Name     string
+	CAPEM    string // the CA that signs an HTTPS recorder's certificate; "" for others
 	listener net.Listener
 	mu       sync.Mutex
 	hits     []Hit
@@ -101,7 +103,34 @@ func NewHTTPRecorder(t *testing.T, name, network string) *Recorder {
 		t.Fatalf("%s: listen %s: %v", name, network, err)
 	}
 	r := &Recorder{Name: name, listener: listener}
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	server := &http.Server{Handler: r.forwardProxyHandler()}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return r
+}
+
+// NewHTTPSRecorder is NewHTTPRecorder behind TLS: an https:// proxy URL names it, and
+// the client must trust CAPEM to reach it. The certificate is valid for 127.0.0.1,
+// ::1 and example.com, so a URL naming localhost fails verification.
+func NewHTTPSRecorder(t *testing.T, name string) *Recorder {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("%s: listen: %v", name, err)
+	}
+	r := &Recorder{Name: name, listener: listener}
+	server := httptest.NewUnstartedServer(r.forwardProxyHandler())
+	server.Listener.Close()
+	server.Listener = listener
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	r.CAPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+	return r
+}
+
+// forwardProxyHandler records each request and answers it as NewHTTPRecorder describes.
+func (r *Recorder) forwardProxyHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		auth := req.Header.Get("Proxy-Authorization")
 		if req.Method == http.MethodConnect {
 			r.record(Hit{Target: req.Host, Auth: auth})
@@ -117,10 +146,7 @@ func NewHTTPRecorder(t *testing.T, name, network string) *Recorder {
 			host = net.JoinHostPort(req.URL.Hostname(), "80")
 		}
 		r.record(Hit{Target: host, Auth: auth})
-	})}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Close() })
-	return r
+	})
 }
 
 // NewSOCKS5Recorder answers SOCKS5 (RFC 1928). A client offering username/password
@@ -263,6 +289,7 @@ func readUserPass(conn net.Conn) (string, string, bool) {
 type Set struct {
 	Config    *Recorder // named by proxy_config (http, IP or hostname URL)
 	Config6   *Recorder // named by proxy_config (http, IPv6 literal URL)
+	TLS       *Recorder // named by proxy_config (https URL: TLS to the proxy)
 	Socks     *Recorder // named by proxy_config or an env var (socks5)
 	EnvHTTPS  *Recorder // HTTPS_PROXY / https_proxy
 	EnvHTTPS6 *Recorder // HTTPS_PROXY as an IPv6 literal
@@ -275,12 +302,13 @@ func NewSet(t *testing.T) *Set {
 	s := &Set{
 		Config:    NewHTTPRecorder(t, "config", "tcp4"),
 		Config6:   NewHTTPRecorder(t, "config6", "tcp6"),
+		TLS:       NewHTTPSRecorder(t, "config-tls"),
 		Socks:     NewSOCKS5Recorder(t, "socks"),
 		EnvHTTPS:  NewHTTPRecorder(t, "env-https", "tcp4"),
 		EnvHTTPS6: NewHTTPRecorder(t, "env-https6", "tcp6"),
 		EnvHTTP:   NewHTTPRecorder(t, "env-http", "tcp4"),
 	}
-	s.All = []*Recorder{s.Config, s.Config6, s.Socks, s.EnvHTTPS, s.EnvHTTPS6, s.EnvHTTP}
+	s.All = []*Recorder{s.Config, s.Config6, s.TLS, s.Socks, s.EnvHTTPS, s.EnvHTTPS6, s.EnvHTTP}
 	return s
 }
 
@@ -340,6 +368,33 @@ var Sources = []Source{
 			URL:      schemas.NewSecretVar("http://127.0.0.1:" + s.Config.Port()),
 			Username: schemas.NewSecretVar(User),
 			Password: schemas.NewSecretVar(Pass),
+		}
+	}},
+	// An https:// proxy URL: TLS to the proxy, trusted through the proxy CA, then CONNECT
+	// inside that TLS session.
+	{Name: "https-ca", Route: &Route{Proxy: "config-tls"}, Config: func(s *Set) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{
+			Type:      schemas.HTTPProxy,
+			URL:       schemas.NewSecretVar("https://127.0.0.1:" + s.TLS.Port()),
+			CACertPEM: schemas.NewSecretVar(s.TLS.CAPEM),
+		}
+	}},
+	{Name: "https-credentials", Route: &Route{Proxy: "config-tls", Auth: BasicAuth}, Config: func(s *Set) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{
+			Type:      schemas.HTTPProxy,
+			URL:       schemas.NewSecretVar("https://127.0.0.1:" + s.TLS.Port()),
+			Username:  schemas.NewSecretVar(User),
+			Password:  schemas.NewSecretVar(Pass),
+			CACertPEM: schemas.NewSecretVar(s.TLS.CAPEM),
+		}
+	}},
+	// The shape an inherited global https:// proxy takes with skip_tls_verify on: no CA,
+	// so every stack must skip verifying the proxy rather than refuse it.
+	{Name: "https-skip-verify", Route: &Route{Proxy: "config-tls"}, Config: func(s *Set) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{
+			Type:          schemas.HTTPProxy,
+			URL:           schemas.NewSecretVar("https://127.0.0.1:" + s.TLS.Port()),
+			SkipTLSVerify: true,
 		}
 	}},
 	{Name: "socks5", Route: &Route{Proxy: "socks"}, Config: func(s *Set) *schemas.ProxyConfig {
