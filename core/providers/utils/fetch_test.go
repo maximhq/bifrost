@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -159,8 +158,7 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
 	var hits atomic.Int32
 	var secretHits atomic.Int32
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A forward proxy receives the absolute target URI in the request line.
+	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Host == "10.0.0.5" {
 			secretHits.Add(1)
 			w.WriteHeader(http.StatusOK)
@@ -180,8 +178,7 @@ func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	defer proxy.Close()
+	})
 
 	proxyCtx := func(t *testing.T) context.Context {
 		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // RedactURLForError reduces a resource URL to the part that is safe to echo back in an
@@ -72,10 +74,11 @@ func sanitizeFetchError(err error, redacted string) error {
 // (schemas.BifrostContextKeyProviderProxyConfig, set by bifrost on every attempt),
 // the fetch leaves through that proxy, the same egress as the provider's inference
 // traffic. The target host is still refused if it resolves to a non-public address;
-// see network.NewSSRFSafeTransport for how the check works once the dial goes to a
-// proxy. With no proxy configured the fetch connects directly, as before.
+// see newFetchClient and network.NewTargetCheckingTransport for how the check works
+// once the dial goes to a proxy. With no proxy configured the fetch connects
+// directly, as before.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
-	const maxBytes int64 = 25 * 1024 * 1024
+	const maxBytes = maxFetchBytes
 
 	// Every error below names the resource by its redacted form only; see
 	// RedactURLForError for why the query and userinfo never make it into a message.
@@ -102,6 +105,9 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 
 	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
+		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
+			return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+		}
 		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	defer resp.Body.Close()
@@ -126,6 +132,9 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 	return mediaType, base64.StdEncoding.EncodeToString(body), nil
 }
 
+// maxFetchBytes caps a fetched resource at 25 MiB.
+const maxFetchBytes int64 = 25 * 1024 * 1024
+
 // proxyEnvVars are the variables golang.org/x/net/http/httpproxy reads.
 var proxyEnvVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"}
 
@@ -142,13 +151,57 @@ func fetchClientFor(ctx context.Context) (*http.Client, error) {
 	if cached, ok := fetchClients.Load(key); ok {
 		return cached.(*http.Client), nil
 	}
-	proxy, tlsConfig, err := NetHTTPProxy(proxyConfig)
-	if err != nil {
-		return nil, err
+	actual, _ := fetchClients.LoadOrStore(key, newFetchClient(proxyConfig))
+	return actual.(*http.Client), nil
+}
+
+// newFetchClient builds the SSRF-hardened fetch client on fasthttp, with the proxy
+// from the same ConfigureProxy the provider's inference clients use.
+//
+// Direct connections, including targets the proxy is told to skip (errBypassProxy),
+// go through network.SSRFSafeDialContext, which checks the resolved target on every
+// dial. Once a request is proxied the dial goes to the proxy, which is operator
+// configuration and may well be on a private address, so it is not checked; the
+// target is judged instead by network.NewTargetCheckingTransport before every hop.
+// See NewTargetCheckingTransport for the DNS caveat that leaves.
+func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
+	ssrfDial := network.SSRFSafeDialContext(10 * time.Second)
+	direct := func(addr string) (net.Conn, error) {
+		return ssrfDial(context.Background(), "tcp", addr)
 	}
-	client := &http.Client{
+	client := &fasthttp.Client{
+		ReadTimeout:              20 * time.Second,
+		WriteTimeout:             20 * time.Second,
+		MaxIdleConnDuration:      30 * time.Second,
+		MaxResponseBodySize:      int(maxFetchBytes) + 1,
+		NoDefaultUserAgentHeader: true,
+	}
+	proxied := false
+	if namesProxy(proxyConfig) {
+		client = ConfigureProxy(client, proxyConfig, getLogger())
+		if proxyDial := client.Dial; proxyDial != nil {
+			proxied = true
+			client.Dial = func(addr string) (net.Conn, error) {
+				conn, err := proxyDial(addr)
+				if errors.Is(err, errBypassProxy) {
+					return direct(addr)
+				}
+				return conn, err
+			}
+		}
+	}
+	if !proxied {
+		client.Dial = direct
+	}
+	client.Transport = NewContextTransport()
+
+	var transport http.RoundTripper = &fasthttpRoundTripper{client: client}
+	if proxied {
+		transport = network.NewTargetCheckingTransport(transport)
+	}
+	return &http.Client{
 		Timeout:   20 * time.Second,
-		Transport: network.NewSSRFSafeTransport(10*time.Second, proxy, tlsConfig),
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
@@ -159,8 +212,6 @@ func fetchClientFor(ctx context.Context) (*http.Client, error) {
 			return nil
 		},
 	}
-	actual, _ := fetchClients.LoadOrStore(key, client)
-	return actual.(*http.Client), nil
 }
 
 // fetchClientKey is the set of resolved values that change which client a fetch needs.
