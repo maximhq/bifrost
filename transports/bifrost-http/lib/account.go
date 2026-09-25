@@ -5,8 +5,11 @@ package lib
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 // BaseAccount implements the Account interface for Bifrost.
@@ -87,6 +90,13 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	} else {
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
+	if inherited, ok := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.store.GetGlobalProxyConfig()); ok {
+		providerConfig.ProxyConfig = inherited.proxy
+		if inherited.skipTLSVerify {
+			// NetworkConfig is a copy here, so this never touches the stored config.
+			providerConfig.NetworkConfig.InsecureSkipVerify = true
+		}
+	}
 	if config.ConcurrencyAndBufferSize != nil {
 		providerConfig.ConcurrencyAndBufferSize = *config.ConcurrencyAndBufferSize
 	} else {
@@ -105,4 +115,61 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		providerConfig.PromptCache = config.PromptCache
 	}
 	return providerConfig, nil
+}
+
+// hasOwnProxy reports whether a provider's proxy_config names a proxy of its own.
+// The UI saves type "none" when the proxy form is left untouched, so "none" and an
+// empty type mean "not configured", the same as nil.
+func hasOwnProxy(proxyConfig *schemas.ProxyConfig) bool {
+	return proxyConfig != nil && proxyConfig.Type != "" && proxyConfig.Type != schemas.NoProxy
+}
+
+// inheritedProxy is the global proxy translated for one provider.
+type inheritedProxy struct {
+	proxy         *schemas.ProxyConfig
+	skipTLSVerify bool
+}
+
+// inheritGlobalProxy returns the global proxy for a provider that has none of its
+// own, when the global proxy is enabled for inference. A provider's own proxy always
+// wins. ok is false when nothing should be inherited.
+//
+// no_proxy carries over, so hosts such as a VPC endpoint stay direct. skip_tls_verify
+// carries over as the provider's insecure_skip_verify, since that is what the global
+// setting means for traffic tunnelled through a TLS-inspecting proxy. The global
+// timeout does not: each provider keeps its own network_config timeouts.
+func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool) {
+	if hasOwnProxy(own) || global == nil || !global.Enabled || !global.EnableForInference || strings.TrimSpace(global.URL) == "" {
+		return inheritedProxy{}, false
+	}
+	var proxyType schemas.ProxyType
+	switch global.Type {
+	case network.GlobalProxyTypeHTTP, "":
+		proxyType = schemas.HTTPProxy
+	case network.GlobalProxyTypeSOCKS5:
+		proxyType = schemas.Socks5Proxy
+	default:
+		// "tcp" has no provider-level equivalent (the UI does not offer it).
+		return inheritedProxy{}, false
+	}
+	return inheritedProxy{
+		proxy: &schemas.ProxyConfig{
+			Type:     proxyType,
+			URL:      plainSecret(global.URL),
+			Username: plainSecret(global.Username),
+			Password: plainSecret(global.Password),
+			NoProxy:  global.NoProxy,
+		},
+		skipTLSVerify: global.SkipTLSVerify,
+	}, true
+}
+
+// plainSecret wraps a literal value. The global proxy stores plain strings, so a
+// password that happens to start with "env." must not be read as an env reference,
+// which NewSecretVar would do.
+func plainSecret(value string) *schemas.SecretVar {
+	if value == "" {
+		return nil
+	}
+	return &schemas.SecretVar{Val: value, SecretType: schemas.SecretTypePlainText}
 }

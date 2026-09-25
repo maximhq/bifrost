@@ -2125,8 +2125,10 @@ func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *table
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
-	// Store the proxy config in memory for use by components that need it
-	s.Config.ProxyConfig = config
+	// Store the proxy config and rebuild the providers that inherit it for inference.
+	if err := s.Config.SetGlobalProxyConfig(config); err != nil {
+		return err
+	}
 	logger.Info("proxy configuration reloaded: enabled=%t, type=%s", config.Enabled, config.Type)
 	return nil
 }

@@ -594,10 +594,20 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 		var conn net.Conn
 		var err error
 
-		switch {
-		case existingDial != nil:
+		viaExistingDial := existingDial != nil
+		if viaExistingDial {
 			// Proxy or custom dial function is set — use it, then enable keepalive
 			conn, err = existingDial(addr)
+			// A no_proxy match on the proxy dialer: connect directly instead,
+			// through the same checked path as a client with no proxy at all.
+			if errors.Is(err, errBypassProxy) {
+				viaExistingDial = false
+				conn, err = nil, nil
+			}
+		}
+
+		switch {
+		case viaExistingDial:
 		case existingDialTimeout != nil:
 			// Preserve dial-timeout behavior
 			conn, err = existingDialTimeout(addr, client.ReadTimeout)
@@ -739,6 +749,17 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	if dialFunc != nil {
+		if noProxy := proxyConfig.NoProxy; noProxy != "" {
+			proxyDial := dialFunc
+			dialFunc = func(addr string) (net.Conn, error) {
+				if network.MatchesNoProxy(network.DialAddrHost(addr), noProxy) {
+					// ConfigureDialer turns this into its own direct dial, so a
+					// bypassed host still gets the private-network checks.
+					return nil, errBypassProxy
+				}
+				return proxyDial(addr)
+			}
+		}
 		client.Dial = dialFunc
 	}
 
@@ -805,6 +826,15 @@ func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.U
 		proxy = EnvProxyFunc()
 	default:
 		return nil, nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+	}
+	if noProxy := proxyConfig.NoProxy; noProxy != "" {
+		configured := proxy
+		proxy = func(req *http.Request) (*url.URL, error) {
+			if network.MatchesNoProxy(req.URL.Hostname(), noProxy) {
+				return nil, nil
+			}
+			return configured(req)
+		}
 	}
 
 	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
@@ -1018,6 +1048,11 @@ func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, log
 
 	return tlsConfig, nil
 }
+
+// errBypassProxy is returned by the proxy dialer ConfigureProxy installs when the
+// target matches the proxy's no_proxy list. ConfigureDialer, which every client
+// applies right after ConfigureProxy, catches it and dials directly.
+var errBypassProxy = errors.New("target matches no_proxy: dial directly")
 
 func dialErrorFunc(message string) fasthttp.DialFunc {
 	return func(_ string) (net.Conn, error) {

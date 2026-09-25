@@ -277,6 +277,13 @@ type ProxyConfig struct {
 	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
 	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
 	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+
+	// NoProxy is a comma-separated list of hosts that connect directly instead of
+	// through the proxy (".example.com" for a domain and its subdomains, "*.example.com"
+	// for subdomains only, "*" for everything). Runtime-only: it is filled in when a
+	// provider inherits the global proxy, whose no_proxy list it carries, and is never
+	// serialized with the provider's own config.
+	NoProxy string `json:"-"`
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
