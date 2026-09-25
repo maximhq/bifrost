@@ -1,26 +1,40 @@
 // Content-logging permutation matrix: every combination of the layers that decide whether a
 // request's content is stored in the log store and exported to an observability connector.
 //
-//   virtual key        inherit | on (disable_content_logging: false) | off (true)
+//   admin layers       inherit | on (disable_content_logging: false) | off (true), per layer:
+//                        team, virtual key (vk), provider key (providerKey) in OSS; business unit
+//                        (bu), user and access profile (accessProfile) in enterprise
 //   client (global)    on | off                (client.disable_content_logging false | true)
 //   connector (OTel)   on | off                (profile disable_content_logging false | true)
 //   per-request gate   allowed | not allowed   (client.allow_per_request_content_storage_override)
 //   request header     absent | on | off       (x-bf-disable-content-logging: false | true)
 //
+// A case carries its admin layers as plain fields; a layer the case does not name is inherit, so
+// the OSS runner and the enterprise runner share one contract.
+//
 // Pure: no network. run-content-logging-matrix.mjs drives a live gateway through every case and
 // checks it against expectedOutcome; content-logging-matrix.test.mjs pins the table itself.
 
-export const VK_MODES = ["inherit", "on", "off"];
+export const LAYER_MODES = ["inherit", "on", "off"];
 export const GLOBAL_MODES = ["on", "off"];
 export const CONNECTOR_MODES = ["on", "off"];
 export const OVERRIDE_MODES = ["allowed", "blocked"];
 export const HEADER_MODES = ["absent", "on", "off"];
 
-// vkDisableValue is what the key's disable_content_logging field is set to for a mode: undefined
-// means the field is omitted on create, so the key inherits.
-export function vkDisableValue(vk) {
-	if (vk === "on") return false;
-	if (vk === "off") return true;
+// ADMIN_TIERS mirrors contentLoggingTiers in core/schemas/contentlogging.go, highest first: the org
+// hierarchy outranks the credential, and layers sharing a tier are peers where any "off" wins.
+export const ADMIN_TIERS = [["bu"], ["team"], ["user"], ["providerKey", "vk", "accessProfile"]];
+
+// OSS_AXES are the admin layers an OSS gateway can set.
+export const OSS_AXES = ["team", "vk", "providerKey"];
+
+const ADMIN_LAYERS = ADMIN_TIERS.flat();
+
+// layerDisableValue is what a layer's disable_content_logging field is set to for a mode: undefined
+// means the field is omitted on create, so the layer inherits.
+export function layerDisableValue(mode) {
+	if (mode === "on") return false;
+	if (mode === "off") return true;
 	return undefined;
 }
 
@@ -31,36 +45,60 @@ export function headerValue(header) {
 	return undefined;
 }
 
+// resolveAdmin walks the tiers from the top: the first tier where any layer says something decides,
+// "off" when any layer in it says off, else "on". "inherit" when no layer says anything.
+export function resolveAdmin(layers) {
+	for (const tier of ADMIN_TIERS) {
+		const modes = tier.map((layer) => layers[layer] ?? "inherit").filter((mode) => mode !== "inherit");
+		if (modes.includes("off")) return "off";
+		if (modes.length > 0) return "on";
+	}
+	return "inherit";
+}
+
 // expectedOutcome is the contract under test.
 //
-// Log store: the client flag decides, the key's own decision overrides it in both directions, and
-// an allowed per-request header overrides both. A header is ignored while overrides are blocked.
+// Log store: the client flag decides unless the admin layers resolve to a decision, which overrides
+// it in both directions; an allowed per-request header overrides both. A header is ignored while
+// overrides are blocked.
 //
-// Connector: the connector's own flag decides. A key set to off also strips content for its
-// traffic; a key set to on never loosens a connector that disables content. The per-request header
+// Connector: the connector's own flag decides. Admin layers that resolve to off also strip content;
+// layers that resolve to on never loosen a connector that disables content. The per-request header
 // never reaches a connector.
-export function expectedOutcome({ vk, global, connector, override, header }) {
-	let logDisabled = global === "off";
-	if (vk === "on") logDisabled = false;
-	if (vk === "off") logDisabled = true;
-	if (override === "allowed") {
-		if (header === "on") logDisabled = false;
-		if (header === "off") logDisabled = true;
+export function expectedOutcome(c) {
+	const admin = resolveAdmin(c);
+	let logDisabled = c.global === "off";
+	if (admin === "on") logDisabled = false;
+	if (admin === "off") logDisabled = true;
+	if (c.override === "allowed") {
+		if (c.header === "on") logDisabled = false;
+		if (c.header === "off") logDisabled = true;
 	}
-	const connectorDisabled = connector === "off" || vk === "off";
+	const connectorDisabled = c.connector === "off" || admin === "off";
 	return { logStoresContent: !logDisabled, connectorExportsContent: !connectorDisabled };
 }
 
-// allCases is the full cross product, grouped so every case that shares a gateway configuration
-// (global, connector, override) is adjacent: the runner reconfigures once per group.
-export function allCases() {
+// crossLayers is every combination of modes over the given admin layers.
+function crossLayers(axes) {
+	let combos = [{}];
+	for (const axis of axes) {
+		combos = combos.flatMap((combo) => LAYER_MODES.map((mode) => ({ ...combo, [axis]: mode })));
+	}
+	return combos;
+}
+
+// allCases is the full cross product over the given admin layers and the gateway settings, grouped
+// so every case that shares a gateway configuration (global, connector, override) is adjacent: the
+// runner reconfigures once per group. headers narrows the header axis for a runner that covers it
+// elsewhere.
+export function allCases({ axes = OSS_AXES, headers = HEADER_MODES, overrides = OVERRIDE_MODES } = {}) {
 	const cases = [];
 	for (const global of GLOBAL_MODES) {
 		for (const connector of CONNECTOR_MODES) {
-			for (const override of OVERRIDE_MODES) {
-				for (const vk of VK_MODES) {
-					for (const header of HEADER_MODES) {
-						const c = { vk, global, connector, override, header };
+			for (const override of overrides) {
+				for (const layers of crossLayers(axes)) {
+					for (const header of headers) {
+						const c = { ...layers, global, connector, override, header };
 						cases.push({ ...c, id: caseID(c), expected: expectedOutcome(c) });
 					}
 				}
@@ -70,8 +108,9 @@ export function allCases() {
 	return cases;
 }
 
-export function caseID({ vk, global, connector, override, header }) {
-	return `vk-${vk}.global-${global}.connector-${connector}.override-${override}.header-${header}`;
+export function caseID(c) {
+	const layers = ADMIN_LAYERS.filter((layer) => c[layer] !== undefined).map((layer) => `${layer}-${c[layer]}`);
+	return [...layers, `global-${c.global}`, `connector-${c.connector}`, `override-${c.override}`, `header-${c.header}`].join(".");
 }
 
 // groupByConfig splits cases into the gateway configurations they need, in allCases order.
