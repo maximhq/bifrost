@@ -88,13 +88,19 @@ func TestHandleGeminiStreams_StripsForwardedAuthorization(t *testing.T) {
 		}},
 	}
 	cases := []struct {
-		name     string
-		apiKey   string
-		wantAuth string
+		name      string
+		apiKey    string // value in the headers map; omitted when omitKey is set
+		omitKey   bool   // provider key empty: callers leave x-goog-api-key out of the map
+		configKey string // x-goog-api-key supplied through network-config extra headers
+		wantKey   string
+		wantAuth  string
 	}{
-		{name: "api_key_set_strips_authorization", apiKey: "dummy-key", wantAuth: ""},
+		{name: "api_key_set_strips_authorization", apiKey: "dummy-key", wantKey: "dummy-key", wantAuth: ""},
 		// An empty x-goog-api-key must not cost the request its only credential.
-		{name: "empty_api_key_keeps_authorization", apiKey: "", wantAuth: "Bearer leaked-token"},
+		{name: "empty_api_key_keeps_authorization", apiKey: "", wantKey: "", wantAuth: "Bearer leaked-token"},
+		// The strip keys off the header actually applied to the request, so an API key
+		// arriving through extra headers still drops the forwarded Authorization.
+		{name: "extra_header_api_key_strips_authorization", omitKey: true, configKey: "config-key", wantKey: "config-key", wantAuth: ""},
 	}
 	for _, hd := range handlers {
 		for _, tc := range cases {
@@ -114,15 +120,22 @@ func TestHandleGeminiStreams_StripsForwardedAuthorization(t *testing.T) {
 				}))
 				defer ts.Close()
 
+				reqHeaders := map[string]string{
+					"Accept":        "text/event-stream",
+					"Cache-Control": "no-cache",
+				}
+				if !tc.omitKey {
+					reqHeaders["x-goog-api-key"] = tc.apiKey
+				}
+				extra := map[string]string{"Authorization": "Bearer leaked-token"} // injected via SetExtraHeaders
+				if tc.configKey != "" {
+					extra["X-Goog-Api-Key"] = tc.configKey
+				}
 				stream, bifrostErr := hd.start(
 					schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 					ts.URL+"/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
-					map[string]string{
-						"x-goog-api-key": tc.apiKey,
-						"Accept":         "text/event-stream",
-						"Cache-Control":  "no-cache",
-					},
-					map[string]string{"Authorization": "Bearer leaked-token"}, // injected via SetExtraHeaders
+					reqHeaders,
+					extra,
 				)
 				require.Nil(t, bifrostErr)
 				require.NotNil(t, stream)
@@ -147,7 +160,7 @@ func TestHandleGeminiStreams_StripsForwardedAuthorization(t *testing.T) {
 					t.Fatal("stream did not close")
 				}
 
-				assert.Equal(t, tc.apiKey, headers.Get("x-goog-api-key"), "x-goog-api-key header")
+				assert.Equal(t, tc.wantKey, headers.Get("x-goog-api-key"), "x-goog-api-key header")
 				assert.Equal(t, tc.wantAuth, headers.Get("Authorization"), "Authorization header")
 			})
 		}

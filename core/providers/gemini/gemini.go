@@ -444,7 +444,7 @@ func HandleGeminiChatCompletionStream(
 
 	// Strip any forwarded Authorization so only x-goog-api-key auth reaches
 	// upstream (Vertex Express rejects requests carrying both credentials).
-	if v, ok := headers["x-goog-api-key"]; ok && v != "" {
+	if len(req.Header.Peek("x-goog-api-key")) > 0 {
 		req.Header.Del("Authorization")
 	}
 
@@ -976,7 +976,7 @@ func HandleGeminiResponsesStream(
 
 	// Strip any forwarded Authorization so only x-goog-api-key auth reaches
 	// upstream (Vertex Express rejects requests carrying both credentials).
-	if v, ok := headers["x-goog-api-key"]; ok && v != "" {
+	if len(req.Header.Peek("x-goog-api-key")) > 0 {
 		req.Header.Del("Authorization")
 	}
 
