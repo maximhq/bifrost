@@ -592,6 +592,8 @@ func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
 		`[""]`,
 		`[{"key_id":"k-1"}]`,
 		`[{"provider":"vertex","provider_key_name":"prod"}]`,
+		`[{"provider":"unregistered","model":"claude-sonnet-5","key_id":"k-1"}]`,
+		`[{"provider":" ","model":"claude-sonnet-5"}]`,
 		`[1]`,
 	} {
 		t.Run(fallbacks, func(t *testing.T) {
