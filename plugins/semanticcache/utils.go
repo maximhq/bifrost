@@ -23,31 +23,28 @@ var directCacheNamespace = uuid.MustParse("b1f3c2d4-e5a6-7890-abcd-ef1234567890"
 
 // isSemanticCacheSupportedRequestType reports whether semantic cache supports
 // this request type for cache lookup and storage. Unsupported types are skipped.
+//
+// IMPORTANT: this list must stay in sync with the switch in buildRequestMetadataForCaching.
+// When adding a new case there, add it here too.
 func isSemanticCacheSupportedRequestType(requestType schemas.RequestType) bool {
-	return requestFamily(requestType) != ""
-}
-
-// requestFamily identifies the response contract rather than the transport.
-// Stream mode is already part of the parameters hash. Keep this mapping in
-// sync with buildRequestMetadataForCaching when adding supported request types.
-func requestFamily(requestType schemas.RequestType) string {
 	switch requestType {
-	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		return "text_completions"
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
-		return "chat_completions"
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
-		return "responses"
-	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
-		return "speech"
-	case schemas.EmbeddingRequest:
-		return "embeddings"
-	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
-		return "transcriptions"
-	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
-		return "image_generation"
+	case schemas.TextCompletionRequest,
+		schemas.TextCompletionStreamRequest,
+		schemas.ChatCompletionRequest,
+		schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest,
+		schemas.ResponsesStreamRequest,
+		schemas.WebSocketResponsesRequest,
+		schemas.SpeechRequest,
+		schemas.SpeechStreamRequest,
+		schemas.EmbeddingRequest,
+		schemas.TranscriptionRequest,
+		schemas.TranscriptionStreamRequest,
+		schemas.ImageGenerationRequest,
+		schemas.ImageGenerationStreamRequest:
+		return true
 	default:
-		return ""
+		return false
 	}
 }
 
@@ -195,19 +192,18 @@ func flattenToFloat32Embedding(values [][]float64) []float32 {
 // changes. The returned map is fed to hashMap to derive params_hash, which
 // then anchors both direct and semantic lookups.
 func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *schemas.BifrostRequest) (map[string]interface{}, error) {
-	family := requestFamily(req.RequestType)
-	if family == "" {
-		return nil, fmt.Errorf("unsupported request type for semantic caching")
-	}
 	metadata := map[string]interface{}{
-		"stream":         bifrost.IsStreamRequestType(req.RequestType),
-		"request_family": family,
+		"stream": bifrost.IsStreamRequestType(req.RequestType),
 	}
 
 	if attachments := plugin.extractAttachmentsForCaching(state, req); len(attachments) > 0 {
 		metadata["attachments"] = attachments
 	}
 
+	// request_family separates endpoints whose input and params hash the same,
+	// such as chat and responses (issue #7560). It is set after the params so
+	// extra params cannot override it. Stream variants share a family because
+	// "stream" is already in the hash.
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest == nil {
@@ -216,6 +212,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
 			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TextCompletionRequest
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if req.ChatRequest == nil {
 			return nil, fmt.Errorf("chat payload is nil")
@@ -223,6 +220,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ChatCompletionRequest
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		if req.ResponsesRequest == nil {
 			return nil, fmt.Errorf("responses payload is nil")
@@ -230,6 +228,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ResponsesRequest
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if req.SpeechRequest == nil {
 			return nil, fmt.Errorf("speech payload is nil")
@@ -237,6 +236,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
 			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.SpeechRequest
 	case schemas.EmbeddingRequest:
 		if req.EmbeddingRequest == nil {
 			return nil, fmt.Errorf("embedding payload is nil")
@@ -244,6 +244,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
 			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.EmbeddingRequest
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if req.TranscriptionRequest == nil {
 			return nil, fmt.Errorf("transcription payload is nil")
@@ -251,6 +252,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
 			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TranscriptionRequest
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		if req.ImageGenerationRequest == nil {
 			return nil, fmt.Errorf("image generation payload is nil")
@@ -258,6 +260,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
 			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ImageGenerationRequest
 	default:
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
