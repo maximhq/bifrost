@@ -35,6 +35,18 @@ type GeminiProvider struct {
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
 
+// setGeminiAuthHeader authenticates the request with apiKey and strips any
+// forwarded Authorization so only x-goog-api-key auth reaches upstream (Vertex
+// Express rejects requests carrying both credentials). Must be called after
+// providerUtils.SetExtraHeaders, which may inject a forwarded Authorization.
+func setGeminiAuthHeader(req *fasthttp.Request, apiKey string) {
+	if apiKey == "" {
+		return
+	}
+	req.Header.Set("x-goog-api-key", apiKey)
+	req.Header.Del("Authorization")
+}
+
 func setGeminiRequestBody(req *fasthttp.Request, bodyReader io.Reader, bodySize int, jsonData []byte) {
 	// Large payload mode streams request bytes directly from the ingress reader.
 	// Normal mode sends marshaled JSON as before.
@@ -124,9 +136,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+model+endpoint))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Large payload mode: stream original request bytes directly from ingress.
 	// Normal mode: use converted JSON body.
@@ -207,9 +217,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("/models?pageSize=%d", schemas.DefaultPageSize)))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -432,6 +440,12 @@ func HandleGeminiChatCompletionStream(
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
+	}
+
+	// Strip any forwarded Authorization so only x-goog-api-key auth reaches
+	// upstream (Vertex Express rejects requests carrying both credentials).
+	if _, ok := headers["x-goog-api-key"]; ok {
+		req.Header.Del("Authorization")
 	}
 
 	// Large payload mode: stream original request bytes directly from ingress.
@@ -772,9 +786,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":generateContent"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Large payload mode streams request bytes directly to upstream; normal mode sends marshaled bytes.
 	if bodyReader == nil {
@@ -960,6 +972,12 @@ func HandleGeminiResponsesStream(
 	// Set headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
+	}
+
+	// Strip any forwarded Authorization so only x-goog-api-key auth reaches
+	// upstream (Vertex Express rejects requests carrying both credentials).
+	if _, ok := headers["x-goog-api-key"]; ok {
+		req.Header.Del("Authorization")
 	}
 
 	// Large payload mode: stream original request body to upstream.
@@ -1260,9 +1278,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":batchEmbedContents"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Large payload mode: stream original request bytes directly from ingress.
 	// Normal mode: use converted JSON body.
@@ -1462,15 +1478,13 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
 	req.Header.SetContentType("application/json")
 
-	// Set headers for streaming
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Cache-Control", "no-cache")
-
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Set headers for streaming
+	setGeminiAuthHeader(req, key.Value.GetValue())
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
 
 	// Large payload mode: stream original request body to upstream.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
@@ -1756,9 +1770,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers for streaming
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -2059,10 +2071,7 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	req.Header.SetContentType("application/json")
 	req.SetBody(jsonData)
 
-	value := key.Value.GetValue()
-	if value != "" {
-		req.Header.Set("x-goog-api-key", value)
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Send the request with optional large response streaming
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
@@ -2152,9 +2161,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		req.Header.SetContentType("application/json")
 		req.SetBody(jsonData)
 
-		if value := key.Value.GetValue(); value != "" {
-			req.Header.Set("x-goog-api-key", value)
-		}
+		setGeminiAuthHeader(req, key.Value.GetValue())
 
 		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
 		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
@@ -2301,9 +2308,7 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+model+":predictLongRunning"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	req.SetBody(jsonData)
 
@@ -2402,9 +2407,7 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/"+operationPath))
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
@@ -2491,9 +2494,7 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 		req.SetRequestURI(*videoResp.Videos[0].URL)
 		req.Header.SetMethod(http.MethodGet)
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-goog-api-key", key.Value.GetValue())
-		}
+		setGeminiAuthHeader(req, key.Value.GetValue())
 		var bifrostErr *schemas.BifrostError
 		var wait func()
 		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, req, resp, 5)
@@ -2655,9 +2656,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.Header.SetContentType("application/json")
 	req.SetBody(jsonData)
 
@@ -2781,9 +2780,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.Header.SetContentType("application/json")
 
 	// Make request
@@ -2950,9 +2947,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.Header.SetContentType("application/json")
 
 	// Make request
@@ -3074,9 +3069,7 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.Header.SetContentType("application/json")
 
 	// Make request
@@ -3158,9 +3151,7 @@ func (provider *GeminiProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodDelete)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
@@ -3363,9 +3354,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.Header.SetContentType("application/json")
 
 	// Make request
@@ -3564,9 +3553,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType())
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.SetBody(buf.Bytes())
 
 	// Make request
@@ -3658,9 +3645,7 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -3821,9 +3806,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -3934,9 +3917,7 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodDelete)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -4055,9 +4036,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
 		req.SetBody(jsonData)
@@ -4194,9 +4173,7 @@ func (provider *GeminiProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	if key.Value.GetValue() != "" {
-		fasthttpReq.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(fasthttpReq, key.Value.GetValue())
 
 	fasthttpReq.SetBody(req.Body)
 
@@ -4276,9 +4253,7 @@ func (provider *GeminiProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	if key.Value.GetValue() != "" {
-		fasthttpReq.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(fasthttpReq, key.Value.GetValue())
 
 	fasthttpReq.Header.Set("Connection", "close")
 
