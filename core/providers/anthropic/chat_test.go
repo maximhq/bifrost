@@ -2761,3 +2761,22 @@ func TestToAnthropicChatRequest_PlaceholderOnlyForEmptyUserTurns(t *testing.T) {
 		t.Fatalf("empty assistant content = %+v, want left empty (no placeholder for assistant turns)", blocks)
 	}
 }
+
+// Content the converter cannot represent is not an empty turn. An audio-only
+// user message converts to zero Anthropic blocks, but it must not be replaced
+// by the placeholder: that would silently discard the audio and let the model
+// answer "." instead of surfacing that Anthropic chat cannot take audio. Only a
+// genuinely empty turn gets the placeholder (#7276).
+func TestToAnthropicChatRequest_UnconvertibleUserContentNotReplacedByPlaceholder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := emptyUserTurnRequest(t, ctx, `[{"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}]`)
+	if len(result.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(result.Messages))
+	}
+	for _, b := range result.Messages[2].Content.ContentBlocks {
+		if b.Type == AnthropicContentBlockTypeText && b.Text != nil && *b.Text == documentPlaceholderText {
+			raw, _ := json.Marshal(result.Messages[2].Content)
+			t.Fatalf("audio-only user turn content = %s, want no placeholder (audio must not be silently replaced)", raw)
+		}
+	}
+}
