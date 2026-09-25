@@ -4,7 +4,7 @@
 // The rows below are written out by hand from the documented contract rather than derived from
 // expectedOutcome, so a change to the rule has to change both places on purpose.
 import assert from "node:assert";
-import { allCases, callbackEndpoints, caseID, DEFAULT_LOG_RETENTION_DAYS, expectedOutcome, groupByConfig, headerValue, logRowFailures, normaliseRetentionDays, vkDisableValue } from "./content-logging-matrix.mjs";
+import { ADMIN_TIERS, allCases, callbackEndpoints, caseID, DEFAULT_LOG_RETENTION_DAYS, expectedOutcome, groupByConfig, headerValue, layerDisableValue, logRowFailures, normaliseRetentionDays, OSS_AXES, resolveAdmin } from "./content-logging-matrix.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -19,14 +19,54 @@ const base = { connector: "on", override: "blocked", header: "absent" };
 
 test("the matrix is the full cross product, each case once", () => {
 	const cases = allCases();
-	assert.strictEqual(cases.length, 3 * 2 * 2 * 2 * 3);
+	assert.deepStrictEqual(OSS_AXES, ["team", "vk", "providerKey"]);
+	assert.strictEqual(cases.length, 3 * 3 * 3 * 2 * 2 * 2 * 3);
 	assert.strictEqual(new Set(cases.map((c) => c.id)).size, cases.length);
 });
 
 test("cases are grouped into the eight gateway configurations", () => {
 	const groups = groupByConfig(allCases());
 	assert.strictEqual(groups.length, 8);
-	for (const g of groups) assert.strictEqual(g.cases.length, 9);
+	for (const g of groups) assert.strictEqual(g.cases.length, 3 * 3 * 3 * 3);
+});
+
+test("the admin tiers mirror the Go resolver: org hierarchy above the credential", () => {
+	assert.deepStrictEqual(ADMIN_TIERS, [["bu"], ["team"], ["user"], ["providerKey", "vk", "accessProfile"]]);
+});
+
+test("admin layers resolve top down; the first tier that decides wins", () => {
+	// layers                                           -> resolved
+	const rows = [
+		[{}, "inherit"],
+		[{ vk: "off" }, "off"],
+		[{ team: "off", vk: "on" }, "off"],
+		[{ team: "on", vk: "off" }, "on"],
+		[{ team: "on", providerKey: "off" }, "on"],
+		[{ bu: "on", team: "off" }, "on"],
+		[{ team: "off", user: "on" }, "off"],
+		[{ user: "on", vk: "off", providerKey: "off" }, "on"],
+		[{ team: "inherit", vk: "on" }, "on"],
+	];
+	for (const [layers, want] of rows) assert.strictEqual(resolveAdmin(layers), want, JSON.stringify(layers));
+});
+
+test("inside the credential tier any off wins", () => {
+	assert.strictEqual(resolveAdmin({ vk: "on", providerKey: "off" }), "off");
+	assert.strictEqual(resolveAdmin({ vk: "off", providerKey: "on" }), "off");
+	assert.strictEqual(resolveAdmin({ vk: "on", accessProfile: "off", providerKey: "on" }), "off");
+	assert.strictEqual(resolveAdmin({ vk: "on", providerKey: "on" }), "on");
+});
+
+test("log store and connector follow the resolved layers", () => {
+	// team off over a key on: nothing stored, OTel stripped.
+	assert.strictEqual(LOG({ ...base, team: "off", vk: "on", global: "on" }), false);
+	assert.strictEqual(OTEL({ ...base, team: "off", vk: "on", global: "on" }), false);
+	// team on over a provider key off: stored even with the client off, and OTel is not tightened.
+	assert.strictEqual(LOG({ ...base, team: "on", providerKey: "off", global: "off" }), true);
+	assert.strictEqual(OTEL({ ...base, team: "on", providerKey: "off", global: "on" }), true);
+	// provider key off beside a key on: off.
+	assert.strictEqual(LOG({ ...base, vk: "on", providerKey: "off", global: "on" }), false);
+	assert.strictEqual(OTEL({ ...base, vk: "on", providerKey: "off", global: "on" }), false);
 });
 
 test("log store: the key overrides the client flag in both directions", () => {
@@ -89,15 +129,15 @@ test("connector: the client flag and the request header never reach it", () => {
 });
 
 test("wire values for the key field and the header", () => {
-	assert.strictEqual(vkDisableValue("inherit"), undefined);
-	assert.strictEqual(vkDisableValue("on"), false);
-	assert.strictEqual(vkDisableValue("off"), true);
+	assert.strictEqual(layerDisableValue("inherit"), undefined);
+	assert.strictEqual(layerDisableValue("on"), false);
+	assert.strictEqual(layerDisableValue("off"), true);
 	assert.strictEqual(headerValue("absent"), undefined);
 	assert.strictEqual(headerValue("on"), "false");
 	assert.strictEqual(headerValue("off"), "true");
 	assert.strictEqual(
-		caseID({ vk: "off", global: "on", connector: "on", override: "allowed", header: "absent" }),
-		"vk-off.global-on.connector-on.override-allowed.header-absent",
+		caseID({ team: "on", vk: "off", providerKey: "inherit", global: "on", connector: "on", override: "allowed", header: "absent" }),
+		"team-on.providerKey-inherit.vk-off.global-on.connector-on.override-allowed.header-absent",
 	);
 });
 
