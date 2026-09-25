@@ -216,9 +216,11 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 			requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
 			switch requestType {
 			case schemas.EmbeddingRequest:
-				return &schemas.BifrostRequest{
-					EmbeddingRequest: invokeReq.ToBifrostEmbeddingRequest(ctx),
-				}, nil
+				embReq, err := invokeReq.ToBifrostEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return &schemas.BifrostRequest{EmbeddingRequest: embReq}, nil
 
 			case schemas.ImageGenerationRequest:
 				return &schemas.BifrostRequest{
