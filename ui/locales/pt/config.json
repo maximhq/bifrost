@@ -491,7 +491,7 @@
 		"proxyConfiguration": "Configuração de proxy",
 		"proxyType": "Tipo de proxy",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "Selecione o tipo de protocolo de proxy. Atualmente só é suportado proxy HTTP.",
+		"proxyTypeHelp": "HTTP / HTTPS aceita um URL de proxy http:// ou https:// (https:// encripta a ligação ao proxy). SOCKS5 aceita um URL socks5://.",
 		"selectType": "Selecionar tipo",
 		"proxyUrl": "URL do proxy",
 		"proxyUrlHelp": "URL completo do servidor proxy, incluindo protocolo e porta.",
@@ -512,16 +512,16 @@
 		"scimHelp": "Usar proxy para pedidos de sincronização de diretório SCIM.",
 		"scimEnterpriseOnly": "O suporte a proxy SCIM está disponível no Bifrost Enterprise.",
 		"inference": "Inferência",
-		"inferenceHelp": "Usar proxy para pedidos de inferência LLM a fornecedores de modelos.",
+		"inferenceHelp": "Utilizar o proxy para pedidos de inferência LLM aos fornecedores de modelos. Um fornecedor com definições de proxy próprias mantém-nas.",
 		"comingSoon": "Em breve",
 		"api": "API",
-		"apiHelp": "Usar proxy para chamadas API externas e webhooks.",
+		"apiHelp": "Utilizar o proxy para chamadas API de saída: servidores MCP, OAuth, webhooks, transferências de plugins, sincronização do catálogo de modelos e exportação OpenTelemetry.",
 		"noPermission": "Não tem permissão para atualizar as definições",
 		"toastSaved": "Configuração de proxy atualizada com sucesso.",
 		"connectionTimeoutHelp": "Tempo limite para estabelecer ligações de proxy. 0 significa sem tempo limite. O predefinido é 60 segundos.",
 		"caCertificateHelp": "Certificado CA codificado em PEM a confiar para ligações TLS através de proxies que interceptam SSL.",
 		"skipTlsHelp": "Desativar a verificação de certificados TLS para proxies HTTPS. Não recomendado em produção.",
-		"unsupportedType": "O proxy {{type}} ainda não é suportado. Utilize proxy HTTP."
+		"unsupportedType": "O proxy {{type}} ainda não é suportado. Utilize um proxy HTTP ou SOCKS5."
 	},
 	"userAgent": {
 		"title": "Mapeamentos de User-Agent",

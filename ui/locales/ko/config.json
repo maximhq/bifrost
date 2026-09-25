@@ -491,7 +491,7 @@
 		"proxyConfiguration": "프록시 구성",
 		"proxyType": "프록시 유형",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "프록시 프로토콜 유형을 선택해요. 현재는 HTTP 프록시만 지원돼요.",
+		"proxyTypeHelp": "HTTP / HTTPS는 http:// 또는 https:// 프록시 URL을 사용해요(https://는 프록시와의 연결을 암호화해요). SOCKS5는 socks5:// URL을 사용해요.",
 		"selectType": "유형 선택",
 		"proxyUrl": "프록시 URL",
 		"proxyUrlHelp": "프로토콜과 포트를 포함한 프록시 서버의 전체 URL.",
@@ -512,16 +512,16 @@
 		"scimHelp": "SCIM 디렉터리 동기화 요청에 프록시를 사용하세요.",
 		"scimEnterpriseOnly": "SCIM 프록시 지원은 Bifrost Enterprise에서 제공돼요.",
 		"inference": "추론",
-		"inferenceHelp": "모델 공급자에 대한 LLM 추론 요청에 프록시를 사용해요.",
+		"inferenceHelp": "모델 제공자로 보내는 LLM 추론 요청에 프록시를 사용해요. 자체 프록시 설정이 있는 제공자는 그 설정을 유지해요.",
 		"comingSoon": "곧 출시 예정",
 		"api": "API",
-		"apiHelp": "외부 API 호출 및 웹후크에 프록시를 사용하세요.",
+		"apiHelp": "외부 API 호출에 프록시를 사용해요: MCP 서버, OAuth, 웹훅, 플러그인 다운로드, 모델 카탈로그 동기화, OpenTelemetry 내보내기.",
 		"noPermission": "설정을 업데이트할 권한이 없어요.",
 		"toastSaved": "프록시 구성이 업데이트되었어요.",
 		"connectionTimeoutHelp": "프록시 연결 설정 시간이 초과되었어요. 0은 시간 초과가 없음을 의미해요. 기본값은 60초이에요.",
 		"caCertificateHelp": "SSL 가로채기 프록시를 통한 TLS 연결을 신뢰하는 PEM 인코딩 CA 인증서이에요.",
 		"skipTlsHelp": "HTTPS 프록시에 대한 TLS 인증서 확인을 비활성화해요. 생산에는 권장되지 않어요.",
-		"unsupportedType": "{{type}} 프록시는 아직 지원되지 않어요. HTTP 프록시를 사용해 주세요."
+		"unsupportedType": "{{type}} 프록시는 아직 지원되지 않아요. HTTP 또는 SOCKS5 프록시를 사용해 주세요."
 	},
 	"userAgent": {
 		"title": "사용자 에이전트 매핑",

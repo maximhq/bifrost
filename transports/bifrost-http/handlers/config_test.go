@@ -838,19 +838,38 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 	const storedURL = "http://10.0.0.5:3128"
 	cases := []struct {
 		name    string
+		stored  *configtables.GlobalProxyConfig // nil: an http proxy at storedURL
 		body    string
 		want403 bool
 	}{
 		{name: "same url, timeout edit", body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":30,"enable_for_inference":true}`, want403: false},
 		{name: "url changed", body: `{"enabled":true,"type":"http","url":"http://evil.example.com:8080","timeout":10,"enable_for_inference":true}`, want403: true},
 		{name: "skip_tls_verify turned on", body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":10,"skip_tls_verify":true,"enable_for_inference":true}`, want403: true},
+		// The type picks the dialer: the same URL under another type is another proxy protocol.
+		{name: "type changed, same url", body: `{"enabled":true,"type":"socks5","url":"` + storedURL + `","timeout":10,"enable_for_inference":true}`, want403: true},
+		// A stored proxy with no type dials as http, so naming socks5 for its bare host:port
+		// changes the protocol, and naming http does not.
+		{
+			name:    "empty stored type changed to socks5, same bare url",
+			stored:  &configtables.GlobalProxyConfig{Enabled: true, URL: "10.0.0.5:1080", Timeout: 10, EnableForInference: true},
+			body:    `{"enabled":true,"type":"socks5","url":"10.0.0.5:1080","timeout":30,"enable_for_inference":true}`,
+			want403: true,
+		},
+		{
+			name:    "empty stored type named http, same bare url",
+			stored:  &configtables.GlobalProxyConfig{Enabled: true, URL: "10.0.0.5:1080", Timeout: 10, EnableForInference: true},
+			body:    `{"enabled":true,"type":"http","url":"10.0.0.5:1080","timeout":30,"enable_for_inference":true}`,
+			want403: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newRealOAuth2Store(t)
-			require.NoError(t, store.UpdateProxyConfig(context.Background(), &configtables.GlobalProxyConfig{
-				Enabled: true, Type: "http", URL: storedURL, Timeout: 10, EnableForInference: true,
-			}))
+			seed := tc.stored
+			if seed == nil {
+				seed = &configtables.GlobalProxyConfig{Enabled: true, Type: "http", URL: storedURL, Timeout: 10, EnableForInference: true}
+			}
+			require.NoError(t, store.UpdateProxyConfig(context.Background(), seed))
 			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
 			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
 
@@ -865,7 +884,8 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 			stored, err := store.GetProxyConfig(context.Background())
 			require.NoError(t, err)
 			if tc.want403 {
-				assert.Equal(t, storedURL, stored.URL)
+				assert.Equal(t, seed.URL, stored.URL)
+				assert.Equal(t, seed.Type, stored.Type)
 				assert.False(t, stored.SkipTLSVerify)
 				assert.Equal(t, 10, stored.Timeout)
 			} else {
@@ -1565,4 +1585,167 @@ func TestUpdateConfig_A2APrivateAllowlist(t *testing.T) {
 	h.updateConfig(cleared)
 	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
 	assert.Empty(t, persistedAllowlist())
+}
+
+// proxyReloadRecorder records the global proxy config updateProxyConfig hands to the
+// runtime.
+type proxyReloadRecorder struct {
+	stubConfigManager
+	reloaded *configtables.GlobalProxyConfig
+}
+
+func (r *proxyReloadRecorder) ReloadProxyConfig(_ context.Context, cfg *configtables.GlobalProxyConfig) error {
+	r.reloaded = cfg
+	return nil
+}
+
+// TestUpdateProxyConfig_ProxyTypes pins which global proxy types PUT /api/proxy-config
+// accepts. socks5 is accepted, stored and applied: the HTTP client factory and the
+// provider stacks dial SOCKS5 proxies (with RFC 1929 credentials), so rejecting it as
+// "not yet supported" only hid a working feature. tcp has no dialer and stays refused.
+func TestUpdateProxyConfig_ProxyTypes(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct {
+		name     string
+		body     string
+		wantCode int
+		wantType string
+		wantURL  string
+	}{
+		{"http", `{"enabled":true,"type":"http","url":"http://10.0.0.5:3128","enable_for_inference":true}`, fasthttp.StatusOK, "http", "http://10.0.0.5:3128"},
+		{"socks5", `{"enabled":true,"type":"socks5","url":"socks5://10.0.0.5:1080","username":"svc","password":"s3cret","enable_for_inference":true,"enable_for_api":true}`, fasthttp.StatusOK, "socks5", "socks5://10.0.0.5:1080"},
+		{"socks5 bare host:port", `{"enabled":true,"type":"socks5","url":"10.0.0.5:1080"}`, fasthttp.StatusOK, "socks5", "10.0.0.5:1080"},
+		{"socks5 upper-case scheme and spaces, as the form accepts", `{"enabled":true,"type":"socks5","url":"  SOCKS5://10.0.0.5:1080  "}`, fasthttp.StatusOK, "socks5", "SOCKS5://10.0.0.5:1080"},
+		{"socks5 without url", `{"enabled":true,"type":"socks5","url":""}`, fasthttp.StatusBadRequest, "", ""},
+		{"socks5 with an http url", `{"enabled":true,"type":"socks5","url":"http://10.0.0.5:1080"}`, fasthttp.StatusBadRequest, "", ""},
+		// A URL the dialer cannot parse is refused: the runtime treats an unparsable
+		// proxy URL as no proxy, so saving one would send traffic direct.
+		{"socks5 with a non-numeric port", `{"enabled":true,"type":"socks5","url":"socks5://10.0.0.5:bad"}`, fasthttp.StatusBadRequest, "", ""},
+		{"http with a non-numeric port", `{"enabled":true,"type":"http","url":"http://10.0.0.5:bad"}`, fasthttp.StatusBadRequest, "", ""},
+		{"http without a host", `{"enabled":true,"type":"http","url":"http://:3128"}`, fasthttp.StatusBadRequest, "", ""},
+		// The destination rule applies to the proxy host whatever the scheme.
+		{"socks5 on a link-local host", `{"enabled":true,"type":"socks5","url":"socks5://169.254.169.254:1080"}`, fasthttp.StatusBadRequest, "", ""},
+		// An http proxy is reached over http:// or https:// only; the dialer refuses any
+		// other scheme at runtime, so it must not be saved.
+		{"http with an ftp url", `{"enabled":true,"type":"http","url":"ftp://10.0.0.5:3128"}`, fasthttp.StatusBadRequest, "", ""},
+		{"http with a socks5 url", `{"enabled":true,"type":"http","url":"socks5://10.0.0.5:1080"}`, fasthttp.StatusBadRequest, "", ""},
+		{"tcp", `{"enabled":true,"type":"tcp","url":"tcp://10.0.0.5:9000"}`, fasthttp.StatusBadRequest, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			manager := &proxyReloadRecorder{}
+			h := &ConfigHandler{store: cfg, configManager: manager}
+
+			ctx := putConfigCtx(tc.body)
+			h.updateProxyConfig(ctx)
+			require.Equal(t, tc.wantCode, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantCode != fasthttp.StatusOK {
+				assert.Nil(t, manager.reloaded, "a refused proxy config must not reach the runtime")
+				return
+			}
+			stored, err := store.GetProxyConfig(bgCtx())
+			require.NoError(t, err)
+			require.NotNil(t, manager.reloaded)
+			assert.Equal(t, tc.wantType, string(stored.Type), "the proxy type must be persisted")
+			assert.Equal(t, tc.wantType, string(manager.reloaded.Type), "the proxy type must reach the runtime")
+			assert.Equal(t, tc.wantURL, stored.URL, "the proxy URL must be persisted trimmed")
+		})
+	}
+}
+
+// TestProxyConfig_URLPasswordRedacted pins that a password carried in the proxy URL's
+// userinfo never comes back from GET, as the separate password field does not: the
+// dialers use URL userinfo as proxy credentials for http and socks5 proxies alike. The
+// settings page saves what GET returned, so a PUT that sends the redacted URL back keeps
+// the stored password instead of saving the placeholder.
+func TestProxyConfig_URLPasswordRedacted(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct {
+		name     string
+		proxy    string
+		stored   string
+		redacted string
+	}{
+		{"socks5", "socks5", "socks5://svc:s3cret@10.0.0.5:1080", "socks5://svc:<redacted>@10.0.0.5:1080"},
+		{"socks5 bare host:port", "socks5", "svc:s3cret@10.0.0.5:1080", "svc:<redacted>@10.0.0.5:1080"},
+		{"http", "http", "http://svc:s3cret@10.0.0.5:3128", "http://svc:<redacted>@10.0.0.5:3128"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: &proxyReloadRecorder{}}
+			require.NoError(t, store.UpdateProxyConfig(bgCtx(), &configtables.GlobalProxyConfig{
+				Enabled: true, Type: network.GlobalProxyType(tc.proxy), URL: tc.stored, EnableForInference: true,
+			}))
+
+			get := bgCtx()
+			h.getProxyConfig(get)
+			require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), string(get.Response.Body()))
+			var proxy configtables.GlobalProxyConfig
+			require.NoError(t, json.Unmarshal(get.Response.Body(), &proxy))
+			assert.Equal(t, tc.redacted, proxy.URL, "GET /api/proxy-config must not return the URL's password")
+
+			all := bgCtx()
+			h.getConfig(all)
+			require.Equal(t, fasthttp.StatusOK, all.Response.StatusCode(), string(all.Response.Body()))
+			var config struct {
+				ProxyConfig configtables.GlobalProxyConfig `json:"proxy_config"`
+			}
+			require.NoError(t, json.Unmarshal(all.Response.Body(), &config))
+			assert.Equal(t, tc.redacted, config.ProxyConfig.URL, "GET /api/config must not return the URL's password")
+
+			body, err := json.Marshal(map[string]any{"enabled": true, "type": tc.proxy, "url": tc.redacted, "enable_for_inference": true})
+			require.NoError(t, err)
+			put := putConfigCtx(string(body))
+			h.updateProxyConfig(put)
+			require.Equal(t, fasthttp.StatusOK, put.Response.StatusCode(), string(put.Response.Body()))
+			saved, err := store.GetProxyConfig(bgCtx())
+			require.NoError(t, err)
+			assert.Equal(t, tc.stored, saved.URL, "saving the redacted URL must keep the stored password")
+		})
+	}
+
+	// With no stored password, the placeholder is dropped rather than saved as one.
+	t.Run("no stored password", func(t *testing.T) {
+		store := newRealOAuth2Store(t)
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+		h := &ConfigHandler{store: cfg, configManager: &proxyReloadRecorder{}}
+		put := putConfigCtx(`{"enabled":true,"type":"socks5","url":"socks5://svc:<redacted>@10.0.0.5:1080"}`)
+		h.updateProxyConfig(put)
+		require.Equal(t, fasthttp.StatusOK, put.Response.StatusCode(), string(put.Response.Body()))
+		saved, err := store.GetProxyConfig(bgCtx())
+		require.NoError(t, err)
+		assert.Equal(t, "socks5://svc@10.0.0.5:1080", saved.URL)
+	})
+}
+
+// TestUpdateProxyConfig_ErrorsDoNotEchoURLPassword pins that a refused proxy URL never
+// quotes its password back. The PUT restores the stored password into a URL that keeps
+// the redacted placeholder before validating it, so an error that echoed the URL would
+// hand back the password GET hides.
+func TestUpdateProxyConfig_ErrorsDoNotEchoURLPassword(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct{ name, url string }{
+		{"non-numeric port", "socks5://svc:<redacted>@10.0.0.5:bad"},
+		{"port 0", "socks5://svc:<redacted>@10.0.0.5:0"},
+		{"no host", "socks5://svc:<redacted>@:1080"},
+		{"unparsable host", "socks5://svc:<redacted>@[::1:1080"},
+		{"wrong scheme", "http://svc:<redacted>@10.0.0.5:1080"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: &proxyReloadRecorder{}}
+			require.NoError(t, store.UpdateProxyConfig(bgCtx(), &configtables.GlobalProxyConfig{
+				Enabled: true, Type: network.GlobalProxyTypeSOCKS5, URL: "socks5://svc:s3cret@10.0.0.5:1080",
+			}))
+			body, err := json.Marshal(map[string]any{"enabled": true, "type": "socks5", "url": tc.url})
+			require.NoError(t, err)
+			put := putConfigCtx(string(body))
+			h.updateProxyConfig(put)
+			require.Equal(t, fasthttp.StatusBadRequest, put.Response.StatusCode(), string(put.Response.Body()))
+			assert.NotContains(t, string(put.Response.Body()), "s3cret", "the 400 must not quote the stored password")
+		})
+	}
 }

@@ -491,7 +491,7 @@
 		"proxyConfiguration": "プロキシ構成",
 		"proxyType": "プロキシタイプ",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "プロキシプロトコルを選択。現在は HTTP プロキシのみ対応。",
+		"proxyTypeHelp": "HTTP / HTTPS には http:// または https:// のプロキシ URL を指定します（https:// はプロキシへの接続を暗号化します）。SOCKS5 には socks5:// の URL を指定します。",
 		"selectType": "タイプを選択",
 		"proxyUrl": "プロキシ URL",
 		"proxyUrlHelp": "プロトコルとポートを含むプロキシサーバーの完全 URL。",
@@ -512,16 +512,16 @@
 		"scimHelp": "SCIM ディレクトリ同期リクエストにプロキシを使います。",
 		"scimEnterpriseOnly": "SCIM プロキシ対応は Bifrost エンタープライズで利用できます。",
 		"inference": "推論",
-		"inferenceHelp": "モデルプロバイダーへの LLM 推論リクエストにプロキシを使います。",
+		"inferenceHelp": "モデルプロバイダーへの LLM 推論リクエストにプロキシを使用します。独自のプロキシ設定を持つプロバイダーはその設定を維持します。",
 		"comingSoon": "近日公開",
 		"api": "API",
-		"apiHelp": "外部 API 呼び出しと webhook にプロキシを使います。",
+		"apiHelp": "外部への API 呼び出しにプロキシを使用します：MCP サーバー、OAuth、Webhook、プラグインのダウンロード、モデルカタログ同期、OpenTelemetry エクスポート。",
 		"noPermission": "設定を更新する権限がありません",
 		"toastSaved": "プロキシ構成を更新しました。",
 		"connectionTimeoutHelp": "プロキシ接続確立のタイムアウト。0 は無制限。デフォルト 60 秒。",
 		"caCertificateHelp": "SSL 傍受プロキシ経由の TLS で信頼する PEM 形式 CA 証明書。",
 		"skipTlsHelp": "HTTPS プロキシの TLS 証明書検証を無効化。本番では非推奨。",
-		"unsupportedType": "{{type}} プロキシは未対応です。HTTP プロキシを使ってください。"
+		"unsupportedType": "{{type}} プロキシは未対応です。HTTP または SOCKS5 プロキシを使ってください。"
 	},
 	"userAgent": {
 		"title": "User-Agent マッピング",

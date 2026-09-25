@@ -90,7 +90,11 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	} else {
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
-	if inherited, ok := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.store.GetGlobalProxyConfig()); ok {
+	inherited, ok, err := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.store.GetGlobalProxyConfig())
+	if err != nil {
+		return nil, fmt.Errorf("provider %s: %w", providerKey, err)
+	}
+	if ok {
 		// skip_tls_verify travels on inherited.proxy (ProxyConfig.SkipTLSVerify), which
 		// scopes it to TLS through the proxy. Setting NetworkConfig.InsecureSkipVerify
 		// instead would also skip verification for no_proxy hosts reached directly.
@@ -144,18 +148,19 @@ type inheritedProxy struct {
 // setting means for traffic tunnelled through a TLS-inspecting proxy. The global
 // timeout does not: each provider keeps its own network_config timeouts.
 // InheritedGlobalProxy is the proxy a relay with no proxy_config of its own inherits
-// from the global proxy, nil when the global proxy is off or not enabled for inference.
-func InheritedGlobalProxy(global *configstoreTables.GlobalProxyConfig) *schemas.ProxyConfig {
-	inherited, ok := inheritGlobalProxy(nil, global)
-	if !ok {
-		return nil
+// from the global proxy, nil when the global proxy is off or not enabled for inference,
+// and an error when it is on but its URL cannot be read.
+func InheritedGlobalProxy(global *configstoreTables.GlobalProxyConfig) (*schemas.ProxyConfig, error) {
+	inherited, ok, err := inheritGlobalProxy(nil, global)
+	if err != nil || !ok {
+		return nil, err
 	}
-	return inherited.proxy
+	return inherited.proxy, nil
 }
 
-func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool) {
+func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool, error) {
 	if hasOwnProxy(own) || global == nil || !global.Enabled || !global.EnableForInference || strings.TrimSpace(global.URL) == "" {
-		return inheritedProxy{}, false
+		return inheritedProxy{}, false, nil
 	}
 	var proxyType schemas.ProxyType
 	switch global.Type {
@@ -165,12 +170,23 @@ func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.Glob
 		proxyType = schemas.Socks5Proxy
 	default:
 		// "tcp" has no provider-level equivalent (the UI does not offer it).
-		return inheritedProxy{}, false
+		return inheritedProxy{}, false, nil
+	}
+	// A bare host:port takes the type's scheme, as the settings page reads it. Providers
+	// parse the URL to add credentials and fall back to no proxy when it does not parse, so
+	// they get the normalized URL. A URL that cannot be normalized is an error, not "no
+	// proxy": a stored URL can predate the validator, and dropping it would send inference
+	// direct around a proxy that is on. A scheme that does not match the type is kept, not
+	// refused: config.json stored such proxies before the scheme was checked, and the
+	// dialer follows the URL's scheme.
+	proxyURL, err := parseGlobalProxyURL(global.Type, strings.TrimSpace(global.URL))
+	if err != nil {
+		return inheritedProxy{}, false, fmt.Errorf("global proxy enabled for inference: %w", err)
 	}
 	return inheritedProxy{
 		proxy: &schemas.ProxyConfig{
 			Type:     proxyType,
-			URL:      plainSecret(global.URL),
+			URL:      plainSecret(proxyURL.String()),
 			Username: plainSecret(global.Username),
 			Password: plainSecret(global.Password),
 			NoProxy:  global.NoProxy,
@@ -180,7 +196,7 @@ func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.Glob
 			// NetworkConfig is deliberately left alone.
 			SkipTLSVerify: global.SkipTLSVerify,
 		},
-	}, true
+	}, true, nil
 }
 
 // plainSecret wraps a literal value. The global proxy stores plain strings, so a

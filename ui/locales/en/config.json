@@ -491,7 +491,7 @@
 		"proxyConfiguration": "Proxy Configuration",
 		"proxyType": "Proxy Type",
 		"httpHttps": "HTTP / HTTPS",
-		"proxyTypeHelp": "Select the proxy protocol type. Currently only HTTP proxy is supported.",
+		"proxyTypeHelp": "HTTP / HTTPS takes an http:// or https:// proxy URL (https:// encrypts the connection to the proxy). SOCKS5 takes a socks5:// URL.",
 		"selectType": "Select type",
 		"proxyUrl": "Proxy URL",
 		"proxyUrlHelp": "Full URL of the proxy server including protocol and port.",
@@ -512,16 +512,16 @@
 		"scimHelp": "Use proxy for SCIM directory sync requests.",
 		"scimEnterpriseOnly": "SCIM proxy support is available in Bifrost Enterprise.",
 		"inference": "Inference",
-		"inferenceHelp": "Use proxy for LLM inference requests to model providers.",
+		"inferenceHelp": "Use proxy for LLM inference requests to model providers. A provider with its own proxy settings keeps them.",
 		"comingSoon": "Coming soon",
 		"api": "API",
-		"apiHelp": "Use proxy for external API calls and webhooks.",
+		"apiHelp": "Use proxy for outbound API calls: MCP servers, OAuth, webhooks, plugin downloads, model catalog sync and OpenTelemetry export.",
 		"noPermission": "You don't have permission to update settings",
 		"toastSaved": "Proxy configuration updated successfully.",
 		"connectionTimeoutHelp": "Timeout for establishing proxy connections. 0 means no timeout. Default is 60 seconds.",
 		"caCertificateHelp": "PEM-encoded CA certificate to trust for TLS connections through SSL-intercepting proxies.",
 		"skipTlsHelp": "Disable TLS certificate verification for HTTPS proxies. Not recommended for production.",
-		"unsupportedType": "{{type}} proxy is not yet supported. Please use HTTP proxy."
+		"unsupportedType": "{{type}} proxy is not yet supported. Please use an HTTP or SOCKS5 proxy."
 	},
 	"userAgent": {
 		"title": "User Agent Mappings",
