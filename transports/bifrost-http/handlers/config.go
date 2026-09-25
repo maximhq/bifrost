@@ -1273,7 +1273,7 @@ func checkURLAccessibility(rawURL string) error {
 	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second, Transport: network.DefaultTransport(network.ClientPurposeAPI)}
 	resp, err := client.Get(rawURL)
 	if err != nil {
 		return err

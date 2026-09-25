@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -132,7 +133,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 			return nil, fmt.Errorf("model parameters URL validation failed: %w", err)
 		}
-		client := &http.Client{Timeout: DefaultModelParametersTimeout}
+		client := &http.Client{Timeout: DefaultModelParametersTimeout, Transport: network.DefaultTransport(network.ClientPurposeAPI)}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

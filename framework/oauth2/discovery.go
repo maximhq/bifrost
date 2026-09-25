@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -61,7 +62,8 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:   10 * time.Second,
+		Transport: network.DefaultTransport(network.ClientPurposeAPI),
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
@@ -174,7 +176,8 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
 func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, string, error) {
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:   10 * time.Second,
+		Transport: network.DefaultTransport(network.ClientPurposeAPI),
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
@@ -275,7 +278,8 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 	)
 
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:   10 * time.Second,
+		Transport: network.DefaultTransport(network.ClientPurposeAPI),
 	}
 
 	for _, candidateURL := range candidateURLs {

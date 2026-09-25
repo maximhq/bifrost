@@ -24,6 +24,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -593,6 +594,9 @@ type Config struct {
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
+	// HTTPClientFactory hands out outbound clients that honour ProxyConfig per purpose
+	// and follow its changes live (see network.HTTPClientFactory).
+	HTTPClientFactory *network.HTTPClientFactory
 
 	// SetupToken is the resolved operator-provisioned bootstrap secret (see
 	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
@@ -1013,6 +1017,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 4a. Global proxy (store only). Loaded before providers so the first
 	// GetConfigForProvider already sees it for providers that inherit it.
 	loadGlobalProxyConfig(ctx, config)
+	// Outbound clients for non-inference traffic (webhooks, skills, plugin downloads,
+	// MCP, OAuth, catalog sync, telemetry), built now so everything constructed below
+	// can take it. Registered as the process default for call sites without a handle.
+	config.HTTPClientFactory = network.NewHTTPClientFactory(config.ProxyConfig.ToNetwork(), logger)
+	network.SetDefaultHTTPClientFactory(config.HTTPClientFactory)
 	// 5. Providers (store → file → auto-detect)
 	if err := loadProviders(ctx, config, &configData); err != nil {
 		return nil, err

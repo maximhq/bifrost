@@ -3002,7 +3002,9 @@ func (m *MCPManager) buildTLSHTTPClient(tlsCfg *schemas.MCPTLSConfig) (*http.Cli
 	// leaves name resolution to the proxy; on the direct path (no proxy
 	// configured, or a NO_PROXY match) it stays out of the way and the guard
 	// below sees the real target as before.
-	cloned.Proxy = mcpProxySelector(cloned.Proxy)
+	// The global proxy, when it is enabled for API traffic, takes the place of the
+	// environment selector; with it off, the environment proxy works as before.
+	cloned.Proxy = mcpProxySelector(network.DefaultProxyFunc(network.ClientPurposeAPI))
 	cloned.DialContext = network.PrivateNetworkDialContext(mcpDialTimeout)
 
 	if tlsCfg != nil {

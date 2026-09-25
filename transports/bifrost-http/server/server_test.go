@@ -1189,3 +1189,39 @@ func TestReloadProxyConfigUpdatesHTTPClientFactory(t *testing.T) {
 		t.Fatalf("factory proxy config = %+v, want the reloaded one", got)
 	}
 }
+
+// TestReloadProxyConfigUpdatesConfigFactory pins that a server running its own bootstrap
+// (enterprise never sets s.HTTPClientFactory) still pushes a proxy change to the
+// config's factory, the one registered as the process default.
+func TestReloadProxyConfigUpdatesConfigFactory(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	factory := network.NewHTTPClientFactory(nil, nil)
+	s := &BifrostHTTPServer{Config: &lib.Config{HTTPClientFactory: factory}}
+	proxy := &configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://10.0.0.9:3128", EnableForAPI: true}
+	if err := s.ReloadProxyConfig(context.Background(), proxy); err != nil {
+		t.Fatalf("ReloadProxyConfig: %v", err)
+	}
+	if got := factory.GetProxyConfig(); got == nil || got.URL != proxy.URL {
+		t.Fatalf("config factory proxy = %+v, want the reloaded one", got)
+	}
+}
+
+// TestReloadProxyConfigAcceptsRemoval pins that removing the global proxy (a nil config,
+// which enterprise passes on removal) clears it everywhere instead of panicking.
+func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	factory := network.NewHTTPClientFactory(&network.GlobalProxyConfig{Enabled: true, URL: "http://10.0.0.9:3128", EnableForAPI: true}, nil)
+	s := &BifrostHTTPServer{Config: &lib.Config{HTTPClientFactory: factory}}
+	if err := s.ReloadProxyConfig(context.Background(), nil); err != nil {
+		t.Fatalf("ReloadProxyConfig(nil): %v", err)
+	}
+	if got := factory.GetProxyConfig(); got != nil {
+		t.Fatalf("factory proxy = %+v, want none after removal", got)
+	}
+}
