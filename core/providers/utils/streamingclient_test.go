@@ -935,3 +935,123 @@ func TestContextTransport_PooledConnTruncatedBodyNotRetried(t *testing.T) {
 		t.Fatal("second request succeeded despite a truncated body")
 	}
 }
+
+// TestDoStreamingRequest_FirstTokenDeadlineClosesSocketDuringHeaderWait: a
+// stream attempt whose upstream never answers is cut off at its first-token
+// deadline. The socket closes and the call returns ErrStreamFirstTokenTimeout,
+// while the request context itself stays live for the fallback that follows.
+func TestDoStreamingRequest_FirstTokenDeadlineClosesSocketDuringHeaderWait(t *testing.T) {
+	upstream := newSilentUpstream(t)
+
+	base := &fasthttp.Client{
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+	ConfigureDialer(base, true)
+	stream := BuildStreamingClient(base)
+
+	req, resp := newSilentStreamingRequest(upstream.URL())
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	abort := NewAttemptAbort(200 * time.Millisecond)
+	ctx := context.WithValue(parent, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+
+	errCh := make(chan error, 1)
+	start := time.Now()
+	go func() { errCh <- DoStreamingRequest(ctx, stream, req, resp) }()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrStreamFirstTokenTimeout) {
+			t.Fatalf("DoStreamingRequest error = %v, want ErrStreamFirstTokenTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("deadline took %v to unblock the header wait", elapsed)
+		}
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first-token deadline does not reach the socket: DoStreamingRequest still blocked after 3s")
+	}
+	if parent.Err() != nil {
+		t.Fatal("a TTFT miss must not cancel the request context")
+	}
+
+	select {
+	case <-upstream.hangups:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream never observed the client hanging up: the cut-off attempt's socket is still open")
+	}
+}
+
+// TestDoHTTPRequest_FirstTokenDeadlineEndsHeaderWait covers the net/http path
+// (Bedrock): a missed first-token deadline ends the header wait without
+// cancelling the request context.
+func TestDoHTTPRequest_FirstTokenDeadlineEndsHeaderWait(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	abort := NewAttemptAbort(200 * time.Millisecond)
+	ctx := context.WithValue(parent, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+
+	start := time.Now()
+	resp, err := DoHTTPRequest(srv.Client(), req)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("expected the header wait to end with an error")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("deadline took %v to unblock the header wait", elapsed)
+	}
+	if !abort.Fired() {
+		t.Fatal("abort did not fire")
+	}
+	if parent.Err() != nil {
+		t.Fatal("a TTFT miss must not cancel the request context")
+	}
+}
+
+// TestDoHTTPRequest_DisarmedDeadlineKeepsBody: once the first token arrived
+// (Disarm), the attempt's child context must never cancel the body.
+func TestDoHTTPRequest_DisarmedDeadlineKeepsBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(300 * time.Millisecond)
+		fmt.Fprint(w, "tail")
+	}))
+	defer srv.Close()
+
+	abort := NewAttemptAbort(100 * time.Millisecond)
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := DoHTTPRequest(srv.Client(), req)
+	if err != nil {
+		t.Fatalf("DoHTTPRequest: %v", err)
+	}
+	defer resp.Body.Close()
+	if !abort.Disarm() {
+		t.Fatal("disarm lost to a 100ms deadline right after headers")
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != "tail" {
+		t.Fatalf("body = %q err = %v, want the full body after disarm", body, err)
+	}
+}

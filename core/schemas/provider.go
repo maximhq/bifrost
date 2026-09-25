@@ -35,6 +35,8 @@ const (
 const (
 	ErrProviderRequestTimedOut      = "request timed out (default is 300 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
 	ErrRequestCancelled             = "request cancelled by caller"
+	ErrStreamFirstTokenTimeout      = "TTFT timeout: stream produced no first token before the deadline"
+	FirstTokenTimeoutErrorCode      = "ttft_timeout"
 	ErrRequestBodyConversion        = "failed to convert bifrost request to the expected provider request body"
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"
 	ErrProviderCreateRequest        = "failed to create HTTP request to provider API"
