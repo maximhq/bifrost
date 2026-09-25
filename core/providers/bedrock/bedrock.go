@@ -140,7 +140,9 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 			}
 			tlsConfig.RootCAs = certPool
 		}
-		transport.TLSClientConfig = tlsConfig
+		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
+		// checked against the merged roots.
+		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
 	}
 
 	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated

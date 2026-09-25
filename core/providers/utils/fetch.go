@@ -226,6 +226,8 @@ type fetchClientKey struct {
 	password  string
 	caCertPEM string
 	noProxy   string
+	// skipTLSVerify is an inherited global skip_tls_verify; it changes the client's TLS.
+	skipTLSVerify bool
 	// env holds the proxy variables for type "environment": EnvProxyFunc reads them
 	// when the client is built, so the values it read are part of which client this is.
 	env string
@@ -236,12 +238,13 @@ func fetchClientKeyFor(proxyConfig *schemas.ProxyConfig) fetchClientKey {
 		return fetchClientKey{}
 	}
 	key := fetchClientKey{
-		proxyType: proxyConfig.Type,
-		url:       proxyConfig.URL.GetValue(),
-		username:  proxyConfig.Username.GetValue(),
-		password:  proxyConfig.Password.GetValue(),
-		caCertPEM: proxyConfig.CACertPEM.GetValue(),
-		noProxy:   proxyConfig.NoProxy,
+		proxyType:     proxyConfig.Type,
+		url:           proxyConfig.URL.GetValue(),
+		username:      proxyConfig.Username.GetValue(),
+		password:      proxyConfig.Password.GetValue(),
+		caCertPEM:     proxyConfig.CACertPEM.GetValue(),
+		noProxy:       proxyConfig.NoProxy,
+		skipTLSVerify: proxyConfig.SkipTLSVerify,
 	}
 	if proxyConfig.Type == schemas.EnvProxy {
 		var env strings.Builder

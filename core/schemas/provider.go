@@ -276,7 +276,7 @@ type ProxyConfig struct {
 	URL       *SecretVar `json:"url"`         // URL of the proxy server (supports env.*)
 	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
 	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy, and for the proxy itself when its URL is https:// (supports env.*)
 
 	// NoProxy is a comma-separated list of hosts that connect directly instead of
 	// through the proxy (".example.com" for a domain and its subdomains, "*.example.com"
@@ -284,6 +284,12 @@ type ProxyConfig struct {
 	// provider inherits the global proxy, whose no_proxy list it carries, and is never
 	// serialized with the provider's own config.
 	NoProxy string `json:"-"`
+
+	// SkipTLSVerify skips verifying the proxy's certificate for an https:// proxy URL
+	// (and, like the global setting it comes from, every TLS session through the
+	// proxy). Runtime-only: it is filled in when a provider inherits a global proxy
+	// with skip_tls_verify on, and is never serialized with the provider's own config.
+	SkipTLSVerify bool `json:"-"`
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
