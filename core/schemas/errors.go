@@ -7,6 +7,7 @@ const (
 	RequestTimedOut          = "request_timed_out"
 	RequestDropped           = "request_dropped"
 	ProviderConnectionFailed = "provider_connection_failed"
+	ProviderShuttingDown     = "provider_shutting_down"
 	// Classification reads the declaration core makes at the same site, not this.
 	NoKeySupportsModel = "no_key_supports_model"
 )
