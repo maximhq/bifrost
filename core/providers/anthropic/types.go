@@ -2132,6 +2132,9 @@ func addAnthropicUsageTokenFields(dst, src *AnthropicUsage) {
 		if src.ServerToolUse.WebSearchRequests > dst.ServerToolUse.WebSearchRequests {
 			dst.ServerToolUse.WebSearchRequests = src.ServerToolUse.WebSearchRequests
 		}
+		if src.ServerToolUse.WebFetchRequests > dst.ServerToolUse.WebFetchRequests {
+			dst.ServerToolUse.WebFetchRequests = src.ServerToolUse.WebFetchRequests
+		}
 	}
 }
 
@@ -2163,6 +2166,7 @@ func (u *AnthropicUsage) ServerSideFallbackModel() *string {
 // AnthropicServerToolUseUsage represents server tool use statistics in usage
 type AnthropicServerToolUseUsage struct {
 	WebSearchRequests int `json:"web_search_requests"` // Number of web search requests made
+	WebFetchRequests  int `json:"web_fetch_requests"`  // Number of web fetch requests made
 }
 
 type AnthropicUsageCacheCreation struct {

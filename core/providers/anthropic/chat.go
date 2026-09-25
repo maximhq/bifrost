@@ -1407,11 +1407,14 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			PromptTokensDetails: promptTokensDetails,
 			CompletionTokens:    billable.OutputTokens,
 		}
-		// Forward web search request count so server-tool use is billed.
-		if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
-			n := billable.ServerToolUse.WebSearchRequests
-			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-				NumSearchQueries: &n,
+		// Forward server-tool use counts so web search is billed.
+		if billable.ServerToolUse != nil && (billable.ServerToolUse.WebSearchRequests > 0 || billable.ServerToolUse.WebFetchRequests > 0) {
+			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			if n := billable.ServerToolUse.WebSearchRequests; n > 0 {
+				bifrostResponse.Usage.CompletionTokensDetails.NumSearchQueries = &n
+			}
+			if n := billable.ServerToolUse.WebFetchRequests; n > 0 {
+				bifrostResponse.Usage.CompletionTokensDetails.NumWebFetchRequests = &n
 			}
 		}
 		// Extended-thinking token count. Already a subset of OutputTokens (see

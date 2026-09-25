@@ -2175,6 +2175,7 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 					RejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
 					CitationTokens:           usage.CompletionTokensDetails.CitationTokens,
 					NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
+					NumWebFetchRequests:      usage.CompletionTokensDetails.NumWebFetchRequests,
 				}
 			}
 		}

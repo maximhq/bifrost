@@ -6018,3 +6018,36 @@ func TestCalculateCost_QueuedVideoIsNotBilledAtSubmission(t *testing.T) {
 	terminal.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
 	assert.InDelta(t, 5.60, s.CalculateCost(terminal, nil), 1e-9)
 }
+
+// TestComputeTextCost_OpenAIWebSearchFromToolUsage walks the OpenAI path end to
+// end: tool_usage.web_search.num_requests lands on the responses usage, the
+// responses->chat mapping carries it, and the per-query fee is billed on output.
+func TestComputeTextCost_OpenAIWebSearchFromToolUsage(t *testing.T) {
+	p := chatPricing(0.00000125, 0.00001)
+	p.SearchContextCostPerQuery = bifrost.Ptr(0.025) // gpt-5 rate, $25/1k requests
+
+	responsesUsage := &schemas.ResponsesResponseUsage{
+		InputTokens:  19416,
+		OutputTokens: 2542,
+		TotalTokens:  21958,
+		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+			ReasoningTokens:  2176,
+			NumSearchQueries: bifrost.Ptr(2),
+		},
+	}
+
+	usage := responsesUsageToBifrostUsage(responsesUsage)
+	require.NotNil(t, usage.CompletionTokensDetails)
+	require.NotNil(t, usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 2, *usage.CompletionTokensDetails.NumSearchQueries)
+
+	breakdown := computeTextCost(&p, usage, serviceTier{})
+
+	// input 19416*0.00000125 = 0.02427
+	// output 2542*0.00001    = 0.02542
+	// search 2*0.025         = 0.05
+	assert.InDelta(t, 0.05, breakdown.OutputCostDetails.SearchQueriesCost, 1e-12)
+	assert.InDelta(t, 0.02427, breakdown.InputCost, 1e-12)
+	assert.InDelta(t, 0.07542, breakdown.OutputCost, 1e-12)
+	assert.InDelta(t, 0.09969, breakdown.TotalCost, 1e-12)
+}
