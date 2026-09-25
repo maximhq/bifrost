@@ -354,6 +354,8 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 		{name: "same url, timeout edit", body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":30,"enable_for_inference":true}`, want403: false},
 		{name: "url changed", body: `{"enabled":true,"type":"http","url":"http://evil.example.com:8080","timeout":10,"enable_for_inference":true}`, want403: true},
 		{name: "skip_tls_verify turned on", body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":10,"skip_tls_verify":true,"enable_for_inference":true}`, want403: true},
+		// The type picks the dialer: the same URL under another type is another proxy protocol.
+		{name: "type changed, same url", body: `{"enabled":true,"type":"socks5","url":"` + storedURL + `","timeout":10,"enable_for_inference":true}`, want403: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -725,6 +727,73 @@ func TestUpdateConfig_FirstAdminStillRequiresSetupToken(t *testing.T) {
 				return
 			}
 			assert.Nil(t, stored, "no admin account may be created without the setup token")
+		})
+	}
+}
+
+// proxyReloadRecorder records the global proxy config updateProxyConfig hands to the
+// runtime.
+type proxyReloadRecorder struct {
+	stubConfigManager
+	reloaded *configtables.GlobalProxyConfig
+}
+
+func (r *proxyReloadRecorder) ReloadProxyConfig(_ context.Context, cfg *configtables.GlobalProxyConfig) error {
+	r.reloaded = cfg
+	return nil
+}
+
+// TestUpdateProxyConfig_ProxyTypes pins which global proxy types PUT /api/proxy-config
+// accepts. socks5 is accepted, stored and applied: the HTTP client factory and the
+// provider stacks dial SOCKS5 proxies (with RFC 1929 credentials), so rejecting it as
+// "not yet supported" only hid a working feature. tcp has no dialer and stays refused.
+func TestUpdateProxyConfig_ProxyTypes(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct {
+		name     string
+		body     string
+		wantCode int
+		wantType string
+		wantURL  string
+	}{
+		{"http", `{"enabled":true,"type":"http","url":"http://10.0.0.5:3128","enable_for_inference":true}`, fasthttp.StatusOK, "http", "http://10.0.0.5:3128"},
+		{"socks5", `{"enabled":true,"type":"socks5","url":"socks5://10.0.0.5:1080","username":"svc","password":"s3cret","enable_for_inference":true,"enable_for_api":true}`, fasthttp.StatusOK, "socks5", "socks5://10.0.0.5:1080"},
+		{"socks5 bare host:port", `{"enabled":true,"type":"socks5","url":"10.0.0.5:1080"}`, fasthttp.StatusOK, "socks5", "10.0.0.5:1080"},
+		{"socks5 upper-case scheme and spaces, as the form accepts", `{"enabled":true,"type":"socks5","url":"  SOCKS5://10.0.0.5:1080  "}`, fasthttp.StatusOK, "socks5", "SOCKS5://10.0.0.5:1080"},
+		{"socks5 without url", `{"enabled":true,"type":"socks5","url":""}`, fasthttp.StatusBadRequest, "", ""},
+		{"socks5 with an http url", `{"enabled":true,"type":"socks5","url":"http://10.0.0.5:1080"}`, fasthttp.StatusBadRequest, "", ""},
+		// A URL the dialer cannot parse is refused: the runtime treats an unparsable
+		// proxy URL as no proxy, so saving one would send traffic direct.
+		{"socks5 with a non-numeric port", `{"enabled":true,"type":"socks5","url":"socks5://10.0.0.5:bad"}`, fasthttp.StatusBadRequest, "", ""},
+		{"http with a non-numeric port", `{"enabled":true,"type":"http","url":"http://10.0.0.5:bad"}`, fasthttp.StatusBadRequest, "", ""},
+		{"http without a host", `{"enabled":true,"type":"http","url":"http://:3128"}`, fasthttp.StatusBadRequest, "", ""},
+		// The destination rule applies to the proxy host whatever the scheme.
+		{"socks5 on a link-local host", `{"enabled":true,"type":"socks5","url":"socks5://169.254.169.254:1080"}`, fasthttp.StatusBadRequest, "", ""},
+		// An http proxy is reached over http:// or https:// only; the dialer refuses any
+		// other scheme at runtime, so it must not be saved.
+		{"http with an ftp url", `{"enabled":true,"type":"http","url":"ftp://10.0.0.5:3128"}`, fasthttp.StatusBadRequest, "", ""},
+		{"http with a socks5 url", `{"enabled":true,"type":"http","url":"socks5://10.0.0.5:1080"}`, fasthttp.StatusBadRequest, "", ""},
+		{"tcp", `{"enabled":true,"type":"tcp","url":"tcp://10.0.0.5:9000"}`, fasthttp.StatusBadRequest, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			manager := &proxyReloadRecorder{}
+			h := &ConfigHandler{store: cfg, configManager: manager}
+
+			ctx := putConfigCtx(tc.body)
+			h.updateProxyConfig(ctx)
+			require.Equal(t, tc.wantCode, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantCode != fasthttp.StatusOK {
+				assert.Nil(t, manager.reloaded, "a refused proxy config must not reach the runtime")
+				return
+			}
+			stored, err := store.GetProxyConfig(bgCtx())
+			require.NoError(t, err)
+			require.NotNil(t, manager.reloaded)
+			assert.Equal(t, tc.wantType, string(stored.Type), "the proxy type must be persisted")
+			assert.Equal(t, tc.wantType, string(manager.reloaded.Type), "the proxy type must reach the runtime")
+			assert.Equal(t, tc.wantURL, stored.URL, "the proxy URL must be persisted trimmed")
 		})
 	}
 }

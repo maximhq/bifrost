@@ -125,6 +125,7 @@
           "var adminSessionGatedRequests = {",
           "  'Add Provider': /requires an authenticated admin session/i,",
           "  'Update Proxy Config': /requires an authenticated admin session/i,",
+          "  'Update Proxy Config (SOCKS5)': /requires an authenticated admin session/i,",
           "  'Add MCP Client': /unauthenticated callers cannot register MCP clients/i,",
           "  'Add MCP Client (unresolvable host)': /could not resolve MCP target host/i,",
           "  'Create MCP Client (vMCP setup)': /unauthenticated callers cannot register MCP clients/i,",
@@ -8919,6 +8920,55 @@
       "name": "Proxy",
       "item": [
         {
+          "name": "Get Proxy Config (snapshot)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Clear any snapshot a previous run left, so a failed GET here can never be mistaken for one.",
+                  "pm.collectionVariables.set('proxy_original_config', '');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The proxy config as it was before this folder ran, so the folder's last write can put",
+                  "// it back. Every write below is skipped unless this captured a real proxy config: a 200",
+                  "// that is not one (an HTML page from a fallback route, say) is not a snapshot.",
+                  "var snapshot = null;",
+                  "try { snapshot = pm.response.json(); } catch (e) { snapshot = null; }",
+                  "var valid = pm.response.code === 200 && snapshot !== null && typeof snapshot === 'object' && typeof snapshot.enabled === 'boolean';",
+                  "pm.test('the original proxy config is captured', function () {",
+                  "  pm.expect(valid, 'status ' + pm.response.code + ', body: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "if (valid) {",
+                  "  pm.collectionVariables.set('proxy_original_config', pm.response.text());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
           "name": "Update Proxy Config",
           "request": {
             "method": "PUT",
@@ -8949,6 +8999,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Every proxy write needs the snapshot \"Get Proxy Config (snapshot)\" took: without it the",
+                  "// folder could not put the original config back, so it changes nothing.",
+                  "if (!pm.collectionVariables.get('proxy_original_config') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}",
                   "// The global proxy URL is only writable from an admin session, and the server",
                   "// resolves it (a loopback or private host is allowed, as a self-hosted proxy",
                   "// is the documented setup; a name that does not resolve is a 400). The",
@@ -8963,6 +9018,7 @@
                   "  enabled: true,",
                   "  type: 'http',",
                   "  url: attempted,",
+                  "  password: '<redacted>', // keep whatever password is stored: the restore cannot read it back",
                   "  timeout: 30,",
                   "  enable_for_inference: true,",
                   "  enable_for_api: true,",
@@ -9035,6 +9091,239 @@
               }
             }
           ]
+        },
+        {
+          "name": "Update Proxy Config (SOCKS5)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Every proxy write needs the snapshot \"Get Proxy Config (snapshot)\" took: without it the",
+                  "// folder could not put the original config back, so it changes nothing.",
+                  "if (!pm.collectionVariables.get('proxy_original_config') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The unauthenticated pass sends a URL with a port stamped per run, so the probe is",
+                  "// always a URL change the server must refuse, even when the stored proxy already is the",
+                  "// authenticated pass's socks5://10.0.0.5:1080 (say, a run interrupted before its restore).",
+                  "var attempted = pm.variables.get('admin_auth_header')",
+                  "  ? 'socks5://10.0.0.5:1080'",
+                  "  : 'socks5://10.0.0.5:' + (20000 + (Date.now() % 10000));",
+                  "pm.collectionVariables.set('proxy_socks5_attempted_url', attempted); // the raw body names it"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The proxy host must resolve (a private address is fine), so it is an IP literal.",
+                  "// Changing the global proxy needs an admin session: the unauthenticated pass is refused.",
+                  "if (pm.variables.get('admin_auth_header')) {",
+                  "  pm.test('a SOCKS5 global proxy is accepted', function () {",
+                  "    pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('an unauthenticated SOCKS5 proxy change is refused (403)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    pm.expect(pm.response.json().error.message, 'error message').to.match(/requires an authenticated admin session/i);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"socks5\", \"url\": \"{{proxy_socks5_attempted_url}}\", \"username\": \"svc\", \"password\": \"<redacted>\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Proxy Config (SOCKS5 persisted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Proxy config is readable (200)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "if (pm.variables.get('admin_auth_header')) {",
+                  "  pm.test('the SOCKS5 global proxy is stored as sent', function () {",
+                  "    pm.expect(body.type, pm.response.text()).to.equal('socks5');",
+                  "    pm.expect(body.url).to.equal('socks5://10.0.0.5:1080');",
+                  "    pm.expect(body.username).to.equal('svc');",
+                  "    pm.expect(body.enable_for_inference).to.equal(true);",
+                  "    pm.expect(body.enable_for_api).to.equal(true);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('the refused SOCKS5 proxy was not stored', function () {",
+                  "    pm.expect(body.url, pm.response.text()).to.not.equal(pm.collectionVariables.get('proxy_socks5_attempted_url'));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Proxy Config (restore original)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only the authenticated pass changes the proxy, so only it restores. The unauthenticated",
+                  "// pass sends nothing here: a restore would be another unauthenticated write, and the",
+                  "// last request still checks the stored config equals the captured one.",
+                  "if (!pm.variables.get('admin_auth_header') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// Every proxy write needs the snapshot \"Get Proxy Config (snapshot)\" took: without it the",
+                  "// folder could not put the original config back, so it changes nothing.",
+                  "if (!pm.collectionVariables.get('proxy_original_config') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// Put back the config the snapshot captured, field by field in a fixed order. The password",
+                  "// cannot be read back: the snapshot holds \"<redacted>\" when one is set, which the server",
+                  "// takes as \"keep the stored password\". Every write in this folder sends that marker, so the",
+                  "// stored password is never replaced and the restore keeps it.",
+                  "var original = null;",
+                  "try { original = JSON.parse(pm.collectionVariables.get('proxy_original_config')); } catch (e) { original = null; }",
+                  "if (!original && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest(); // never restore from anything but the captured config",
+                  "}",
+                  "if (original) {",
+                  "  pm.request.body.raw = JSON.stringify({",
+                  "    enabled: original.enabled,",
+                  "    type: original.type || 'http',",
+                  "    url: original.url,",
+                  "    username: original.username,",
+                  "    password: original.password,",
+                  "    no_proxy: original.no_proxy,",
+                  "    timeout: original.timeout,",
+                  "    skip_tls_verify: original.skip_tls_verify,",
+                  "    enable_for_scim: original.enable_for_scim,",
+                  "    enable_for_inference: original.enable_for_inference,",
+                  "    enable_for_api: original.enable_for_api",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the original proxy config is restored (200)', function () {",
+                  "  pm.expect(pm.collectionVariables.get('proxy_original_config'), 'original config captured by Update Proxy Config').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Proxy Config (restored)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var original = JSON.parse(pm.collectionVariables.get('proxy_original_config') || '{}');",
+                  "var body = pm.response.json();",
+                  "pm.test('the stored proxy config matches the one the folder started with', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  ['enabled', 'type', 'url', 'username', 'password', 'no_proxy', 'timeout', 'skip_tls_verify', 'enable_for_inference', 'enable_for_api', 'enable_for_scim'].forEach(function (k) {",
+                  "    var want = original[k] === undefined ? null : original[k];",
+                  "    var got = body[k] === undefined ? null : body[k];",
+                  "    if (k === 'type' && want === null) { want = 'http'; }",
+                  "    pm.expect(got, k + ': ' + pm.response.text()).to.eql(want);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
         }
       ]
     },
