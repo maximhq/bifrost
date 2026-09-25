@@ -6165,3 +6165,48 @@ func TestUpdateTeamNewBudgetStartsAtZero(t *testing.T) {
 		})
 	}
 }
+
+// TestTeamContentLoggingRoundTrip drives the team handlers end to end: a team created with the
+// decision persists it, an update that omits the field keeps it, false flips it to a decision to
+// force content on, and null clears it back to inherit.
+func TestTeamContentLoggingRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+	ctx := context.Background()
+
+	createCtx := newTestRequestCtx(`{"name":"team-content-off","disable_content_logging":true}`)
+	handler.createTeam(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	teams, _, err := store.GetTeamsPaginated(ctx, configstore.TeamsQueryParams{Search: "team-content-off"})
+	require.NoError(t, err)
+	require.Len(t, teams, 1)
+	teamID := teams[0].ID
+
+	read := func(t *testing.T) *bool {
+		t.Helper()
+		stored, err := store.GetTeam(ctx, teamID)
+		require.NoError(t, err)
+		return stored.DisableContentLogging
+	}
+	require.NotNil(t, read(t), "create must persist the decision")
+	assert.True(t, *read(t))
+
+	putTeam := func(t *testing.T, body string) {
+		t.Helper()
+		putCtx := newGovernanceTeamIDCtx(teamID, body)
+		handler.updateTeam(putCtx)
+		require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+	}
+
+	putTeam(t, `{"name":"team-content-renamed"}`)
+	require.NotNil(t, read(t), "an update that omits the field must not clear it")
+	assert.True(t, *read(t))
+
+	putTeam(t, `{"disable_content_logging":false}`)
+	require.NotNil(t, read(t))
+	assert.False(t, *read(t), "false is a decision to force content on, not an absence")
+
+	putTeam(t, `{"disable_content_logging":null}`)
+	assert.Nil(t, read(t), "null clears the decision back to inherit")
+}

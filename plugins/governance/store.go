@@ -1290,7 +1290,32 @@ func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]s
 		return nil, "", nil, ""
 	}
 	StampVirtualKeyScope(ctx, virtualKey)
+	if virtualKey.TeamID != nil {
+		gs.StampTeamContentLogging(ctx, *virtualKey.TeamID)
+	}
 	return []schemas.Permit{gs.permitForVirtualKey(ctx, virtualKey)}, "", nil, ""
+}
+
+// StampTeamContentLogging stamps the team's own content-logging decision for the request. The team
+// is read from the live team map, not off a key's team pointer: that pointer is only rebuilt when
+// the whole store is, so a team edit would otherwise not reach requests until the next rebuild. A
+// team that inherits stamps nothing.
+//
+// Exported because a store that resolves callers other than keys (a user in several teams) stamps
+// every team it resolves the same way.
+func (gs *LocalGovernanceStore) StampTeamContentLogging(ctx *schemas.BifrostContext, teamID string) {
+	if ctx == nil || teamID == "" {
+		return
+	}
+	value, ok := gs.teams.Load(teamID)
+	if !ok || value == nil {
+		return
+	}
+	team, ok := value.(*configstoreTables.TableTeam)
+	if !ok || team == nil || team.DisableContentLogging == nil {
+		return
+	}
+	schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyTeamDisableContentLogging, *team.DisableContentLogging)
 }
 
 // PresentedVirtualKey is the virtual key the request presented, read off the identity the
@@ -1300,13 +1325,17 @@ func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]s
 // Exported because a store that resolves permits from something other than a key still resolves
 // keys, and which key a request presented is the same question either way.
 func PresentedVirtualKey(ctx *schemas.BifrostContext) string {
-	if identity := ctx.Grant().Identity(); identity != nil {
-		if credential := identity.Credential(); credential.Kind == string(grant.CredentialVirtualKey) {
-			return credential.Value
+	// A context built without a grant (an MCP connect, an internal probe) settled nothing, so it falls
+	// through to the key it carries under the key's own name.
+	if g := ctx.Grant(); g != nil {
+		if identity := g.Identity(); identity != nil {
+			if credential := identity.Credential(); credential.Kind == string(grant.CredentialVirtualKey) {
+				return credential.Value
+			}
+			// An identity was settled and it is not a key: whatever the context also carries under the
+			// key's own name did not authenticate this request.
+			return ""
 		}
-		// An identity was settled and it is not a key: whatever the context also carries under the
-		// key's own name did not authenticate this request.
-		return ""
 	}
 	virtualKeyValue, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 	return virtualKeyValue
