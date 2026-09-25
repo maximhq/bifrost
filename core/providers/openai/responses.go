@@ -989,6 +989,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 		schemas.ResponsesToolTypeLocalShell:              true,
 		schemas.ResponsesToolTypeShell:                   true,
 		schemas.ResponsesToolTypeProgrammaticToolCalling: true,
+		schemas.ResponsesToolTypeApplyPatch:              true,
 		schemas.ResponsesToolTypeCustom:                  true,
 		schemas.ResponsesToolTypeWebSearchPreview:        true,
 		schemas.ResponsesToolTypeMemory:                  true,

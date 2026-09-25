@@ -88,5 +88,11 @@ export function summarizeResponsesToolCall(msg: ResponsesMessage, mapping?: Reco
 		const actionType = typeof action.type === "string" ? action.type : undefined;
 		return [actionType, detail].filter(Boolean).join(" · ") || undefined;
 	}
+	// apply_patch_call carries an `operation` instead of an `action`.
+	const operation = item.operation as Record<string, unknown> | undefined;
+	if (operation && typeof operation === "object" && !Array.isArray(operation)) {
+		const operationType = typeof operation.type === "string" ? operation.type : undefined;
+		return [operationType, firstDetail([operation.path], mapping)].filter(Boolean).join(" · ") || undefined;
+	}
 	return summarizeQueries(item.queries, mapping) ?? firstDetail([item.server_label, item.container_id], mapping);
 }
