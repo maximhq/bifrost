@@ -1151,9 +1151,18 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// surfaces instead of the content being silently replaced. Assistant
 			// messages are out of scope here and are left as converted.
 			if anthropicMsg.Role == AnthropicMessageRoleUser && onlyBlankTextBlocks(content) && isEmptyChatContent(msg.Content) {
+				// Keep a prompt-cache marker from the replaced blank block.
+				var cacheControl *schemas.CacheControl
+				for _, b := range content {
+					if b.CacheControl != nil {
+						cacheControl = b.CacheControl
+						break
+					}
+				}
 				content = []AnthropicContentBlock{{
-					Type: AnthropicContentBlockTypeText,
-					Text: schemas.Ptr(documentPlaceholderText),
+					Type:         AnthropicContentBlockTypeText,
+					Text:         schemas.Ptr(documentPlaceholderText),
+					CacheControl: cacheControl,
 				}}
 			}
 

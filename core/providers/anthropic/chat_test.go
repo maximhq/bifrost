@@ -2783,3 +2783,19 @@ func TestToAnthropicChatRequest_UnconvertibleUserContentNotReplacedByPlaceholder
 		}
 	}
 }
+
+// Replacing a blank user text block with the placeholder must keep its
+// prompt-cache marker; clients often put cache_control on the final user turn,
+// and dropping it would silently lose the cache breakpoint (#7276).
+func TestToAnthropicChatRequest_BlankUserTurnPlaceholderKeepsCacheControl(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := emptyUserTurnRequest(t, ctx, `[{"type": "text", "text": " ", "cache_control": {"type": "ephemeral"}}]`)
+	if len(result.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(result.Messages))
+	}
+	assertSinglePlaceholderUserMessage(t, result.Messages[2], "trailing user")
+	if cc := result.Messages[2].Content.ContentBlocks[0].CacheControl; cc == nil || cc.Type != "ephemeral" {
+		raw, _ := json.Marshal(result.Messages[2].Content)
+		t.Fatalf("placeholder content = %s, want cache_control ephemeral carried over", raw)
+	}
+}
