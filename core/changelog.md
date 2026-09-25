@@ -1,3 +1,4 @@
+- [fix]: fold file_type into a data URL for OpenAI-compatible providers [@Ethanol-E85](https://github.com/Ethanol-E85)
 - [fix]: preserve opted-in Anthropic extra params through Responses conversion [@wangrat](https://github.com/wangrat)
 - feat: pinned provider keys on routing fallbacks via key_id on each fallback (#7470)
 - feat: forward OpenAI async tools, output_schema and tunnel_id on Responses, stripping async for unsupported models with a SupportsAsyncTools datasheet override (#7242)
