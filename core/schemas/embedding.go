@@ -305,10 +305,11 @@ func (p *EmbeddingParameters) Clone() *EmbeddingParameters {
 type EmbeddingModality string
 
 const (
-	EmbeddingModalityText  EmbeddingModality = "text"
-	EmbeddingModalityImage EmbeddingModality = "image"
-	EmbeddingModalityVideo EmbeddingModality = "video"
-	EmbeddingModalityAudio EmbeddingModality = "audio"
+	EmbeddingModalityText       EmbeddingModality = "text"
+	EmbeddingModalityImage      EmbeddingModality = "image"
+	EmbeddingModalityVideo      EmbeddingModality = "video"
+	EmbeddingModalityAudio      EmbeddingModality = "audio"
+	EmbeddingModalityAudioVideo EmbeddingModality = "audio_video"
 )
 
 // EmbeddingVideoSegment holds the time range of a video embedding segment.
