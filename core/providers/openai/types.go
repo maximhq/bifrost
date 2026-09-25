@@ -1065,10 +1065,14 @@ func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 
 // OpenAIModel represents an OpenAI model
 type OpenAIModel struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	OwnedBy string `json:"owned_by"`
-	Created *int64 `json:"created,omitempty"`
+	ID                       string          `json:"id"`
+	Object                   string          `json:"object"`
+	OwnedBy                  string          `json:"owned_by"`
+	Created                  *int64          `json:"created,omitempty"`
+	DisplayName              *string         `json:"display_name,omitempty"`
+	Description              *string         `json:"description,omitempty"`
+	DefaultReasoningLevel    *string         `json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels json.RawMessage `json:"supported_reasoning_levels,omitempty"`
 
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`
