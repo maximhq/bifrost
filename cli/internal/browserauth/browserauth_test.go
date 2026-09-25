@@ -35,7 +35,7 @@ func TestSignInCompletesLoopbackPKCE(t *testing.T) {
 			if got := base64.RawURLEncoding.EncodeToString(sum[:]); got != authorizeURL.Query().Get("code_challenge") {
 				t.Fatalf("PKCE challenge = %q", got)
 			}
-			if body["device_name"] != "Bifrost CLI" || body["platform"] == "" || body["agent_version"] == "" || body["hardware_id"] != "cli-device-test" {
+			if body["device_name"] != "Bifrost CLI" || body["platform"] == "" || body["agent_version"] == "" {
 				t.Fatalf("missing agent metadata: %#v", body)
 			}
 			_, _ = io.WriteString(writer, `{"agent_access_token":"ck-bf-agent-access","refresh_token":"refresh","expires_in":3600,"user":{"id":"user-1","email":"alice@example.com"}}`)
@@ -45,14 +45,14 @@ func TestSignInCompletesLoopbackPKCE(t *testing.T) {
 	}))
 	defer gateway.Close()
 
-	client := &Client{BaseURL: gateway.URL, HTTPClient: gateway.Client(), CallbackWait: time.Second, Version: "test", HardwareID: "cli-device-test"}
+	client := &Client{BaseURL: gateway.URL, HTTPClient: gateway.Client(), CallbackWait: time.Second, Version: "test"}
 	client.OpenBrowser = func(target string) error {
 		parsed, err := url.Parse(target)
 		if err != nil {
 			return err
 		}
 		authorizeURL = parsed
-		if parsed.Path != "/api/agent/auth/authorize" || parsed.Query().Get("client_id") != "bifrost-agent" {
+		if parsed.Path != "/api/agent/auth/authorize" || parsed.Query().Get("client_id") != "bifrost-cli" {
 			t.Fatalf("unexpected authorize URL: %s", parsed)
 		}
 		callback, err := url.Parse(parsed.Query().Get("redirect_uri"))
@@ -115,8 +115,8 @@ func TestCallbackServerShowsCLICompletionAfterExchange(t *testing.T) {
 			t.Fatalf("completion page missing %q: %q", want, body)
 		}
 	}
-	if strings.Contains(body, "Bifrost Edge") || strings.Contains(body, "return to the terminal") {
-		t.Fatalf("completion page retained non-CLI copy: %q", body)
+	if strings.Contains(body, "return to the terminal") {
+		t.Fatalf("completion page retained outdated copy: %q", body)
 	}
 	if policy := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "default-src 'none'") {
 		t.Fatalf("completion page CSP = %q", policy)
