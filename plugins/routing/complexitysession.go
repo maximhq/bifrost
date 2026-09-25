@@ -1,8 +1,6 @@
 package routing
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +13,8 @@ import (
 )
 
 const (
-	complexitySessionKeyPrefix     = "complexity-session:v1:"
+	// complexitySessionKind is the session state kind under which the effective tier is kept.
+	complexitySessionKind          = "complexity"
 	complexitySessionInactivityTTL = 24 * time.Hour
 )
 
@@ -143,29 +142,9 @@ func decodeStoredComplexityTier(value any) (string, error) {
 	return tier, nil
 }
 
-// buildComplexitySessionKey isolates equal caller session IDs across virtual
-// keys and authenticated users, then hashes the complete tuple so the in-memory
-// key has bounded size and reveals no caller-provided identifier.
-func buildComplexitySessionKey(
-	ctx *schemas.BifrostContext,
-	virtualKeyID string,
-	sessionID string,
-) string {
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
-	scopeKind := "deployment"
-	switch {
-	case virtualKeyID != "" && userID != "":
-		scopeKind = "virtual-key-user"
-	case virtualKeyID != "":
-		scopeKind = "virtual-key"
-	case userID != "":
-		scopeKind = "user"
-	}
-
-	hash := sha256.New()
-	for _, part := range []string{scopeKind, virtualKeyID, userID, sessionID} {
-		_, _ = hash.Write([]byte(part))
-		_, _ = hash.Write([]byte{0})
-	}
-	return complexitySessionKeyPrefix + hex.EncodeToString(hash.Sum(nil))
+// complexitySessionKey is where the request's session keeps its effective tier: the shared
+// session state key, scoped to the virtual key and user the request is attributed to, under
+// the complexity kind.
+func complexitySessionKey(ctx *schemas.BifrostContext) string {
+	return bifrost.SessionStateKey(ctx, complexitySessionKind)
 }

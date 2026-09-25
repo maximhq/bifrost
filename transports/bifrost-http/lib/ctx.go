@@ -582,6 +582,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Session affinity: whether this request lets its session decide where it goes.
+		if keyStr == "x-bf-session-affinity" {
+			switch strings.ToLower(strings.TrimSpace(string(value))) {
+			case "on", "true", "1":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, true)
+			case "off", "false", "0":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
+			default:
+				if logger != nil {
+					logger.Warn("x-bf-session-affinity is not on or off, ignoring")
+				}
+			}
+			return true
+		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-eh-"); ok {
 			// Skip empty header names after prefix removal
 			if labelName == "" {

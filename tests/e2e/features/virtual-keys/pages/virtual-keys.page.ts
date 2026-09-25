@@ -79,6 +79,8 @@ export interface VirtualKeyConfig {
   entityType?: "none" | "team" | "customer";
   teamId?: string;
   customerId?: string;
+  // Content logging for the key's traffic; omitted leaves the form on "inherit"
+  contentLogging?: "inherit" | "disabled" | "enabled";
 }
 
 /**
@@ -95,6 +97,7 @@ export class VirtualKeysPage extends BasePage {
   readonly nameInput: Locator;
   readonly descriptionInput: Locator;
   readonly isActiveToggle: Locator;
+  readonly contentLoggingSelect: Locator;
   readonly providerSelect: Locator;
   readonly saveBtn: Locator;
   readonly cancelBtn: Locator;
@@ -112,6 +115,7 @@ export class VirtualKeysPage extends BasePage {
     this.nameInput = page.getByTestId("vk-name-input");
     this.descriptionInput = page.getByTestId("vk-description-input");
     this.isActiveToggle = page.getByTestId("vk-is-active-toggle");
+    this.contentLoggingSelect = page.getByTestId("vk-content-logging-select");
     this.providerSelect = page.getByTestId("vk-provider-select");
     this.saveBtn = page.getByTestId("vk-save-btn");
     this.cancelBtn = page.getByTestId("vk-cancel-btn");
@@ -268,6 +272,10 @@ export class VirtualKeysPage extends BasePage {
     if (config.isActive === false) {
       await this.isActiveToggle.focus();
       await this.page.keyboard.press("Space"); // Toggle the switch
+    }
+
+    if (config.contentLogging && config.contentLogging !== "inherit") {
+      await this.setContentLogging(config.contentLogging);
     }
 
     // Add provider configurations
@@ -468,6 +476,10 @@ export class VirtualKeysPage extends BasePage {
       }
     }
 
+    if (updates.contentLogging) {
+      await this.setContentLogging(updates.contentLogging);
+    }
+
     if (updates.budgets && updates.budgets.length > 0) {
       await this.setBudgets(updates.budgets);
     }
@@ -586,6 +598,24 @@ export class VirtualKeysPage extends BasePage {
     // Wait for any existing toasts to disappear
     await this.forceCloseToasts();
     await this.openVirtualKeyEditor(name);
+  }
+
+  /**
+   * Pick the key's content-logging choice in the open sheet
+   */
+  async setContentLogging(choice: "inherit" | "disabled" | "enabled"): Promise<void> {
+    await this.contentLoggingSelect.click();
+    await this.page.getByTestId(`vk-content-logging-option-${choice}`).click();
+  }
+
+  /**
+   * Read the key's content-logging choice from the open sheet, by the option label it shows
+   */
+  async getContentLogging(): Promise<"inherit" | "disabled" | "enabled"> {
+    const text = (await this.contentLoggingSelect.textContent()) ?? "";
+    if (text.includes("Off for this key")) return "disabled";
+    if (text.includes("On for this key")) return "enabled";
+    return "inherit";
   }
 
   /**

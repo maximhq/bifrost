@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // OAuthMetadata contains discovered OAuth configuration from authorization server
@@ -391,6 +393,56 @@ type DynamicClientRegistrationResponse struct {
 	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
 }
 
+// registerDynamicClient registers Bifrost as an OAuth client at
+// registrationURL and returns the issued credentials.
+//
+// Shared by the two places a registration is obtained: the one-time bootstrap
+// in InitiateOAuthFlow (no client_id was supplied), and ReregisterDynamicClient
+// replacing a registration the provider no longer honors. Sharing it is what
+// keeps grant_types, response_types and the auth method identical between the
+// two, so a replacement is never rejected at the token step for metadata that
+// has nothing to do with why it was re-issued.
+//
+// redirectURI is the exception, and is the caller's to choose: it has to be the
+// one the consent FOLLOWING this registration presents, because that is what
+// the provider checks the authorize request against. Matching an earlier
+// registration's URI is only correct while the external URL has not changed
+// since; see ReregisterDynamicClient.
+func registerDynamicClient(ctx context.Context, registrationURL, redirectURI string, scopes []string) (clientID, clientSecret *schemas.SecretVar, err error) {
+	regReq := &DynamicClientRegistrationRequest{
+		ClientName:              "Bifrost MCP Gateway",
+		RedirectURIs:            []string{redirectURI},
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none", // Public client with PKCE (no client secret needed)
+	}
+	if len(scopes) > 0 {
+		regReq.Scope = strings.Join(scopes, " ")
+	}
+
+	regResp, err := RegisterDynamicClient(ctx, registrationURL, regReq)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Literal values, not NewSecretVar: these are opaque strings from an
+	// external authorization server's registration response, and NewSecretVar
+	// would parse an "env."/"vault." prefix as a reference — a registered
+	// client_id/client_secret happening to start with one of those prefixes
+	// would then resolve a local deployment secret instead of being stored
+	// as-is.
+	//
+	// SecretType is set rather than left zero because SecretVar.Equals compares
+	// it, and a row read back from the store always carries plain_text. Left
+	// zero, a client_id identical to the stored one compares unequal, so
+	// RotateMCPOAuthConfig sees a rotation where there is none and cascades
+	// every bound token to needs_reauth over a provider that simply handed back
+	// the registration it already held.
+	return &schemas.SecretVar{Val: regResp.ClientID, SecretType: schemas.SecretTypePlainText},
+		&schemas.SecretVar{Val: regResp.ClientSecret, SecretType: schemas.SecretTypePlainText}, // May be empty for public clients
+		nil
+}
+
 // RegisterDynamicClient performs dynamic client registration with the OAuth provider (RFC 7591)
 // This allows Bifrost to automatically register as an OAuth client without manual setup.
 //
@@ -435,6 +487,12 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	// Check status code (201 Created or 200 OK are both valid per RFC 7591)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		logger.Error(fmt.Sprintf("[Dynamic Registration] Failed with status %d: %s", resp.StatusCode, string(respBody)))
+		// A 4xx is the provider understanding the request and refusing it,
+		// which the caller may be able to act on; anything else is the
+		// provider failing. See ErrDynamicRegistrationRejected.
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return nil, fmt.Errorf("registration failed with status %d: %s: %w", resp.StatusCode, string(respBody), ErrDynamicRegistrationRejected)
+		}
 		return nil, fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 

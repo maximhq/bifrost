@@ -5,17 +5,14 @@
 
 import { ComboboxSelect, ComboboxSelectOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Textarea } from "@/components/ui/textarea";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { getProviderLabel } from "@/lib/constants/logs";
 import { useEffect, useState } from "react";
 import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
 
 type CELValueEditorContext = {
 	validateRegex?: (pattern: string) => string | null;
-	menuPosition?: "absolute" | "fixed";
-	menuPortalTarget?: HTMLElement | null;
 };
 
 export function ValueEditor({
@@ -32,8 +29,6 @@ export function ValueEditor({
 	const isNullOperator = operator === "null" || operator === "notNull";
 
 	const validateRegex = context?.validateRegex;
-	const menuPosition = context?.menuPosition;
-	const menuPortalTarget = context?.menuPortalTarget;
 
 	// Get valueEditorType, handling both string and function types
 	const valueEditorType =
@@ -93,7 +88,7 @@ export function ValueEditor({
 		}
 	};
 
-	// Handle model field with ModelMultiselect
+	// Handle model field with ModelSelector
 	const isModelField = fieldData?.name === "model";
 	if (isModelField && isSelectType) {
 		// For array operators (in, notIn), use multi-select
@@ -118,14 +113,13 @@ export function ValueEditor({
 			};
 
 			return (
-				<ModelMultiselect
+				<ModelSelector
+					multiple
 					value={selectedModels}
 					onChange={handleMultiModelChange}
 					placeholder="Select models..."
-					loadModelsOnEmptyProvider
+					allowCustomModel
 					className="!min-h-9 w-[360px]"
-					menuPosition={menuPosition}
-					menuPortalTarget={menuPortalTarget}
 				/>
 			);
 		}
@@ -140,21 +134,17 @@ export function ValueEditor({
 				} else if (typeof parsedValue === "string") {
 					valueToUse = parsedValue;
 				}
-			} catch (error) {}
+			} catch (error) { }
 		}
 
 		// For single operators (=, !=), use single select
 		return (
-			<ModelMultiselect
+			<ModelSelector
 				value={valueToUse || ""}
 				onChange={handleOnChange}
 				placeholder="Search for a model..."
-				isSingleSelect
-				clearable={true}
-				loadModelsOnEmptyProvider
+				allowCustomModel
 				className="border-input w-[360px]"
-				menuPosition={menuPosition}
-				menuPortalTarget={menuPortalTarget}
 			/>
 		);
 	}
@@ -166,13 +156,10 @@ export function ValueEditor({
 			.filter((option) => !("options" in option) && (option as any).name)
 			.map((option) => {
 				const optName = (option as any).name || "";
-				const optLabel = (option as any).label || optName;
-
 				return {
 					value: optName,
-					label: isProviderField ? getProviderLabel(optName) : optLabel,
+					label: (option as any).label || optName,
 					disabled: (option as any).disabled || false,
-					icon: isProviderField ? <RenderProviderIcon provider={optName as ProviderIconType} size="sm" className="h-4 w-4" /> : undefined,
 				};
 			});
 
@@ -200,26 +187,47 @@ export function ValueEditor({
 				handleOnChange(values.length > 0 ? JSON.stringify(values) : "");
 			};
 
-			return (
+			return isProviderField ? (
+				<ProviderSelector
+					multiple
+					source="values"
+					values={options}
+					value={selectedValues}
+					onChange={handleMultiselectChange}
+					placeholder="Select providers..."
+					className="w-[360px]"
+					noPortal
+				/>
+			) : (
 				<ComboboxSelect
 					multiple
 					value={selectedValues}
 					onValueChange={handleMultiselectChange}
 					options={options}
 					placeholder="Select providers..."
-					className="h-10 w-[360px]"
+					className="h-9 w-[360px]"
 					noPortal
 				/>
 			);
 		}
 
-		return (
+		return isProviderField ? (
+			<ProviderSelector
+				source="values"
+				values={options}
+				value={value || ""}
+				onChange={(newValue: string) => handleOnChange(newValue)}
+				placeholder={fieldData.placeholder || "Select..."}
+				className="w-[360px]"
+				noPortal
+			/>
+		) : (
 			<ComboboxSelect
 				value={value || null}
 				onValueChange={(newValue) => handleOnChange(newValue ?? "")}
 				options={options}
 				placeholder={fieldData.placeholder || "Select..."}
-				className="h-10 w-[360px]"
+				className="h-9 w-[360px]"
 				noPortal
 			/>
 		);

@@ -160,7 +160,7 @@ export default function ComplexityRouterPage() {
 	// serve. /api/models only applies per-key allow-lists and blacklists when it
 	// is handed key ids; without them it returns the whole provider pool, so the
 	// dropdown offers models every key would reject. Memoized because
-	// ModelMultiselect refetches whenever this array's identity changes.
+	// ModelSelector refetches whenever this array's identity changes.
 	const enabledKeyIdsForProvider = useMemo(
 		() => (allKeys || []).filter((key) => key.provider === liveSemantic?.provider && key.enabled !== false).map((key) => key.key_id),
 		[allKeys, liveSemantic?.provider],

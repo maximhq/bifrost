@@ -1765,3 +1765,188 @@ result = {"count": 3}`,
 		})
 	}
 }
+
+// =============================================================================
+// NESTED TOOL CALL ALLOW-LIST ENFORCEMENT
+// =============================================================================
+
+// setupCodeModeTestToolsServer registers test-tools-server as the only Code Mode client
+// with the given allow-lists and MCP plugins, for tests that pin how callMCPTool
+// authorizes the tools that generated code invokes.
+func setupCodeModeTestToolsServer(t *testing.T, toolsToExecute, toolsToAutoExecute []string, plugins ...schemas.MCPPlugin) (*mcp.MCPManager, *bifrost.Bifrost) {
+	t.Helper()
+
+	stdioFixtureSemaphore <- struct{}{}
+	t.Cleanup(func() {
+		<-stdioFixtureSemaphore
+	})
+	initMCPServerPathsOnce.Do(func() {
+		InitMCPServerPaths(t)
+	})
+
+	serverPath := filepath.Join(GetBifrostRoot(t), "..", "examples", "mcps", "test-tools-server", "dist", "index.js")
+	if _, err := os.Stat(serverPath); err != nil {
+		t.Fatalf("test-tools-server not found at %s", serverPath)
+	}
+
+	config := schemas.MCPClientConfig{
+		ID:             "test-tools-server-client",
+		Name:           "testToolsServer",
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig: &schemas.MCPStdioConfig{
+			Command: "node",
+			Args:    []string{serverPath},
+		},
+		IsCodeModeClient:   true,
+		ToolsToExecute:     toolsToExecute,
+		ToolsToAutoExecute: toolsToAutoExecute,
+	}
+	manager := setupMCPManager(t, config)
+	// Not requireCodeModeClientsReady: its executable-tool count compares prefixed
+	// ToolMap keys against the unprefixed allow-list, so it only passes for "*".
+	clients := manager.GetClients()
+	require.Len(t, clients, 1)
+	require.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State, "test-tools-server must connect")
+
+	bf, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    &testAccount{},
+		MCPPlugins: plugins,
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(bf.Shutdown)
+	bf.SetMCPManager(manager)
+	return manager, bf
+}
+
+// TestCodeMode_STDIO_ApprovedCallIgnoresAutoExecuteList pins that a Code Mode call that
+// did not come from the agent loop (a human approved it, or the application runs it
+// itself) is bound only by tools_to_execute. tools_to_auto_execute means "needs
+// approval", never "denied", so echo must run even though it is not on that list.
+func TestCodeMode_STDIO_ApprovedCallIgnoresAutoExecuteList(t *testing.T) {
+	t.Parallel()
+
+	_, bf := setupCodeModeTestToolsServer(t,
+		[]string{"*"},
+		[]string{"executeToolCode", "listToolFiles", "readToolFile"},
+	)
+
+	toolCall := CreateExecuteToolCodeCall("call-approved", `result = testToolsServer.echo(message="approved")`)
+	result, bifrostErr := bf.ExecuteChatMCPTool(createTestContext(), &toolCall)
+	require.Nil(t, bifrostErr, "execution should succeed")
+	require.NotNil(t, result)
+	require.NotNil(t, result.Content)
+	require.NotNil(t, result.Content.ContentStr)
+
+	returnValue, hasError, errorMsg := ParseCodeModeResponse(t, *result.Content.ContentStr)
+	require.False(t, hasError, "approved call must not be denied by tools_to_auto_execute: %s", errorMsg)
+	echoed, ok := returnValue.(map[string]interface{})
+	require.True(t, ok, "result should be an object, got %T", returnValue)
+	assert.Equal(t, "approved", echoed["message"])
+}
+
+// TestCodeMode_STDIO_PreHookRenameIsAuthorized pins that the allow-list check covers the
+// tool name a plugin pre-hook rewrites to, not just the name the code asked for. The
+// code calls echo (allowed); the plugin redirects it to calculator (not in
+// tools_to_execute), and the call must be refused before it reaches the MCP server.
+func TestCodeMode_STDIO_PreHookRenameIsAuthorized(t *testing.T) {
+	t.Parallel()
+
+	renamer := NewTestModifyRequestPlugin()
+	renamer.SetToolNameModifier(func(name string) string {
+		if name == "testToolsServer-echo" {
+			return "testToolsServer-calculator"
+		}
+		return name
+	})
+	// echo is on both lists so the requested name passes every check; only the
+	// rewritten name can fail it.
+	_, bf := setupCodeModeTestToolsServer(t,
+		[]string{"echo"},
+		[]string{"executeToolCode", "listToolFiles", "readToolFile", "echo"},
+		renamer,
+	)
+
+	toolCall := CreateExecuteToolCodeCall("call-renamed", `result = testToolsServer.echo(message="redirected")`)
+	result, bifrostErr := bf.ExecuteChatMCPTool(createTestContext(), &toolCall)
+	require.Nil(t, bifrostErr, "outer executeToolCode should complete and report the nested error")
+	require.NotNil(t, result)
+	require.NotNil(t, result.Content)
+	require.NotNil(t, result.Content.ContentStr)
+
+	_, hasError, errorMsg := ParseCodeModeResponse(t, *result.Content.ContentStr)
+	require.True(t, hasError, "renamed call to a non-executable tool must be refused")
+	assert.Contains(t, errorMsg, "testToolsServer-calculator")
+	assert.Contains(t, errorMsg, "not in tools_to_execute")
+}
+
+// TestCodeMode_STDIO_UnattendedCallEnforcesAutoExecuteList pins the guarantee this check
+// exists for: in the agent loop, code that reaches a tool through getattr (invisible to
+// the pre-flight source scan) is still held to tools_to_auto_execute at invocation time.
+// The allowed subtest is the control that proves the denied one is not vacuous.
+func TestCodeMode_STDIO_UnattendedCallEnforcesAutoExecuteList(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		toolsToAutoExecute []string
+		wantEchoCalled     bool
+	}{
+		{
+			name:               "echo_not_auto_executable_is_refused",
+			toolsToAutoExecute: []string{"executeToolCode", "listToolFiles", "readToolFile"},
+			wantEchoCalled:     false,
+		},
+		{
+			name:               "echo_auto_executable_runs",
+			toolsToAutoExecute: []string{"executeToolCode", "listToolFiles", "readToolFile", "echo"},
+			wantEchoCalled:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := NewTestLoggingPlugin()
+			manager, _ := setupCodeModeTestToolsServer(t, []string{"*"}, tc.toolsToAutoExecute, logger)
+
+			// getattr hides the echo call from extractToolCallsFromCode, so the agent
+			// auto-executes the code and only callMCPTool can stop the nested call.
+			mockLLM := &MockLLMCaller{
+				chatResponses: []*schemas.BifrostChatResponse{
+					CreateChatResponseWithToolCalls([]schemas.ChatAssistantMessageToolCall{
+						CreateExecuteToolCodeCall("call-getattr", `result = getattr(testToolsServer, "echo")(message="unattended")`),
+					}),
+					CreateChatResponseWithText("done"),
+				},
+			}
+			initialResponse := mockLLM.chatResponses[0]
+			mockLLM.chatCallCount = 1
+
+			originalReq := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4",
+				Input: []schemas.ChatMessage{
+					{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo something")},
+					},
+				},
+			}
+
+			result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(createTestContext(), originalReq, initialResponse, mockLLM.MakeChatRequest)
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, result)
+			require.Equal(t, 2, mockLLM.chatCallCount, "executeToolCode must have been auto-executed and the loop continued")
+
+			echoCalled := false
+			for _, call := range logger.GetPreHookCalls() {
+				if call.Request != nil && call.Request.ChatAssistantMessageToolCall != nil &&
+					call.Request.ChatAssistantMessageToolCall.Function.Name != nil &&
+					*call.Request.ChatAssistantMessageToolCall.Function.Name == "testToolsServer-echo" {
+					echoCalled = true
+				}
+			}
+			assert.Equal(t, tc.wantEchoCalled, echoCalled, "nested echo invocation reached the plugin pipeline")
+		})
+	}
+}

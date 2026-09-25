@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Children, cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { BarStack, type BarShapeProps, Rectangle, usePlotArea } from "recharts";
 
 // Bars round only the open end (the end that points away from the axis). The
@@ -30,10 +30,16 @@ export function rankingBarShape(props: BarShapeProps) {
 // the stack as one shape instead.
 //
 // The cap is sized from the column width Recharts will draw: the plot width
-// split across `buckets`, minus the category gap, never wider than `barSize`.
+// split across `buckets`, minus a 1px gap, never wider than `barSize`. The
+// same width is pushed onto each child <Bar>: on a numeric X axis a fixed
+// barSize wins over barCategoryGap, so dense buckets would otherwise render
+// as one fused block with no gap between columns.
 export function CappedBarStack({ buckets, barSize = 30, children }: { buckets: number; barSize?: number; children: ReactNode }) {
 	const plot = usePlotArea();
-	const columnWidth = plot && buckets > 0 ? Math.min(barSize, plot.width / buckets - 2) : barSize;
+	const columnWidth = plot && buckets > 0 ? Math.max(1, Math.min(barSize, Math.floor(plot.width / buckets) - 1)) : barSize;
 	const r = capRadius(columnWidth);
-	return <BarStack radius={[r, r, 0, 0]}>{children}</BarStack>;
+	const sized = Children.map(children, (child) =>
+		isValidElement(child) ? cloneElement(child as ReactElement<{ barSize?: number }>, { barSize: columnWidth }) : child,
+	);
+	return <BarStack radius={[r, r, 0, 0]}>{sized}</BarStack>;
 }

@@ -2268,6 +2268,68 @@ func (l legacyBifrostCost) mergeInto(bc *BifrostCost) {
 	}
 }
 
+// DeepCopy returns a copy whose detail pointers are all cloned, so a caller can
+// edit any category without mutating a cost shared with the client-facing
+// response. Returns nil for a nil receiver.
+//
+// Every field is copied explicitly. TestBifrostCost_DeepCopyCoversEveryField
+// fails when a field is added to BifrostCost or any of its detail structs
+// without being added here.
+func (bc *BifrostCost) DeepCopy() *BifrostCost {
+	if bc == nil {
+		return nil
+	}
+	return &BifrostCost{
+		InputCost:             bc.InputCost,
+		InputCostDetails:      bc.InputCostDetails.deepCopy(),
+		OutputCost:            bc.OutputCost,
+		OutputCostDetails:     bc.OutputCostDetails.deepCopy(),
+		AdditionalCost:        bc.AdditionalCost,
+		AdditionalCostDetails: bc.AdditionalCostDetails.deepCopy(),
+		TotalCost:             bc.TotalCost,
+	}
+}
+
+func (a *InputCostDetails) deepCopy() *InputCostDetails {
+	if a == nil {
+		return nil
+	}
+	return &InputCostDetails{
+		TextCost:        a.TextCost,
+		AudioCost:       a.AudioCost,
+		ImageCost:       a.ImageCost,
+		CachedReadCost:  a.CachedReadCost,
+		CachedWriteCost: a.CachedWriteCost,
+		RequestCost:     a.RequestCost,
+	}
+}
+
+func (a *OutputCostDetails) deepCopy() *OutputCostDetails {
+	if a == nil {
+		return nil
+	}
+	return &OutputCostDetails{
+		TextCost:          a.TextCost,
+		AudioCost:         a.AudioCost,
+		ImageCost:         a.ImageCost,
+		ReasoningCost:     a.ReasoningCost,
+		CitationCost:      a.CitationCost,
+		SearchQueriesCost: a.SearchQueriesCost,
+	}
+}
+
+func (a *AdditionalCostDetails) deepCopy() *AdditionalCostDetails {
+	if a == nil {
+		return nil
+	}
+	return &AdditionalCostDetails{
+		GuardrailCost:     a.GuardrailCost,
+		MCPCost:           a.MCPCost,
+		SemanticCacheCost: a.SemanticCacheCost,
+		RoutingCost:       a.RoutingCost,
+	}
+}
+
 // Add returns the component-wise sum of two cost breakdowns, treating a nil
 // operand as zero. Returns nil only when both are nil.
 func (bc *BifrostCost) Add(other *BifrostCost) *BifrostCost {
@@ -2385,22 +2447,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		su := *u.SearchUnits
 		c.SearchUnits = &su
 	}
-	if u.Cost != nil {
-		cost := *u.Cost
-		if u.Cost.InputCostDetails != nil {
-			d := *u.Cost.InputCostDetails
-			cost.InputCostDetails = &d
-		}
-		if u.Cost.OutputCostDetails != nil {
-			d := *u.Cost.OutputCostDetails
-			cost.OutputCostDetails = &d
-		}
-		if u.Cost.AdditionalCostDetails != nil {
-			d := *u.Cost.AdditionalCostDetails
-			cost.AdditionalCostDetails = &d
-		}
-		c.Cost = &cost
-	}
+	c.Cost = u.Cost.DeepCopy()
 	if u.CostInUsdTicks != nil {
 		t := *u.CostInUsdTicks
 		c.CostInUsdTicks = &t

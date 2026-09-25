@@ -45,6 +45,29 @@ var (
 	// each user manages their own auth and there is no shared upstream
 	// connection to "reconnect". Distinct from "not implemented".
 	ErrMCPReconnectNotApplicable = errors.New("reconnect is not applicable for this client type")
+	// ErrMCPClientNotFound signals that no MCP client is registered under the
+	// given ID. Callers that surface this to an operator should map it to a
+	// 404 rather than a generic failure.
+	ErrMCPClientNotFound = errors.New("mcp client not found")
+	// ErrMCPRefreshNotApplicable signals that an on-demand tool refresh is not
+	// meaningful for this client right now — it is disabled, its credential is
+	// confirmed dead, or it is still awaiting the one-time admin verification
+	// flow. The request is well-formed; the client is just not in a state
+	// where discovery means anything. Distinct from a discovery failure.
+	ErrMCPRefreshNotApplicable = errors.New("tool refresh is not applicable for this client's current state")
+)
+
+// MCPInboundBearerOmittedReason says why a request that presented an identity-provider token reached
+// token-exchange resolution without one to exchange. Only the auth layer that handled the inbound
+// credential knows the difference between a token it rejected and no token at all, and it records
+// the rejection under BifrostContextKeyMCPInboundBearerOmitted so the refusal a caller reads back
+// names the actual cause. A request with no record simply carried no token.
+type MCPInboundBearerOmittedReason string
+
+const (
+	// MCPInboundBearerRejected: the identity-provider token failed validation, so nothing verified
+	// could be exchanged on the caller's behalf.
+	MCPInboundBearerRejected MCPInboundBearerOmittedReason = "rejected"
 )
 
 // MCPAuthRequiredKind discriminates the kind of inline-401 auth flow surfaced

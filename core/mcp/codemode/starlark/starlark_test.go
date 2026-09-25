@@ -371,7 +371,7 @@ func TestExtractResultFromResponsesMessage(t *testing.T) {
 		errorMsg := "Tool is not allowed by security policy: dangerous_tool"
 		msg := &schemas.ResponsesMessage{
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Error: &errorMsg,
+				Error: &schemas.ResponsesToolMessageError{ResponsesToolMessageErrorStr: &errorMsg},
 			},
 		}
 
@@ -507,9 +507,13 @@ func TestExtractResultFromResponsesMessage(t *testing.T) {
 
 	t.Run("Handle empty error string (should not error)", func(t *testing.T) {
 		emptyError := ""
+		output := "successful output"
 		msg := &schemas.ResponsesMessage{
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Error: &emptyError,
+				Error: &schemas.ResponsesToolMessageError{ResponsesToolMessageErrorStr: &emptyError},
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: &output,
+				},
 			},
 		}
 
@@ -517,8 +521,30 @@ func TestExtractResultFromResponsesMessage(t *testing.T) {
 		if err != nil {
 			t.Errorf("Expected no error for empty error string, got: %v", err)
 		}
+		if result != output {
+			t.Errorf("Expected output for empty legacy error string, got %v", result)
+		}
+	})
+
+	t.Run("Handle empty structured error before output", func(t *testing.T) {
+		output := "must not be returned"
+		msg := &schemas.ResponsesMessage{
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Error: &schemas.ResponsesToolMessageError{
+					ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{},
+				},
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: &output,
+				},
+			},
+		}
+
+		result, err := extractResultFromResponsesMessage(msg)
+		if err == nil || err.Error() != "tool call returned an error" {
+			t.Fatalf("Expected fallback structured error, got result=%v err=%v", result, err)
+		}
 		if result != nil {
-			t.Errorf("Expected nil result for empty error string, got %v", result)
+			t.Fatalf("Expected nil result when structured error is present, got %v", result)
 		}
 	})
 }

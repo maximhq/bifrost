@@ -323,6 +323,9 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
 	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
+	{IDs: []string{"logs_add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
+	{IDs: []string{"logs_add_warp_conversations_updated_at_index"}, run: migrationAddWarpConversationsUpdatedAtIndex},
+	{IDs: []string{"logs_add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2942,6 +2945,13 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id ON logs(session_id) WHERE session_id IS NOT NULL",
 	},
 	{
+		table: "logs",
+		// Session grouping keeps each session's earliest chain root, which probes
+		// a session's peers in timestamp order.
+		name: "idx_logs_session_id_timestamp",
+		sql:  "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id_timestamp ON logs(session_id, timestamp) WHERE session_id IS NOT NULL",
+	},
+	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_user_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_user_id ON mcp_tool_logs(user_id)",
@@ -4877,6 +4887,307 @@ func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding governance snapshot columns to mcp tool logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWarpConversationTables creates Warp's saved-chat storage.
+//
+// These live in the log store rather than the config store: a transcript is
+// user-generated content that grows with use and carries the same prompt text
+// the logs do, not configuration an install is worthless without. See
+// warpconversations.go.
+func migrationAddWarpConversationTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_conversation_tables"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	// Transactional so a boot that dies between the two tables leaves neither,
+	// rather than a conversations table whose messages have nowhere to go.
+	//
+	// No boundDDLLockWait, unlike the migrations that alter logs: this one only
+	// creates tables that do not exist yet, so it takes no lock any running query
+	// could be holding and has nothing to time out against.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&WarpConversation{}, &WarpMessage{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpConversationTables(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackWarpConversationTables drops Warp's history tables, but only while
+// they are empty.
+//
+// These hold user content, not schema: a saved conversation is something
+// someone can reopen, so dropping a populated pair is deleting their data
+// rather than reversing a migration. Empty is still reversible, which keeps a
+// failed upgrade recoverable without putting saved chats at risk.
+//
+// The emptiness check is only worth anything if nothing can write between it
+// and the DROP. Runtime chat writes take no migration lock - the advisory lock
+// in triggerMigrations covers startup migrations only - so on PostgreSQL this
+// takes ACCESS EXCLUSIVE on both tables first, under a bounded lock_timeout,
+// and probes afterwards. Holding that lock, no insert can commit, so what the
+// probe sees is what the DROP will destroy. SQLite serializes writers at the
+// database level and needs no equivalent; the ClickHouse tables are a separate
+// migration with no rollback.
+//
+// The probe is an existence check rather than a COUNT: counting a populated
+// history table while holding ACCESS EXCLUSIVE would stall every reader and
+// writer for the length of the scan, to answer a question that one row settles.
+func rollbackWarpConversationTables(tx *gorm.DB) error {
+	postgres := tx.Dialector.Name() == "postgres"
+	if postgres {
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+	}
+	// Names spelled out rather than derived: they are fixed by TableName(), and a
+	// literal keeps this identifier out of any interpolation question.
+	//
+	// Lock order follows the writers: AppendWarpMessages locks the conversation
+	// row first and then inserts messages, so the rollback acquires
+	// warp_conversations before warp_messages. Taking them the other way round
+	// is the textbook two-lock deadlock, with one side aborted by the server.
+	// The drop below stays child-before-parent; only the locks follow the
+	// writers, and lock order is independent of drop order.
+	tables := []struct {
+		model any
+		name  string
+	}{
+		{&WarpConversation{}, "warp_conversations"},
+		{&WarpMessage{}, "warp_messages"},
+	}
+	if postgres {
+		for _, table := range tables {
+			if !tx.Migrator().HasTable(table.model) {
+				continue
+			}
+			if err := tx.Exec("LOCK TABLE " + table.name + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock warp history before rollback: %w", err)
+			}
+		}
+	}
+	for _, table := range tables {
+		if !tx.Migrator().HasTable(table.model) {
+			continue
+		}
+		var present []struct{ One int }
+		if err := tx.Model(table.model).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check warp history before rollback: %w", err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("logs_add_warp_conversation_tables is non-rollbackable: warp_conversations and warp_messages hold saved chats, and dropping them would delete that content rather than reverse a schema change; clear the history first if the rollback is genuinely intended")
+		}
+	}
+	return tx.Migrator().DropTable(&WarpMessage{}, &WarpConversation{})
+}
+
+// warpMessageOutcomeColumns are the per-message outcome fields added after the
+// conversation tables shipped: how the turn ended and what it cost.
+var warpMessageOutcomeColumns = []struct{ column, field string }{
+	{"finish_reason", "FinishReason"},
+	{"total_tokens", "TotalTokens"},
+	{"cost", "Cost"},
+	// The structured question a turn ended with, kept alongside the other
+	// outcome fields because it describes how the turn ended too.
+	{"question_json", "QuestionJSON"},
+}
+
+// migrationAddWarpMessageOutcomeColumns adds finish_reason, total_tokens and
+// cost to Warp's stored messages, so a partial answer stays marked partial when
+// its thread is reopened and the history list can show what each thread cost.
+//
+// A separate step rather than a wider AutoMigrate in the migration that created
+// the tables: applied ids are recorded and never re-run, so a database that
+// already has warp_messages would keep the original column list forever and
+// every insert naming one of these would fail.
+func migrationAddWarpMessageOutcomeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_message_outcome_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Bounded, unlike logs_add_warp_conversation_tables: that one only
+			// creates tables nothing can be holding a lock on, while ADD COLUMN
+			// here waits behind any open read of warp_messages. An unbounded wait
+			// blocks every later statement queued behind it, so a slow reader
+			// stalls the boot instead of failing this migration and retrying.
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			mg := tx.Migrator()
+			for _, column := range warpMessageOutcomeColumns {
+				if mg.HasColumn(&WarpMessage{}, column.column) {
+					continue
+				}
+				if err := mg.AddColumn(&WarpMessage{}, column.field); err != nil {
+					return fmt.Errorf("add %s column: %w", column.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpMessageOutcomeColumns(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackWarpMessageOutcomeColumns drops the outcome columns, but only while
+// nothing has been recorded in them.
+//
+// These annotate a transcript rather than holding it, so at first glance they
+// look like pure schema. They are not: finish_reason is what marks an answer
+// partial, and total_tokens/cost are the only record of what a saved chat cost.
+// Dropping a populated set destroys that record - the chats stay readable, and
+// every figure anyone might reconcile against is gone. Empty is still
+// reversible, which keeps a failed upgrade recoverable.
+func rollbackWarpMessageOutcomeColumns(tx *gorm.DB) error {
+	mg := tx.Migrator()
+	if mg.HasTable(&WarpMessage{}) {
+		// Same shape as the table rollback: take the lock, then probe. The check
+		// is only worth anything if nothing can commit between it and DropColumn,
+		// and runtime chat writes take no migration lock - so a concurrent append
+		// could land outcome data after a zero result and have it dropped.
+		//
+		// The probe is an existence check rather than a Count, because holding
+		// ACCESS EXCLUSIVE through a scan of a populated warp_messages is an
+		// outage to answer a question one row settles.
+		if tx.Dialector.Name() == "postgres" {
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := tx.Exec("LOCK TABLE warp_messages IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock warp messages before rollback: %w", err)
+			}
+		}
+		// Zero tokens and zero cost are what an unmigrated row reads as, so the
+		// guard asks whether anything was actually written rather than whether
+		// rows exist at all.
+		var recorded []struct{ One int }
+		if err := tx.Model(&WarpMessage{}).
+			Select("1 AS one").
+			Where("finish_reason <> '' OR total_tokens <> 0 OR cost <> 0 OR question_json <> ''").
+			Limit(1).
+			Find(&recorded).Error; err != nil {
+			return fmt.Errorf("could not check recorded warp outcomes before rollback: %w", err)
+		}
+		if len(recorded) > 0 {
+			return fmt.Errorf("logs_add_warp_message_outcome_columns is non-rollbackable: warp message(s) carry a recorded finish reason or usage, and dropping these columns would destroy that record rather than reverse a schema change; clear the history first if the rollback is genuinely intended")
+		}
+	}
+	for _, column := range warpMessageOutcomeColumns {
+		if !mg.HasColumn(&WarpMessage{}, column.column) {
+			continue
+		}
+		if err := mg.DropColumn(&WarpMessage{}, column.field); err != nil {
+			return fmt.Errorf("drop %s column: %w", column.column, err)
+		}
+	}
+	return nil
+}
+
+// migrationAddWarpConversationsUpdatedAtIndex adds the index the retention
+// sweep needs.
+//
+// A migration of its own rather than a wider AutoMigrate in the step that
+// created the tables: applied ids are recorded and never re-run, so an install
+// that already has warp_conversations would never gain this index, and the
+// hourly sweep would keep scanning the whole table there forever.
+func migrationAddWarpConversationsUpdatedAtIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_conversations_updated_at_index"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	// No transaction: CREATE INDEX CONCURRENTLY cannot run inside one. The whole
+	// point of this migration is that warp_conversations may already exist and be
+	// large, and a plain CREATE INDEX holds its lock for the entire build - a
+	// bounded lock_timeout caps the wait to acquire that lock, never the build,
+	// so it does nothing for the outage it looks like it prevents.
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if tx.Dialector.Name() == "postgres" {
+				// HasIndex reads pg_indexes, which lists an interrupted
+				// CONCURRENTLY build by name even though pg_index.indisvalid is
+				// false. Trusting it meant this migration recorded success while
+				// leaving an index the planner will not use - and the retention
+				// sweep's cross-owner `updated_at < cutoff` then scans the whole
+				// table, which is the exact cost this index exists to avoid.
+				//
+				// An invalid remnant is dropped concurrently and rebuilt, matching
+				// how ensureMetadataGINIndex recovers the same situation.
+				var indexValid bool
+				if err := tx.Raw(`
+					SELECT COALESCE(bool_and(pi.indisvalid), false)
+					FROM pg_class pc
+					JOIN pg_index pi ON pi.indrelid = pc.oid
+					JOIN pg_class ic ON ic.oid = pi.indexrelid
+					WHERE pc.relname = 'warp_conversations'
+					  AND ic.relname = 'idx_warp_conversations_updated_at'
+				`).Scan(&indexValid).Error; err != nil {
+					return fmt.Errorf("check warp_conversations updated_at index validity: %w", err)
+				}
+				if indexValid {
+					return nil
+				}
+				// Safe when it does not exist; necessary when it exists but is invalid.
+				if err := tx.Exec(`DROP INDEX CONCURRENTLY IF EXISTS idx_warp_conversations_updated_at`).Error; err != nil {
+					return fmt.Errorf("drop invalid warp_conversations updated_at index: %w", err)
+				}
+			} else if mg.HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at") {
+				return nil
+			}
+			if tx.Dialector.Name() == "postgres" {
+				// IF NOT EXISTS because CONCURRENTLY can fail partway and leave an
+				// invalid index behind; a re-run then has something to find.
+				if err := tx.Exec(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_warp_conversations_updated_at ON warp_conversations (updated_at DESC)`).Error; err != nil {
+					return fmt.Errorf("create warp_conversations updated_at index: %w", err)
+				}
+				return nil
+			}
+			// SQLite and the rest: no CONCURRENTLY, and no concurrent writers to
+			// block either, so the migrator's own path is right.
+			if err := mg.CreateIndex(&WarpConversation{}, "idx_warp_conversations_updated_at"); err != nil {
+				return fmt.Errorf("create warp_conversations updated_at index: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Purely an access path: dropping it costs performance, never content.
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at") {
+				return nil
+			}
+			if tx.Dialector.Name() == "postgres" {
+				return tx.Exec(`DROP INDEX CONCURRENTLY IF EXISTS idx_warp_conversations_updated_at`).Error
+			}
+			return mg.DropIndex(&WarpConversation{}, "idx_warp_conversations_updated_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

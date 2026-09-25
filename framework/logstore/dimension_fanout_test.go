@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"testing"
 	"time"
@@ -85,7 +86,12 @@ func TestDimensionFanoutFrom_PerDialect(t *testing.T) {
 // (including malformed ones) that the Go writer would never produce.
 func newFanoutTestStore(t *testing.T) (*RDBLogStore, *gorm.DB) {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	// A named shared-cache database rather than ":memory:", which gives every
+	// pooled connection its own empty database - so a call that uses two at once
+	// (SearchLogs counts and pages concurrently) found no logs table on the
+	// second. Named per test so parallel tests do not share rows.
+	dsn := "file:" + url.QueryEscape(t.Name()) + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)

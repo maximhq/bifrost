@@ -52,6 +52,11 @@ func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
 
 // LogStore is the interface for the log store.
 type LogStore interface {
+	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
+	// rather than in the config store because they are user-generated content
+	// that grows with use, not settings an install depends on.
+	WarpConversationStore
+
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
 	CreateIfNotExists(ctx context.Context, entry *Log) error

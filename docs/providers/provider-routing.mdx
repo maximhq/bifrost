@@ -1288,6 +1288,15 @@ All three routing layers (governance, enterprise LB Level 1, model-catalog-resol
   *layer* where Level 1 runs has moved from a middleware to PreRequestHook.
 </Info>
 
+<Note>
+  **Session affinity** sits on top of this order. After PreRequestHook it moves the
+  provider that last served the session to the front of the fallback chain. A request
+  that names its provider (`openai/gpt-4o`) is never reordered. Inside Level 2 it reuses
+  the key that last served the session while that key stays in the pool, including for a
+  request that named its provider. Routing decides which providers and keys are offered;
+  the session only decides their order. See [Session Affinity](/providers/session-affinity).
+</Note>
+
 ### Example Scenarios
 
 <Tabs>

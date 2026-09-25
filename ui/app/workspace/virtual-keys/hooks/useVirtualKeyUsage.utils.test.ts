@@ -42,6 +42,14 @@ describe("resolveDisplayRateLimit", () => {
 		expect(resolveDisplayRateLimit({ isManagedByProfile: true, profileRateLimit: undefined, vkRateLimit: undefined })).toBeUndefined();
 	});
 
+	// A key owned by a team, business unit or customer holding a profile has no user profile to
+	// resolve; the server hands back the entity profile's rate limit as vk.rate_limit.
+	it("shows the entity profile's rate limit for a key its owning entity's profile governs", () => {
+		expect(resolveDisplayRateLimit({ isManagedByProfile: true, isEntityGoverned: true, profileRateLimit: undefined, vkRateLimit })).toEqual(
+			vkRateLimit,
+		);
+	});
+
 	it("shows nothing for an unmanaged key with no rate limit", () => {
 		expect(resolveDisplayRateLimit({ isManagedByProfile: false, profileRateLimit: undefined, vkRateLimit: undefined })).toBeUndefined();
 	});

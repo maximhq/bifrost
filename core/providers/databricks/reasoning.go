@@ -3,7 +3,6 @@ package databricks
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -153,8 +152,15 @@ func normalizeReasoningBlocks(body []byte) []byte {
 		return body
 	}
 
-	out := body
-	choices.ForEach(func(idx, choice gjson.Result) bool {
+	// Each choice is edited in its own JSON and the choices array is written back
+	// once. Addressing through the whole body (choices.<i>.<carrier>.content) would
+	// reserialise the entire response up to four times per choice, making this
+	// O(choices x body). Pinned by TestNormalizeReasoningBlocks_AllocationScaling.
+	var rebuiltChoices [][]byte
+	anyChanged := false
+	failed := false
+	choices.ForEach(func(_, choice gjson.Result) bool {
+		choiceRaw := []byte(choice.Raw)
 		for _, carrier := range []string{"message", "delta"} {
 			content := choice.Get(carrier + ".content")
 			if !content.IsArray() {
@@ -186,22 +192,23 @@ func normalizeReasoningBlocks(body []byte) []byte {
 				return true
 			})
 
-			base := fmt.Sprintf("choices.%d.%s", idx.Int(), carrier)
+			base := carrier
 			var err error
 			switch {
 			case len(kept) == 0 && carrier == "delta":
-				out, err = sjson.DeleteBytes(out, base+".content")
+				choiceRaw, err = sjson.DeleteBytes(choiceRaw, base+".content")
 			case len(kept) == 0:
-				out, err = sjson.SetBytes(out, base+".content", "")
+				choiceRaw, err = sjson.SetBytes(choiceRaw, base+".content", "")
 			case allText:
-				out, err = sjson.SetBytes(out, base+".content", strings.Join(texts, ""))
+				choiceRaw, err = sjson.SetBytes(choiceRaw, base+".content", strings.Join(texts, ""))
 			default:
-				out, err = sjson.SetRawBytes(out, base+".content", []byte("["+strings.Join(kept, ",")+"]"))
+				choiceRaw, err = sjson.SetRawBytes(choiceRaw, base+".content", []byte("["+strings.Join(kept, ",")+"]"))
 			}
 			if err != nil {
-				out = body
+				failed = true
 				return false
 			}
+			anyChanged = true
 
 			if reasoning.Len() == 0 && signature == "" {
 				continue
@@ -214,17 +221,37 @@ func normalizeReasoningBlocks(body []byte) []byte {
 			if signature != "" {
 				detail.Signature = schemas.Ptr(signature)
 			}
-			if out, err = sjson.SetBytes(out, base+".reasoning", reasoning.String()); err != nil {
-				out = body
+			if choiceRaw, err = sjson.SetBytes(choiceRaw, base+".reasoning", reasoning.String()); err != nil {
+				failed = true
 				return false
 			}
-			if out, err = sjson.SetBytes(out, base+".reasoning_details", []schemas.ChatReasoningDetails{detail}); err != nil {
-				out = body
+			if choiceRaw, err = sjson.SetBytes(choiceRaw, base+".reasoning_details", []schemas.ChatReasoningDetails{detail}); err != nil {
+				failed = true
 				return false
 			}
 		}
+		rebuiltChoices = append(rebuiltChoices, choiceRaw)
 		return true
 	})
+	if failed || !anyChanged {
+		return body
+	}
+
+	var joined bytes.Buffer
+	joined.Grow(len(body))
+	joined.WriteByte('[')
+	for i, c := range rebuiltChoices {
+		if i > 0 {
+			joined.WriteByte(',')
+		}
+		joined.Write(c)
+	}
+	joined.WriteByte(']')
+
+	out, err := sjson.SetRawBytes(body, "choices", joined.Bytes())
+	if err != nil {
+		return body
+	}
 	return out
 }
 

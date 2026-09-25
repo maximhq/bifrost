@@ -46,47 +46,71 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers            []string          `json:"providers,omitempty"`
-	Models               []string          `json:"models,omitempty"`
-	Aliases              []string          `json:"aliases,omitempty"`
-	Status               []string          `json:"status,omitempty"`
-	StopReasons          []string          `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	ToolCallNames        []string          `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
-	Objects              []string          `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
-	ParentRequestID      string            `json:"parent_request_id,omitempty"`
-	RequestID            string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
-	RootsOnly            bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
-	SelectedKeyIDs       []string          `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
-	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
-	SessionID            string            `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
-	TeamIDs              []string          `json:"team_ids,omitempty"`
-	CustomerIDs          []string          `json:"customer_ids,omitempty"`
-	UserIDs              []string          `json:"user_ids,omitempty"`
-	BusinessUnitIDs      []string          `json:"business_unit_ids,omitempty"`
-	ProjectIDs           []string          `json:"project_ids,omitempty"`
-	RoutingEngineUsed    []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	Apps                 []string          `json:"apps,omitempty"`                // Backend-detected client apps
-	UserAgents           []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
-	StartTime            *time.Time        `json:"start_time,omitempty"`
-	EndTime              *time.Time        `json:"end_time,omitempty"`
-	MinLatency           *float64          `json:"min_latency,omitempty"`
-	MaxLatency           *float64          `json:"max_latency,omitempty"`
-	MinTokens            *int              `json:"min_tokens,omitempty"`
-	MaxTokens            *int              `json:"max_tokens,omitempty"`
-	MinCost              *float64          `json:"min_cost,omitempty"`
-	MaxCost              *float64          `json:"max_cost,omitempty"`
-	MissingCostOnly      bool              `json:"missing_cost_only,omitempty"`
-	CacheHitTypes        []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
-	ContentSearch        string            `json:"content_search,omitempty"`
-	MetadataFilters      map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	Providers            []string   `json:"providers,omitempty"`
+	Models               []string   `json:"models,omitempty"`
+	Aliases              []string   `json:"aliases,omitempty"`
+	Status               []string   `json:"status,omitempty"`
+	StopReasons          []string   `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	ToolCallNames        []string   `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
+	Objects              []string   `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID      string     `json:"parent_request_id,omitempty"`
+	RequestID            string     `json:"request_id,omitempty"`     // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
+	RootsOnly            bool       `json:"roots_only,omitempty"`     // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
+	GroupSessions        bool       `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.
+	SelectedKeyIDs       []string   `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
+	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	SessionID            string     `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
+	TeamIDs              []string   `json:"team_ids,omitempty"`
+	CustomerIDs          []string   `json:"customer_ids,omitempty"`
+	UserIDs              []string   `json:"user_ids,omitempty"`
+	BusinessUnitIDs      []string   `json:"business_unit_ids,omitempty"`
+	ProjectIDs           []string   `json:"project_ids,omitempty"`
+	RoutingEngineUsed    []string   `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	Apps                 []string   `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents           []string   `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
+	StartTime            *time.Time `json:"start_time,omitempty"`
+	EndTime              *time.Time `json:"end_time,omitempty"`
+	MinLatency           *float64   `json:"min_latency,omitempty"`
+	MaxLatency           *float64   `json:"max_latency,omitempty"`
+	MinTokens            *int       `json:"min_tokens,omitempty"`
+	MaxTokens            *int       `json:"max_tokens,omitempty"`
+	MinCost              *float64   `json:"min_cost,omitempty"`
+	MaxCost              *float64   `json:"max_cost,omitempty"`
+	MissingCostOnly      bool       `json:"missing_cost_only,omitempty"`
+	CacheHitTypes        []string   `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
+	// ErrorTypes and ErrorCodes filter on the provider's error classification
+	// inside error_details (error.type, error.code) - the same values the
+	// error_type and error_code ranking dimensions group by, so a ranking row can
+	// be opened as the rows it counted. Like those dimensions they only ever
+	// match failed requests.
+	ErrorTypes []string `json:"error_types,omitempty"`
+	ErrorCodes []string `json:"error_codes,omitempty"`
+	// StatusCodes filters on the HTTP status the failure came back with
+	// (error_details.status_code). It is the error field every provider
+	// populates: error.code is empty for most of them, so "what kind of 400s are
+	// these" is usually a question about the status, not the code.
+	StatusCodes     []int             `json:"status_codes,omitempty"`
+	ContentSearch   string            `json:"content_search,omitempty"`
+	MetadataFilters map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
 	// "return every ranked entity", which is what the dashboard export uses.
 	RankingLimit *int `json:"ranking_limit,omitempty"`
+}
+
+// SessionGroupingActive reports whether this query should collapse each
+// session_id to a single row. Session grouping sits on top of chain grouping:
+// the row it keeps is the session's earliest *chain root*, so it is meaningless
+// without RootsOnly. It is also skipped for the three queries that are already
+// scoped to one group or one row — listing a session, listing a chain, or
+// looking up an ID — where collapsing would hide the rows the caller asked for.
+func (f SearchFilters) SessionGroupingActive() bool {
+	return f.GroupSessions && f.RootsOnly &&
+		f.SessionID == "" && f.ParentRequestID == "" && f.RequestID == ""
 }
 
 // EffectiveRankingLimit resolves the ranking row cap: the store default when
@@ -193,7 +217,7 @@ type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	IncNumber               *int64    `gorm:"column:inc_number" json:"inc_number,omitempty"`
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
-	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
+	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;not null" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
@@ -213,10 +237,10 @@ type Log struct {
 	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`              // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
-	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                         // Raw complexity score behind the tier; unindexed (detail-view only)
-	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`                              // Raw opaque session identity resolved at ingress for key stickiness and log correlation
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
+	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
@@ -308,6 +332,15 @@ type Log struct {
 	ChildCount     int64   `gorm:"-" json:"child_count,omitempty"`
 	ChildrenCost   float64 `gorm:"-" json:"children_cost,omitempty"`
 	ChildrenTokens int64   `gorm:"-" json:"children_tokens,omitempty"`
+
+	// Aggregates over every row sharing this row's session_id, under the same
+	// filters that produced the page. Populated only on the session root of a
+	// collapsed session; never stored. The count excludes this row (it is the
+	// "N more" badge on the expander) while the totals include it, so the cells
+	// can render them as-is without re-adding the root's own numbers.
+	SessionChildCount  int64   `gorm:"-" json:"session_child_count,omitempty"`
+	SessionTotalCost   float64 `gorm:"-" json:"session_total_cost,omitempty"`
+	SessionTotalTokens int64   `gorm:"-" json:"session_total_tokens,omitempty"`
 
 	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
@@ -2372,13 +2405,16 @@ type ModelRankingEntry struct {
 }
 
 // ModelRankingTrend represents the percentage change compared to the previous period.
+// TokensTrend and CostTrend are nil when the previous period had none of that
+// metric but this one does - there is no percentage to report, and 0 would
+// claim the metric held steady.
 type ModelRankingTrend struct {
-	HasPreviousPeriod bool    `json:"has_previous_period"`
-	RequestsTrend     float64 `json:"requests_trend"`
-	TokensTrend       float64 `json:"tokens_trend"`
-	CostTrend         float64 `json:"cost_trend"`
-	LatencyTrend      float64 `json:"latency_trend"`
-	ThroughputTrend   float64 `json:"throughput_trend"`
+	HasPreviousPeriod bool     `json:"has_previous_period"`
+	RequestsTrend     float64  `json:"requests_trend"`
+	TokensTrend       *float64 `json:"tokens_trend"`
+	CostTrend         *float64 `json:"cost_trend"`
+	LatencyTrend      float64  `json:"latency_trend"`
+	ThroughputTrend   float64  `json:"throughput_trend"`
 }
 
 // ModelRankingWithTrend combines ranking entry with trend data.
@@ -2401,11 +2437,12 @@ type UserRankingEntry struct {
 }
 
 // UserRankingTrend represents the percentage change compared to the previous period.
+// TokensTrend and CostTrend follow ModelRankingTrend's nil convention.
 type UserRankingTrend struct {
-	HasPreviousPeriod bool    `json:"has_previous_period"`
-	RequestsTrend     float64 `json:"requests_trend"`
-	TokensTrend       float64 `json:"tokens_trend"`
-	CostTrend         float64 `json:"cost_trend"`
+	HasPreviousPeriod bool     `json:"has_previous_period"`
+	RequestsTrend     float64  `json:"requests_trend"`
+	TokensTrend       *float64 `json:"tokens_trend"`
+	CostTrend         *float64 `json:"cost_trend"`
 }
 
 // UserRankingWithTrend combines ranking entry with trend data.
@@ -2431,8 +2468,25 @@ const (
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 	RankingDimensionApp          RankingDimension = "app"
 	RankingDimensionUserAgent    RankingDimension = "user_agent"
+	// The routing dimensions: which rule, provider key, alias or complexity tier
+	// handled a request. Each has been filterable on the Logs page for as long as
+	// it has existed and could be ranked by nothing, so "which rule takes the most
+	// traffic" had a filter to check one guess at a time and no way to ask.
+	RankingDimensionRoutingRule         RankingDimension = "routing_rule"
+	RankingDimensionSelectedKey         RankingDimension = "selected_key"
+	RankingDimensionAlias               RankingDimension = "alias"
+	RankingDimensionComplexityTier      RankingDimension = "complexity_tier"
+	RankingDimensionComplexityMechanism RankingDimension = "complexity_mechanism"
+	// Stored as a comma-separated list on the row, so one request can count
+	// under several values (see commalistdimensions.go).
+	RankingDimensionRoutingEngine RankingDimension = "routing_engine"
+	RankingDimensionToolCallName  RankingDimension = "tool_call_name"
 )
 
+// ValidRankingDimensions is what the HTTP rankings endpoint accepts. The routing,
+// JSON-field and comma-list dimensions are deliberately not in it: they are
+// reachable through GetDimensionRankings for in-process callers, and adding one
+// here is a change to the public API.
 var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionTeam:         true,
 	RankingDimensionCustomer:     true,
@@ -2447,6 +2501,8 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 type dimensionColumnDef struct {
 	IDCol   string
 	NameCol string
+	// RawOnly marks a dimension whose column the hourly matview does not carry.
+	RawOnly bool
 }
 
 var dimensionColumns = map[RankingDimension]dimensionColumnDef{
@@ -2458,6 +2514,12 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 	RankingDimensionApp:          {IDCol: "app", NameCol: "app"},
 	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: "user_agent"},
+	RankingDimensionRoutingRule:  {IDCol: "routing_rule_id", NameCol: "routing_rule_name"},
+	RankingDimensionSelectedKey:  {IDCol: "selected_key_id", NameCol: "selected_key_name"},
+	RankingDimensionAlias:        {IDCol: "alias", NameCol: "alias"},
+	// Not carried by mv_logs_hourly, so always read from the raw table.
+	RankingDimensionComplexityTier:      {IDCol: "complexity_tier", NameCol: "complexity_tier", RawOnly: true},
+	RankingDimensionComplexityMechanism: {IDCol: "complexity_mechanism", NameCol: "complexity_mechanism", RawOnly: true},
 }
 
 // DimensionColumnDef returns the column pair for a supported ranking dimension.
@@ -2474,11 +2536,13 @@ type DimensionRankingEntry struct {
 	TotalCost     float64 `json:"total_cost"`
 }
 
+// DimensionRankingTrend follows ModelRankingTrend's nil convention for
+// TokensTrend and CostTrend.
 type DimensionRankingTrend struct {
-	HasPreviousPeriod bool    `json:"has_previous_period"`
-	RequestsTrend     float64 `json:"requests_trend"`
-	TokensTrend       float64 `json:"tokens_trend"`
-	CostTrend         float64 `json:"cost_trend"`
+	HasPreviousPeriod bool     `json:"has_previous_period"`
+	RequestsTrend     float64  `json:"requests_trend"`
+	TokensTrend       *float64 `json:"tokens_trend"`
+	CostTrend         *float64 `json:"cost_trend"`
 }
 
 type DimensionRankingWithTrend struct {

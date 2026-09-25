@@ -70,7 +70,7 @@ Complexity Router does not currently classify Codex requests sent through native
 </Warning>
 
 <Note>
-Session-aware routing keeps the **complexity tier** stable; it does not pin a weighted routing target, provider key, or provider prompt-cache entry. Provider cache TTLs remain provider-owned and independent of the 24-hour routing-state lifetime.
+Session-aware routing keeps the **complexity tier** stable; it does not pin a weighted routing target, provider key, or provider prompt-cache entry. Provider cache TTLs remain provider-owned and independent of the 24-hour routing-state lifetime. Keeping a session on one provider and key is the job of [Session Affinity](/providers/session-affinity), which uses the same session identity and runs alongside the router.
 </Note>
 
 ---

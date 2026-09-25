@@ -31,8 +31,11 @@ newman run tests/e2e/api/collections/provider-harness.json \
 ```
 
 The fixture emits metadata followed by an error for `preamble-error`, then returns
-`hello` for the configured fallback, `preamble-success`. Both Chat Completions and
-Responses must return only the successful attempt's events and a terminal result.
+`hello` for the configured fallback, `preamble-success`. Azure paths (`/openai/v1/*`)
+fail with a rate limit; direct OpenAI paths (`/v1/*`) fail with `server_is_overloaded`
+and no HTTP status, as a real overloaded OpenAI stream does. For both providers, Chat
+Completions and Responses must return only the successful attempt's events and a
+terminal result.
 The cases are skipped unless `azureStreamPreambleFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.

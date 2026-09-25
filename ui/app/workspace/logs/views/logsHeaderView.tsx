@@ -359,7 +359,8 @@ export function LogsHeaderView({
 					</Button>
 				</TooltipTrigger>
 				<TooltipContent sideOffset={6} className="max-w-64">
-					Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.
+					Groups fallback attempts and linked requests under the original root request, and every request sharing a session under the
+					session&apos;s first request. Expand any row to view what it stands for.
 					<br />
 					<br />
 					This grouped view may load more slowly than the flat view for very large log tables.
@@ -367,7 +368,7 @@ export function LogsHeaderView({
 			</Tooltip>
 			{/* Full width while the row wraps, so the search field owns its own line
 			    instead of squeezing to its 12rem minimum beside the date picker. */}
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center rounded-sm border lg:basis-auto overflow-hidden">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center overflow-hidden rounded-sm border lg:basis-auto">
 				<Search className="mr-2 ml-2 size-4" />
 				<Input
 					type="text"
