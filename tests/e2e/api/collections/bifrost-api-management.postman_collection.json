@@ -9061,7 +9061,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"enabled\": true, \"type\": \"socks5\", \"url\": \"socks5://proxy.example.com:1080\", \"username\": \"svc\", \"password\": \"s3cret\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
+              "raw": "{\"enabled\": true, \"type\": \"socks5\", \"url\": \"socks5://proxy.example.com:1080\", \"username\": \"svc\", \"password\": \"s3cret\", \"ca_cert_pem\": \"-----BEGIN CERTIFICATE-----\\nMIIBlTCCATugAwIBAgIUbGjUzQp5Cyax7LN2Pk5HXqmvxxowCgYIKoZIzj0EAwIw\\nHzEdMBsGA1UEAwwUQmlmcm9zdCBlMmUgcHJveHkgQ0EwIBcNMjYwOTI1MjA1MTM1\\nWhgPMjEyNjA5MDEyMDUxMzVaMB8xHTAbBgNVBAMMFEJpZnJvc3QgZTJlIHByb3h5\\nIENBMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEoN2he3VoQpkehwQg0MFLl7sc\\nWaEnbFmv1ps6To7X0hHPHTvELafUlj6sKR6kgw1CLZqRONt/MLK9rtHOjeXlfaNT\\nMFEwHQYDVR0OBBYEFHXZc0tqe8vlKYEyWIcH52zLz3rMMB8GA1UdIwQYMBaAFHXZ\\nc0tqe8vlKYEyWIcH52zLz3rMMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwID\\nSAAwRQIhAPBn1uidgntBnNBkd6VYRctRVQm615YEOnW7x8rRCA6+AiBoMQ264gOR\\n5i5DCRm8z6miAjBfXCcHKdVUUaxGxQi0fA==\\n-----END CERTIFICATE-----\\n\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
             },
             "url": {
               "raw": "{{base_url}}/api/proxy-config",
@@ -9091,6 +9091,7 @@
                   "  pm.expect(body.username).to.equal('svc');",
                   "  pm.expect(body.enable_for_inference).to.equal(true);",
                   "  pm.expect(body.enable_for_api).to.equal(true);",
+                  "  pm.expect(body.ca_cert_pem || '', 'the proxy CA must be stored and returned').to.contain('BEGIN CERTIFICATE');",
                   "});"
                 ]
               }

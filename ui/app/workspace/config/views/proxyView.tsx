@@ -262,6 +262,7 @@ export default function ProxyView() {
 											<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 											<FormControl>
 												<Textarea
+													data-testid="proxy-ca-cert-input"
 													placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
 													className="font-mono text-xs"
 													rows={6}
@@ -271,7 +272,8 @@ export default function ProxyView() {
 												/>
 											</FormControl>
 											<FormDescription>
-												PEM-encoded CA certificate to trust for TLS connections through SSL-intercepting proxies.
+												Your proxy&apos;s CA certificate (PEM). Trusted for the connection to an https:// proxy and for traffic through a
+												TLS-inspecting proxy.
 											</FormDescription>
 											<FormMessage />
 										</FormItem>
@@ -283,7 +285,8 @@ export default function ProxyView() {
 									<div className="space-y-0.5">
 										<FormLabel className="text-sm font-medium">Skip TLS Verification</FormLabel>
 										<p className="text-muted-foreground text-sm">
-											Disable TLS certificate verification for HTTPS proxies. Not recommended for production.
+											Skip verifying the https:// proxy&apos;s own certificate. Traffic through the proxy is always verified: add the
+											proxy&apos;s CA above for a TLS-inspecting proxy. Not recommended for production.
 										</p>
 									</div>
 									<FormField
@@ -292,7 +295,12 @@ export default function ProxyView() {
 										render={({ field }) => (
 											<FormItem>
 												<FormControl>
-													<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!watchedEnabled} />
+													<Switch
+														data-testid="proxy-skip-tls-verify-switch"
+														checked={field.value}
+														onCheckedChange={field.onChange}
+														disabled={!watchedEnabled}
+													/>
 												</FormControl>
 											</FormItem>
 										)}

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1207,6 +1208,13 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
 			return
 		}
+	}
+
+	// A proxy CA that is not a PEM certificate would be ignored by every client that
+	// should trust it, and proxied TLS would then fail with no hint why.
+	if strings.TrimSpace(payload.CACertPEM) != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(payload.CACertPEM)) {
+		SendError(ctx, fasthttp.StatusBadRequest, "proxy ca_cert_pem holds no valid PEM certificate")
+		return
 	}
 
 	// Handle password - if it's "<redacted>", keep the existing password

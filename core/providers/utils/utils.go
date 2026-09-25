@@ -18,14 +18,12 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"weak"
 
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
@@ -706,24 +704,25 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		return client
 	}
 
-	// The proxy CA is trusted for TLS through the proxy and, for an https:// proxy
-	// URL, for the TLS session with the proxy itself.
+	// The proxy CA is trusted for TLS through the proxy (a TLS-inspecting proxy re-signs
+	// targets with it) and, for an https:// proxy URL, for the TLS session with the proxy
+	// itself. skip_tls_verify covers only that proxy session: targets are verified.
 	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
 		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
 		getLogger().Error(errMsg)
 		client.Dial = dialErrorFunc(errMsg)
 		return client
 	}
-	var proxyTLS *tls.Config
+	var caTLS *tls.Config
 	if proxyCACertPEM := proxyConfig.CACertPEM.GetValue(); proxyCACertPEM != "" {
 		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
 		if err != nil {
 			getLogger().Warn("Failed to configure custom CA certificate: %v", err)
 		} else {
-			proxyTLS = tlsConfig
+			caTLS = tlsConfig
 		}
 	}
-	proxyTLS = withProxySkipVerify(proxyTLS, proxyConfig.SkipTLSVerify)
+	proxyTLS := proxyHopTLS(caTLS, proxyConfig.SkipTLSVerify)
 
 	var dialFunc fasthttp.DialFunc
 	// Create the appropriate proxy based on type
@@ -804,10 +803,10 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		client.Dial = dialFunc
 	}
 
-	if proxyTLS != nil {
-		// The proxy dialers above keep proxyTLS for the hop to an https:// proxy; the
-		// client's TLS to its targets verifies no_proxy hosts even when the skip is on.
-		client.TLSConfig = scopeSkipVerify(proxyTLS, proxyConfig.NoProxy)
+	if caTLS != nil {
+		// The dialers above use proxyTLS for the hop to an https:// proxy; the client's
+		// TLS to its targets trusts the proxy CA and never skips verification.
+		client.TLSConfig = caTLS
 	}
 
 	return client
@@ -879,81 +878,59 @@ func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.U
 		}
 	}
 
-	return proxy, scopeSkipVerify(withProxySkipVerify(tlsConfig, proxyConfig.SkipTLSVerify), proxyConfig.NoProxy), nil
+	// tlsConfig is for targets and never skips verification; a skip_tls_verify for an
+	// https:// proxy's own certificate needs the hop dialed separately
+	// (HTTPSProxyTunnelDial), since net/http uses one TLS config for both.
+	return proxy, tlsConfig, nil
 }
 
-// skipVerifyScopes records, for each TLS config scopeSkipVerify built, the no_proxy list
-// whose hosts it still verifies, so a later merge of network_config TLS settings
-// (RescopeProxySkipVerify) can rebuild the check with the merged root pool. Keys are
-// weak pointers and entries are dropped when their config is collected.
-var skipVerifyScopes sync.Map // weak.Pointer[tls.Config] -> string
-
-// scopeSkipVerify limits a proxy's skipped certificate checks to TLS through the proxy.
-// A host on noProxy is reached directly, where no TLS-inspecting proxy sits in between,
-// so its certificate is still verified (against the config's RootCAs, or the system
-// roots). A config that verifies anyway, or an empty noProxy, is returned unchanged.
-func scopeSkipVerify(tlsConfig *tls.Config, noProxy string) *tls.Config {
-	if tlsConfig == nil || !tlsConfig.InsecureSkipVerify || strings.TrimSpace(noProxy) == "" {
-		return tlsConfig
+// HTTPSProxyTunnelDial returns a net/http DialContext for a proxy_config that names an
+// https:// proxy, or nil for any other proxy_config. net/http uses one TLS config for the
+// hop to an https:// proxy and for the target, so skip_tls_verify (which covers only the
+// proxy's certificate) cannot be expressed through Transport.Proxy: a transport using
+// this dial sets Proxy to nil and gets a ready tunnel (network.DialViaProxyTLS, with the
+// proxy CA and skip_tls_verify for the hop), and verifies the target with its own
+// TLSClientConfig. no_proxy hosts go through direct.
+func HTTPSProxyTunnelDial(proxyConfig *schemas.ProxyConfig, direct func(ctx context.Context, network, addr string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if proxyConfig == nil || proxyConfig.Type != schemas.HTTPProxy {
+		return nil
 	}
-	scoped := tlsConfig.Clone()
-	roots := scoped.RootCAs
-	scoped.VerifyConnection = func(state tls.ConnectionState) error {
-		if state.ServerName == "" {
-			// An IP-literal target sends no SNI, so the handshake does not say which
-			// host this is, or whether it bypassed the proxy. Verify the chain, without
-			// the hostname check that needs the name: a direct no_proxy IP host keeps
-			// real verification, and only an IP target behind a TLS-inspecting proxy
-			// (whose chain the proxy signs) needs the proxy CA in ca_cert_pem.
-			return verifyPeerCertificate(state, roots)
+	raw := strings.TrimSpace(proxyConfig.URL.GetValue())
+	if !strings.HasPrefix(strings.ToLower(raw), "https://") {
+		return nil
+	}
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	if username, password := proxyConfig.Username.GetValue(), proxyConfig.Password.GetValue(); username != "" && password != "" {
+		proxyURL.User = url.UserPassword(username, password)
+	}
+	var caTLS *tls.Config
+	if caPEM := proxyConfig.CACertPEM.GetValue(); caPEM != "" {
+		if cfg, err := createTLSConfigWithCA(caPEM); err == nil {
+			caTLS = cfg
 		}
-		if !network.MatchesNoProxy(state.ServerName, noProxy) {
-			return nil
+	}
+	hopTLS := proxyHopTLS(caTLS, proxyConfig.SkipTLSVerify)
+	noProxy := proxyConfig.NoProxy
+	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		if network.MatchesNoProxy(network.DialAddrHost(addr), noProxy) {
+			return direct(ctx, netw, addr)
 		}
-		return verifyPeerCertificate(state, roots)
+		return network.DialViaProxyTLS(ctx, proxyURL, addr, hopTLS)
 	}
-	key := weak.Make(scoped)
-	skipVerifyScopes.Store(key, noProxy)
-	runtime.AddCleanup(scoped, func(k weak.Pointer[tls.Config]) { skipVerifyScopes.Delete(k) }, key)
-	return scoped
 }
 
-// RescopeProxySkipVerify re-applies a proxy's no_proxy certificate scope (see
-// scopeSkipVerify) after network_config TLS settings were merged onto base: the
-// verifier is rebuilt with the merged root pool, so network_config.ca_cert_pem is
-// trusted for direct hosts, and dropped when the provider turned verification off
-// itself (providerSkipVerify). Every merge of a proxy TLS config must end here, or the
-// scope keeps the pre-merge roots.
-func RescopeProxySkipVerify(base, merged *tls.Config, providerSkipVerify bool) *tls.Config {
-	if base == nil || merged == nil {
-		return merged
+// proxyHopTLS is the TLS config for the hop to an https:// proxy: a copy of caTLS (the
+// proxy CA on the system roots, or nil for the system roots), with verification off when
+// skip is set. nil when there is neither a CA nor a skip. caTLS is never modified.
+func proxyHopTLS(caTLS *tls.Config, skip bool) *tls.Config {
+	var hop *tls.Config
+	if caTLS != nil {
+		hop = caTLS.Clone()
 	}
-	noProxy, ok := skipVerifyScopes.Load(weak.Make(base))
-	if !ok {
-		return merged
-	}
-	if providerSkipVerify {
-		merged.VerifyConnection = nil
-		return merged
-	}
-	return scopeSkipVerify(merged, noProxy.(string))
-}
-
-// verifyPeerCertificate runs the verification InsecureSkipVerify turned off.
-func verifyPeerCertificate(state tls.ConnectionState, roots *x509.CertPool) error {
-	if len(state.PeerCertificates) == 0 {
-		return fmt.Errorf("tls: %s presented no certificate", state.ServerName)
-	}
-	intermediates := x509.NewCertPool()
-	for _, cert := range state.PeerCertificates[1:] {
-		intermediates.AddCert(cert)
-	}
-	_, err := state.PeerCertificates[0].Verify(x509.VerifyOptions{
-		DNSName:       state.ServerName,
-		Roots:         roots,
-		Intermediates: intermediates,
-	})
-	return err
+	return withProxySkipVerify(hop, skip)
 }
 
 // withProxySkipVerify turns certificate verification off on the proxy TLS config when
@@ -1007,6 +984,11 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 	if proxy == nil {
 		return dialer, nil
 	}
+	var hopTLS *tls.Config
+	if tlsConfig != nil {
+		hopTLS = tlsConfig.Clone()
+	}
+	hopTLS = proxyHopTLS(hopTLS, proxyConfig.SkipTLSVerify)
 	// The websocket library's own proxy support knows http and socks5 but not https
 	// proxies, so the dialer reaches the proxy through network.DialViaProxyTLS, as
 	// every other provider stack does. The library calls NetDialTLSContext only for
@@ -1014,10 +996,10 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 	// the proxy is chosen by is still the request's.
 	dialer.Proxy = nil
 	dialer.NetDialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
-		return dialWebSocketUpstream(ctx, proxy, "http", addr, tlsConfig)
+		return dialWebSocketUpstream(ctx, proxy, "http", addr, hopTLS)
 	}
 	dialer.NetDialTLSContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
-		conn, err := dialWebSocketUpstream(ctx, proxy, "https", addr, tlsConfig)
+		conn, err := dialWebSocketUpstream(ctx, proxy, "https", addr, hopTLS)
 		if err != nil {
 			return nil, err
 		}
@@ -1293,7 +1275,7 @@ func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, log
 		}
 	}
 
-	return RescopeProxySkipVerify(base, tlsConfig, networkConfig.InsecureSkipVerify), nil
+	return tlsConfig, nil
 }
 
 // proxyDialFunc returns a fasthttp dialer that reaches each target through rawURL with
