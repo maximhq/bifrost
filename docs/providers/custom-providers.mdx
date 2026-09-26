@@ -245,6 +245,12 @@ Available operations:
 - **`transcription`**: Speech-to-text conversion
 - **`transcription_stream`**: Streaming speech-to-text
 - **`rerank`**: Document reranking via `/v1/rerank` (OpenAI-compatible base only)
+- **`passthrough`**: Byte-preserving requests via `/passthrough/<provider>/...`
+- **`passthrough_stream`**: Streaming byte-preserving requests via the same route
+
+<Info>
+`passthrough` and `passthrough_stream` are independent flags, just like the `_stream` suffix on every other operation above. Enabling only `passthrough` lets non-streaming clients through but a streaming client hitting the same `/passthrough/<provider>/...` route will get `passthrough_stream is not supported by <provider> provider` until `passthrough_stream` is enabled too. A quick non-streaming smoke test won't catch a missing `passthrough_stream` -- test with a real streaming client, or enable both together if you don't know in advance which your clients will send.
+</Info>
 
 ### Base Provider Types
 
