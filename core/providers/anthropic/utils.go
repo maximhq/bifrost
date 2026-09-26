@@ -2558,7 +2558,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
-func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]string) []string {
+func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schemas.SecretVar) []string {
 	seen := make(map[string]bool)
 	var all []string
 	add := func(v string) {
@@ -2570,8 +2570,8 @@ func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]strin
 		}
 	}
 	for k, v := range providerExtraHeaders {
-		if strings.EqualFold(k, AnthropicBetaHeader) && v != "" {
-			add(v)
+		if strings.EqualFold(k, AnthropicBetaHeader) && v.GetValue() != "" {
+			add(v.GetValue())
 		}
 	}
 

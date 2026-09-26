@@ -3,6 +3,7 @@ package tables
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -37,6 +38,12 @@ type TableProvider struct {
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `gorm:"-" json:"concurrency_and_buffer_size,omitempty"`
 	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
 
+	// ExtraHeaders mirrors NetworkConfig.ExtraHeaders as a top-level field so the global
+	// vault callbacks, which only walk top-level fields, store and remove each header value,
+	// the same as TableMCPClient.Headers. Set it through SetNetworkConfig; AfterFind fills
+	// it on load and BeforeSave writes it back into network_config_json.
+	ExtraHeaders map[string]schemas.SecretVar `gorm:"-" json:"-"`
+
 	// Custom provider fields
 	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
@@ -67,12 +74,34 @@ type TableProvider struct {
 // TableName represents a provider configuration in the database
 func (TableProvider) TableName() string { return "config_providers" }
 
+// VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault callbacks store
+// and remove this provider's extra header secrets under config_providers/<name>.
+func (p *TableProvider) VaultPathKey() string { return p.Name }
+
+// SetNetworkConfig sets NetworkConfig and copies its extra headers into ExtraHeaders.
+// The vault store callback runs before BeforeSave, so ExtraHeaders must be set before
+// the row reaches GORM. The copy keeps the callback from writing vault refs into the
+// caller's map, which may be the live in-memory config.
+func (p *TableProvider) SetNetworkConfig(nc *schemas.NetworkConfig) {
+	p.NetworkConfig = nc
+	p.ExtraHeaders = nil
+	if nc != nil {
+		p.ExtraHeaders = maps.Clone(nc.ExtraHeaders)
+	}
+}
+
 // BeforeSave is a GORM hook that serializes runtime config structs into JSON columns,
 // validates governance fields, and encrypts the proxy configuration before writing
 // to the database.
 func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	if p.NetworkConfig != nil {
-		data, err := json.Marshal(p.NetworkConfig)
+		// Serialize the headers the vault callback may have rewritten to vault refs.
+		// A row whose ExtraHeaders was never set keeps NetworkConfig's own headers.
+		nc := *p.NetworkConfig
+		if p.ExtraHeaders != nil {
+			nc.ExtraHeaders = p.ExtraHeaders
+		}
+		data, err := json.Marshal(nc)
 		if err != nil {
 			return err
 		}
@@ -150,6 +179,7 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.NetworkConfig = &config
+		p.ExtraHeaders = maps.Clone(config.ExtraHeaders)
 	}
 
 	if p.ConcurrencyBufferJSON != "" {
