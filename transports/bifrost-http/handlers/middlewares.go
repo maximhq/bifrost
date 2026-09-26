@@ -977,18 +977,18 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 			am.bootstrapToken.Store(&configuredSetupToken)
 			logger.Warn("================================================================")
 			logger.Warn("No admin account is configured for this Bifrost instance yet.")
-			logger.Warn("Until one is created, the dashboard/API is reachable without a")
-			logger.Warn("password from anyone who can route to this port. To finish setup,")
-			logger.Warn("pass the configured setup token as auth_config.setup_token in the")
-			logger.Warn("PUT /api/config call that creates the admin account.")
+			logger.Warn("Until one is created, every management API request must send the")
+			logger.Warn("configured setup token in the X-Bifrost-Setup-Token header. To")
+			logger.Warn("finish setup, create the admin account with PUT /api/config,")
+			logger.Warn("sending the same token.")
 			logger.Warn("================================================================")
 		} else {
 			logger.Warn("================================================================")
 			logger.Warn("No admin account is configured for this Bifrost instance yet, and")
-			logger.Warn("no setup token is configured. Set setup_token in config.json (or")
-			logger.Warn("the BIFROST_SETUP_TOKEN environment variable) before creating the")
-			logger.Warn("first admin account — requests to create it will be rejected until")
-			logger.Warn("a setup token is configured.")
+			logger.Warn("no setup token is configured, so the management API refuses every")
+			logger.Warn("request. Set setup_token in config.json (or the BIFROST_SETUP_TOKEN")
+			logger.Warn("environment variable), then send it in the X-Bifrost-Setup-Token")
+			logger.Warn("header until the first admin account is created.")
 			logger.Warn("================================================================")
 		}
 	}
@@ -1089,7 +1089,7 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return true
-	}, true)
+	}, true, false)
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
@@ -1160,11 +1160,45 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 			}
 		}
 		return false
-	}, false)
+	}, false, true)
+}
+
+// SetupTokenHeader carries the operator's setup token (config.json setup_token or the
+// BIFROST_SETUP_TOKEN env var) on management API requests made before the first admin
+// account exists.
+const SetupTokenHeader = "X-Bifrost-Setup-Token"
+
+// setupAuthDocsURL documents creating the first admin account and the setup token.
+const setupAuthDocsURL = "https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth"
+
+// allowPreAdminManagementRequest decides a management API request while no admin
+// account exists. Whitelisted and realtime-transport routes pass as they do once auth
+// is enabled; every other request must carry the setup token in SetupTokenHeader. The
+// token is the same one that creating the first admin requires, so until an operator
+// finishes setup nobody who merely reaches the port can use the management API. With
+// no token configured it fails closed. It writes the error response and returns false
+// when the request is refused.
+func (m *AuthMiddleware) allowPreAdminManagementRequest(ctx *fasthttp.RequestCtx, shouldSkip func(*configstore.AuthConfig, string) bool) bool {
+	// The raw path, as the router and the authenticated path below match it.
+	url := string(ctx.Request.URI().PathOriginal())
+	if shouldSkip(nil, url) || isRealtimeTransportEndpoint(url) {
+		return true
+	}
+	if m.bootstrapToken.Load() == nil {
+		SendError(ctx, fasthttp.StatusForbidden, "Admin authentication is not set up for this Bifrost instance, and no setup token is configured. Set setup_token in config.json (or the BIFROST_SETUP_TOKEN environment variable) and send it in the "+SetupTokenHeader+" header until the first admin account is created. See "+setupAuthDocsURL)
+		return false
+	}
+	if token := string(ctx.Request.Header.Peek(SetupTokenHeader)); token == "" || !m.CheckBootstrapToken(token) {
+		SendError(ctx, fasthttp.StatusUnauthorized, "Admin authentication is not set up for this Bifrost instance yet, and the "+SetupTokenHeader+" header is missing or wrong. Send the setup token (config.json setup_token or the BIFROST_SETUP_TOKEN environment variable) in that header until the first admin account is created. See "+setupAuthDocsURL)
+		return false
+	}
+	return true
 }
 
 // middleware is the core authentication middleware that checks if the request should be authenticated or not.
-func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool, allowVirtualKeyAuth bool) schemas.BifrostHTTPMiddleware {
+// requireSetupTokenBeforeAdmin gates the management API on the setup token while no
+// admin account exists (see allowPreAdminManagementRequest); inference passes false.
+func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool, allowVirtualKeyAuth, requireSetupTokenBeforeAdmin bool) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			// We will first check if its API key auth
@@ -1174,6 +1208,9 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				return
 			}
 			authConfig := m.authConfig.Load()
+			if authConfig == nil && requireSetupTokenBeforeAdmin && !m.allowPreAdminManagementRequest(ctx, shouldSkip) {
+				return
+			}
 			if authConfig == nil || !authConfig.IsEnabled {
 				// logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
@@ -1184,8 +1221,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				// Distinct from IsLocalAdminContextKey (which is also true for genuinely
 				// authenticated sessions): this specifically marks "no credential was
 				// checked at all" so handlers gating especially dangerous capabilities
-				// (e.g. native plugin/subprocess loading) can require real authentication
-				// even while the rest of the API is intentionally left open.
+				// (e.g. native plugin/subprocess loading) can require real authentication.
+				// Before an admin exists, management requests only reach this point with the
+				// setup token (allowPreAdminManagementRequest), which proves operator access
+				// but not an admin identity.
 				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 				next(ctx)
 				return

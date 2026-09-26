@@ -606,28 +606,71 @@ func TestChainMiddlewares_ShortCircuitMiddlePosition(t *testing.T) {
 	}
 }
 
-// TestAuthMiddleware_NilAuthConfig tests that auth middleware allows requests when auth config is nil
-func TestAuthMiddleware_NilAuthConfig(t *testing.T) {
+// TestAuthMiddleware_NoAdminRequiresSetupToken pins the management API before the first
+// admin account exists: every non-whitelisted request must carry the operator's setup
+// token (config.json setup_token or BIFROST_SETUP_TOKEN) in the X-Bifrost-Setup-Token
+// header. Without a configured token it fails closed. Inference is unchanged, and so is
+// an instance whose admin exists with auth deliberately disabled.
+func TestAuthMiddleware_NoAdminRequiresSetupToken(t *testing.T) {
 	SetLogger(&mockLogger{})
+	const token = "operator-setup-token"
 
-	am := &AuthMiddleware{}
-	// authConfig is nil by default (simulates app start with no auth config)
-
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.SetRequestURI("/api/some-endpoint")
-
-	nextCalled := false
-	next := func(ctx *fasthttp.RequestCtx) {
-		nextCalled = true
+	withToken := func() *AuthMiddleware {
+		am := &AuthMiddleware{}
+		tok := token
+		am.bootstrapToken.Store(&tok)
+		return am
 	}
+	for _, tc := range []struct {
+		name       string
+		am         func() *AuthMiddleware
+		path       string
+		header     string
+		inference  bool
+		wantNext   bool
+		wantStatus int
+		wantBody   []string
+	}{
+		{name: "no header", am: withToken, path: "/api/mcp/client", wantStatus: fasthttp.StatusUnauthorized,
+			wantBody: []string{"admin", "X-Bifrost-Setup-Token", "docs.getbifrost.ai"}},
+		{name: "wrong token", am: withToken, path: "/api/mcp/client", header: "not-the-token", wantStatus: fasthttp.StatusUnauthorized,
+			wantBody: []string{"X-Bifrost-Setup-Token"}},
+		{name: "setup token", am: withToken, path: "/api/mcp/client", header: token, wantNext: true},
+		{name: "no token configured: fails closed", am: func() *AuthMiddleware { return &AuthMiddleware{} }, path: "/api/mcp/client", header: "anything",
+			wantStatus: fasthttp.StatusForbidden, wantBody: []string{"setup_token", "BIFROST_SETUP_TOKEN"}},
+		{name: "whitelisted route stays open", am: withToken, path: "/api/session/is-auth-enabled", wantNext: true},
+		{name: "version stays open", am: withToken, path: "/api/version", wantNext: true},
+		{name: "inference is unchanged", am: withToken, path: "/v1/chat/completions", inference: true, wantNext: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			am := tc.am()
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.path)
+			if tc.header != "" {
+				ctx.Request.Header.Set("X-Bifrost-Setup-Token", tc.header)
+			}
+			nextCalled := false
+			mw := am.APIMiddleware()
+			if tc.inference {
+				mw = am.InferenceMiddleware()
+			}
+			mw(func(*fasthttp.RequestCtx) { nextCalled = true })(ctx)
 
-	middleware := am.APIMiddleware()
-	handler := middleware(next)
-	handler(ctx)
-
-	// When auth config is nil, requests should be allowed through
-	if !nextCalled {
-		t.Error("Next handler should be called when auth config is nil")
+			if nextCalled != tc.wantNext {
+				t.Fatalf("next called = %v, want %v (status %d, body %s)", nextCalled, tc.wantNext, ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if tc.wantNext {
+				return
+			}
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			for _, want := range tc.wantBody {
+				if !strings.Contains(string(ctx.Response.Body()), want) {
+					t.Errorf("body %s does not mention %q", ctx.Response.Body(), want)
+				}
+			}
+		})
 	}
 }
 
@@ -1090,12 +1133,16 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	am := &AuthMiddleware{}
-	// Initially auth config is nil
+	// Initially auth config is nil: no admin yet, so the management API takes the
+	// operator's setup token.
+	setupToken := "operator-setup-token"
+	am.bootstrapToken.Store(&setupToken)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetRequestURI("/api/some-endpoint")
+	ctx.Request.Header.Set(SetupTokenHeader, setupToken)
 
-	// First request should pass (nil config)
+	// First request should pass (no admin yet, setup token sent)
 	nextCalled := false
 	next := func(ctx *fasthttp.RequestCtx) {
 		nextCalled = true
@@ -1106,7 +1153,7 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	handler(ctx)
 
 	if !nextCalled {
-		t.Error("First request should pass when auth config is nil")
+		t.Error("First request should pass with the setup token while no admin exists")
 	}
 
 	// Now enable auth

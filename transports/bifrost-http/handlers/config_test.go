@@ -128,3 +128,55 @@ func TestUpdateConfig_FrameworkConfigStoreFailureLeavesRuntimeUnchanged(t *testi
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	assert.Same(t, before, cfg.FrameworkConfig, "runtime framework config must not change when the store write fails")
 }
+
+// setupTokenManager accepts only one setup token, and records the auth config the
+// handler applies.
+type setupTokenManager struct {
+	stubConfigManager
+	token   string
+	applied *configstore.AuthConfig
+}
+
+func (m *setupTokenManager) ValidateSetupToken(token string) bool { return token == m.token }
+func (m *setupTokenManager) UpdateAuthConfig(_ context.Context, cfg *configstore.AuthConfig) error {
+	m.applied = cfg
+	return nil
+}
+
+// TestUpdateConfig_CreateAdminAcceptsSetupTokenHeader pins that the first admin account
+// can be created with the setup token sent once, in the X-Bifrost-Setup-Token header the
+// management API requires before an admin exists, instead of again in
+// auth_config.setup_token. A wrong or missing token still refuses the write.
+func TestUpdateConfig_CreateAdminAcceptsSetupTokenHeader(t *testing.T) {
+	SetLogger(&mockLogger{})
+	body := `{"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"Str0ng-Passw0rd!"},"client_config":{"log_retention_days":7}}`
+	for _, tc := range []struct {
+		name      string
+		header    string
+		wantAdmin bool
+	}{
+		{"setup token in the header", "operator-setup-token", true},
+		{"wrong token in the header", "not-the-token", false},
+		{"no token anywhere", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			manager := &setupTokenManager{token: "operator-setup-token"}
+			h := &ConfigHandler{store: cfg, configManager: manager}
+
+			ctx := putConfigCtx(body)
+			if tc.header != "" {
+				ctx.Request.Header.Set(SetupTokenHeader, tc.header)
+			}
+			h.updateConfig(ctx)
+			if tc.wantAdmin {
+				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				require.NotNil(t, manager.applied, "the admin account must be created")
+				return
+			}
+			require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Nil(t, manager.applied, "no admin account may be created without the setup token")
+		})
+	}
+}
