@@ -1,4 +1,5 @@
 - [fix]: preserve opted-in Anthropic extra params through Responses conversion [@wangrat](https://github.com/wangrat)
+- [fix]: resolve host environment references before starting STDIO MCP clients on Windows [@mat973252-coder](https://github.com/mat973252-coder)
 - feat: pinned provider keys on routing fallbacks via key_id on each fallback (#7470)
 - feat: forward OpenAI async tools, output_schema and tunnel_id on Responses, stripping async for unsupported models with a SupportsAsyncTools datasheet override (#7242)
 - feat: prompt-cache breakpoints for the GPT-6 family with a SupportsPromptCacheBreakpoint datasheet override (#7240)
