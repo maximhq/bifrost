@@ -249,6 +249,7 @@ run_mode() {
             --timeout-script 60000 --timeout 120000
             --ignore-redirects
             -r "$REPORTERS")
+        cmd+=(--env-var "setup_token=${BIFROST_SETUP_TOKEN:-}")
         [[ "$REPORTERS" == *"html"* ]] && cmd+=(--reporter-html-export "${report_prefix}.html")
         [[ "$REPORTERS" == *"json"* ]] && cmd+=(--reporter-json-export "${report_prefix}.json")
         [ -n "$VERBOSE" ] && cmd+=("$VERBOSE")

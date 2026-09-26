@@ -32,6 +32,7 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { allCases, callbackEndpoints, groupByConfig, headerValue, logRowFailures, normaliseRetentionDays, vkDisableValue, VK_MODES } from "./lib/content-logging-matrix.mjs";
+import { withSetupToken } from "./lib/setup-token.mjs";
 
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -121,7 +122,7 @@ function createEchoProvider() {
 }
 
 async function request(method, path, body, headers = {}) {
-	const requestHeaders = adminAuthHeader ? { Authorization: adminAuthHeader, ...headers } : { ...headers };
+	const requestHeaders = withSetupToken(adminAuthHeader ? { Authorization: adminAuthHeader, ...headers } : { ...headers }, path);
 	if (body !== undefined) requestHeaders["content-type"] = "application/json";
 	const res = await fetch(`${baseURL}${path}`, {
 		method,

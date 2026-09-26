@@ -233,6 +233,45 @@ func TestClientAuthorization(t *testing.T) {
 	}
 }
 
+// TestClientSendsSetupTokenOnManagementCalls pins that the CLI works against a gateway
+// with no admin account yet: management calls carry BIFROST_SETUP_TOKEN in
+// X-Bifrost-Setup-Token, which the management API requires until the first admin
+// exists. Inference calls never carry it, and nothing is sent when it is unset.
+func TestClientSendsSetupTokenOnManagementCalls(t *testing.T) {
+	requests := make(chan *http.Request, 3)
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests <- r.Clone(context.Background())
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: r,
+		}, nil
+	})}
+	api := New("https://gateway.example", Credentials{}, time.Second)
+	api.HTTPClient = httpClient
+
+	t.Setenv("BIFROST_SETUP_TOKEN", "operator-setup-token")
+	if _, err := api.Do(context.Background(), Request{Path: "/api/providers"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := (<-requests).Header.Get("X-Bifrost-Setup-Token"); got != "operator-setup-token" {
+		t.Fatalf("management call setup token = %q, want the BIFROST_SETUP_TOKEN value", got)
+	}
+	if _, err := api.Do(context.Background(), Request{Path: "/v1/models"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := (<-requests).Header.Get("X-Bifrost-Setup-Token"); got != "" {
+		t.Fatalf("inference call carried the setup token %q", got)
+	}
+
+	t.Setenv("BIFROST_SETUP_TOKEN", "")
+	if _, err := api.Do(context.Background(), Request{Path: "/api/providers"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := (<-requests).Header.Get("X-Bifrost-Setup-Token"); got != "" {
+		t.Fatalf("setup token %q sent while BIFROST_SETUP_TOKEN is unset", got)
+	}
+}
+
 // TestClientAgentInferenceAuthorization mirrors the Edge gateway-mode bearer and selection headers.
 func TestClientAgentInferenceAuthorization(t *testing.T) {
 	var received *http.Request

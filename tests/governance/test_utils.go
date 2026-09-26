@@ -106,6 +106,15 @@ func baseURL() string {
 	return "http://localhost:8080"
 }
 
+// setSetupTokenHeader adds BIFROST_SETUP_TOKEN to management API requests: until the
+// gateway's first admin account exists, the management API requires it in
+// X-Bifrost-Setup-Token. The gateway ignores it once an admin exists.
+func setSetupTokenHeader(req *http.Request) {
+	if token := os.Getenv("BIFROST_SETUP_TOKEN"); token != "" && strings.HasPrefix(req.URL.Path, "/api/") {
+		req.Header.Set("X-Bifrost-Setup-Token", token)
+	}
+}
+
 func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	client := &http.Client{}
 	url := fmt.Sprintf("%s%s", baseURL(), req.Path)
@@ -125,6 +134,7 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	setSetupTokenHeader(httpReq)
 
 	// Add virtual key header if provided
 	if req.VKHeader != nil {
@@ -180,6 +190,7 @@ func MakeRequestWithCustomHeaders(t *testing.T, req APIRequest, customHeaders ma
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	setSetupTokenHeader(httpReq)
 
 	// Add custom headers
 	for key, value := range customHeaders {
