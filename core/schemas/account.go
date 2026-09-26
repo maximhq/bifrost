@@ -513,6 +513,13 @@ func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
 	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
 }
 
+// IsTypesafeModelFamily reports whether the current attempt resolves to a
+// TypeSafe System One model. It honors aliases by resolving the canonical
+// model name first. See IsAnthropicModelFamily for usage notes.
+func IsTypesafeModelFamily(ctx *BifrostContext, model string) bool {
+	return IsTypesafeModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {

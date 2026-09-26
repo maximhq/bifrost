@@ -160910,6 +160910,177 @@
       ]
     },
     {
+      "name": "118. OpenRouter native decisions (openrouter-decisions)",
+      "item": [
+        {
+          "name": "/v1/decisions - native typed answers, id and billed cost - openrouter/typesafe/jev-1.13",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('every question produced a typed answer', function () {",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.within(0, 1);",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.category.probabilities, 'choice probabilities: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.value).to.be.a('number');",
+                  "    pm.expect(body.answers.urgency.legend, 'score legend: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.test('native endpoint served the resolved jev model', function () {",
+                  "    pm.expect(body.id, 'generation id: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(body.model, 'model: ' + pm.response.text()).to.include('jev');",
+                  "});",
+                  "pm.test('usage carries OpenRouter billed cost', function () {",
+                  "    pm.expect(body.usage.prompt_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "    pm.expect(body.usage.cost && body.usage.cost.total_cost, 'cost: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/typesafe/jev-1.13\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - alias resolves on the native endpoint - openrouter/~typesafe/jev-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('every question produced a typed answer', function () {",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.within(0, 1);",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.category.probabilities, 'choice probabilities: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.value).to.be.a('number');",
+                  "    pm.expect(body.answers.urgency.legend, 'score legend: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.test('native endpoint served the resolved jev model', function () {",
+                  "    pm.expect(body.id, 'generation id: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(body.model, 'model: ' + pm.response.text()).to.include('jev');",
+                  "});",
+                  "pm.test('usage carries OpenRouter billed cost', function () {",
+                  "    pm.expect(body.usage.prompt_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "    pm.expect(body.usage.cost && body.usage.cost.total_cost, 'cost: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/~typesafe/jev-latest\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - chat model still emulates - openrouter/google/gemini-3.8-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('non System One model is emulated, not sent to the decisions endpoint', function () {",
+                  "    pm.expect(body.answers.category.kind, 'answers: ' + pm.response.text()).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.id || '', 'emulated responses carry no decisions generation id: ' + pm.response.text()).to.not.match(/^gen-dec-/);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/google/gemini-3.8-flash\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "107. Decision LLM emulation and fallback (decision-llm-emulation)",
       "item": [
         {
