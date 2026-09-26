@@ -3040,6 +3040,91 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 	return &UserRankingResult{Rankings: rankings}, nil
 }
 
+// GetUserSpend returns each user's total cost inside the filter window. Unlike
+// GetUserRankings it reads no previous period, sends no user id list and sorts
+// nothing, so its cost does not grow with the number of users. Postgres windows of a
+// day or more read whole hours from the hourly matview and the partial boundary hours
+// from the raw table, so the totals stay exactly inside the window; everything else
+// reads the raw logs table with the same status and user filters as GetUserRankings.
+func (s *RDBLogStore) GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) &&
+		!isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+		entries, err := s.getUserSpendHybrid(ctx, filters)
+		if !s.fallBackToRaw(err) {
+			return entries, err
+		}
+	}
+	totals := map[string]float64{}
+	if err := s.addRawUserSpend(ctx, filters, totals, ""); err != nil {
+		return nil, err
+	}
+	return userSpendEntries(totals), nil
+}
+
+// getUserSpendHybrid sums whole hours inside the window from mv_logs_hourly and adds
+// the raw rows of the partial boundary hours, the same split GetStats uses.
+func (s *RDBLogStore) getUserSpendHybrid(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error) {
+	dimFilters := filters
+	dimFilters.StartTime, dimFilters.EndTime = nil, nil
+
+	var rows []struct {
+		UserID    string          `gorm:"column:user_id"`
+		TotalCost sql.NullFloat64 `gorm:"column:total_cost"`
+	}
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, dimFilters)
+	q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
+	q = q.Where("user_id != ''")
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, "user_id")
+	if err := q.Select("user_id, SUM(total_cost) AS total_cost").Group("user_id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	totals := make(map[string]float64, len(rows))
+	for _, r := range rows {
+		totals[r.UserID] += r.TotalCost.Float64
+	}
+
+	if sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime); sliverSQL != "" {
+		if err := s.addRawUserSpend(ctx, dimFilters, totals, sliverSQL, sliverArgs...); err != nil {
+			return nil, err
+		}
+	}
+	return userSpendEntries(totals), nil
+}
+
+// addRawUserSpend adds each user's raw-table cost matching filters, plus an optional
+// extra time predicate, into totals.
+func (s *RDBLogStore) addRawUserSpend(ctx context.Context, filters SearchFilters, totals map[string]float64, extraWhere string, extraArgs ...any) error {
+	var rows []struct {
+		UserID    string          `gorm:"column:user_id"`
+		TotalCost sql.NullFloat64 `gorm:"column:total_cost"`
+	}
+	q := s.scopedLogsDB(ctx).Model(&Log{})
+	q = s.applyFilters(q, filters)
+	if extraWhere != "" {
+		q = q.Where(extraWhere, extraArgs...)
+	}
+	q = q.Where("status IN ?", terminalLogStatuses)
+	q = q.Where("user_id IS NOT NULL AND user_id != ''")
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, "user_id")
+	if err := q.Select("user_id, COALESCE(SUM(cost), 0) AS total_cost").Group("user_id").Find(&rows).Error; err != nil {
+		return fmt.Errorf("failed to get user spend: %w", err)
+	}
+	for _, r := range rows {
+		totals[r.UserID] += r.TotalCost.Float64
+	}
+	return nil
+}
+
+// userSpendEntries converts per-user totals into UserSpendEntry values.
+func userSpendEntries(totals map[string]float64) []UserSpendEntry {
+	out := make([]UserSpendEntry, 0, len(totals))
+	for userID, cost := range totals {
+		out = append(out, UserSpendEntry{UserID: userID, TotalCost: cost})
+	}
+	return out
+}
+
 // GetDimensionRankings returns entities ranked by usage with trend comparison, grouped by the given dimension.
 func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
 	// error_type / error_code / fail_reason / guardrail_rule / guardrail_action

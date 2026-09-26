@@ -21,6 +21,7 @@ import {
 	Globe,
 	Hexagon,
 	History,
+	House,
 	KeyRound,
 	Landmark,
 	LaptopMinimalCheck,
@@ -636,6 +637,17 @@ export default function AppSidebar() {
 
 	const items = useMemo(
 		() => [
+			...(IS_ENTERPRISE
+				? [
+						{
+							title: "Home",
+							url: "/workspace/home",
+							icon: House,
+							description: "Your usage, keys, budgets and access",
+							hasAccess: true,
+						},
+					]
+				: []),
 			{
 				title: "Observability",
 				url: "/workspace/logs",
