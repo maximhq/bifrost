@@ -237,3 +237,34 @@ type RunwareError struct {
 	TaskType  string `json:"taskType,omitempty"`
 	TaskUUID  string `json:"taskUUID,omitempty"`
 }
+
+// RunwareModelsResponse is the envelope returned by Runware's OpenAI-compatible /v1/models.
+type RunwareModelsResponse struct {
+	Data []RunwareModelEnvelope `json:"data"`
+}
+
+// RunwareModelEnvelope is one /v1/models entry. Unlike the modelSearch catalog, which describes
+// every modality Runware serves, /v1/models lists the text models callable through
+// /chat/completions and carries the per-token price and context limits for each.
+type RunwareModelEnvelope struct {
+	ID               string          `json:"id"`
+	Name             string          `json:"name,omitempty"`
+	Description      string          `json:"description,omitempty"`
+	OwnedBy          string          `json:"owned_by,omitempty"`
+	Created          int64           `json:"created,omitempty"`
+	ContextLength    *int            `json:"context_length,omitempty"`
+	MaxOutputTokens  *int            `json:"max_output_tokens,omitempty"`
+	InputModalities  []string        `json:"input_modalities,omitempty"`
+	OutputModalities []string        `json:"output_modalities,omitempty"`
+	Pricing          *RunwarePricing `json:"pricing,omitempty"`
+}
+
+// RunwarePricing is /v1/models' per-token price block. Values are string-encoded decimals, matching
+// the shape Bifrost's own pricing schema uses.
+type RunwarePricing struct {
+	Prompt         *string `json:"prompt,omitempty"`
+	Completion     *string `json:"completion,omitempty"`
+	Image          *string `json:"image,omitempty"`
+	Request        *string `json:"request,omitempty"`
+	InputCacheRead *string `json:"input_cache_read,omitempty"`
+}
