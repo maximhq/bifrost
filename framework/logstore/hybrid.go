@@ -953,6 +953,12 @@ func (h *HybridLogStore) GetUserRankings(ctx context.Context, filters SearchFilt
 	return h.inner.GetUserRankings(ctx, filters)
 }
 
+// GetUserSpend delegates to the inner store and returns each user's total cost in
+// the filter window.
+func (h *HybridLogStore) GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error) {
+	return h.inner.GetUserSpend(ctx, filters)
+}
+
 func (h *HybridLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
 	return h.inner.GetDimensionRankings(ctx, filters, dimension)
 }
