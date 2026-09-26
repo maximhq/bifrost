@@ -21,7 +21,7 @@ function formatRequest(requests: number): string {
 // Empty chart placeholder when data fails to render
 function EmptyChart() {
 	return (
-		<ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+		<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 			<BarChart
 				data={[
 					{ name: "", value: 0 },
@@ -412,7 +412,7 @@ export function LogsVolumeChart({
 							<Skeleton className="h-full w-full" />
 						) : hasValidData ? (
 							<ChartErrorBoundary resetKey={`${effectingTimeRange.startTime}-${effectingTimeRange.endTime}-${chartData.length}`}>
-								<ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+								<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 									<BarChart
 										data={chartData}
 										margin={{ top: 6, right: 4, left: 12, bottom: 0 }}
