@@ -48,7 +48,7 @@ function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
 
 	return (
 		<ChartErrorBoundary resetKey={JSON.stringify(chartData.map(({ tool_name, count, cost }) => [tool_name, count, cost]))}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
 				<BarChart data={chartData} layout="vertical" margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
 					<CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
 					<XAxis

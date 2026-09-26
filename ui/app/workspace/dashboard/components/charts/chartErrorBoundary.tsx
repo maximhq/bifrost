@@ -4,7 +4,7 @@ import { BarChart, CartesianGrid, ResponsiveContainer, XAxis, YAxis } from "rech
 // Empty chart placeholder when data fails to render
 function EmptyChart() {
 	return (
-		<ResponsiveContainer width="100%" height="100%">
+		<ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
 			<BarChart
 				data={[
 					{ name: "", value: 0 },
