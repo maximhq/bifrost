@@ -25,6 +25,7 @@ type complexityProposal struct {
 func (p *RoutingPlugin) computeComplexity(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostRequest,
+	jevMemo *jevDecisionMemo,
 ) *complexity.ComplexityResult {
 	input, disposition := complexity.BuildInputWithDisposition(ctx, req)
 	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
@@ -68,7 +69,7 @@ func (p *RoutingPlugin) computeComplexity(
 	}
 
 	if !sessionActive {
-		proposal := p.classifyComplexityInput(ctx, input)
+		proposal := p.classifyComplexityInput(ctx, input, jevMemo)
 		publishComplexityProposal(ctx, proposal)
 		return proposal.Result
 	}
@@ -77,7 +78,7 @@ func (p *RoutingPlugin) computeComplexity(
 	priorTier, priorFound, loadErr := p.sessionStore.load(key, false)
 	if loadErr != nil {
 		p.logComplexitySessionStoreError("inspect", loadErr)
-		proposal := p.classifyComplexityInput(ctx, input)
+		proposal := p.classifyComplexityInput(ctx, input, jevMemo)
 		publishComplexityProposal(ctx, proposal)
 		return proposal.Result
 	}
@@ -101,7 +102,7 @@ func (p *RoutingPlugin) computeComplexity(
 		// current human turn instead of routing from a stale read.
 	}
 
-	proposal := p.classifyComplexityInput(ctx, input)
+	proposal := p.classifyComplexityInput(ctx, input, jevMemo)
 	proposedTier := ""
 	if proposal.Result != nil {
 		proposedTier = proposal.Result.Tier
@@ -158,7 +159,7 @@ func (p *RoutingPlugin) computeComplexity(
 	return result
 }
 
-func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, input complexity.ComplexityInput) complexityProposal {
+func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, input complexity.ComplexityInput, jevMemo *jevDecisionMemo) complexityProposal {
 	if p.semanticClassifier == nil || !p.semanticClassifier.IsConfigured() {
 		if p.logger != nil {
 			p.logger.Debug("[Routing] %s", noSemanticClassifierLog)
@@ -241,7 +242,7 @@ func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, inp
 			schemas.LogLevelInfo,
 			unavailableCause+"; falling back to the Jev classifier",
 		)
-		return p.classifyJevComplexity(ctx, input)
+		return p.classifyJevComplexity(ctx, input, jevMemo)
 	}
 	return complexityProposal{
 		Mechanism:  complexity.MechanismSkipped,
