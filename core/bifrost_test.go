@@ -3721,6 +3721,32 @@ func TestApplyRawCaptureSignals_RunsAfterPassthroughClear(t *testing.T) {
 	}
 }
 
+// TestApplyProviderProxySignal_RewritesPerAttempt pins that each attempt publishes its
+// own provider's proxy, so a fallback from a proxied provider (Vertex behind a corporate
+// proxy) to a directly reachable one (Bedrock over a VPC endpoint) does not send the
+// fallback's URL fetches through the first provider's proxy.
+func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	vertexProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.9:3128")}
+
+	applyProviderProxySignal(ctx, &schemas.ProviderConfig{ProxyConfig: vertexProxy})
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != vertexProxy {
+		t.Fatalf("primary attempt: proxy = %v, want the Vertex proxy", got)
+	}
+
+	applyProviderProxySignal(ctx, &schemas.ProviderConfig{})
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
+		t.Fatalf("fallback attempt: proxy = %v, want nil (the fallback has no proxy)", got)
+	}
+
+	ctx.BlockRestrictedWrites()
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, vertexProxy)
+	ctx.UnblockRestrictedWrites()
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
+		t.Fatal("a plugin write must not be able to redirect provider fetches through another proxy")
+	}
+}
+
 // https://github.com/maximhq/bifrost/issues/6966: prepareFallbackRequest enumerates sub-request
 // types by hand, and the shallow copy shares any pointer it does not re-target with the
 // original request. A type it forgets therefore keeps the primary provider and model, so the

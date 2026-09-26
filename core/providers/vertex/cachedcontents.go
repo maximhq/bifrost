@@ -98,12 +98,12 @@ func expandVertexModelPath(model, projectID, region string) string {
 // the Gemini generation endpoints) and any Authorization header already set from
 // context extra headers is left intact. Otherwise an OAuth bearer token is fetched
 // from the key credentials and set on the Authorization header.
-func vertexAuthHeaders(req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
+func (provider *VertexProvider) vertexAuthHeaders(req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
 	if key.Value.GetValue() != "" {
 		req.URI().QueryArgs().Set("key", key.Value.GetValue())
 		return nil
 	}
-	tokenSource, err := getAuthTokenSource(key)
+	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("error creating auth token source", err)
 	}
@@ -183,7 +183,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, authErr
 	}
 	req.SetBody(jsonBody)
@@ -256,7 +256,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -332,7 +332,7 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -438,7 +438,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPatch)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 	req.SetBody(jsonBody)
@@ -527,7 +527,7 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodDelete)
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 

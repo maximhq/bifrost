@@ -34,6 +34,7 @@ import (
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
+	"golang.org/x/net/http/httpproxy"
 )
 
 // ThoughtSignatureSeparator delimits a tool call's base ID from a provider reasoning
@@ -761,62 +762,182 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	return client
 }
 
-// ConfigureWebSocketProxy sets up a proxy for a WebSocket dialer based on the provided configuration.
-// It supports HTTP, SOCKS5, and environment-based proxy configurations, mirroring ConfigureProxy above.
-// Unlike ConfigureProxy (which fails fast by swapping in an always-erroring fasthttp.DialFunc on a
-// client that's built once and reused silently), this returns an error directly: callers resolve proxy
-// configuration fresh on every dial, so a returned error surfaces immediately instead of on first use.
+// NetHTTPProxy resolves a ProxyConfig into what a net/http transport needs: the
+// Proxy func and, when the proxy carries a CA, a TLS config that trusts it. It is
+// the net/http counterpart of ConfigureProxy, so every stack a provider uses reads
+// proxy_config by the same rules.
 //
-// ws.Dialer.Proxy dispatches on the resolved proxy URL's scheme internally (HTTP CONNECT tunneling for
-// "http", golang.org/x/net/proxy.FromURL — which handles "socks5" — for everything else), so unlike the
-// fasthttp path there is no need for separate HTTP vs SOCKS5 dialer constructors.
-func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig) (*ws.Dialer, error) {
+// A nil config, type "none", or an http/socks5 config with no URL returns a nil
+// Proxy func: the caller keeps its own default. The UI saves "none" when the proxy
+// form is left alone, so "none" must mean "not configured", not "force direct".
+//
+// net/http dispatches on the proxy URL's scheme (HTTP CONNECT for "http", SOCKS5
+// for "socks5"), so both types share one path.
+func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.URL, error), *tls.Config, error) {
 	if proxyConfig == nil {
-		return dialer, nil
+		return nil, nil, nil
 	}
 
+	var proxy func(*http.Request) (*url.URL, error)
 	switch proxyConfig.Type {
 	case schemas.NoProxy:
-		return dialer, nil
+		return nil, nil, nil
 	case schemas.HTTPProxy, schemas.Socks5Proxy:
 		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
-			return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
+			return nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
 		}
 		proxyURLValue := proxyConfig.URL.GetValue()
 		if proxyURLValue == "" {
-			getLogger().Warn("Warning: proxy URL is required for setting up WebSocket proxy")
-			return dialer, nil
+			getLogger().Warn("Warning: proxy URL is required for setting up proxy")
+			return nil, nil, nil
 		}
 		parsedURL, err := url.Parse(proxyURLValue)
 		if err != nil {
-			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
+			return nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
 		}
 		proxyUsername := proxyConfig.Username.GetValue()
 		proxyPassword := proxyConfig.Password.GetValue()
 		if proxyUsername != "" && proxyPassword != "" {
 			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 		}
-		dialer.Proxy = http.ProxyURL(parsedURL)
+		proxy = http.ProxyURL(parsedURL)
 	case schemas.EnvProxy:
-		dialer.Proxy = http.ProxyFromEnvironment
+		proxy = EnvProxyFunc()
 	default:
-		return nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+		return nil, nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
 	}
 
 	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
-		return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
+		return nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
 	}
-	proxyCACertPEM := proxyConfig.CACertPEM.GetValue()
-	if proxyCACertPEM != "" {
-		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
+	var tlsConfig *tls.Config
+	if proxyCACertPEM := proxyConfig.CACertPEM.GetValue(); proxyCACertPEM != "" {
+		var err error
+		tlsConfig, err = createTLSConfigWithCA(proxyCACertPEM)
 		if err != nil {
-			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
-		} else {
-			dialer.TLSClientConfig = tlsConfig
+			return nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
 		}
 	}
 
+	return proxy, tlsConfig, nil
+}
+
+// EnvProxyFunc returns a net/http Proxy func for HTTP_PROXY, HTTPS_PROXY and
+// NO_PROXY (upper- or lower-case), read when EnvProxyFunc is called.
+//
+// http.ProxyFromEnvironment reads the environment once per process and caches it,
+// while fasthttp's env dialer (fasthttpproxy.FasthttpProxyHTTPDialer, used by
+// ConfigureProxy for type "environment") reads it each time a client is built.
+// Reading at client build here keeps a provider's net/http and fasthttp stacks on
+// the same values across provider rebuilds.
+//
+// Like http.ProxyFromEnvironment it picks the variable by request scheme (https ->
+// HTTPS_PROXY, http -> HTTP_PROXY) and never proxies localhost or loopback targets.
+func EnvProxyFunc() func(*http.Request) (*url.URL, error) {
+	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
+	return func(req *http.Request) (*url.URL, error) {
+		return proxyFunc(req.URL)
+	}
+}
+
+// ConfigureWebSocketProxy sets up a proxy for a WebSocket dialer from the provider's
+// proxy configuration, using the same rules as NetHTTPProxy.
+// Unlike ConfigureProxy (which fails fast by swapping in an always-erroring fasthttp.DialFunc on a
+// client that's built once and reused silently), this returns an error directly: callers resolve proxy
+// configuration fresh on every dial, so a returned error surfaces immediately instead of on first use.
+func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig) (*ws.Dialer, error) {
+	proxy, tlsConfig, err := NetHTTPProxy(proxyConfig)
+	if err != nil {
+		return nil, err
+	}
+	if proxy != nil {
+		dialer.Proxy = proxy
+	}
+	if tlsConfig != nil {
+		dialer.TLSClientConfig = tlsConfig
+	}
 	return dialer, nil
+}
+
+// NewProviderHTTPClient builds the net/http client a provider uses for calls that do
+// not go to its inference endpoint, such as OAuth token exchange and credential
+// refresh (golang.org/x/oauth2, azidentity). Those libraries speak net/http, so
+// without this client they fall back to http.DefaultTransport and skip the
+// provider's proxy_config entirely.
+//
+// When proxy_config names a proxy, it is used. Otherwise the client keeps what
+// http.DefaultTransport did before, proxying from the environment, so a deployment
+// that relied on HTTPS_PROXY for token calls sees no change. TLS follows the
+// provider's network_config (custom CA, insecure_skip_verify), layered on the
+// proxy's CA the same way ConfigureTLS does for the fasthttp clients.
+//
+// An invalid proxy or TLS config does not fail provider construction: the client
+// returns the configuration error on every request, as ConfigureProxy does with
+// dialErrorFunc.
+func NewProviderHTTPClient(proxyConfig *schemas.ProxyConfig, networkConfig schemas.NetworkConfig, logger schemas.Logger) *http.Client {
+	timeout := time.Duration(networkConfig.DefaultRequestTimeoutInSeconds) * time.Second
+	proxy, proxyTLS, err := NetHTTPProxy(proxyConfig)
+	if err == nil {
+		proxyTLS, err = networkTLSConfig(proxyTLS, networkConfig, logger)
+	}
+	if err != nil {
+		logger.Error("%v", err)
+		return &http.Client{Transport: errorTransport{err: err}, Timeout: timeout}
+	}
+	if proxy == nil {
+		proxy = EnvProxyFunc()
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 bypassProxyForLocalTargets(proxy),
+			TLSClientConfig:       proxyTLS,
+			MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     true,
+		},
+		Timeout: timeout,
+	}
+}
+
+// bypassProxyForLocalTargets wraps proxy so requests to the local host or to a
+// cloud instance-metadata service always connect directly. Credential chains reach
+// those on purpose: azidentity's managed identity calls IMDS at 169.254.169.254
+// (and Azure Arc's agent on localhost), and Google's metadata server answers at
+// metadata.google.internal. A corporate proxy cannot reach any of them, so sending
+// them through it would break workload identity the moment a proxy is configured.
+func bypassProxyForLocalTargets(proxy func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		if isLocalOrMetadataHost(req.URL.Hostname()) {
+			return nil, nil
+		}
+		return proxy(req)
+	}
+}
+
+// isLocalOrMetadataHost reports whether host is loopback, link-local, or a named
+// instance-metadata endpoint.
+func isLocalOrMetadataHost(host string) bool {
+	switch strings.ToLower(strings.TrimSuffix(host, ".")) {
+	case "localhost", "metadata.google.internal", "metadata":
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || network.IsMetadataEndpoint(ip)
+}
+
+// errorTransport fails every request with a fixed configuration error. It is the
+// net/http counterpart of dialErrorFunc.
+type errorTransport struct {
+	err error
+}
+
+func (t errorTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, t.err
 }
 
 // createTLSConfigWithCA creates a TLS configuration with a custom CA certificate
@@ -843,19 +964,30 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
-	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromSecret() && networkConfig.CACertPEM.GetValue() == "" {
-		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.GetRawRef())
-		logger.Error(errMsg)
-		client.Dial = dialErrorFunc(errMsg)
+	tlsConfig, err := networkTLSConfig(client.TLSConfig, networkConfig, logger)
+	if err != nil {
+		logger.Error(err.Error())
+		client.Dial = dialErrorFunc(err.Error())
 		return client
+	}
+	client.TLSConfig = tlsConfig
+	return client
+}
+
+// networkTLSConfig layers NetworkConfig's TLS settings (insecure_skip_verify, a
+// custom CA) onto base, which may already trust a proxy CA. base is returned
+// unchanged when neither setting is present, and never mutated otherwise.
+func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, logger schemas.Logger) (*tls.Config, error) {
+	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromSecret() && networkConfig.CACertPEM.GetValue() == "" {
+		return nil, fmt.Errorf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.GetRawRef())
 	}
 
 	caCertPEM := networkConfig.CACertPEM.GetValue()
 	if !networkConfig.InsecureSkipVerify && caCertPEM == "" {
-		return client
+		return base, nil
 	}
 
-	tlsConfig := client.TLSConfig
+	tlsConfig := base
 	if tlsConfig == nil {
 		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	} else {
@@ -884,8 +1016,7 @@ func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, 
 		}
 	}
 
-	client.TLSConfig = tlsConfig
-	return client
+	return tlsConfig, nil
 }
 
 func dialErrorFunc(message string) fasthttp.DialFunc {

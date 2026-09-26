@@ -2,10 +2,14 @@ package network
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,6 +41,22 @@ var teredo = netip.MustParsePrefix("2001:0000::/32")
 var metadataEndpoints = []netip.Addr{
 	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud ECS
 	netip.MustParseAddr("fd00:ec2::254"),   // AWS IMDS over IPv6
+}
+
+// IsMetadataEndpoint reports whether ip is one of the cloud instance-metadata
+// addresses that sit outside the link-local range (see metadataEndpoints).
+func IsMetadataEndpoint(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, endpoint := range metadataEndpoints {
+		if addr == endpoint {
+			return true
+		}
+	}
+	return false
 }
 
 // IsPublicIP reports whether ip is safe to dial from server-side code that
@@ -180,6 +200,113 @@ func ssrfSafeDialContext(resolver ipLookuper, dial func(ctx context.Context, net
 			}
 		}
 		return dial(ctx, netw, net.JoinHostPort(ips[0].String(), port))
+	}
+}
+
+// NewSSRFSafeTransport returns a RoundTripper for fetching user-controlled URLs
+// that keeps SSRFSafeDialContext's guarantees whether or not the request leaves
+// through a proxy.
+//
+// proxy nil: a plain http.Transport on SSRFSafeDialContext, so every dial is
+// checked against the resolved target exactly as before.
+//
+// proxy set: once a request is proxied, the dial goes to the proxy rather than the
+// target, so the dial-time check can no longer see the target. Two things replace it:
+//   - the proxy's own address is dialed without the IsPublicIP check. The proxy is
+//     operator configuration, and a local or VPC-internal proxy is the normal case;
+//     only addresses the proxy func actually returned are exempt, so every other
+//     dial (NO_PROXY bypasses included) still goes through the SSRF dialer.
+//   - before each round trip, including every redirect hop, the target hostname is
+//     resolved and refused if any address fails IsPublicIP.
+//
+// The proxy resolves the target again on its own, so a DNS answer that changes
+// between Bifrost's check and the proxy's lookup is not caught here. Past that
+// point the proxy's egress policy is what governs, the same as for any other
+// traffic an operator routes through it.
+func NewSSRFSafeTransport(dialTimeout time.Duration, proxy func(*http.Request) (*url.URL, error), tlsConfig *tls.Config) http.RoundTripper {
+	dialer := &net.Dialer{Timeout: dialTimeout}
+	return newSSRFSafeTransport(net.DefaultResolver, dialer.DialContext, proxy, tlsConfig)
+}
+
+// newSSRFSafeTransport is the seam behind NewSSRFSafeTransport with injectable
+// resolver and dial for tests.
+func newSSRFSafeTransport(resolver ipLookuper, dial func(ctx context.Context, network, addr string) (net.Conn, error), proxy func(*http.Request) (*url.URL, error), tlsConfig *tls.Config) http.RoundTripper {
+	ssrfDial := ssrfSafeDialContext(resolver, dial, nil)
+	transport := &http.Transport{
+		DialContext:     ssrfDial,
+		TLSClientConfig: tlsConfig,
+	}
+	if proxy == nil {
+		return transport
+	}
+
+	// http.Transport calls Proxy before it dials, so recording each address the
+	// proxy func hands back is enough for DialContext to recognise the proxy.
+	var proxyAddrs sync.Map
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := proxy(req)
+		if err == nil && proxyURL != nil {
+			proxyAddrs.Store(proxyDialAddr(proxyURL), struct{}{})
+		}
+		return proxyURL, err
+	}
+	transport.DialContext = func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		if _, ok := proxyAddrs.Load(addr); ok {
+			return dial(ctx, netw, addr)
+		}
+		return ssrfDial(ctx, netw, addr)
+	}
+	return &targetCheckingTransport{resolver: resolver, next: transport}
+}
+
+// proxyDialAddr mirrors the host:port net/http dials for a proxy URL, defaulting
+// the port by scheme when the URL leaves it out.
+func proxyDialAddr(proxyURL *url.URL) string {
+	port := proxyURL.Port()
+	if port == "" {
+		switch proxyURL.Scheme {
+		case "https":
+			port = "443"
+		case "socks5", "socks5h":
+			port = "1080"
+		default:
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(proxyURL.Hostname(), port)
+}
+
+// targetCheckingTransport refuses a request whose target host resolves to any
+// non-public address. It stands in for the dial-time check when the dial goes to
+// a proxy. http.Client calls RoundTrip once per redirect hop, so redirects are
+// judged the same way as the original request.
+type targetCheckingTransport struct {
+	resolver ipLookuper
+	next     http.RoundTripper
+}
+
+func (t *targetCheckingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	host := req.URL.Hostname()
+	ips, err := t.resolver.LookupIP(req.Context(), "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
+	}
+	for _, ip := range ips {
+		if !IsPublicIP(ip) {
+			return nil, fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+		}
+	}
+	return t.next.RoundTrip(req)
+}
+
+// CloseIdleConnections lets http.Client.CloseIdleConnections reach the wrapped
+// transport's pool.
+func (t *targetCheckingTransport) CloseIdleConnections() {
+	if closer, ok := t.next.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
 	}
 }
 

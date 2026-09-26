@@ -1,10 +1,18 @@
 package utils
 
 import (
+	"context"
+	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestRedactURLForError pins that nothing a caller could authenticate with survives into
@@ -139,5 +147,146 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFetchAndEncodeURL_UsesProviderProxy pins that a URL fetch made on a provider's behalf
+// leaves through that provider's proxy_config, the same way its inference traffic does. A
+// deployment whose only egress is a proxy otherwise times out on every image or document
+// URL. The proxy here is a plain-HTTP forward proxy on loopback: an operator-configured
+// proxy may sit on a private or loopback address, so the SSRF gate must let Bifrost dial it
+// while still judging the target host.
+func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
+	var hits atomic.Int32
+	var secretHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A forward proxy receives the absolute target URI in the request line.
+		if r.URL.Host == "10.0.0.5" {
+			secretHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Host != "203.0.113.10" {
+			http.Error(w, "unexpected target "+r.URL.Host, http.StatusBadGateway)
+			return
+		}
+		hits.Add(1)
+		switch r.URL.Path {
+		case "/img.png":
+			w.Header().Set("Content-Type", "image/png; charset=binary")
+			_, _ = w.Write([]byte("PNGDATA"))
+		case "/redirect":
+			http.Redirect(w, r, "http://10.0.0.5/secret", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer proxy.Close()
+
+	proxyCtx := func(t *testing.T) context.Context {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		t.Cleanup(cancel)
+		return context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+			Type: schemas.HTTPProxy,
+			URL:  schemas.NewSecretVar(proxy.URL),
+		})
+	}
+
+	t.Run("public target goes through the proxy", func(t *testing.T) {
+		hits.Store(0)
+		mediaType, encoded, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/img.png")
+		if err != nil {
+			t.Fatalf("fetch through proxy failed: %v", err)
+		}
+		if hits.Load() != 1 {
+			t.Fatalf("proxy saw %d requests, want 1", hits.Load())
+		}
+		if mediaType != "image/png" {
+			t.Errorf("mediaType = %q, want image/png", mediaType)
+		}
+		if want := base64.StdEncoding.EncodeToString([]byte("PNGDATA")); encoded != want {
+			t.Errorf("encoded = %q, want %q", encoded, want)
+		}
+	})
+
+	t.Run("private target is refused before reaching the proxy", func(t *testing.T) {
+		secretHits.Store(0)
+		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://10.0.0.5/secret")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected a non-public address error, got %v", err)
+		}
+		if secretHits.Load() != 0 {
+			t.Fatalf("private target reached the proxy %d times", secretHits.Load())
+		}
+	})
+
+	t.Run("redirect to a private target is refused", func(t *testing.T) {
+		secretHits.Store(0)
+		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/redirect")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected a non-public address error, got %v", err)
+		}
+		if secretHits.Load() != 0 {
+			t.Fatalf("redirected private target reached the proxy %d times", secretHits.Load())
+		}
+	})
+
+	t.Run("no proxy in context keeps the direct SSRF dialer", func(t *testing.T) {
+		_, _, err := FetchAndEncodeURL(t.Context(), proxy.URL+"/img.png")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected the loopback proxy address itself to be refused as a direct target, got %v", err)
+		}
+	})
+}
+
+// TestFetchClientFor_OneClientPerResolvedProxy pins how fetch clients are cached: one
+// client per distinct resolved proxy (so connections pool across fetches), a different
+// client whenever any value that changes the route differs, the password included, and
+// one shared direct client for every config that means "no proxy".
+func TestFetchClientFor_OneClientPerResolvedProxy(t *testing.T) {
+	clientFor := func(pc *schemas.ProxyConfig) *http.Client {
+		t.Helper()
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyProviderProxyConfig, pc)
+		client, err := fetchClientFor(ctx)
+		if err != nil {
+			t.Fatalf("fetchClientFor: %v", err)
+		}
+		return client
+	}
+	proxy := func(password string) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{
+			Type:     schemas.HTTPProxy,
+			URL:      schemas.NewSecretVar("http://127.0.0.1:3128"),
+			Username: schemas.NewSecretVar("svc"),
+			Password: schemas.NewSecretVar(password),
+		}
+	}
+
+	reused := clientFor(proxy("one"))
+	if clientFor(proxy("one")) != reused {
+		t.Error("the same resolved proxy must reuse one client")
+	}
+	if clientFor(proxy("one")) == clientFor(proxy("two")) {
+		t.Error("a different proxy password must get its own client")
+	}
+	direct := clientFor(nil)
+	for name, pc := range map[string]*schemas.ProxyConfig{
+		"none":       {Type: schemas.NoProxy},
+		"empty type": {},
+	} {
+		if clientFor(pc) != direct {
+			t.Errorf("%s must share the direct client", name)
+		}
+	}
+	if clientFor(proxy("one")) == direct {
+		t.Error("a proxied config must not get the direct client")
+	}
+
+	env := &schemas.ProxyConfig{Type: schemas.EnvProxy}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
+	first := clientFor(env)
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3129")
+	if clientFor(env) == first {
+		t.Error("type environment must get a new client when the proxy variables change")
 	}
 }

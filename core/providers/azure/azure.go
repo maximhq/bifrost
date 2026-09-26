@@ -42,6 +42,7 @@ type AzureProvider struct {
 	client          *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig   schemas.NetworkConfig // Network configuration including extra headers
+	authHTTPClient  *http.Client          // net/http client for Entra ID token calls, routed through proxy_config like the fasthttp clients
 
 	credentials         sync.Map // map of tenant ID:client ID to azcore.TokenCredential
 	sendBackRawRequest  bool     // Whether to include raw request in BifrostResponse
@@ -63,7 +64,7 @@ func (p *AzureProvider) getOrCreateAuth(
 		tenantID,
 		clientID,
 		clientSecret,
-		nil,
+		&azidentity.ClientSecretCredentialOptions{ClientOptions: p.authClientOptions()},
 	)
 	if err != nil {
 		return nil, err
@@ -71,6 +72,17 @@ func (p *AzureProvider) getOrCreateAuth(
 
 	actual, _ := p.credentials.LoadOrStore(key, cred)
 	return actual.(azcore.TokenCredential), nil
+}
+
+// authClientOptions routes azidentity's token calls through authHTTPClient, so Entra
+// ID requests leave through the provider's proxy_config instead of
+// http.DefaultTransport. The client never proxies IMDS or other local targets (see
+// providerUtils.NewProviderHTTPClient), so managed identity keeps working.
+func (p *AzureProvider) authClientOptions() azcore.ClientOptions {
+	if p.authHTTPClient == nil {
+		return azcore.ClientOptions{}
+	}
+	return azcore.ClientOptions{Transport: p.authHTTPClient}
 }
 
 // getOrCreateDefaultAzureCredential returns a DefaultAzureCredential, creating and caching it if needed.
@@ -83,7 +95,7 @@ func (p *AzureProvider) getOrCreateDefaultAzureCredential() (azcore.TokenCredent
 		return val.(azcore.TokenCredential), nil
 	}
 
-	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	cred, err := azidentity.NewDefaultAzureCredential(&azidentity.DefaultAzureCredentialOptions{ClientOptions: p.authClientOptions()})
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +206,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		client:              client,
 		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
+		authHTTPClient:      providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
