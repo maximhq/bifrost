@@ -533,7 +533,11 @@ func migrationEnsureDeclaredIndexes(ctx context.Context, db *gorm.DB, logger sch
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
 	opts := *migrator.DefaultOptions
-	opts.UseTransaction = true
+	// Each CreateIndex stands on its own: an index built on a large table can take
+	// a while, and wrapping the set in one transaction holds a write lock across
+	// all of them. Leaving them unwrapped also means a failure part way through
+	// keeps the indexes already built, and the next start resumes from there.
+	opts.UseTransaction = false
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
