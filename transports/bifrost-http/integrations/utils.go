@@ -169,12 +169,9 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
-	// Set the HTTP status code from the provider error
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode))
-	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-	}
+	// Same ladder as the unary path, so the status can't depend on whether the
+	// request was streaming.
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 	ctx.SetContentType("application/json")
 
 	// Always use the route-level ErrorConverter (not StreamConfig.ErrorConverter) because
@@ -214,19 +211,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode))
-	} else if !bifrostErr.IsBifrostError {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	} else {
-		if bifrostErr.Error != nil &&
-			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
-				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		}
-	}
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 	ctx.SetContentType("application/json")
 
 	// Marshal the error for response and log the error for diagnostics

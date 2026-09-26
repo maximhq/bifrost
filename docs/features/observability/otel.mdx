@@ -1123,7 +1123,7 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to upstream providers |
 | `bifrost_success_requests_total` | Counter | Successful upstream requests |
-| `bifrost_error_requests_total` | Counter | Error requests with status code labels |
+| `bifrost_error_requests_total` | Counter | Error requests, labelled by `status_code` |
 | `bifrost_input_tokens_total` | Counter | Total input tokens |
 | `bifrost_output_tokens_total` | Counter | Total output tokens |
 | `bifrost_cache_hits_total` | Counter | Cache hits |
@@ -1143,6 +1143,10 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
 | `http_request_size_bytes` | Histogram | HTTP request body size |
 | `http_response_size_bytes` | Histogram | HTTP response body size |
+
+<Note>
+Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion error, or an empty or unparseable provider response — carried no status of its own and was labelled `status_code="unknown"`, even though the caller received a 500. 5xx dashboards and alerts under-counted these. They are now labelled `status_code="500"`, and the counter gained an `error_type` attribute matching the Prometheus one; repoint anything keyed on `status_code="unknown"`. See [Error Types](./prometheus#error-types) for the `error_type` vocabulary.
+</Note>
 
 > **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
 

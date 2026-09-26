@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -212,19 +211,7 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		return
 	}
 
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode))
-	} else if !bifrostErr.IsBifrostError {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	} else {
-		if bifrostErr.Error != nil &&
-			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
-				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		}
-	}
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 
 	// Routed-identity headers from the error itself (provider/model/request-type +
 	// routing_info incl. is-fallback). Callers forward provider headers before this,

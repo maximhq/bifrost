@@ -101,3 +101,60 @@ func TestParseOpenAIError_DefaultStatusCodeFallsBackWithStatusNumber(t *testing.
 		t.Fatalf("expected fallback message with default status, got %q", errResp.Error.Message)
 	}
 }
+
+// An SSE error rides a committed HTTP 200, so the error carries no status of its
+// own. Left nil it reaches metrics as a caller 400 and ClassifyFailure has nothing
+// to act on.
+func TestResponsesStreamError_CarriesGatewayStatus(t *testing.T) {
+	cases := []struct {
+		name, wire string
+		want       int
+	}{
+		{
+			"overload with no recognizable signal defaults to 502",
+			`{"type":"response.failed","response":{"error":{"code":"server_error","message":"Our servers are currently overloaded. Please try again later."}}}`,
+			fasthttp.StatusBadGateway,
+		},
+		{
+			"empty error object still gets a status",
+			`{"type":"error","error":{}}`,
+			fasthttp.StatusBadGateway,
+		},
+		{
+			// 502 would read as transient and retry the same key instead of rotating.
+			"rate limit by type keeps its 429",
+			`{"type":"error","error":{"type":"too_many_requests","code":"no_capacity","message":"capacity"}}`,
+			fasthttp.StatusTooManyRequests,
+		},
+		{
+			"quota by code keeps its 429",
+			`{"type":"error","error":{"code":"insufficient_quota","message":"quota"}}`,
+			fasthttp.StatusTooManyRequests,
+		},
+		{
+			// 502 would retry a request that can never succeed.
+			"context length is a caller fault",
+			`{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"input is too large"}}}`,
+			fasthttp.StatusBadRequest,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var response schemas.BifrostResponsesStreamResponse
+			if err := schemas.Unmarshal([]byte(tc.wire), &response); err != nil {
+				t.Fatalf("unmarshal stream error: %v", err)
+			}
+			got := responsesStreamError(&response)
+			if got.StatusCode == nil {
+				t.Fatalf("StatusCode is nil, want %d", tc.want)
+			}
+			if *got.StatusCode != tc.want {
+				t.Fatalf("StatusCode = %d, want %d", *got.StatusCode, tc.want)
+			}
+			// The status is what makes this reach 5xx dashboards rather than 400.
+			if got.EffectiveHTTPStatus() != tc.want {
+				t.Fatalf("EffectiveHTTPStatus() = %d, want %d", got.EffectiveHTTPStatus(), tc.want)
+			}
+		})
+	}
+}

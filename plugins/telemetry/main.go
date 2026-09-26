@@ -487,13 +487,15 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
-	// error_type is the normalized reason, status_code the raw fact it came from.
+	// error_type is the normalized reason, status_code the status the failure resolves
+	// to — the caller's status over HTTP, but not for an error sent inside a committed
+	// stream, where the caller already had a 200.
 	// Cardinality is bounded: error_type is near-determined by status_code for
 	// upstream failures, so it splits few series that were not already split.
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_error_requests_total",
-			Help: "Total number of failed requests, by raw status_code and normalized error_type.",
+			Help: "Total number of failed requests, by effective status_code and normalized error_type.",
 		},
 		append(append(defaultBifrostLabels, "status_code", "error_type"), filteredCustomLabels...),
 	)
@@ -1328,11 +1330,9 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record error and success counts
 		if bifrostErr != nil {
-			// Add status_code to label values (create new slice to avoid modifying original)
-			statusCode := "unknown"
-			if bifrostErr.StatusCode != nil {
-				statusCode = strconv.Itoa(*bifrostErr.StatusCode)
-			}
+			// Effective, not raw: an internally-raised error carries no StatusCode but
+			// still returns 500, and labelling those "unknown" hid them from 5xx queries.
+			statusCode := strconv.Itoa(bifrostErr.EffectiveHTTPStatus())
 			// Same requestType that fills the `method` label, so verdict and labels
 			// cannot disagree. Never empty: bifrostErr is non-nil in this branch.
 			errorType := schemas.ClassifyErrorType(bifrostErr, requestType)

@@ -144,9 +144,9 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 	if err.Error.Code != nil {
 		attrs[schemas.AttrErrorCode] = *err.Error.Code
 	}
-	if err.StatusCode != nil {
-		attrs[schemas.AttrHTTPResponseStatusCode] = *err.StatusCode
-	}
+	// Effective, not raw: an internally-raised error carries no StatusCode but still
+	// returns 500, and the status_code metric dimension reads this attribute.
+	attrs[schemas.AttrHTTPResponseStatusCode] = err.EffectiveHTTPStatus()
 
 	// Usage the provider billed us for even though the request failed or was
 	// cancelled (see BifrostError.ExtraFields.BilledUsage). Governance and the

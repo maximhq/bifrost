@@ -548,3 +548,54 @@ func TestClassifierMatchesCategorization(t *testing.T) {
 		}
 	}
 }
+
+// The transport, the span attribute and the metric dimension all read this, so a
+// nil StatusCode must resolve to the same status everywhere.
+func TestEffectiveHTTPStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *BifrostError
+		want int
+	}{
+		{"nil error", nil, 500},
+		{"explicit provider status wins", &BifrostError{StatusCode: statusPtr(429)}, 429},
+		{"bodyless status normalized to 502", &BifrostError{StatusCode: statusPtr(204)}, 502},
+		{"informational status normalized to 502", &BifrostError{StatusCode: statusPtr(100)}, 502},
+		{"provider-attributed, no status", &BifrostError{IsBifrostError: false}, 400},
+		{"bifrost-internal, no status", &BifrostError{IsBifrostError: true}, 500},
+		{
+			"provider auto-resolve failure is a caller mistake",
+			&BifrostError{IsBifrostError: true, Error: &ErrorField{Message: ProviderAutoResolveErrorMessage}},
+			400,
+		},
+		{
+			"model auto-resolve failure is a caller mistake",
+			&BifrostError{IsBifrostError: true, Error: &ErrorField{Message: ModelAutoResolveErrorMessage}},
+			400,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.EffectiveHTTPStatus(); got != tt.want {
+				t.Errorf("EffectiveHTTPStatus() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// A nil StatusCode used to leave the attribute unset, which the otel plugin read as
+// status_code="unknown" while the client got a 500.
+func TestSpanStatusAttributeMatchesEffectiveStatus(t *testing.T) {
+	internal := &BifrostError{IsBifrostError: true, Error: &ErrorField{Message: "failed to write model field"}}
+
+	d := &LLMSpanData{Error: &SpanError{
+		Detail:     internal.Error,
+		StatusCode: Ptr(internal.EffectiveHTTPStatus()),
+	}}
+
+	attrs := d.ResponseAttributes()
+	if got := GetIntAttr(attrs, AttrHTTPResponseStatusCode); got != 500 {
+		t.Errorf("%s = %d, want 500", AttrHTTPResponseStatusCode, got)
+	}
+}

@@ -200,3 +200,82 @@ func TestMCPConnectionTypeOTelNetworkTransport(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordErrorRequestCarriesStatusAndErrorType asserts the error counter is
+// dimensioned by both status_code and error_type. status_code alone cannot separate a
+// Bifrost fault from a provider one, which is why the Prometheus counter carries both.
+func TestRecordErrorRequestCarriesStatusAndErrorType(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m := &MetricsExporter{provider: provider, meter: provider.Meter("test")}
+	m.initMetrics()
+
+	now := time.Now()
+	errSpan := func(model string, attrs map[string]any) *schemas.Span {
+		attrs[schemas.AttrProviderName] = "openai"
+		attrs[schemas.AttrRequestModel] = model
+		return &schemas.Span{
+			Kind:      schemas.SpanKindLLMCall,
+			StartTime: now, EndTime: now.Add(time.Second),
+			Status:     schemas.SpanStatusError,
+			Attributes: attrs,
+		}
+	}
+
+	trace := &schemas.Trace{
+		Spans: []*schemas.Span{
+			// Internally-raised failure: resolves to 500, attributed to Bifrost.
+			errSpan("gpt-image-1", map[string]any{
+				schemas.AttrHTTPResponseStatusCode: 500,
+				schemas.AttrBifrostErrorType:       string(schemas.ErrorTypeBifrostInternal),
+			}),
+			// Provider 500: same status, different fault.
+			errSpan("gpt-4o", map[string]any{
+				schemas.AttrHTTPResponseStatusCode: 500,
+				schemas.AttrBifrostErrorType:       string(schemas.ErrorTypeProviderServerError),
+			}),
+			// Unclassified failure still gets a label rather than an empty one.
+			errSpan("gpt-4o-mini", map[string]any{}),
+		},
+	}
+
+	(&OtelPlugin{}).recordMetricsFromTrace(context.Background(), m, trace, false)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	got := make(map[string]string, 3)
+	for _, sm := range rm.ScopeMetrics {
+		for _, mtr := range sm.Metrics {
+			if mtr.Name != "bifrost_error_requests_total" {
+				continue
+			}
+			sum, ok := mtr.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q is %T, want Sum[int64]", mtr.Name, mtr.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				model, _ := dp.Attributes.Value("model")
+				status, _ := dp.Attributes.Value("status_code")
+				errorType, hasErrorType := dp.Attributes.Value("error_type")
+				if !hasErrorType {
+					t.Errorf("model %q: error_type dimension missing", model.AsString())
+				}
+				got[model.AsString()] = status.AsString() + "/" + errorType.AsString()
+			}
+		}
+	}
+
+	want := map[string]string{
+		"gpt-image-1": "500/" + string(schemas.ErrorTypeBifrostInternal),
+		"gpt-4o":      "500/" + string(schemas.ErrorTypeProviderServerError),
+		"gpt-4o-mini": "unknown/" + string(schemas.ErrorTypeOther),
+	}
+	for model, wantLabels := range want {
+		if got[model] != wantLabels {
+			t.Errorf("model %q: status_code/error_type = %q, want %q", model, got[model], wantLabels)
+		}
+	}
+}

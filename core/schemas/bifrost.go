@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 )
 
@@ -2031,6 +2032,43 @@ func (e *BifrostError) PopulateExtraFields(requestType RequestType, provider Mod
 	} else {
 		e.ExtraFields.ResolvedModelUsed = originalModelRequested
 	}
+}
+
+// Routing failures raised before a provider is chosen. Here, not in package bifrost,
+// so EffectiveHTTPStatus can match on them without an import cycle.
+const (
+	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
+	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
+)
+
+// NormalizeJSONErrorStatus maps statuses that forbid response content to 502.
+func NormalizeJSONErrorStatus(code int) int {
+	if code < 200 || code == http.StatusNoContent ||
+		code == http.StatusResetContent || code == http.StatusNotModified {
+		return http.StatusBadGateway
+	}
+	return code
+}
+
+// EffectiveHTTPStatus returns the HTTP status this error resolves to. Single source of
+// truth for the response, the span status_code attribute and the metric dimension.
+func (e *BifrostError) EffectiveHTTPStatus() int {
+	if e == nil {
+		return http.StatusInternalServerError
+	}
+	if e.StatusCode != nil {
+		return NormalizeJSONErrorStatus(*e.StatusCode)
+	}
+	if !e.IsBifrostError {
+		return http.StatusBadRequest
+	}
+	// Auto-resolve failures are caller mistakes, not Bifrost faults.
+	if e.Error != nil &&
+		(e.Error.Message == ProviderAutoResolveErrorMessage ||
+			e.Error.Message == ModelAutoResolveErrorMessage) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 // String renders the error as JSON for logging and test diagnostics.

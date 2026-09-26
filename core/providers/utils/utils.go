@@ -4384,14 +4384,9 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		}
 	}
 
-	// End span with appropriate status
+	// End span with appropriate status. Error attributes (gen_ai.error,
+	// http.response.status_code) are stamped by PopulateLLMResponseAttributes above.
 	if err != nil {
-		if err.Error != nil {
-			tracer.SetAttribute(handle, "error", err.Error.Message)
-		}
-		if err.StatusCode != nil {
-			tracer.SetAttribute(handle, "status_code", *err.StatusCode)
-		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "streaming request failed")
 	} else {
 		tracer.EndSpan(handle, schemas.SpanStatusOk, "")
