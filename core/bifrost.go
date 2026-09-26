@@ -6713,8 +6713,10 @@ func executeRequestWithRetries[T any](
 		}
 
 		// The previous failed stream has drained before reaching this retry.
-		if prevCheckedPreamble && attempts > 0 {
+		if attempts > 0 && isStreamRequest {
 			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+		}
+		if prevCheckedPreamble && attempts > 0 {
 			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 		}
