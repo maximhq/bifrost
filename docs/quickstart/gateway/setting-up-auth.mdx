@@ -36,15 +36,30 @@ Bifrost provides built-in authentication to protect your dashboard and admin API
 </Note>
 
 <Note>
-  **Creating the first admin account:** until an admin account exists, Bifrost's dashboard/admin API is reachable
-  without a password from anyone who can route to it. To close that window, the first time you enable authentication
-  on an instance you must also supply a **Setup token**. Your operator configures this value ahead of time via
-  `setup_token` in `config.json` (accepts a literal value or an `env.VAR_NAME` / `vault.path` reference, same as
-  `admin_username`/`admin_password`) or the `BIFROST_SETUP_TOKEN` environment variable. Paste that same value into
-  the **Setup token** field that appears below the password field. The setup token is never persisted and is never
-  printed to logs. If no setup token is configured, creating the first admin account is rejected until you set one
-  - and because every node in a multi-node deployment reads the same configured value, there's no need to target a
-  specific node.
+  **Before the first admin account exists:** Bifrost's management API (`/api/*`) accepts a request only when it
+  carries the operator's **setup token** in the `X-Bifrost-Setup-Token` header. The operator configures this value
+  ahead of time via `setup_token` in `config.json` (a literal value or an `env.VAR_NAME` / `vault.path` reference, same
+  as `admin_username`/`admin_password`) or the `BIFROST_SETUP_TOKEN` environment variable. A request without it gets
+  `401`; if no setup token is configured at all, the management API answers `403` to everything until you set one.
+  Health, version and login routes stay open, inference is unaffected, and once an admin account exists the header is
+  no longer needed. The setup token is never persisted or logged, and every node in a multi-node deployment reads the
+  same configured value.
+
+  The dashboard does not send the header, so create the first admin account before you use it. The simplest way is to
+  provision it in `config.json`:
+
+  ```json
+  {
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD"
+    }
+  }
+  ```
+
+  Automation that creates it through `PUT /api/config` sends the setup token in the `X-Bifrost-Setup-Token` header
+  (or as `auth_config.setup_token` in the body) on that request and on any other management call it makes first.
 </Note>
 
 <Note>
