@@ -46,7 +46,7 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 					{!hasData && <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>}
 					{hasData && gaugeGeometry && (
 						<>
-							<ResponsiveContainer width="100%" height="100%">
+							<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 								<PieChart>
 									<Pie
 										data={valueData}

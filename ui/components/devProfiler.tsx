@@ -534,7 +534,7 @@ export function DevProfiler(): React.ReactNode {
 							<span className="text-zinc-400">CPU Usage (last 5 min)</span>
 						</div>
 						<div className="h-24">
-							<ResponsiveContainer width="100%" height="100%">
+							<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 								<AreaChart data={cpuChartData}>
 									<defs>
 										<linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
@@ -614,7 +614,7 @@ export function DevProfiler(): React.ReactNode {
 							<span className="text-zinc-400">Memory (last 5 min)</span>
 						</div>
 						<div className="h-24">
-							<ResponsiveContainer width="100%" height="100%">
+							<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 								<AreaChart data={memoryChartData}>
 									<defs>
 										<linearGradient id="allocGradient" x1="0" y1="0" x2="0" y2="1">
