@@ -3,6 +3,7 @@
 	"languageEnglish": "English",
 	"languageChinese": "简体中文",
 	"nav": {
+		"home": "홈",
 		"observability": "관찰 가능성",
 		"dashboard": "대시보드",
 		"llmLogs": "LLM 로그",
@@ -70,6 +71,7 @@
 		"licenseInfo": "라이선스 정보"
 	},
 	"navDesc": {
+		"home": "내 사용량, 키, 예산, 접근 권한",
 		"observability": "요청 로그 및 모니터링",
 		"dashboard": "대시보드",
 		"llmLogs": "LLM 요청 로그 및 모니터링",
@@ -135,6 +137,10 @@
 		"featureFlags": "기능 플래그 전환",
 		"branding": "커스텀 로고 및 아이콘",
 		"licenseInfo": "엔터프라이즈 라이선스 정보"
+	},
+	"home": {
+		"unlockTitle": "개인 홈 잠금 해제",
+		"unlockDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스의 일부입니다. 홈에서는 각 사용자 자신의 사용량, 키, 예산, 접근 권한을 보여 줍니다."
 	},
 	"search": {
 		"placeholder": "검색...",

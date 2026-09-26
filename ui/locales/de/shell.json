@@ -3,6 +3,7 @@
   "languageEnglish": "English",
   "languageChinese": "简体中文",
   "nav": {
+    "home": "Startseite",
     "observability": "Beobachtbarkeit",
     "dashboard": "Übersicht",
     "llmLogs": "LLM-Protokolle",
@@ -70,6 +71,7 @@
     "licenseInfo": "Lizenzinfo"
   },
   "navDesc": {
+    "home": "Ihre Nutzung, Schlüssel, Budgets und Zugriffe",
     "observability": "Anfrageprotokolle & Monitoring",
     "dashboard": "Übersicht",
     "llmLogs": "LLM-Anfrageprotokolle & Monitoring",
@@ -135,6 +137,10 @@
     "featureFlags": "Feature-Flags umschalten",
     "branding": "Benutzerdefiniertes Logo und Icon",
     "licenseInfo": "Informationen zur Enterprise-Lizenz"
+  },
+  "home": {
+    "unlockTitle": "Persönliche Startseite freischalten",
+    "unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Die Startseite zeigt jeder Person die eigene Nutzung, Schlüssel, Budgets und Zugriffe."
   },
   "search": {
     "placeholder": "Suchen...",

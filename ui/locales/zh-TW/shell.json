@@ -3,6 +3,7 @@
 	"languageEnglish": "English",
 	"languageChinese": "簡體中文",
 	"nav": {
+		"home": "主頁",
 		"observability": "可觀測性",
 		"dashboard": "儀表板",
 		"llmLogs": "LLM 日誌",
@@ -70,6 +71,7 @@
 		"licenseInfo": "許可證資訊"
 	},
 	"navDesc": {
+		"home": "你的用量、金鑰、預算和存取權限",
 		"observability": "請求日誌與監控",
 		"dashboard": "儀表板",
 		"llmLogs": "LLM 請求日誌與監控",
@@ -135,6 +137,10 @@
 		"featureFlags": "切換功能開關",
 		"branding": "自定義 Logo 與圖示",
 		"licenseInfo": "企業版許可證資訊"
+	},
+	"home": {
+		"unlockTitle": "解鎖你的個人主頁",
+		"unlockDescription": "此功能屬於 Bifrost 企業版許可證。主頁會向每位使用者展示自己的用量、金鑰、預算和存取權限。"
 	},
 	"search": {
 		"placeholder": "搜尋…",

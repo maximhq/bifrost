@@ -3,6 +3,7 @@
 	"languageEnglish": "English",
 	"languageChinese": "简体中文",
 	"nav": {
+		"home": "Home",
 		"observability": "Observability",
 		"dashboard": "Dashboard",
 		"llmLogs": "LLM Logs",
@@ -70,6 +71,7 @@
 		"licenseInfo": "License Info"
 	},
 	"navDesc": {
+		"home": "Your usage, keys, budgets and access",
 		"observability": "Request logs & monitoring",
 		"dashboard": "Dashboard",
 		"llmLogs": "LLM request logs & monitoring",
@@ -135,6 +137,10 @@
 		"featureFlags": "Toggle feature flags",
 		"branding": "Custom logo and icon",
 		"licenseInfo": "Enterprise license information"
+	},
+	"home": {
+		"unlockTitle": "Unlock your personal Home page",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. Home shows each user their own usage, keys, budgets and access."
 	},
 	"search": {
 		"placeholder": "Search...",

@@ -3,6 +3,7 @@
 	"languageEnglish": "English",
 	"languageChinese": "简体中文",
 	"nav": {
+		"home": "主页",
 		"observability": "可观测性",
 		"dashboard": "仪表盘",
 		"llmLogs": "LLM 日志",
@@ -70,6 +71,7 @@
 		"licenseInfo": "许可证信息"
 	},
 	"navDesc": {
+		"home": "你的用量、密钥、预算和访问权限",
 		"observability": "请求日志与监控",
 		"dashboard": "仪表盘",
 		"llmLogs": "LLM 请求日志与监控",
@@ -135,6 +137,10 @@
 		"featureFlags": "切换功能开关",
 		"branding": "自定义 Logo 与图标",
 		"licenseInfo": "企业许可证信息"
+	},
+	"home": {
+		"unlockTitle": "解锁你的个人主页",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可证。主页会向每位用户展示自己的用量、密钥、预算和访问权限。"
 	},
 	"search": {
 		"placeholder": "搜索…",

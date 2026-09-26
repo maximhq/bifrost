@@ -3,6 +3,7 @@
 	"languageEnglish": "English",
 	"languageChinese": "简体中文",
 	"nav": {
+		"home": "Inicio",
 		"observability": "Observabilidad",
 		"dashboard": "Panel",
 		"llmLogs": "Registros LLM",
@@ -70,6 +71,7 @@
 		"licenseInfo": "Información de licencia"
 	},
 	"navDesc": {
+		"home": "Tu uso, claves, presupuestos y acceso",
 		"observability": "Registros de solicitudes y monitorización",
 		"dashboard": "Panel",
 		"llmLogs": "Registros y monitorización de solicitudes LLM",
@@ -135,6 +137,10 @@
 		"featureFlags": "Activar o desactivar indicadores de funciones",
 		"branding": "Logo e icono personalizados",
 		"licenseInfo": "Información de la licencia Enterprise"
+	},
+	"home": {
+		"unlockTitle": "Desbloquea tu página de inicio personal",
+		"unlockDescription": "Esta función forma parte de la licencia empresarial de Bifrost. Inicio muestra a cada usuario su propio uso, claves, presupuestos y acceso."
 	},
 	"search": {
 		"placeholder": "Buscar...",

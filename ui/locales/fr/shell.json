@@ -3,6 +3,7 @@
 	"languageEnglish": "English",
 	"languageChinese": "简体中文",
 	"nav": {
+		"home": "Accueil",
 		"observability": "Observabilité",
 		"dashboard": "Tableau de bord",
 		"llmLogs": "Journaux LLM",
@@ -70,6 +71,7 @@
 		"licenseInfo": "Infos licence"
 	},
 	"navDesc": {
+		"home": "Votre utilisation, vos clés, budgets et accès",
 		"observability": "Journaux de requêtes et monitoring",
 		"dashboard": "Tableau de bord",
 		"llmLogs": "Journaux et monitoring des requêtes LLM",
@@ -135,6 +137,10 @@
 		"featureFlags": "Activer ou désactiver les feature flags",
 		"branding": "Logo et icône personnalisés",
 		"licenseInfo": "Informations sur la licence Enterprise"
+	},
+	"home": {
+		"unlockTitle": "Débloquez votre page d'accueil personnelle",
+		"unlockDescription": "Cette fonctionnalité fait partie de la licence entreprise Bifrost. L'accueil montre à chaque utilisateur sa propre utilisation, ses clés, ses budgets et ses accès."
 	},
 	"search": {
 		"placeholder": "Rechercher…",
