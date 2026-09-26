@@ -2,7 +2,9 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -908,5 +910,78 @@ func TestRotationMarkerNotSetWhenCancelledDuringBackoff(t *testing.T) {
 	}
 	if trail[0].TriggeredRotation {
 		t.Fatalf("trail record %+v claims it triggered a rotation, but the rotated attempt was cancelled before it ran", trail[0])
+	}
+}
+
+// TestAnthropicStreamTrailingEmptyUserTurnReachesUpstreamFilled pins the wire
+// for the Cursor shape from #7276 through the real client: a trailing user
+// turn with content "" must reach Anthropic as a non-empty user message
+// (Anthropic rejects empty user content) and must not be dropped (a request
+// ending on the assistant turn is a prefill, which Fable 5.1 rejects). The
+// stream then comes back as ordinary chat chunks.
+func TestAnthropicStreamTrailingEmptyUserTurnReachesUpstreamFilled(t *testing.T) {
+	bodies := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies <- body
+		anthropicMessagesHandler()(w, r)
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, upstream.URL)
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "anthropic-key", Value: *schemas.NewSecretVar("sk-anthropic"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	// The compat plugin publishes this for models whose datasheet row says
+	// supports_assistant_prefill=false (Fable 5.1); the provider then trims
+	// trailing assistant turns, so a dropped user turn would be fatal here.
+	ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, false)
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-fable-5-1",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Reply with one word: OK")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("OK")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("stream failed before reaching the upstream: %s", bifrostErr.Error.Message)
+	}
+	content, errs := drainChatStream(stream)
+	if len(errs) > 0 {
+		t.Fatalf("stream emitted error chunks: %v", errs)
+	}
+	if content != "hello" {
+		t.Fatalf("stream content = %q, want %q", content, "hello")
+	}
+
+	var wire struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	body := <-bodies
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode upstream request body %q: %v", body, err)
+	}
+	if len(wire.Messages) != 3 {
+		t.Fatalf("upstream messages = %d, want 3 (the empty user turn must be filled, not dropped): %s", len(wire.Messages), body)
+	}
+	last := wire.Messages[2]
+	if last.Role != "user" {
+		t.Fatalf("upstream last message role = %q, want user so the request is not an assistant prefill: %s", last.Role, body)
+	}
+	if len(last.Content) != 1 || last.Content[0].Type != "text" || strings.TrimSpace(last.Content[0].Text) == "" {
+		t.Fatalf("upstream last user content = %+v, want one non-empty text block: %s", last.Content, body)
 	}
 }

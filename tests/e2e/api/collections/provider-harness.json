@@ -171953,6 +171953,190 @@
           }
         }
       ]
+    },
+    {
+      "name": "118. Anthropic empty user turn filled instead of dropped (#7276)",
+      "description": "Regression coverage for #7276. Cursor and other OpenAI-compatible clients append a trailing user turn with content \"\" or []. ToAnthropicChatRequest filters empty text blocks (the #1189 fix) but nothing refilled a user message left with zero blocks, so it reached Anthropic as content:[] and Claude Fable 5.1 answered 400 \"messages.N: user messages must have non-empty content\" (Sonnet 5 tolerates the empty trailing turn). Dropping the turn is not a fix: Bifrost already trims trailing assistant turns for supports_assistant_prefill=false models, and a request ending on the assistant turn is a prefill Fable rejects with \"This model does not support assistant message prefill\". Production path: /v1/chat/completions -> core -> anthropic.ToAnthropicChatRequest, which now emits the provider's existing \".\" placeholder text block for a user turn that converted to no blocks (the Anthropic twin of the Bedrock fix for #2765). 118.1 / 118.2 pin the non-streaming wire for content \"\" and [] via raw_request (three messages, trailing user, non-empty text); 118.3 pins that the streaming request completes as chat chunks.",
+      "item": [
+        {
+          "name": "anthropic/claude-fable-5-1 /v1/chat/completions trailing user content \"\" is filled, not dropped - #7276",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('118.1 2xx - an Anthropic 400 \"user messages must have non-empty content\" or \"does not support assistant message prefill\" is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('118.1 caller receives a chat completion', function () {",
+                  "  pm.expect(body.choices, JSON.stringify(body).slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('118.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('118.1 upstream wire keeps three messages and ends on a non-empty user turn', function () {",
+                  "  var msgs = rr.messages || [];",
+                  "  pm.expect(msgs.length, JSON.stringify(msgs).slice(0, 400)).to.equal(3);",
+                  "  var last = msgs[msgs.length - 1] || {};",
+                  "  pm.expect(last.role, 'trailing turn must stay user (a trailing assistant turn is a prefill Fable rejects)').to.equal('user');",
+                  "  var text = Array.isArray(last.content) ? (last.content[0] || {}).text : last.content;",
+                  "  pm.expect((text || '').trim().length, 'empty user content reached Anthropic: ' + JSON.stringify(last.content)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"stream\": false,\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one word: OK\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-fable-5-1 /v1/chat/completions trailing user content [] is filled, not dropped - #7276",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('118.2 2xx - an Anthropic 400 \"user messages must have non-empty content\" or \"does not support assistant message prefill\" is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('118.2 caller receives a chat completion', function () {",
+                  "  pm.expect(body.choices, JSON.stringify(body).slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('118.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('118.2 upstream wire keeps three messages and ends on a non-empty user turn', function () {",
+                  "  var msgs = rr.messages || [];",
+                  "  pm.expect(msgs.length, JSON.stringify(msgs).slice(0, 400)).to.equal(3);",
+                  "  var last = msgs[msgs.length - 1] || {};",
+                  "  pm.expect(last.role, 'trailing turn must stay user (a trailing assistant turn is a prefill Fable rejects)').to.equal('user');",
+                  "  var text = Array.isArray(last.content) ? (last.content[0] || {}).text : last.content;",
+                  "  pm.expect((text || '').trim().length, 'empty user content reached Anthropic: ' + JSON.stringify(last.content)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"stream\": false,\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one word: OK\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": []\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-fable-5-1 /v1/chat/completions streaming with trailing empty user content streams instead of 400 - #7276",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('118.3 2xx - an Anthropic 400 on the empty trailing user turn is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('118.3 SSE frames are chat.completion.chunk and the stream terminates', function () {",
+                  "  pm.expect(text, 'no chat chunks in stream: ' + text.slice(0, 300)).to.include('\"object\":\"chat.completion.chunk\"');",
+                  "  pm.expect(text.indexOf('[DONE]'), 'missing [DONE]').to.be.above(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"stream\": true,\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one word: OK\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

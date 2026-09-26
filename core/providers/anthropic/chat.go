@@ -1142,6 +1142,34 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			}
 
+			// Anthropic requires user content with non-whitespace text. A user
+			// turn that is empty or whitespace-only is kept with the existing
+			// non-whitespace placeholder rather than dropped: dropping it can
+			// leave the conversation ending on an assistant turn, an unsupported
+			// prefill for some models. A turn whose content was real but
+			// unconvertible (input_audio) is left as is, so the upstream error
+			// surfaces instead of the content being silently replaced. Assistant
+			// messages are out of scope here and are left as converted.
+			if anthropicMsg.Role == AnthropicMessageRoleUser && onlyBlankTextBlocks(content) && isEmptyChatContent(msg.Content) {
+				// Keep a prompt-cache marker from the replaced blank text. Read it
+				// from the original blocks: an exactly-empty text block was
+				// already dropped by the conversion above.
+				var cacheControl *schemas.CacheControl
+				if msg.Content != nil {
+					for _, b := range msg.Content.ContentBlocks {
+						if b.CacheControl != nil {
+							cacheControl = b.CacheControl
+							break
+						}
+					}
+				}
+				content = []AnthropicContentBlock{{
+					Type:         AnthropicContentBlockTypeText,
+					Text:         schemas.Ptr(documentPlaceholderText),
+					CacheControl: cacheControl,
+				}}
+			}
+
 			// Set content
 			if len(content) == 1 && content[0].Type == AnthropicContentBlockTypeText {
 				// Always use ContentBlocks for consistent array serialization
@@ -2183,4 +2211,34 @@ func countFunctionTools(tools []AnthropicTool) int {
 		}
 	}
 	return n
+}
+
+// isEmptyChatContent reports whether chat message content carries nothing:
+// absent, a blank string, or only text blocks with blank text. Any other
+// block type counts as content even when the Anthropic converter cannot
+// represent it.
+func isEmptyChatContent(c *schemas.ChatMessageContent) bool {
+	if c == nil {
+		return true
+	}
+	if c.ContentStr != nil && strings.TrimSpace(*c.ContentStr) != "" {
+		return false
+	}
+	for _, b := range c.ContentBlocks {
+		if b.Type != schemas.ChatContentBlockTypeText || (b.Text != nil && strings.TrimSpace(*b.Text) != "") {
+			return false
+		}
+	}
+	return true
+}
+
+// onlyBlankTextBlocks reports whether converted Anthropic content is empty or
+// holds only text blocks with blank text, which Anthropic rejects.
+func onlyBlankTextBlocks(content []AnthropicContentBlock) bool {
+	for _, b := range content {
+		if b.Type != AnthropicContentBlockTypeText || (b.Text != nil && strings.TrimSpace(*b.Text) != "") {
+			return false
+		}
+	}
+	return true
 }

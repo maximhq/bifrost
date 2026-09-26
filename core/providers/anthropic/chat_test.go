@@ -2618,3 +2618,192 @@ func TestToAnthropicChatRequest_AllowedToolsNoneNameableStillMeansNone(t *testin
 	assert.Equal(t, 0, countFunctionTools(filtered), "no function tool was allowed, so the choice must be none")
 	assert.Len(t, filtered, 2, "both server tools are still there")
 }
+
+// emptyUserTurnRequest converts an OpenAI-compatible chat body whose final user
+// message carries the given raw JSON content — the shapes Cursor and other
+// OpenAI-compatible clients send for an empty turn (#7276).
+func emptyUserTurnRequest(t *testing.T, ctx *schemas.BifrostContext, rawContent string) *AnthropicMessageRequest {
+	t.Helper()
+	body := `{
+		"model": "anthropic/claude-fable-5-1",
+		"messages": [
+			{"role": "user", "content": "Reply with one word: OK"},
+			{"role": "assistant", "content": "OK"},
+			{"role": "user", "content": ` + rawContent + `}
+		]
+	}`
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+	result, err := ToAnthropicChatRequest(ctx, openAIReq.ToBifrostChatRequest(ctx))
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+	return result
+}
+
+// assertSinglePlaceholderUserMessage checks that msg is a user turn holding
+// exactly one text block with the provider placeholder.
+func assertSinglePlaceholderUserMessage(t *testing.T, msg AnthropicMessage, label string) {
+	t.Helper()
+	if msg.Role != AnthropicMessageRoleUser {
+		t.Fatalf("%s: role = %q, want user", label, msg.Role)
+	}
+	blocks := msg.Content.ContentBlocks
+	if len(blocks) != 1 || blocks[0].Type != AnthropicContentBlockTypeText || blocks[0].Text == nil || *blocks[0].Text != documentPlaceholderText {
+		raw, _ := json.Marshal(msg.Content)
+		t.Fatalf("%s: content = %s, want exactly one text block %q", label, raw, documentPlaceholderText)
+	}
+}
+
+// A user turn whose content converts to zero blocks must reach Anthropic as a
+// placeholder text block, not as content:[] — Anthropic rejects an empty user
+// message ("user messages must have non-empty content"). The turn must also
+// stay in place: dropping it would leave the conversation ending on the
+// assistant turn, which models without assistant-prefill support (Fable 5.1)
+// reject as well. Every empty representation Cursor emits is covered (#7276).
+func TestToAnthropicChatRequest_EmptyUserTurnGetsPlaceholder(t *testing.T) {
+	cases := map[string]string{
+		"empty string":          `""`,
+		"empty array":           `[]`,
+		"empty text block":      `[{"type": "text", "text": ""}]`,
+		"null":                  `null`,
+		"whitespace string":     `" "`,
+		"newline string":        `"\n"`,
+		"whitespace text block": `[{"type": "text", "text": "  \n"}]`,
+	}
+	for name, rawContent := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result := emptyUserTurnRequest(t, ctx, rawContent)
+			if len(result.Messages) != 3 {
+				t.Fatalf("messages = %d, want 3 (empty user turn must be filled, not dropped)", len(result.Messages))
+			}
+			assertSinglePlaceholderUserMessage(t, result.Messages[2], "trailing user")
+		})
+	}
+}
+
+// The exact #7276 shape on a model whose datasheet row says it does not
+// support assistant prefill: the trailing-assistant trim has nothing to trim,
+// the empty user turn is filled, and the request still ends on a user turn.
+func TestToAnthropicChatRequest_EmptyUserTurnAfterPrefillTrimStillEndsOnUser(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, false)
+	result := emptyUserTurnRequest(t, ctx, `""`)
+	if len(result.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(result.Messages))
+	}
+	if result.Messages[1].Role != AnthropicMessageRoleAssistant {
+		t.Fatalf("messages[1].role = %q, want the assistant turn kept as history", result.Messages[1].Role)
+	}
+	assertSinglePlaceholderUserMessage(t, result.Messages[2], "trailing user")
+}
+
+// An empty user turn in the middle of the conversation is filled the same
+// way: Anthropic rejects empty content on every non-final message.
+func TestToAnthropicChatRequest_EmptyUserTurnMidConversationGetsPlaceholder(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5-20250929",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue.")}},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(result.Messages))
+	}
+	assertSinglePlaceholderUserMessage(t, result.Messages[0], "leading user")
+	last := result.Messages[2].Content.ContentBlocks
+	if len(last) != 1 || last[0].Text == nil || *last[0].Text != "Continue." {
+		t.Fatalf("messages[2] = %+v, want the non-empty user text untouched", result.Messages[2].Content)
+	}
+}
+
+// The placeholder is only for messages that convert to nothing. A user turn
+// with text, or with a non-text block, is left exactly as converted; an empty
+// assistant turn keeps today's shape — Anthropic permits an empty final
+// assistant message, and a synthetic assistant utterance is not ours to invent.
+func TestToAnthropicChatRequest_PlaceholderOnlyForEmptyUserTurns(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	textUser := emptyUserTurnRequest(t, ctx, `"Say it again."`)
+	if blocks := textUser.Messages[2].Content.ContentBlocks; len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Say it again." {
+		t.Fatalf("non-empty user text = %+v, want unchanged", textUser.Messages[2].Content)
+	}
+
+	imageUser := emptyUserTurnRequest(t, ctx, `[{"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}]`)
+	if blocks := imageUser.Messages[2].Content.ContentBlocks; len(blocks) != 1 || blocks[0].Type != AnthropicContentBlockTypeImage {
+		t.Fatalf("image-only user content = %+v, want the single image block and no placeholder", imageUser.Messages[2].Content)
+	}
+
+	emptyAssistant := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5-20250929",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}},
+		},
+	}
+	result, err := ToAnthropicChatRequest(ctx, emptyAssistant)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+	if len(result.Messages) != 2 || result.Messages[1].Role != AnthropicMessageRoleAssistant {
+		t.Fatalf("messages = %+v, want the empty assistant turn kept", result.Messages)
+	}
+	if blocks := result.Messages[1].Content.ContentBlocks; len(blocks) != 0 {
+		t.Fatalf("empty assistant content = %+v, want left empty (no placeholder for assistant turns)", blocks)
+	}
+}
+
+// Content the converter cannot represent is not an empty turn. An audio-only
+// user message converts to zero Anthropic blocks, but it must not be replaced
+// by the placeholder: that would silently discard the audio and let the model
+// answer "." instead of surfacing that Anthropic chat cannot take audio. Only a
+// genuinely empty turn gets the placeholder (#7276).
+func TestToAnthropicChatRequest_UnconvertibleUserContentNotReplacedByPlaceholder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := emptyUserTurnRequest(t, ctx, `[{"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}]`)
+	if len(result.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(result.Messages))
+	}
+	for _, b := range result.Messages[2].Content.ContentBlocks {
+		if b.Type == AnthropicContentBlockTypeText && b.Text != nil && *b.Text == documentPlaceholderText {
+			raw, _ := json.Marshal(result.Messages[2].Content)
+			t.Fatalf("audio-only user turn content = %s, want no placeholder (audio must not be silently replaced)", raw)
+		}
+	}
+}
+
+// Replacing a blank user text block with the placeholder must keep its
+// prompt-cache marker; clients often put cache_control on the final user turn,
+// and dropping it would silently lose the cache breakpoint (#7276).
+func TestToAnthropicChatRequest_BlankUserTurnPlaceholderKeepsCacheControl(t *testing.T) {
+	cases := map[string]string{
+		"whitespace text": `[{"type": "text", "text": " ", "cache_control": {"type": "ephemeral"}}]`,
+		"empty text":      `[{"type": "text", "text": "", "cache_control": {"type": "ephemeral"}}]`,
+	}
+	for name, rawContent := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result := emptyUserTurnRequest(t, ctx, rawContent)
+			if len(result.Messages) != 3 {
+				t.Fatalf("messages = %d, want 3", len(result.Messages))
+			}
+			assertSinglePlaceholderUserMessage(t, result.Messages[2], "trailing user")
+			if cc := result.Messages[2].Content.ContentBlocks[0].CacheControl; cc == nil || cc.Type != "ephemeral" {
+				raw, _ := json.Marshal(result.Messages[2].Content)
+				t.Fatalf("placeholder content = %s, want cache_control ephemeral carried over", raw)
+			}
+		})
+	}
+}
