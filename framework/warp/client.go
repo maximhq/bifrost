@@ -149,7 +149,7 @@ func (a *warpAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvi
 func (a *warpAccount) GetConfigForProvider(_ schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        a.config.BaseURL,
+			BaseURL:                        schemas.NewSecretVar(a.config.BaseURL),
 			DefaultRequestTimeoutInSeconds: a.config.EffectiveRequestTimeoutSeconds(),
 		},
 	}
