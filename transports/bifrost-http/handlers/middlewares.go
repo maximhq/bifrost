@@ -506,12 +506,14 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 					ctx.SetBodyString(err.Error())
+					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
 				if resp != nil {
 					// Short-circuit with response — drain plugin logs before returning
 					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					applyHTTPResponseToCtx(ctx, resp)
+					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
 				// If we got here, the plugin may have modified req in-place
@@ -522,6 +524,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// or path has already been failed with 409; running the handler anyway would
 			// serve a response the transport just rejected.
 			if !applyHTTPRequestToCtx(ctx, req) {
+				_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 				return
 			}
 			// Adding user values
@@ -529,6 +532,15 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				ctx.SetUserValue(key, value)
 			}
 			next(ctx)
+
+			deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
+			if !deferred && len(plugins) > 0 {
+				_ = runTransportPostHooks(ctx, plugins, bifrostCtx, true)
+			}
+			// This is the last synchronous point before fasthttp serializes the response.
+			// Streaming handlers may already have attached a body reader, but no response
+			// headers are written to the connection until the middleware chain returns.
+			_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 
 			// For streaming responses, store a callback to run post-hooks after the stream ends.
 			// The streaming handler calls this BEFORE reader.Done() so that errors can
@@ -538,7 +550,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// IMPORTANT: The callback must NOT access ctx — fasthttp recycles RequestCtx
 			// after the response body stream completes. All needed data is eagerly captured
 			// here (while ctx is still valid) and passed through the closure.
-			if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+			if deferred {
 				// Verify the completer slot exists before allocating pooled snapshots.
 				// The streaming handler pre-allocates this *atomic.Value; if absent,
 				// skip work to avoid leaking pooled HTTPRequest/HTTPResponse objects.
@@ -587,8 +599,95 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				return
 			}
 
-			_ = runTransportPostHooks(ctx, plugins, bifrostCtx, true)
 		}
+	}
+}
+
+// runTransportResponseHeadersHooks runs the pre-commit response-header
+// hooks in reverse plugin order and applies their mutations to the live fasthttp
+// response. The RequestCtx is only used synchronously while it is still owned by
+// the handler goroutine.
+func runTransportResponseHeadersHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext, req *schemas.HTTPRequest) error {
+	if len(plugins) == 0 {
+		return nil
+	}
+
+	resp := schemas.AcquireHTTPResponseMetadata()
+	defer schemas.ReleaseHTTPResponseMetadata(resp)
+	// original is the pre-hook snapshot; only entries the hooks changed are written back.
+	original := schemas.AcquireHTTPResponseMetadata()
+	defer schemas.ReleaseHTTPResponseMetadata(original)
+	resp.StatusCode = ctx.Response.StatusCode()
+	for key, value := range ctx.Response.Header.All() {
+		resp.Headers[string(key)] = string(value)
+		original.Headers[string(key)] = string(value)
+	}
+
+	var hookErr error
+	for i := len(plugins) - 1; i >= 0; i-- {
+		plugin := plugins[i]
+		pluginName := plugin.GetName()
+		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		st, sh := startTransportPluginSpan(ctx, pluginName, "transportresponseheadershook")
+		err := plugin.HTTPTransportResponseHeadersHook(pluginCtx, req, resp)
+		endTransportPluginSpan(st, sh, err)
+		pluginCtx.ReleasePluginScope()
+		if err != nil {
+			logger.Warn("error in HTTPTransportResponseHeadersHook for plugin %s: %s", pluginName, err.Error())
+			hookErr = fmt.Errorf("transport response-headers hook plugin %s: %w", pluginName, err)
+			break
+		}
+	}
+
+	applyHTTPResponseMetadataToCtx(ctx, original, resp)
+	appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+	return hookErr
+}
+
+// applyHTTPResponseMetadataToCtx applies only the additions, replacements, and
+// deletions made relative to original, so untouched repeated headers (Link,
+// Set-Cookie) keep every value. Framing headers stay transport-controlled.
+func applyHTTPResponseMetadataToCtx(ctx *fasthttp.RequestCtx, original, resp *schemas.HTTPResponseMetadata) {
+	if resp == nil {
+		return
+	}
+
+	for key := range original.Headers {
+		if isTransportControlledResponseHeader(key) {
+			continue
+		}
+		if !responseMetadataHasHeader(resp, key) {
+			ctx.Response.Header.Del(key)
+		}
+	}
+	for key, value := range resp.Headers {
+		if isTransportControlledResponseHeader(key) {
+			continue
+		}
+		if responseMetadataHasHeader(original, key) && original.Header(key) == value {
+			continue
+		}
+		// Del first: Set only replaces the first value of a repeated header.
+		ctx.Response.Header.Del(key)
+		ctx.Response.Header.Set(key, value)
+	}
+}
+
+func responseMetadataHasHeader(resp *schemas.HTTPResponseMetadata, key string) bool {
+	for candidate := range resp.Headers {
+		if strings.EqualFold(candidate, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTransportControlledResponseHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case "content-length", "transfer-encoding", "connection":
+		return true
+	default:
+		return false
 	}
 }
 

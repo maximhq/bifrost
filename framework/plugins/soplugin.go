@@ -27,9 +27,10 @@ type DynamicPlugin struct {
 	httpTransportPreAuthHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 
 	// HTTPTransportPlugin (optional)
-	httpTransportPreHook         func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
-	httpTransportPostHook        func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
-	httpTransportStreamChunkHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+	httpTransportPreHook             func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	httpTransportPostHook            func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
+	httpTransportStreamChunkHook     func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+	httpTransportResponseHeadersHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error
 
 	// LLMPlugin (optional)
 	// preRequestHook is forward-compat: new .so plugins built against LLMPlugin can export
@@ -103,6 +104,15 @@ func (dp *DynamicPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContex
 		return stream, nil // No-op if not implemented
 	}
 	return dp.httpTransportStreamChunkHook(ctx, req, stream)
+}
+
+// HTTPTransportResponseHeadersHook intercepts response headers immediately before
+// they are committed. The symbol is optional for shared-object plugins.
+func (dp *DynamicPlugin) HTTPTransportResponseHeadersHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+	if dp.httpTransportResponseHeadersHook == nil {
+		return nil
+	}
+	return dp.httpTransportResponseHeadersHook(ctx, req, resp)
 }
 
 // PreRequestHook is invoked once per top-level request to decide provider/model/fallbacks

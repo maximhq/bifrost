@@ -780,6 +780,11 @@ func (p *OtelPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *sch
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *OtelPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *OtelPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil

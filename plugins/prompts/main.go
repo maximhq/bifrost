@@ -203,6 +203,11 @@ func (p *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *Plugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes streaming chunks through unchanged; prompt injection
 // happens in PreLLMHook before the provider call.
 func (p *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {

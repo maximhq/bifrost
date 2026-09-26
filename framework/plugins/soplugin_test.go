@@ -120,6 +120,25 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		assert.Equal(t, "transport-post-hook-value", resp.Headers["x-hello-world-plugin"], "Plugin should have added custom header")
 	})
 
+	// Test optional HTTPTransportResponseHeadersHook
+	t.Run("HTTPTransportResponseHeadersHook", func(t *testing.T) {
+		ctx := context.Background()
+		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		req := &schemas.HTTPRequest{Method: "POST", Path: "/api"}
+		resp := &schemas.HTTPResponseMetadata{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "text/event-stream"},
+		}
+
+		httpTransportPlugin, ok := plugin.(schemas.HTTPTransportPlugin)
+		require.True(t, ok, "Plugin should implement HTTPTransportPlugin")
+		err := httpTransportPlugin.HTTPTransportResponseHeadersHook(pluginCtx, req, resp)
+		require.NoError(t, err, "HTTPTransportResponseHeadersHook should not return error")
+		assert.Equal(t, "response-headers-hook-value", resp.Header("x-hello-world-response-header"))
+	})
+
 	// Test PreLLMHook
 	t.Run("PreLLMHook", func(t *testing.T) {
 		ctx := context.Background()
@@ -202,6 +221,16 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		err := plugin.Cleanup()
 		assert.NoError(t, err, "Cleanup should not return error")
 	})
+}
+
+func TestAsHTTPTransportPluginRecognizesResponseHeadersOnlyDynamicPlugin(t *testing.T) {
+	dp := &DynamicPlugin{
+		httpTransportResponseHeadersHook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+			return nil
+		},
+	}
+
+	require.Same(t, dp, AsHTTPTransportPlugin(dp))
 }
 
 // TestLoadPlugins_DisabledPlugin tests that disabled plugins are not loaded
@@ -326,6 +355,21 @@ func TestDynamicPlugin_ContextPropagation(t *testing.T) {
 	}
 	_, _, err = plugin.PostLLMHook(pluginCtx, resp, nil)
 	require.NoError(t, err, "PostLLMHook should succeed with context")
+}
+
+func TestDynamicPlugin_ResponseHeadersHookIsOptional(t *testing.T) {
+	plugin := &DynamicPlugin{
+		getName: func() string { return "legacy-plugin" },
+		cleanup: func() error { return nil },
+	}
+	resp := &schemas.HTTPResponseMetadata{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "text/event-stream"},
+	}
+
+	err := plugin.HTTPTransportResponseHeadersHook(nil, nil, resp)
+	require.NoError(t, err)
+	assert.Equal(t, "text/event-stream", resp.Header("Content-Type"))
 }
 
 // TestDynamicPlugin_ConcurrentCalls tests concurrent plugin calls
