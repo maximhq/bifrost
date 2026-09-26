@@ -240,6 +240,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	tempEntry := &logstore.Log{}
 	needsSerialization := false
+	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 
 	if contentLoggingEnabled {
 		if data.ChatOutput != nil {
@@ -303,10 +304,10 @@ func (p *LoggerPlugin) updateLogEntry(
 		if data.IsLargePayloadRequest {
 			// Large payload preview is already a string — skip sonic.Marshal to avoid
 			// double-encoding a pre-truncated preview string.
-			if str, ok := data.RawRequest.(string); ok {
+			if str, ok := data.RawRequest.(string); shouldStoreRaw && ok {
 				updates["raw_request"] = str
 			}
-		} else if data.RawRequest != nil {
+		} else if shouldStoreRaw && data.RawRequest != nil {
 			rawRequestBytes, err := sonic.Marshal(data.RawRequest)
 			if err != nil {
 				p.logger.Error("failed to marshal raw request: %v", err)
@@ -333,7 +334,6 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 
 	if data.ErrorDetails != nil {
-		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 		tempEntry.ErrorDetailsParsed = sanitizeErrorForLogging(data.ErrorDetails, contentLoggingEnabled, shouldStoreRaw)
 		needsSerialization = true
 	}
@@ -355,12 +355,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	if data.IsLargePayloadResponse {
 		updates["is_large_payload_response"] = true
 		// Large payload preview is already a string — skip sonic.Marshal.
-		if contentLoggingEnabled {
+		if shouldStoreRaw && contentLoggingEnabled {
 			if str, ok := data.RawResponse.(string); ok {
 				updates["raw_response"] = str
 			}
 		}
-	} else if contentLoggingEnabled && data.RawResponse != nil {
+	} else if shouldStoreRaw && contentLoggingEnabled && data.RawResponse != nil {
 		rawResponseBytes, err := sonic.Marshal(data.RawResponse)
 		if err != nil {
 			p.logger.Error("failed to marshal raw response: %v", err)
