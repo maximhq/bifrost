@@ -299,9 +299,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)

@@ -171953,6 +171953,422 @@
           }
         }
       ]
+    },
+    {
+      "name": "118. Gemini forwarded Authorization stripped when x-goog-api-key authenticates (PR #3835)",
+      "description": "Clients forward `Authorization: Bearer ...` (x-bf-eh-authorization, or a header allowlist). The Gemini provider authenticates with x-goog-api-key, so the forwarded Bearer reached Google alongside the key. Google rejects the pair: AI Studio returns 401 \"Request had invalid authentication credentials\", and Vertex Express (base_url overridden to aiplatform.googleapis.com) can return 401 \"API keys are not supported by this API\". PR #3835 strips Authorization whenever a non-empty x-goog-api-key is set (setGeminiAuthHeader, plus both streaming handlers). Each case forwards a bogus Bearer on a different Gemini wire path and asserts a clean 200: chat and responses (unary + stream), the /genai drop-in (generateContent + streamGenerateContent), embeddings and list-models.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash-lite chat completions unary with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('choices present', function () { pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-lite\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-lite chat completions stream with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('stream carried content frames', function () {",
+                  "  pm.expect(pm.response.text(), 'empty stream: ' + pm.response.text()).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stream\": true,\n  \"model\": \"gemini/gemini-2.5-flash-lite\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-lite responses unary with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('output present', function () { pm.expect(pm.response.json().output, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-lite\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Say hi.\"\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-lite responses stream with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('stream carried content frames', function () {",
+                  "  pm.expect(pm.response.text(), 'empty stream: ' + pm.response.text()).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stream\": true,\n  \"model\": \"gemini/gemini-2.5-flash-lite\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Say hi.\"\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-lite /genai generateContent with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('candidates present', function () { pm.expect(pm.response.json().candidates, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash-lite:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash-lite:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-lite /genai streamGenerateContent with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('stream carried content frames', function () {",
+                  "  pm.expect(pm.response.text(), 'empty stream: ' + pm.response.text()).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash-lite:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash-lite:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-embedding-001 embeddings with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('embedding present', function () { pm.expect(pm.response.json().data, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"hi\"\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini list models with forwarded Bearer - gemini-forwarded-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (forwarded Authorization must not reach Gemini alongside x-goog-api-key)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no dual-credential rejection from Google', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
+                  "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
+                  "});",
+                  "pm.test('models listed', function () { pm.expect(pm.response.json().data, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-eh-authorization",
+                "value": "Bearer harness-bogus-forwarded-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
