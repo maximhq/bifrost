@@ -1,0 +1,465 @@
+{
+	"appName": "Bifrost",
+	"languageEnglish": "English",
+	"languageChinese": "簡體中文",
+	"nav": {
+		"home": "主頁",
+		"observability": "可觀測性",
+		"dashboard": "儀表板",
+		"llmLogs": "LLM 日誌",
+		"mcpLogs": "MCP 日誌",
+		"connectors": "聯結器",
+		"logsSettings": "日誌設定",
+		"models": "模型",
+		"modelCatalog": "模型目錄",
+		"modelProviders": "模型供應商",
+		"budgetsLimits": "預算與限額",
+		"routingRules": "路由規則",
+		"complexityRouter": "複雜度路由器",
+		"circuitBreaker": "熔斷器",
+		"pricingOverrides": "定價覆蓋",
+		"modelSettings": "模型設定",
+		"mcpGateway": "MCP 閘道",
+		"mcpCatalog": "MCP 目錄",
+		"mcpLibrary": "MCP 庫",
+		"toolGroups": "工具組",
+		"virtualMcps": "虛擬 MCP",
+		"authSessions": "認證會話",
+		"oauthGrants": "OAuth 授權",
+		"mcpSettings": "MCP 設定",
+		"plugins": "外掛",
+		"alerting": "告警",
+		"channels": "通知渠道",
+		"rules": "規則",
+		"history": "歷史記錄",
+		"governance": "治理",
+		"virtualKeys": "虛擬金鑰",
+		"users": "使用者",
+		"teams": "團隊",
+		"businessUnits": "業務單元",
+		"customers": "客戶",
+		"userProvisioning": "使用者配置",
+		"rolesPermissions": "角色與許可權",
+		"accessProfiles": "存取配置",
+		"projects": "專案",
+		"auditLogs": "審計日誌",
+		"guardrails": "護欄",
+		"guardrailRules": "規則",
+		"guardrailProviders": "供應商",
+		"webhooks": "Webhook",
+		"edgeControl": "邊緣控制",
+		"devices": "裝置",
+		"approvals": "審批",
+		"edgeSettings": "邊緣設定",
+		"clusterConfig": "叢集配置",
+		"adaptiveRouting": "自適應路由",
+		"adaptiveRoutingDashboard": "儀表板",
+		"adaptiveRoutingSettings": "設定",
+		"promptRepository": "提示詞倉庫",
+		"skillsRepository": "技能倉庫",
+		"settings": "設定",
+		"clientSettings": "客戶端設定",
+		"compatibility": "相容性",
+		"caching": "快取",
+		"security": "安全",
+		"warp": "Warp",
+		"proxy": "代理",
+		"apiKeys": "API 金鑰",
+		"performanceTuning": "效能調優",
+		"featureFlags": "功能開關",
+		"branding": "品牌",
+		"licenseInfo": "許可證資訊"
+	},
+	"navDesc": {
+		"home": "你的用量、金鑰、預算和存取權限",
+		"observability": "請求日誌與監控",
+		"dashboard": "儀表板",
+		"llmLogs": "LLM 請求日誌與監控",
+		"mcpLogs": "MCP 工具執行日誌",
+		"connectors": "日誌聯結器",
+		"logsSettings": "日誌設定",
+		"models": "配置模型",
+		"modelCatalog": "供應商、金鑰與用量總覽",
+		"modelProviders": "配置模型",
+		"budgetsLimits": "預算與速率限制",
+		"routingRules": "智慧路由規則",
+		"complexityRouter": "按複雜度分層路由",
+		"circuitBreaker": "主端點失敗時自動回退",
+		"pricingOverrides": "作用域定價覆蓋",
+		"modelSettings": "模型與路由配置",
+		"mcpGateway": "MCP 配置",
+		"mcpCatalog": "MCP 工具目錄",
+		"mcpLibrary": "安裝精選 MCP 伺服器",
+		"toolGroups": "工具組",
+		"virtualMcps": "虛擬 MCP",
+		"authSessions": "按使用者的 OAuth 會話",
+		"oauthGrants": "下游 OAuth 授權",
+		"mcpSettings": "MCP 配置",
+		"plugins": "管理自定義外掛",
+		"alerting": "管理告警渠道、規則與歷史",
+		"channels": "配置通知渠道",
+		"rules": "定義告警規則",
+		"history": "檢視告警投遞歷史",
+		"governance": "虛擬金鑰、使用者、團隊、客戶與角色",
+		"virtualKeys": "管理虛擬金鑰與存取許可權",
+		"users": "管理使用者",
+		"teams": "管理團隊",
+		"businessUnits": "管理業務單元",
+		"customers": "管理客戶",
+		"userProvisioning": "使用者管理與配置",
+		"rolesPermissions": "使用者角色與許可權",
+		"accessProfiles": "管理角色的存取配置",
+		"projects": "將請求限定到專案的存取與預算",
+		"auditLogs": "審計日誌與合規",
+		"guardrails": "護欄配置",
+		"guardrailRules": "護欄規則",
+		"guardrailProviders": "護欄供應商配置",
+		"webhooks": "非同步任務 Webhook 端點",
+		"edgeControl": "邊緣裝置管理",
+		"devices": "管理邊緣裝置",
+		"approvals": "審批應用與 MCP 伺服器",
+		"edgeSettings": "邊緣設定",
+		"clusterConfig": "管理 Bifrost 叢集",
+		"adaptiveRouting": "管理自適應路由",
+		"adaptiveRoutingDashboard": "自適應路由指標",
+		"adaptiveRoutingSettings": "自適應路由設定",
+		"promptRepository": "提示詞倉庫",
+		"skillsRepository": "技能倉庫",
+		"settings": "Bifrost 設定",
+		"clientSettings": "客戶端配置",
+		"compatibility": "相容性轉換設定",
+		"caching": "快取配置",
+		"security": "安全設定",
+		"warp": "Warp 代理設定",
+		"proxy": "代理配置",
+		"apiKeys": "API 金鑰管理",
+		"performanceTuning": "效能調優設定",
+		"featureFlags": "切換功能開關",
+		"branding": "自定義 Logo 與圖示",
+		"licenseInfo": "企業版許可證資訊"
+	},
+	"home": {
+		"unlockTitle": "解鎖你的個人主頁",
+		"unlockDescription": "此功能屬於 Bifrost 企業版許可證。主頁會向每位使用者展示自己的用量、金鑰、預算和存取權限。"
+	},
+	"search": {
+		"placeholder": "搜尋…",
+		"ariaLabel": "搜尋側欄導航"
+	},
+	"sidebar": {
+		"collapse": "收起側欄",
+		"expand": "展開側欄",
+		"mcpIconTitle": "MCP 客戶端圖示"
+	},
+	"promo": {
+		"restartRequired": {
+			"title": "需要重啟",
+			"defaultReason": "配置變更需要重啟服務後才能生效。"
+		},
+		"onboarding": {
+			"title": "設定清單未完成",
+			"stepsLeft_one": "還剩 {{count}} 個設定步驟。未完成這些步驟會使 Bifrost 處於風險狀態。",
+			"stepsLeft_other": "還剩 {{count}} 個設定步驟。未完成這些步驟會使 Bifrost 處於風險狀態。",
+			"resume": "繼續設定"
+		},
+		"newRelease": {
+			"available": "{{name}} 現已可用。",
+			"viewNotes": "檢視釋出說明",
+			"imageAlt": "Bifrost"
+		},
+		"productionSetup": {
+			"title": "需要生產環境部署幫助？",
+			"body": "我們可協助生產環境部署，包括定製整合與專屬支援。",
+			"bookPrefix": "預約產品演示請點選",
+			"here": "這裡"
+		}
+	},
+	"topbar": {
+		"accountMenu": "帳戶選單",
+		"openMenu": "開啟選單",
+		"signOut": "退出登入",
+		"version": "版本",
+		"userFallback": "使用者",
+		"discord": "Discord 伺服器",
+		"github": "GitHub 倉庫",
+		"reportBug": "報告問題",
+		"docs": "完整文件"
+	},
+	"pageTitle": {
+		"beta": "Beta",
+		"betaAria": "{{title}} 處於測試階段",
+		"betaAriaFallback": "此頁面處於測試階段",
+		"aboutPage": "關於此頁面"
+	},
+	"titles": {
+		"dashboard": "儀表板",
+		"adaptiveRoutingSettings": "自適應路由設定",
+		"alertChannels": "告警渠道",
+		"alertHistory": "告警歷史",
+		"alertRules": "告警規則",
+		"clusterConfig": "叢集配置",
+		"settings": "設定",
+		"licenseInfo": "許可證資訊",
+		"edgeSettings": "邊緣設定",
+		"edgeDevices": "邊緣裝置",
+		"edgeApprovals": "邊緣審批",
+		"rolesPermissions": "角色與許可權",
+		"guardrailRules": "護欄規則",
+		"guardrailProviders": "護欄供應商",
+		"llmLogs": "LLM 日誌",
+		"logConnectors": "日誌聯結器",
+		"observabilityConnectors": "可觀測性聯結器",
+		"promptRepository": "提示詞倉庫",
+		"modelProviders": "模型供應商",
+		"routingTree": "路由樹",
+		"userProvisioning": "使用者配置"
+	},
+	"error": {
+		"title": "出錯了",
+		"description": "出了點問題，請重新整理頁面。",
+		"reload": "重新載入",
+		"unreachableTitle": "無法連線到控制台",
+		"unreachableDescription": "Bifrost 未返回配置。這通常是短暫中斷，尤其是在 Bifrost 升級期間。",
+		"retrying": "正在重試…",
+		"retry": "重試",
+		"dataUnaffected": "您的設定和資料不受影響。"
+	},
+	"notFound": {
+		"title": "頁面未找到",
+		"description": "你存取的頁面不存在，或已被移動",
+		"goHome": "返回首頁"
+	},
+	"updating": {
+		"bannerTitle": "Bifrost 正在升級",
+		"bannerDescription": "你可以繼續工作，升級完成後重新載入即可。",
+		"reload": "重新載入",
+		"screenTitle": "Bifrost 正在升級",
+		"descriptionWaiting": "正在滾動釋出新版本的 Bifrost。請保持此頁面開啟，升級完成後將自動重新載入。",
+		"descriptionStuck": "Bifrost 仍在升級。如果耗時過長，請聯絡管理員瞭解更多資訊。",
+		"autoReloadPaused": "已暫停自動重新載入",
+		"waiting": "正在等待升級完成",
+		"reloadNow": "立即重新載入"
+	},
+	"onboarding": {
+		"expandSetupChecklist": "展開設定清單",
+		"setupChecklist": "設定清單",
+		"minimize": "最小化",
+		"closeForNow": "暫時關閉",
+		"skip": "跳過",
+		"skipped": "已跳過",
+		"remindMeLater": "稍後提醒我",
+		"notCompletingTheseStepsKeepsYourBifrostSetupVulnerable": "未完成這些步驟會使 Bifrost 處於風險狀態。",
+		"tomorrow": "明天",
+		"inAWeek": "一週後",
+		"pickADate": "選擇日期…",
+		"iAcceptTheRiskHideForEveryone": "我接受此風險，為所有人隱藏",
+		"progress": "已完成 {{done}} / {{total}} 個步驟",
+		"steps": {
+			"cors": "限制 CORS 來源",
+			"dashboard-auth": "設定儀表板認證",
+			"enforce-inference-auth": "對推理請求強制認證",
+			"provider-key": "新增供應商金鑰",
+			"scim": "配置 SCIM 預配",
+			"models": "配置治理模型目錄",
+			"virtual-keys": "設定虛擬金鑰 / 存取配置"
+		},
+		"sections": {
+			"Security": "安全",
+			"Provider Setup": "供應商設定",
+			"Everything Else": "其他設定"
+		}
+	},
+	"warp": {
+		"ask": "詢問 Warp",
+		"history": {
+			"openFailed": "無法開啟該對話。",
+			"deleteFailed": "無法刪除該對話。",
+			"untitled": "未命名",
+			"deleteAria": "刪除對話",
+			"deleteTitle": "刪除此對話？",
+			"deleteDescription": "「{{title}}」及其訊息將被永久刪除。此操作無法撤銷。",
+			"loading": "正在載入歷史紀錄",
+			"loadFailed": "無法載入歷史紀錄。",
+			"empty": "尚無已儲存的對話。",
+			"cancel": "取消",
+			"delete": "刪除",
+			"messages_one": "{{count}} 則訊息",
+			"messages_other": "{{count}} 則訊息"
+		},
+		"panel": {
+			"indexStatusTitle": "Warp 無法讀取其索引狀態。語意搜尋可能可用，也可能不可用。",
+			"backToChat": "返回聊天",
+			"chatHistory": "聊天歷史",
+			"newChat": "新聊天",
+			"close": "關閉 Warp",
+			"preview": "預覽",
+			"loading": "正在載入 Warp…",
+			"loadFailed": "無法載入 Warp 的設定。請重新載入頁面後再試。",
+			"turnedOff": "Warp 已關閉",
+			"notSetUp": "Warp 尚未設定",
+			"enableHint": "開啟「啟用 Warp」即可開始提問。",
+			"chooseModel": "為 Warp 選擇要執行的模型。",
+			"openSettings": "開啟 Warp 設定",
+			"configure": "設定 Warp",
+			"emptyTitle": "詢問你的 Bifrost 資料",
+			"queued": "已排隊",
+			"removeQueued": "移除排隊訊息",
+			"resumeQueue": "繼續傳送佇列中的訊息",
+			"jumpToLatest": "跳到最新"
+		},
+		"starters": {
+			"spend": "過去 7 天各供應商的花費是多少？",
+			"latency": "昨天哪個模型的 p99 延遲最差？",
+			"users": "本週按費用排名前 5 的使用者是誰？",
+			"failed": "顯示過去 24 小時內失敗的請求"
+		},
+		"composer": {
+			"followUp": "提出追問，目前回答結束後會傳送…",
+			"placeholder": "詢問你的 Bifrost 資料…",
+			"stop": "停止",
+			"send": "傳送"
+		},
+		"question": {
+			"label": "問題",
+			"skip": "跳過",
+			"orType": "或在下方輸入你自己的回答。"
+		},
+		"message": {
+			"whatThisCovers": "涵蓋內容",
+			"partialTitle": "部分回答",
+			"partialBody": "Warp 在完成核查前已用盡全部研究步驟。以下是目前已找到的內容，並說明了未能確認的部分。問題範圍更窄時通常能完成。",
+			"whatToTry": "可以嘗試：",
+			"thinking": "思考中"
+		},
+		"toolStatus": {
+			"inProgress": "進行中",
+			"failed": "失敗",
+			"completed": "已完成"
+		},
+		"index": {
+			"noVectorStore": "無向量儲存",
+			"searchNotSetUp": "搜尋尚未設定",
+			"failed": "索引失敗",
+			"indexingPercent": "正在索引 {{percent}}%",
+			"indexing": "正在索引",
+			"ready": "索引就緒"
+		},
+		"tools": {
+			"semantic_search_logs": {
+				"running": "正在執行向量搜尋",
+				"done": "已執行向量搜尋"
+			},
+			"count_logs": {
+				"running": "正在檢查日誌量",
+				"done": "已檢查日誌量"
+			},
+			"query_logs": {
+				"running": "正在搜尋請求日誌",
+				"done": "已搜尋請求日誌"
+			},
+			"get_log_detail": {
+				"running": "正在開啟請求",
+				"done": "已開啟請求"
+			},
+			"get_request_trace": {
+				"running": "正在追蹤發生了什麼",
+				"done": "已追蹤發生了什麼"
+			},
+			"query_metrics": {
+				"running": "正在查詢指標",
+				"done": "已查詢指標"
+			},
+			"query_usage_by": {
+				"running": "正在按用量排名",
+				"done": "已按用量排名"
+			},
+			"query_user_usage": {
+				"running": "正在依用量對使用者排名",
+				"done": "已依用量對使用者排名"
+			},
+			"query_virtual_key_usage": {
+				"running": "正在依用量對虛擬金鑰排名",
+				"done": "已依用量對虛擬金鑰排名"
+			},
+			"query_model_performance": {
+				"running": "正在比較模型與供應商",
+				"done": "已比較模型與供應商"
+			},
+			"describe_filter_space": {
+				"running": "正在檢查可用值",
+				"done": "已檢查可用值"
+			},
+			"describe_virtual_key": {
+				"running": "正在檢查虛擬金鑰限制",
+				"done": "已檢查虛擬金鑰限制"
+			},
+			"describe_scope": {
+				"running": "正在驗證範圍",
+				"done": "已驗證範圍"
+			},
+			"ask_user": {
+				"running": "正在提問",
+				"done": "已提問"
+			}
+		},
+		"errors": {
+			"not_configured": {
+				"summary": "Warp 尚未設定。",
+				"cause": "未設定供應商和模型，或在設定中關閉了 Warp。",
+				"suggestions": [
+					"開啟 Warp 設定並選擇供應商和模型。",
+					"確認已開啟「啟用 Warp」。"
+				]
+			},
+			"max_iterations": {
+				"summary": "Warp 未能得出答案。",
+				"cause": "Warp 用盡了全部研究步驟預算仍未得出結論。這通常表示問題過寬，每次查詢又引出新問題，於是它一直在查找而沒有作答。",
+				"suggestions": [
+					"一次只問一件事：單一指標、一個時間範圍、一個範圍。",
+					"明確寫出時間視窗，例如「過去 24 小時」。",
+					"說明你指的是誰的流量——某個團隊、某個客戶，或全部。",
+					"若問題確實需要更多步驟，可在 Warp 設定中提高最大迭代次數。"
+				]
+			},
+			"timeout": {
+				"summary": "耗時過長。",
+				"cause": "整個請求在 Warp 完成前已超過時間預算。時間範圍長、範圍寬會使每次查詢更慢，而 Warp 會執行多次查詢。",
+				"suggestions": [
+					"嘗試更短的時間範圍。",
+					"縮小到一個團隊、客戶或虛擬金鑰。",
+					"若模型本身較慢，可在 Warp 設定中提高請求逾時。"
+				]
+			},
+			"upstream_error": {
+				"summary": "無法連線到 Warp 的模型。",
+				"cause": "供應商拒絕了請求或無法連線。這與 Warp 自身的模型有關，與你詢問的流量無關。",
+				"suggestions": [
+					"檢查 Warp 設定中的供應商、模型和金鑰。",
+					"確認 Base URL 正確——預設指向此 Bifrost。",
+					"在 playground 中試用同一模型，看它是否能正常回答。"
+				]
+			},
+			"tool_error": {
+				"summary": "一次查詢失敗。",
+				"cause": "Warp 的某次資料查詢回傳了錯誤，且在剩餘步驟內無法復原。",
+				"suggestions": [
+					"嘗試更窄的時間範圍。",
+					"確認你提到的模型、金鑰或團隊確實存在。"
+				]
+			},
+			"cancelled": {
+				"summary": "已停止。",
+				"cause": "請求在完成前被取消。",
+				"suggestions": []
+			},
+			"unknown": {
+				"summary": "出了點問題。",
+				"cause": "Warp 回傳了錯誤，但沒有可辨識的錯誤碼。",
+				"suggestions": [
+					"再試一次該問題。",
+					"若持續發生，請連同下方詳情一併回報。"
+				]
+			}
+		}
+	}
+}

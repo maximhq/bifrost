@@ -8,6 +8,7 @@ import { useListSkillVersionsQuery } from "@/lib/store/apis/skillsApi";
 import { SkillVersionSummary } from "@/lib/types/skills";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { formatDate, useDebouncedValue } from "../components/helpers";
 
 const PAGE_SIZE = 20;
@@ -21,6 +22,7 @@ export function SkillVersionsPopover({
 	servingVersion: string;
 	onSelectVersion: (version: SkillVersionSummary) => void;
 }) {
+	const { t } = useTranslation("config");
 	const [open, setOpen] = useState(false);
 	const [search, setSearch] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 300);
@@ -79,7 +81,7 @@ export function SkillVersionsPopover({
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
 				<Button variant="outline" size="sm" data-testid="skill-versions-popover-trigger" className="h-8 gap-1.5">
-					Versions
+					{t("skillsRepo.versionsLabel")}
 					<ChevronDown className="h-3.5 w-3.5" />
 				</Button>
 			</PopoverTrigger>
@@ -114,6 +116,7 @@ export function SkillVersionsList({
 	open: boolean;
 	onSelectVersion: (version: SkillVersionSummary) => void;
 }) {
+	const { t } = useTranslation("config");
 	const [search, setSearch] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 300);
 	const [offset, setOffset] = useState(0);
@@ -171,14 +174,14 @@ export function SkillVersionsList({
 		<Command shouldFilter={false}>
 			<CommandInput
 				data-testid="skill-versions-search-input"
-				placeholder="Search versions..."
+				placeholder={t("skillsRepo.searchVersions")}
 				value={search}
 				onValueChange={setSearch}
 				isLoading={isFetching}
 			/>
 			<CommandList>
 				{!isFetching && accumulated.length === 0 && (
-					<CommandEmpty>{debouncedSearch ? "No versions match your search" : "No versions yet"}</CommandEmpty>
+					<CommandEmpty>{debouncedSearch ? t("skillsRepo.noVersionsMatch") : t("skillsRepo.noVersionsYet")}</CommandEmpty>
 				)}
 				<CommandGroup>
 					{accumulated.map((v) => {
@@ -195,7 +198,7 @@ export function SkillVersionsList({
 									<span className="text-sm font-medium">{v.version}</span>
 									{isServing && (
 										<Badge variant="secondary" className="h-auto bg-emerald-100 px-1.5 py-0 text-xs">
-											Serving
+											{t("skillsRepo.serving")}
 										</Badge>
 									)}
 								</span>
@@ -205,7 +208,7 @@ export function SkillVersionsList({
 					})}
 
 					{isError && !isFetching && accumulated.length === 0 && (
-						<div className="text-muted-foreground py-6 text-center text-xs">Failed to load versions</div>
+						<div className="text-muted-foreground py-6 text-center text-xs">{t("skillsRepo.loadVersionsFailed")}</div>
 					)}
 
 					{/* Sentinel observed to trigger the next page fetch */}

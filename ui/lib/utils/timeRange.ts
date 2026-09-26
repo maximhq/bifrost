@@ -1,9 +1,9 @@
 export const TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
+	{ label: "Last hour", value: "1h", labelKey: "timePeriods.1h" },
+	{ label: "Last 6 hours", value: "6h", labelKey: "timePeriods.6h" },
+	{ label: "Last 24 hours", value: "24h", labelKey: "timePeriods.24h" },
+	{ label: "Last 7 days", value: "7d", labelKey: "timePeriods.7d" },
+	{ label: "Last 30 days", value: "30d", labelKey: "timePeriods.30d" },
 ];
 
 export type TimePeriod = (typeof TIME_PERIODS)[number]["value"];

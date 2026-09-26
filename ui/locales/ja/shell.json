@@ -1,0 +1,465 @@
+{
+	"appName": "Bifrost",
+	"languageEnglish": "English",
+	"languageChinese": "简体中文",
+	"nav": {
+		"home": "ホーム",
+		"observability": "オブザーバビリティ",
+		"dashboard": "ダッシュボード",
+		"llmLogs": "LLM ログ",
+		"mcpLogs": "MCP ログ",
+		"connectors": "コネクタ",
+		"logsSettings": "ログ設定",
+		"models": "モデル",
+		"modelCatalog": "モデルカタログ",
+		"modelProviders": "モデルプロバイダー",
+		"budgetsLimits": "予算と制限",
+		"routingRules": "ルーティングルール",
+		"complexityRouter": "複雑度ルーター",
+		"circuitBreaker": "サーキットブレーカー",
+		"pricingOverrides": "料金オーバーライド",
+		"modelSettings": "モデル設定",
+		"mcpGateway": "MCP ゲートウェイ",
+		"mcpCatalog": "MCP カタログ",
+		"mcpLibrary": "MCP ライブラリ",
+		"toolGroups": "ツールグループ",
+		"virtualMcps": "仮想 MCP",
+		"authSessions": "認証セッション",
+		"oauthGrants": "OAuth グラント",
+		"mcpSettings": "MCP 設定",
+		"plugins": "プラグイン",
+		"alerting": "アラート",
+		"channels": "チャネル",
+		"rules": "ルール",
+		"history": "履歴",
+		"governance": "ガバナンス",
+		"virtualKeys": "仮想キー",
+		"users": "ユーザー",
+		"teams": "チーム",
+		"businessUnits": "ビジネスユニット",
+		"customers": "顧客",
+		"userProvisioning": "ユーザープロビジョニング",
+		"rolesPermissions": "ロールと権限",
+		"accessProfiles": "アクセスプロファイル",
+		"projects": "プロジェクト",
+		"auditLogs": "監査ログ",
+		"guardrails": "ガードレール",
+		"guardrailRules": "ルール",
+		"guardrailProviders": "プロバイダー",
+		"webhooks": "Webhook",
+		"edgeControl": "エッジ制御",
+		"devices": "デバイス",
+		"approvals": "承認",
+		"edgeSettings": "エッジ設定",
+		"clusterConfig": "クラスター設定",
+		"adaptiveRouting": "適応型ルーティング",
+		"adaptiveRoutingDashboard": "ダッシュボード",
+		"adaptiveRoutingSettings": "設定",
+		"promptRepository": "プロンプトリポジトリ",
+		"skillsRepository": "スキルリポジトリ",
+		"settings": "設定",
+		"clientSettings": "クライアント設定",
+		"compatibility": "互換性",
+		"caching": "キャッシュ",
+		"security": "セキュリティ",
+		"warp": "Warp",
+		"proxy": "プロキシ",
+		"apiKeys": "API キー",
+		"performanceTuning": "パフォーマンス調整",
+		"featureFlags": "フィーチャーフラグ",
+		"branding": "ブランディング",
+		"licenseInfo": "ライセンス情報"
+	},
+	"navDesc": {
+		"home": "自分の利用量、キー、予算、アクセス",
+		"observability": "リクエストログと監視",
+		"dashboard": "ダッシュボード",
+		"llmLogs": "LLM リクエストログと監視",
+		"mcpLogs": "MCP ツール実行ログ",
+		"connectors": "ログコネクタ",
+		"logsSettings": "ログの構成",
+		"models": "モデルを構成",
+		"modelCatalog": "プロバイダー、キー、利用状況の概要",
+		"modelProviders": "モデルを構成",
+		"budgetsLimits": "予算とレート制限",
+		"routingRules": "インテリジェントルーティングルール",
+		"complexityRouter": "複雑度ティアによるルーティング",
+		"circuitBreaker": "プライマリエンドポイント障害時の自動フォールバック",
+		"pricingOverrides": "スコープ付き料金オーバーライド",
+		"modelSettings": "モデルとルーティングの構成",
+		"mcpGateway": "MCP 構成",
+		"mcpCatalog": "MCP ツールカタログ",
+		"mcpLibrary": "厳選 MCP サーバーをインストール",
+		"toolGroups": "ツールグループ",
+		"virtualMcps": "仮想 MCP",
+		"authSessions": "ユーザーごとの OAuth セッション",
+		"oauthGrants": "ダウンストリーム OAuth グラント",
+		"mcpSettings": "MCP 構成",
+		"plugins": "カスタムプラグインを管理",
+		"alerting": "アラートチャネル、ルール、履歴を管理",
+		"channels": "通知チャネルを構成",
+		"rules": "アラートルールを定義",
+		"history": "アラート配信履歴を確認",
+		"governance": "仮想キー、ユーザー、チーム、顧客、ロール",
+		"virtualKeys": "仮想キーとアクセスを管理",
+		"users": "ユーザーを管理",
+		"teams": "チームを管理",
+		"businessUnits": "ビジネスユニットを管理",
+		"customers": "顧客を管理",
+		"userProvisioning": "ユーザー管理とプロビジョニング",
+		"rolesPermissions": "ユーザーロールと権限",
+		"accessProfiles": "ロール向けアクセスプロファイルを管理",
+		"projects": "リクエストをプロジェクトのアクセスと予算に紐づけ",
+		"auditLogs": "監査ログとコンプライアンス",
+		"guardrails": "ガードレール構成",
+		"guardrailRules": "ガードレールルール",
+		"guardrailProviders": "ガードレールプロバイダー構成",
+		"webhooks": "非同期ジョブの webhook エンドポイント",
+		"edgeControl": "エッジデバイス管理",
+		"devices": "エッジデバイスを管理",
+		"approvals": "アプリと MCP サーバーを承認",
+		"edgeSettings": "エッジ設定",
+		"clusterConfig": "Bifrost クラスターを管理",
+		"adaptiveRouting": "適応型ルーティングを管理",
+		"adaptiveRoutingDashboard": "適応型ルーティングの指標",
+		"adaptiveRoutingSettings": "適応型ルーティング設定",
+		"promptRepository": "プロンプトリポジトリ",
+		"skillsRepository": "スキルリポジトリ",
+		"settings": "Bifrost 設定",
+		"clientSettings": "クライアント構成設定",
+		"compatibility": "互換性変換設定",
+		"caching": "キャッシュ構成",
+		"security": "セキュリティ設定",
+		"warp": "Warp エージェントの設定",
+		"proxy": "プロキシ構成",
+		"apiKeys": "API キー管理",
+		"performanceTuning": "パフォーマンス調整設定",
+		"featureFlags": "フィーチャーフラグの切り替え",
+		"branding": "カスタムロゴとアイコン",
+		"licenseInfo": "エンタープライズライセンス情報"
+	},
+	"home": {
+		"unlockTitle": "個人用ホームを解除",
+		"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。ホームでは、各ユーザー自身の利用量、キー、予算、アクセスが表示されます。"
+	},
+	"search": {
+		"placeholder": "検索…",
+		"ariaLabel": "サイドバーナビゲーションを検索"
+	},
+	"sidebar": {
+		"collapse": "サイドバーを折りたたむ",
+		"expand": "サイドバーを展開",
+		"mcpIconTitle": "MCP クライアントアイコン"
+	},
+	"promo": {
+		"restartRequired": {
+			"title": "再起動が必要です",
+			"defaultReason": "構成の変更を反映するにはサーバーの再起動が必要です。"
+		},
+		"onboarding": {
+			"title": "セットアップチェックリストが未完了です",
+			"stepsLeft_one": "セットアップ手順が {{count}} 件残っています。完了しないと Bifrost のセットアップが脆弱なままです。",
+			"stepsLeft_other": "セットアップ手順が {{count}} 件残っています。完了しないと Bifrost のセットアップが脆弱なままです。",
+			"resume": "セットアップを再開"
+		},
+		"newRelease": {
+			"available": "{{name}} が利用可能になりました。",
+			"viewNotes": "リリースノートを表示",
+			"imageAlt": "Bifrost"
+		},
+		"productionSetup": {
+			"title": "本番セットアップの支援が必要ですか？",
+			"body": "カスタム連携や専任サポートを含む本番セットアップの支援を提供しています。",
+			"bookPrefix": "チームとのデモを予約",
+			"here": "こちら"
+		}
+	},
+	"topbar": {
+		"accountMenu": "アカウントメニュー",
+		"openMenu": "メニューを開く",
+		"signOut": "サインアウト",
+		"version": "バージョン",
+		"userFallback": "ユーザー",
+		"discord": "Discord サーバー",
+		"github": "GitHub リポジトリ",
+		"reportBug": "バグを報告",
+		"docs": "完全なドキュメント"
+	},
+	"pageTitle": {
+		"beta": "Beta",
+		"betaAria": "{{title}} はベータです",
+		"betaAriaFallback": "このページはベータです",
+		"aboutPage": "このページについて"
+	},
+	"titles": {
+		"dashboard": "ダッシュボード",
+		"adaptiveRoutingSettings": "適応型ルーティング設定",
+		"alertChannels": "アラートチャネル",
+		"alertHistory": "アラート履歴",
+		"alertRules": "アラートルール",
+		"clusterConfig": "クラスター設定",
+		"settings": "設定",
+		"licenseInfo": "ライセンス情報",
+		"edgeSettings": "エッジ設定",
+		"edgeDevices": "エッジデバイス",
+		"edgeApprovals": "エッジ承認",
+		"rolesPermissions": "ロールと権限",
+		"guardrailRules": "ガードレールルール",
+		"guardrailProviders": "ガードレールプロバイダー",
+		"llmLogs": "LLM ログ",
+		"logConnectors": "ログコネクタ",
+		"observabilityConnectors": "オブザーバビリティコネクタ",
+		"promptRepository": "プロンプトリポジトリ",
+		"modelProviders": "モデルプロバイダー",
+		"routingTree": "ルーティングツリー",
+		"userProvisioning": "ユーザープロビジョニング"
+	},
+	"error": {
+		"title": "問題が発生しました",
+		"description": "問題が発生しました。ページを更新してください。",
+		"reload": "再読み込み",
+		"unreachableTitle": "ダッシュボードに接続できません",
+		"unreachableDescription": "Bifrost が構成を返しませんでした。アップグレード中など、一時的な中断であることが多いです。",
+		"retrying": "再試行中…",
+		"retry": "再試行",
+		"dataUnaffected": "設定とデータは影響を受けていません。"
+	},
+	"notFound": {
+		"title": "ページが見つかりません",
+		"description": "お探しのページは存在しないか、移動されています",
+		"goHome": "ホームへ"
+	},
+	"updating": {
+		"bannerTitle": "Bifrost をアップグレード中です",
+		"bannerDescription": "作業を続け、アップグレード完了後に再読み込みできます。",
+		"reload": "再読み込み",
+		"screenTitle": "Bifrost をアップグレード中です",
+		"descriptionWaiting": "新しいバージョンの Bifrost を展開しています。このページを開いたままにしてください。完了すると自動で再読み込みされます。",
+		"descriptionStuck": "Bifrost はまだアップグレード中です。想定より長い場合は、管理者にお問い合わせください。",
+		"autoReloadPaused": "自動再読み込みを一時停止しました",
+		"waiting": "アップグレードの完了を待っています",
+		"reloadNow": "今すぐ再読み込み"
+	},
+	"onboarding": {
+		"expandSetupChecklist": "セットアップチェックリストを展開",
+		"setupChecklist": "セットアップチェックリスト",
+		"minimize": "最小化",
+		"closeForNow": "いったん閉じる",
+		"skip": "スキップ",
+		"skipped": "スキップ済み",
+		"remindMeLater": "あとで通知",
+		"notCompletingTheseStepsKeepsYourBifrostSetupVulnerable": "これらの手順を完了しないと、Bifrost のセットアップが脆弱なままです。",
+		"tomorrow": "明日",
+		"inAWeek": "1 週間後",
+		"pickADate": "日付を選択…",
+		"iAcceptTheRiskHideForEveryone": "リスクを承認する - 全員から非表示",
+		"progress": "{{done}} / {{total}} 手順が完了",
+		"steps": {
+			"cors": "CORS オリジンを制限",
+			"dashboard-auth": "ダッシュボード認証を設定",
+			"enforce-inference-auth": "推論で認証を強制",
+			"provider-key": "プロバイダーキーを追加",
+			"scim": "SCIM プロビジョニングを構成",
+			"models": "ガバナンスモデルカタログを構成",
+			"virtual-keys": "仮想キー / アクセスプロファイルを設定"
+		},
+		"sections": {
+			"Security": "セキュリティ",
+			"Provider Setup": "プロバイダー設定",
+			"Everything Else": "その他"
+		}
+	},
+	"warp": {
+		"ask": "Warp に質問",
+		"history": {
+			"openFailed": "その会話を開けませんでした。",
+			"deleteFailed": "その会話を削除できませんでした。",
+			"untitled": "無題",
+			"deleteAria": "会話を削除",
+			"deleteTitle": "この会話を削除しますか？",
+			"deleteDescription": "「{{title}}」とそのメッセージは完全に削除されます。この操作は取り消せません。",
+			"loading": "履歴を読み込み中",
+			"loadFailed": "履歴を読み込めませんでした。",
+			"empty": "保存された会話はまだありません。",
+			"cancel": "キャンセル",
+			"delete": "削除",
+			"messages_one": "{{count}} 件のメッセージ",
+			"messages_other": "{{count}} 件のメッセージ"
+		},
+		"panel": {
+			"indexStatusTitle": "Warp がインデックス状態を読み取れませんでした。セマンティック検索が利用できるかどうかは不明です。",
+			"backToChat": "チャットに戻る",
+			"chatHistory": "チャット履歴",
+			"newChat": "新しいチャット",
+			"close": "Warp を閉じる",
+			"preview": "プレビュー",
+			"loading": "Warp を読み込み中...",
+			"loadFailed": "Warp の設定を読み込めませんでした。ページを再読み込みして再試行してください。",
+			"turnedOff": "Warp はオフです",
+			"notSetUp": "Warp はまだ設定されていません",
+			"enableHint": "「Warp を有効化」をオンにして質問を始めましょう。",
+			"chooseModel": "Warp が使用するモデルを選択してください。",
+			"openSettings": "Warp 設定を開く",
+			"configure": "Warp を設定",
+			"emptyTitle": "Bifrost のデータについて質問",
+			"queued": "キュー待ち",
+			"removeQueued": "キュー済みメッセージを削除",
+			"resumeQueue": "キューのメッセージを再開",
+			"jumpToLatest": "最新へジャンプ"
+		},
+		"starters": {
+			"spend": "過去 7 日間のプロバイダー別の支出は？",
+			"latency": "昨日 p99 レイテンシが最も悪かったモデルは？",
+			"users": "今週のコスト上位 5 ユーザーは誰？",
+			"failed": "過去 24 時間の失敗したリクエストを見せて"
+		},
+		"composer": {
+			"followUp": "フォローアップを入力。この回答が終わると送信されます...",
+			"placeholder": "Bifrost のデータについて質問...",
+			"stop": "停止",
+			"send": "送信"
+		},
+		"question": {
+			"label": "質問",
+			"skip": "スキップ",
+			"orType": "または下に自分の回答を入力してください。"
+		},
+		"message": {
+			"whatThisCovers": "この内容の範囲",
+			"partialTitle": "部分的な回答",
+			"partialBody": "Warp は確認を終える前に調査ステップを使い切りました。ここまでで分かった内容と、確認できなかった点を示しています。より絞り込んだ質問なら通常は完了します。",
+			"whatToTry": "試すこと:",
+			"thinking": "思考中"
+		},
+		"toolStatus": {
+			"inProgress": "進行中",
+			"failed": "失敗",
+			"completed": "完了"
+		},
+		"index": {
+			"noVectorStore": "ベクターストアなし",
+			"searchNotSetUp": "検索未設定",
+			"failed": "インデックス作成に失敗",
+			"indexingPercent": "インデックス作成中 {{percent}}%",
+			"indexing": "インデックス作成中",
+			"ready": "インデックス準備完了"
+		},
+		"tools": {
+			"semantic_search_logs": {
+				"running": "ベクター検索を実行中",
+				"done": "ベクター検索を実行しました"
+			},
+			"count_logs": {
+				"running": "ログ量を確認中",
+				"done": "ログ量を確認しました"
+			},
+			"query_logs": {
+				"running": "リクエストログを検索中",
+				"done": "リクエストログを検索しました"
+			},
+			"get_log_detail": {
+				"running": "リクエストを開いています",
+				"done": "リクエストを開きました"
+			},
+			"get_request_trace": {
+				"running": "何が起きたかを追跡中",
+				"done": "何が起きたかを追跡しました"
+			},
+			"query_metrics": {
+				"running": "メトリクスを照会中",
+				"done": "メトリクスを照会しました"
+			},
+			"query_usage_by": {
+				"running": "利用量を順位付け中",
+				"done": "利用量を順位付けしました"
+			},
+			"query_user_usage": {
+				"running": "利用量でユーザーを順位付け中",
+				"done": "利用量でユーザーを順位付けしました"
+			},
+			"query_virtual_key_usage": {
+				"running": "利用量で仮想キーを順位付け中",
+				"done": "利用量で仮想キーを順位付けしました"
+			},
+			"query_model_performance": {
+				"running": "モデルとプロバイダーを比較中",
+				"done": "モデルとプロバイダーを比較しました"
+			},
+			"describe_filter_space": {
+				"running": "利用可能な値を確認中",
+				"done": "利用可能な値を確認しました"
+			},
+			"describe_virtual_key": {
+				"running": "仮想キーの上限を確認中",
+				"done": "仮想キーの上限を確認しました"
+			},
+			"describe_scope": {
+				"running": "スコープを検証中",
+				"done": "スコープを検証しました"
+			},
+			"ask_user": {
+				"running": "質問しています",
+				"done": "質問しました"
+			}
+		},
+		"errors": {
+			"not_configured": {
+				"summary": "Warp はまだ設定されていません。",
+				"cause": "プロバイダーとモデルが未設定か、設定で Warp がオフになっています。",
+				"suggestions": [
+					"Warp 設定を開き、プロバイダーとモデルを選択してください。",
+					"「Warp を有効化」がオンになっていることを確認してください。"
+				]
+			},
+			"max_iterations": {
+				"summary": "Warp が答えにたどり着けませんでした。",
+				"cause": "Warp は結論に達しないまま調査ステップの予算を使い切りました。質問が広すぎて、各クエリが次のクエリを生み、答えずに探し続けた場合によく起きます。",
+				"suggestions": [
+					"一度に一つだけ聞いてください: 単一のメトリクス、一つの時間範囲、一つのスコープ。",
+					"ウィンドウを明示してください。例: 「過去 24 時間」。",
+					"どのトラフィックかを指定してください — チーム、顧客、またはすべて。",
+					"本当に手順が必要な質問なら、Warp 設定で Max Iterations を上げてください。"
+				]
+			},
+			"timeout": {
+				"summary": "時間がかかりすぎました。",
+				"cause": "Warp が完了する前にリクエスト全体が時間予算を超えました。長い時間範囲と広いスコープは各クエリを遅くし、Warp は複数回実行します。",
+				"suggestions": [
+					"より短い時間範囲を試してください。",
+					"一つのチーム、顧客、または仮想キーに絞ってください。",
+					"モデルが単に遅い場合は、Warp 設定で Request Timeout を上げてください。"
+				]
+			},
+			"upstream_error": {
+				"summary": "Warp のモデルに到達できませんでした。",
+				"cause": "プロバイダーがリクエストを拒否したか、到達できませんでした。これは質問したトラフィックではなく、Warp 自身のモデルに関するものです。",
+				"suggestions": [
+					"Warp 設定でプロバイダー、モデル、キーを確認してください。",
+					"Base URL が正しいか確認してください — デフォルトはこの Bifrost です。",
+					"同じモデルをプレイグラウンドで試し、そもそも応答するか確認してください。"
+				]
+			},
+			"tool_error": {
+				"summary": "クエリが失敗しました。",
+				"cause": "Warp のデータクエリの一つがエラーを返し、残りのステップ内で回復できませんでした。",
+				"suggestions": [
+					"より狭い時間範囲を試してください。",
+					"指定したモデル、キー、チームが実際に存在するか確認してください。"
+				]
+			},
+			"cancelled": {
+				"summary": "停止しました。",
+				"cause": "完了する前にリクエストがキャンセルされました。",
+				"suggestions": []
+			},
+			"unknown": {
+				"summary": "問題が発生しました。",
+				"cause": "Warp が認識されないコードでエラーを返しました。",
+				"suggestions": [
+					"質問を再度試してください。",
+					"繰り返す場合は、下記の詳細とともに報告してください。"
+				]
+			}
+		}
+	}
+}

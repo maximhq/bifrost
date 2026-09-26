@@ -22,6 +22,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ArrowLeft, Download, MoreHorizontal, Plus, Loader2, Trash2 } from "lucide-react";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { type SkillFormState, composeFrontmatter, useSkillForm } from "./helpers";
 import { SkillHeader } from "./shared";
@@ -43,6 +44,8 @@ export function SkillDetailView({
 	setIsEditing: (editing: boolean) => void;
 	onBack: () => void;
 }) {
+	const { t } = useTranslation("config");
+	const { t: tc } = useTranslation("common");
 	const hasEditAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Delete);
 
@@ -110,7 +113,7 @@ export function SkillDetailView({
 		if (!form.runValidation()) return;
 		const bumpErr = validateVersionBump(form.version, highestVersion);
 		if (bumpErr) {
-			toast.error("Invalid version", { description: bumpErr });
+			toast.error(t("skillsRepo.toastInvalidVersion"), { description: bumpErr });
 			return;
 		}
 
@@ -120,10 +123,10 @@ export function SkillDetailView({
 				id: skillId,
 				data: { ...payload, serve },
 			}).unwrap();
-			toast.success(serve ? "Skill saved and now serving this version" : "Version saved successfully");
+			toast.success(serve ? t("skillsRepo.toastSavedAndServing") : t("skillsRepo.toastSaved"));
 			setIsEditing(false);
 		} catch (err: unknown) {
-			toast.error("Failed to update skill", {
+			toast.error(t("skillsRepo.toastUpdateFailed"), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -132,10 +135,10 @@ export function SkillDetailView({
 	const handleDelete = async () => {
 		try {
 			await deleteSkill(skillId).unwrap();
-			toast.success("Skill deleted");
+			toast.success(t("skillsRepo.toastDeleted"));
 			onBack();
 		} catch (err: unknown) {
-			toast.error("Failed to delete skill", {
+			toast.error(t("skillsRepo.toastDeleteFailed"), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -211,13 +214,13 @@ export function SkillDetailView({
 									dropdownTrigger={{
 										className: "bg-transparent",
 										dataTestId: "skill-versions-popover-trigger",
-										"aria-label": `Versions for ${skill.name}`,
+										"aria-label": t("skillsRepo.versionsForAria", { name: skill.name }),
 									}}
 									button={{
 										dataTestId: "skill-add-version-btn",
 										className: "bg-transparent",
 										disabled: !hasEditAccess,
-										"aria-label": "Add new version",
+										"aria-label": t("skillsRepo.addNewVersionAria"),
 									}}
 									dropdownContent={{
 										align: "end",
@@ -238,11 +241,11 @@ export function SkillDetailView({
 									}}
 								>
 									<Plus className="h-3.5 w-3.5" />
-									<span className="hidden md:inline">Add New Version</span>
+									<span className="hidden md:inline">{t("skillsRepo.addNewVersion")}</span>
 								</SplitButton>
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild>
-										<Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Actions for ${skill.name}`}>
+										<Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("skillsRepo.actionsForAria", { name: skill.name })}>
 											<MoreHorizontal className="h-4 w-4" />
 										</Button>
 									</DropdownMenuTrigger>
@@ -250,7 +253,7 @@ export function SkillDetailView({
 										<DropdownMenuItem className="cursor-pointer" asChild>
 											<a href={`${getApiBaseUrl()}/skills/serve/${encodeURIComponent(skill.name)}/download.zip`} download>
 												<Download className="h-4 w-4" />
-												Download ZIP
+												{t("skillsRepo.downloadZip")}
 											</a>
 										</DropdownMenuItem>
 										{hasDeleteAccess && (
@@ -264,7 +267,7 @@ export function SkillDetailView({
 												}}
 											>
 												<Trash2 className="h-4 w-4" />
-												Delete
+												{tc("delete")}
 											</DropdownMenuItem>
 										)}
 									</DropdownMenuContent>
@@ -272,20 +275,20 @@ export function SkillDetailView({
 								<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
 									<AlertDialogContent>
 										<AlertDialogHeader>
-											<AlertDialogTitle>Delete {skill.name}?</AlertDialogTitle>
+											<AlertDialogTitle>{t("skillsRepo.deleteTitle", { name: skill.name })}</AlertDialogTitle>
 											<AlertDialogDescription>
-												This action cannot be undone. The skill, its files, and version history will be permanently deleted.
+												{t("skillsRepo.deleteConfirmation")}
 											</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
-											<AlertDialogCancel>Cancel</AlertDialogCancel>
+											<AlertDialogCancel>{tc("cancel")}</AlertDialogCancel>
 											<AlertDialogAction onClick={handleDelete} disabled={isDeleting}>
 												{isDeleting ? (
 													<>
-														<Loader2 className="h-3.5 w-3.5 animate-spin" /> Deleting...
+														<Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("skillsRepo.deleting")}
 													</>
 												) : (
-													"Delete skill"
+													t("skillsRepo.deleteSkill")
 												)}
 											</AlertDialogAction>
 										</AlertDialogFooter>

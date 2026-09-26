@@ -7,6 +7,7 @@ import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { useListFeatureFlagsQuery } from "@/lib/store/apis/featureFlagsApi";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, TriangleAlert } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import WarpView from "../views/warpView";
 
 export default function WarpPage() {
@@ -22,16 +23,17 @@ export default function WarpPage() {
 }
 
 function WarpDisabled() {
+	const { t } = useTranslation("config");
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<PageTitle title="Warp" />
 			<Alert variant="warning" data-testid="warp-feature-flag-disabled">
 				<TriangleAlert className="h-4 w-4" />
 				<AlertDescription className="gap-2">
-					<span>Warp is behind the &quot;warp&quot; feature flag, which is off on this deployment.</span>
+					<span>{t("warp.featureFlagOff")}</span>
 					<Button asChild variant="outline" size="sm" data-testid="warp-feature-flags-link">
 						<Link to="/workspace/config/feature-flags">
-							Open feature flags
+							{t("warp.openFeatureFlags")}
 							<ArrowRight className="size-3.5" />
 						</Link>
 					</Button>

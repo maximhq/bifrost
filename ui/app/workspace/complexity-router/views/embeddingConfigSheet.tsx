@@ -21,6 +21,7 @@ import { Link } from "@tanstack/react-router";
 import { ArrowRight, Info, LoaderCircle, Save, TriangleAlert } from "lucide-react";
 import { useCallback, type ReactNode } from "react";
 import { Controller, type Control, type FieldErrors, type UseFormRegister, type UseFormSetValue } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import type { AnalyzerFormValues, LLMFormValues, SemanticFormValues } from "../formSchema";
 import { llmTimeoutFieldValue, semanticTimeoutFieldValue } from "../formSchema";
 import { FieldLabel, InfoTip } from "./formPrimitives";
@@ -100,6 +101,9 @@ export default function EmbeddingConfigSheet({
 	// list back down to them rather than re-deriving the capability rules here.
 	const isEmbeddingProvider = useCallback((provider: ModelProvider) => providers.some((p) => p.name === provider.name), [providers]);
 	const isLLMProvider = useCallback((provider: ModelProvider) => llmProviders.some((p) => p.name === provider.name), [llmProviders]);
+	const { t } = useTranslation("models");
+	const { t: tCommon } = useTranslation("common");
+	const tcpx = (key: string, opts?: Record<string, unknown>) => t(`routing.complexityUi.${key}`, opts);
 
 	const noProviders = !providersLoading && providers.length === 0;
 	const isConfigured = Boolean(semantic?.provider && semantic?.embedding_model);
@@ -120,10 +124,8 @@ export default function EmbeddingConfigSheet({
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex flex-col p-0" data-testid="complexity-router-embedding-sheet">
 				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
-					<SheetTitle>Embedding configuration</SheetTitle>
-					<SheetDescription>
-						The model that embeds requests and reference phrases. API keys are inherited from the provider&apos;s main configuration.
-					</SheetDescription>
+					<SheetTitle>{tcpx("sheetTitle")}</SheetTitle>
+					<SheetDescription>{tcpx("sheetDescription")}</SheetDescription>
 				</SheetHeader>
 
 				<div className="custom-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
@@ -131,10 +133,10 @@ export default function EmbeddingConfigSheet({
 						<Alert variant="warning" data-testid="complexity-router-no-embedding-providers">
 							<TriangleAlert className="h-4 w-4" />
 							<AlertDescription className="gap-2">
-								<span>No embedding-capable provider is configured. There is nothing to select here until one exists.</span>
+								<span>{tcpx("noEmbeddingProviders")}</span>
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-sheet-add-provider-link">
 									<Link to="/workspace/providers">
-										Add an embedding provider
+										{tcpx("addEmbeddingProvider")}
 										<ArrowRight className="size-3.5" />
 									</Link>
 								</Button>
@@ -147,12 +149,11 @@ export default function EmbeddingConfigSheet({
 							<TriangleAlert className="h-4 w-4" />
 							<AlertDescription className="gap-2">
 								<span>
-									<span className="font-medium">{getProviderLabel(semantic?.provider ?? "")}</span> is saved here but has no enabled key, so
-									it cannot embed anything. Re-enable a key for it, or select another provider below.
+									{tcpx("savedProviderUnavailable", { provider: getProviderLabel(semantic?.provider ?? "") })}
 								</span>
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-saved-provider-link">
 									<Link to="/workspace/providers" search={{ provider: semantic?.provider }}>
-										Review provider keys
+										{tcpx("reviewProviderKeys")}
 										<ArrowRight className="size-3.5" />
 									</Link>
 								</Button>
@@ -166,10 +167,7 @@ export default function EmbeddingConfigSheet({
 					{!providersLoading && !noProviders && !isConfigured && (
 						<Alert variant="info" data-testid="complexity-router-classifier-required-callout">
 							<Info className="h-4 w-4" />
-							<AlertDescription>
-								Pick an embedding provider and model to configure the rest. Until then the classifier is off and only the phrase lists are
-								saved.
-							</AlertDescription>
+							<AlertDescription>{tcpx("classifierRequired")}</AlertDescription>
 						</Alert>
 					)}
 
@@ -180,7 +178,7 @@ export default function EmbeddingConfigSheet({
 					) : (
 						<>
 							<div className="space-y-2">
-								<FieldLabel htmlFor="semantic-provider">Embedding provider</FieldLabel>
+								<FieldLabel htmlFor="semantic-provider">{tcpx("embeddingProvider")}</FieldLabel>
 								<Controller
 									control={control}
 									name="semantic.provider"
@@ -198,13 +196,14 @@ export default function EmbeddingConfigSheet({
 											}}
 											disabled={!canUpdate || noProviders}
 										/>
+
 									)}
 								/>
 								{errors?.provider && <p className="text-destructive text-xs">{errors.provider.message}</p>}
 							</div>
 
 							<div className="space-y-2">
-								<FieldLabel htmlFor="semantic-embedding-model">Embedding model</FieldLabel>
+								<FieldLabel htmlFor="semantic-embedding-model">{tcpx("embeddingModel")}</FieldLabel>
 								<Controller
 									control={control}
 									name="semantic.embedding_model"
@@ -219,7 +218,8 @@ export default function EmbeddingConfigSheet({
 												field.onChange(model);
 											}}
 											allowCustomModel
-											placeholder={semantic?.provider ? "Search or type an embedding model…" : "Select a provider first"}
+											placeholder={semantic?.provider ? tcpx("searchEmbeddingModel") : tcpx("selectProviderFirst")}
+
 											disabled={!canUpdate || !semantic?.provider}
 										/>
 									)}
@@ -230,7 +230,7 @@ export default function EmbeddingConfigSheet({
 							{/* Similarity floor + conversation window */}
 							<div className="grid gap-4 sm:grid-cols-2">
 								<div className="space-y-2">
-									<FieldLabel htmlFor="semantic-min-similarity">Minimum similarity threshold</FieldLabel>
+									<FieldLabel htmlFor="semantic-min-similarity">{tcpx("minSimilarity")}</FieldLabel>
 									<Input
 										id="semantic-min-similarity"
 										data-testid="complexity-router-semantic-min-similarity-input"
@@ -247,29 +247,18 @@ export default function EmbeddingConfigSheet({
 										<p className="text-destructive text-xs">{errors.min_similarity.message}</p>
 									) : (
 										<>
-											<p className="text-muted-foreground text-xs leading-relaxed">
-												Between 0 and 1. How close the nearest phrase must be before its tier is used.
-											</p>
+											<p className="text-muted-foreground text-xs leading-relaxed">{tcpx("minSimilarityHelp")}</p>
 											<p className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
 												<TriangleAlert className="mt-0.5 size-3 shrink-0" />
-												Lower values raise the risk of false positives.
+												{tcpx("minSimilarityWarn")}
 											</p>
 										</>
 									)}
 								</div>
 
 								<div className="space-y-2">
-									<FieldLabel
-										htmlFor="semantic-message-history"
-										tooltip={
-											<>
-												The most recent user messages are joined oldest to newest and embedded as one text. Widening this lets a short
-												follow-up like &ldquo;and make it faster&rdquo; inherit earlier intent, but dilutes the latest message and embeds
-												more tokens. System prompts and assistant replies are never embedded.
-											</>
-										}
-									>
-										Max messages to embed
+									<FieldLabel htmlFor="semantic-message-history" tooltip={tcpx("maxMessagesEmbedTip")}>
+										{tcpx("maxMessagesEmbed")}
 									</FieldLabel>
 									<Input
 										id="semantic-message-history"
@@ -290,11 +279,8 @@ export default function EmbeddingConfigSheet({
 							{/* Timeout + phrase storage */}
 							<div className="grid gap-4 sm:grid-cols-2">
 								<div className="space-y-2">
-									<FieldLabel
-										htmlFor="semantic-timeout"
-										tooltip="Maximum wait for the embedding call, including provider queue and response time. On timeout, the configured fallback applies."
-									>
-										Embedding timeout (ms)
+									<FieldLabel htmlFor="semantic-timeout" tooltip={tcpx("embeddingTimeoutTip")}>
+										{tcpx("embeddingTimeout")}
 									</FieldLabel>
 									<Controller
 										control={control}
@@ -327,13 +313,14 @@ export default function EmbeddingConfigSheet({
 											<span className="space-y-1.5">
 												{SEMANTIC_VECTOR_STORE_OPTIONS.map((option) => (
 													<span key={option.value} className="block">
-														<b>{option.label}</b>: {option.tooltip}
+														<b>{option.value === "vector_store" ? tcpx("vectorStoreExternal") : tcpx("vectorStoreEmbedded")}</b>:{" "}
+														{option.value === "vector_store" ? tcpx("vectorStoreExternalTip") : tcpx("vectorStoreEmbeddedTip")}
 													</span>
 												))}
 											</span>
 										}
 									>
-										Reference phrase storage
+										{tcpx("phraseStorage")}
 									</FieldLabel>
 									<Controller
 										control={control}
@@ -350,7 +337,7 @@ export default function EmbeddingConfigSheet({
 												<SelectContent>
 													{SEMANTIC_VECTOR_STORE_OPTIONS.map((option) => (
 														<SelectItem key={option.value} value={option.value}>
-															{option.label}
+														{option.value === "vector_store" ? tcpx("vectorStoreExternal") : tcpx("vectorStoreEmbedded")}
 														</SelectItem>
 													))}
 												</SelectContent>
@@ -359,7 +346,7 @@ export default function EmbeddingConfigSheet({
 									/>
 									{semantic?.vector_store === "vector_store" && !isVectorStoreConnected && (
 										<p className="text-muted-foreground text-xs leading-relaxed">
-											No vector store is connected, so phrases stay in the embedded store until one is configured.
+											{tcpx("noVectorStoreConnected")}
 										</p>
 									)}
 								</div>
@@ -373,20 +360,21 @@ export default function EmbeddingConfigSheet({
 							    the section below), because that text needs width and
 							    iteration room a sheet cannot give it. */}
 							<div className="space-y-2 border-t pt-4">
-								<FieldLabel
-									htmlFor="semantic-fallback"
-									tooltip={
-										<span className="space-y-1.5">
-											{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
-												<span key={option.value} className="block">
-													<b>{option.label}</b>: {option.description}
-												</span>
-											))}
-										</span>
-									}
-								>
-									When no phrase matches confidently
-								</FieldLabel>
+									<FieldLabel
+										htmlFor="semantic-fallback"
+										tooltip={
+											<span className="space-y-1.5">
+												{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
+													<span key={option.value} className="block">
+														<b>{option.value === "llm" ? tcpx("fallbackLlm") : tcpx("fallbackNone")}</b>:{" "}
+														{option.value === "llm" ? tcpx("fallbackLlmDesc") : tcpx("fallbackNoneDesc")}
+													</span>
+												))}
+											</span>
+										}
+									>
+										{tcpx("whenNoMatch")}
+									</FieldLabel>
 								<Controller
 									control={control}
 									name="semantic.fallback"
@@ -398,7 +386,7 @@ export default function EmbeddingConfigSheet({
 											<SelectContent>
 												{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
 													<SelectItem key={option.value} value={option.value}>
-														{option.label}
+														{option.value === "llm" ? tcpx("fallbackLlm") : tcpx("fallbackNone")}
 													</SelectItem>
 												))}
 											</SelectContent>
@@ -414,36 +402,27 @@ export default function EmbeddingConfigSheet({
 							{isLLMFallbackSelected && (
 								<div className="space-y-5 border-t pt-4" data-testid="complexity-router-llm-fallback-section">
 									<div className="flex items-center gap-1.5">
-										<h3 className="text-sm font-medium">Fallback classifier</h3>
-										<InfoTip label="About the fallback classifier prompt">
-											This configures the model and its request settings only. The classification prompt itself is edited on the Complexity
-											Router page, in the Fallback Classification Prompt section below the phrase lists.
-										</InfoTip>
+										<h3 className="text-sm font-medium">{tcpx("fallbackClassifier")}</h3>
+										<InfoTip label={tcpx("fallbackPromptTitle")}>{tcpx("fallbackClassifierPromptTip")}</InfoTip>
 									</div>
-									<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">
-										This model assigns a complexity tier when no reference phrase matches confidently. API keys come from the
-										provider&apos;s main configuration.
-									</p>
+									<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">{tcpx("fallbackClassifierHelp")}</p>
 
 									{/* The cost of this classifier is latency, and it is paid on every
 									    classified request, so it is stated up front rather than
 									    discovered in production. */}
 									<Alert variant="warning" data-testid="complexity-router-llm-latency-callout">
 										<TriangleAlert className="h-4 w-4" />
-										<AlertDescription>
-											Pick a small, fast model. The timeout limits how long classification can delay the request. If it times out,
-											complexity routing is skipped for that request.
-										</AlertDescription>
+										<AlertDescription>{tcpx("llmLatencyCallout")}</AlertDescription>
 									</Alert>
 
 									{noLLMProviders && (
 										<Alert variant="warning" data-testid="complexity-router-no-llm-providers">
 											<TriangleAlert className="h-4 w-4" />
 											<AlertDescription className="gap-2">
-												<span>No provider with an enabled key is configured. There is nothing to select here until one exists.</span>
+												<span>{tcpx("noLlmProviders")}</span>
 												<Button asChild variant="outline" size="sm" data-testid="complexity-router-llm-add-provider-link">
 													<Link to="/workspace/providers">
-														Add a provider
+														{tcpx("addProvider")}
 														<ArrowRight className="size-3.5" />
 													</Link>
 												</Button>
@@ -455,13 +434,10 @@ export default function EmbeddingConfigSheet({
 										<Alert variant="warning" data-testid="complexity-router-llm-saved-provider-unavailable">
 											<TriangleAlert className="h-4 w-4" />
 											<AlertDescription className="gap-2">
-												<span>
-													<span className="font-medium">{getProviderLabel(llm?.provider ?? "")}</span> is saved here but has no enabled key,
-													so it cannot classify anything. Re-enable a key for it, or select another provider below.
-												</span>
+												<span>{tcpx("savedLlmProviderUnavailable", { provider: getProviderLabel(llm?.provider ?? "") })}</span>
 												<Button asChild variant="outline" size="sm" data-testid="complexity-router-llm-saved-provider-link">
 													<Link to="/workspace/providers" search={{ provider: llm?.provider }}>
-														Review provider keys
+														{tcpx("reviewProviderKeys")}
 														<ArrowRight className="size-3.5" />
 													</Link>
 												</Button>
@@ -472,14 +448,12 @@ export default function EmbeddingConfigSheet({
 									{!providersLoading && !noLLMProviders && !isLLMConfigured && (
 										<Alert variant="info" data-testid="complexity-router-llm-required-callout">
 											<Info className="h-4 w-4" />
-											<AlertDescription>
-												Pick a provider and model to configure the rest. Until then the LLM classifier cannot run.
-											</AlertDescription>
+											<AlertDescription>{tcpx("llmRequired")}</AlertDescription>
 										</Alert>
 									)}
 
 									<div className="space-y-2">
-										<FieldLabel htmlFor="llm-provider">Fallback provider</FieldLabel>
+										<FieldLabel htmlFor="llm-provider">{tcpx("fallbackProvider")}</FieldLabel>
 										<Controller
 											control={control}
 											name="llm.provider"
@@ -497,13 +471,14 @@ export default function EmbeddingConfigSheet({
 													}}
 													disabled={!canUpdate || noLLMProviders}
 												/>
+
 											)}
 										/>
 										{llmErrors?.provider && <p className="text-destructive text-xs">{llmErrors.provider.message}</p>}
 									</div>
 
 									<div className="space-y-2">
-										<FieldLabel htmlFor="llm-model">Fallback model</FieldLabel>
+										<FieldLabel htmlFor="llm-model">{tcpx("fallbackModel")}</FieldLabel>
 										<Controller
 											control={control}
 											name="llm.model"
@@ -518,7 +493,8 @@ export default function EmbeddingConfigSheet({
 														field.onChange(model);
 													}}
 													allowCustomModel
-													placeholder={llm?.provider ? "Search or type a chat model…" : "Select a provider first"}
+													placeholder={llm?.provider ? tcpx("searchChatModel") : tcpx("selectProviderFirst")}
+
 													disabled={!canUpdate || !llm?.provider}
 												/>
 											)}
@@ -529,11 +505,8 @@ export default function EmbeddingConfigSheet({
 									{/* Timeout + conversation window */}
 									<div className="grid gap-4 sm:grid-cols-2">
 										<div className="space-y-2">
-											<FieldLabel
-												htmlFor="llm-timeout"
-												tooltip="Ceiling on the classification completion, which runs inline on the request path. Exceeding it skips complexity tier based routing for that request."
-											>
-												Classification timeout (ms)
+											<FieldLabel htmlFor="llm-timeout" tooltip={tcpx("classificationTimeoutTip")}>
+												{tcpx("classificationTimeout")}
 											</FieldLabel>
 											<Controller
 												control={control}
@@ -560,17 +533,8 @@ export default function EmbeddingConfigSheet({
 										</div>
 
 										<div className="space-y-2">
-											<FieldLabel
-												htmlFor="llm-message-history"
-												tooltip={
-													<>
-														The most recent user messages are sent to the classifier oldest to newest. Widening this lets a short follow-up
-														like &ldquo;and make it faster&rdquo; inherit earlier intent, but sends more input tokens per request. System
-														prompts and assistant replies are never sent.
-													</>
-												}
-											>
-												Max messages to send
+											<FieldLabel htmlFor="llm-message-history" tooltip={tcpx("maxMessagesSendTip")}>
+												{tcpx("maxMessagesSend")}
 											</FieldLabel>
 											<Input
 												id="llm-message-history"
@@ -594,11 +558,8 @@ export default function EmbeddingConfigSheet({
 
 							{/* Embedding budget attribution */}
 							<div className="flex items-center justify-between gap-6">
-								<FieldLabel
-									htmlFor="semantic-count-toward-budgets"
-									tooltip="Bills each classification embedding to the same budgets as the request that triggered it, and warmup embeddings to the provider and model budgets. Cost is always reported to telemetry either way."
-								>
-									Count embedding cost toward budgets
+								<FieldLabel htmlFor="semantic-count-toward-budgets" tooltip={tcpx("countEmbeddingBudgetsTip")}>
+									{tcpx("countEmbeddingBudgets")}
 								</FieldLabel>
 								<Controller
 									control={control}
@@ -618,11 +579,8 @@ export default function EmbeddingConfigSheet({
 							{/* Fallback classifier budget attribution */}
 							{isLLMFallbackSelected && (
 								<div className="flex items-center justify-between gap-6 border-t pt-4">
-									<FieldLabel
-										htmlFor="llm-count-toward-budgets"
-										tooltip="Bills each classification completion to the same budgets as the request that triggered it. Cost is always reported to telemetry either way."
-									>
-										Count classification cost toward budgets
+									<FieldLabel htmlFor="llm-count-toward-budgets" tooltip={tcpx("countClassificationBudgetsTip")}>
+										{tcpx("countClassificationBudgets")}
 									</FieldLabel>
 									<Controller
 										control={control}
@@ -663,7 +621,7 @@ export default function EmbeddingConfigSheet({
 						onClick={() => onOpenChange(false)}
 						data-testid="complexity-router-embedding-sheet-close-button"
 					>
-						Close
+						{tCommon("close")}
 					</Button>
 					<Button
 						type="button"
@@ -673,7 +631,7 @@ export default function EmbeddingConfigSheet({
 						data-testid="complexity-router-embedding-sheet-save-button"
 					>
 						{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-						{isSaving ? "Saving…" : "Save changes"}
+						{isSaving ? t("routing.saving") : t("routing.saveChanges")}
 					</Button>
 				</SheetFooter>
 			</SheetContent>
