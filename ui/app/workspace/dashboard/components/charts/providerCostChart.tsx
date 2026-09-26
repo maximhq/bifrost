@@ -121,7 +121,7 @@ function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedPr
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedProvider}`}>
-			<ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />

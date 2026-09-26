@@ -120,7 +120,7 @@ function TopDimensionChart({
 			<div style={{ height: Math.max(200, chartData.length * 40 + 40), marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${chartData.length}`}>
-						<ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+						<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 							<BarChart data={chartData} layout="vertical" margin={{ top: 6, right: 20, left: 0, bottom: 0 }} barCategoryGap={4}>
 								<CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
 								<XAxis
