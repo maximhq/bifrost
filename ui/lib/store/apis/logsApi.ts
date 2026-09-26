@@ -9,6 +9,7 @@ import {
 	LogSessionSummaryResponse,
 	LogsHistogramResponse,
 	LogStats,
+	LogStatsResponse,
 	ModelHistogramResponse,
 	ModelRankingsResponse,
 	Pagination,
@@ -62,6 +63,18 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.stop_reasons && filters.stop_reasons.length > 0) {
 		params.stop_reasons = filters.stop_reasons.join(",");
 	}
+	if (filters.tool_call_names && filters.tool_call_names.length > 0) {
+		params.tool_call_names = filters.tool_call_names.join(",");
+	}
+	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
+		params.complexity_tiers = filters.complexity_tiers.join(",");
+	}
+	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
+		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
+	}
+	if (filters.session_id) {
+		params.session_id = filters.session_id;
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {
@@ -70,6 +83,8 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
 	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+	if (filters.min_cost !== undefined) params.min_cost = filters.min_cost;
+	if (filters.max_cost !== undefined) params.max_cost = filters.max_cost;
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
@@ -77,6 +92,7 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 		params.cache_hit_types = filters.cache_hit_types.join(",");
 	}
 	if (filters.content_search) params.content_search = filters.content_search;
+	if (filters.request_id) params.request_id = filters.request_id;
 	if (filters.user_ids && filters.user_ids.length > 0) {
 		params.user_ids = filters.user_ids.join(",");
 	}
@@ -88,6 +104,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.business_unit_ids && filters.business_unit_ids.length > 0) {
 		params.business_unit_ids = filters.business_unit_ids.join(",");
+	}
+	if (filters.project_ids && filters.project_ids.length > 0) {
+		params.project_ids = filters.project_ids.join(",");
 	}
 	if (filters.apps && filters.apps.length > 0) {
 		params.apps = JSON.stringify(filters.apps);
@@ -129,9 +148,11 @@ export const logsApi = baseApi.injectEndpoints({
 				pagination: Pagination;
 				/** Grouped view: hide fallback-child rows so each chain lists as its root */
 				rootsOnly?: boolean;
+				/** Grouped view: collapse each session onto its earliest root row. Needs rootsOnly. */
+				groupSessions?: boolean;
 			}
 		>({
-			query: ({ filters, pagination, rootsOnly }) => ({
+			query: ({ filters, pagination, rootsOnly, groupSessions }) => ({
 				url: "/logs",
 				params: {
 					limit: pagination.limit,
@@ -139,6 +160,7 @@ export const logsApi = baseApi.injectEndpoints({
 					sort_by: pagination.sort_by,
 					order: pagination.order,
 					...(rootsOnly ? { roots_only: "true" } : {}),
+					...(groupSessions ? { group_sessions: "true" } : {}),
 					...buildFilterParams(filters),
 				},
 			}),
@@ -172,14 +194,21 @@ export const logsApi = baseApi.injectEndpoints({
 
 		// Get logs statistics with filters
 		getLogsStats: builder.query<
-			LogStats,
+			LogStatsResponse,
 			{
 				filters: LogFilters;
+				// Opt in to change-vs-previous-period. Callers that omit this get the
+				// exact response they got before, and a different RTK cache entry, so
+				// views that do not need the comparison never pay for the extra query.
+				comparePrevious?: boolean;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, comparePrevious }) => ({
 				url: "/logs/stats",
-				params: buildFilterParams(filters),
+				params: {
+					...buildFilterParams(filters),
+					...(comparePrevious ? { compare_to_previous: true } : {}),
+				},
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -377,12 +406,14 @@ export const logsApi = baseApi.injectEndpoints({
 				routing_rules?: RoutingRule[];
 				routing_engines?: string[];
 				stop_reasons?: string[];
+				tool_call_names?: string[];
 				apps?: string[];
 				user_agents?: string[];
 				teams?: { id: string; name: string }[];
 				customers?: { id: string; name: string }[];
 				users?: { id: string; name: string }[];
 				business_units?: { id: string; name: string }[];
+				projects?: { id: string; name: string }[];
 				metadata_keys?: Record<string, string[]>;
 			},
 			{ dimensions?: string[]; q?: string } | void

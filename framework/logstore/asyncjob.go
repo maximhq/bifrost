@@ -148,21 +148,32 @@ func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultT
 	}
 
 	var contextValues map[any]any
+	var g schemas.Grant
 	if bifrostCtx != nil {
 		contextValues = bifrostCtx.GetUserValues()
+		g = bifrostCtx.Grant()
 	}
-	go e.executeJob(job, operation, contextValues)
+	go e.executeJob(job, operation, contextValues, g)
 
 	return job, nil
 }
 
 // executeJob runs the operation in the background and updates the job record.
-func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, contextValues map[any]any) {
+func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, contextValues map[any]any, g schemas.Grant) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Restore original request context values (virtual key, tracing headers, etc.)
 	for k, v := range contextValues {
 		ctx.SetValue(k, v)
+	}
+
+	// The job is the submit call's request, run later: it carries that request's grant, not a
+	// copy, the same way a realtime turn carries its session's grant (see
+	// newRealtimeTurnContext). GetUserValues above does not include it — Grant is held on its own
+	// field, not the user-values map — so without this, governance sees a context nobody settled
+	// an identity on and refuses it outright.
+	if g != nil {
+		ctx.SetGrant(g)
 	}
 
 	// Clear trace context inherited from the original HTTP request.

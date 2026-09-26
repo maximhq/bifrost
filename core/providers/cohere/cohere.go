@@ -677,12 +677,16 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 	response := acquireCohereResponse()
 	defer releaseCohereResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostResponsesResponse()
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 
 	bifrostResponse.Model = request.Model
 
@@ -968,12 +972,16 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	response := acquireCohereEmbeddingResponse()
 	defer releaseCohereEmbeddingResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostEmbeddingResponse()
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -1056,6 +1064,11 @@ func (provider *CohereProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	}
 
 	return bifrostResponse, nil
+}
+
+// Decision is not supported by the Cohere provider.
+func (provider *CohereProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Cohere provider.

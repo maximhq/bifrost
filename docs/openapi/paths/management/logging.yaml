@@ -1,6 +1,15 @@
 logs:
   get:
     operationId: getLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get logs
     description: |
       Retrieves logs with filtering, search, and pagination via query parameters.
@@ -37,6 +46,7 @@ logs:
         description: Comma-separated list of virtual key IDs to filter by
         schema:
           type: string
+      - $ref: "#/_histogram-parameters/project_ids"
       - name: routing_rule_ids
         in: query
         description: Comma-separated list of routing rule IDs to filter by
@@ -45,6 +55,26 @@ logs:
       - name: routing_engine_used
         in: query
         description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
+        schema:
+          type: string
+      - name: tool_call_names
+        in: query
+        description: Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.
+        schema:
+          type: string
+      - name: complexity_tiers
+        in: query
+        description: Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)
+        schema:
+          type: string
+      - name: complexity_mechanisms
+        in: query
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        schema:
+          type: string
+      - name: session_id
+        in: query
+        description: Exact Bifrost session ID used for key stickiness and request correlation
         schema:
           type: string
       - name: start_time
@@ -99,6 +129,23 @@ logs:
         description: Search in request/response content
         schema:
           type: string
+      - name: request_id
+        in: query
+        description: "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root."
+        schema:
+          type: string
+      - name: roots_only
+        in: query
+        description: "Hide rows whose parent_request_id points at another row matching the same filters, so each fallback chain lists as its root request. The root carries child_count, children_cost and children_tokens for the rows it hides. Ignored when parent_request_id or request_id is set."
+        schema:
+          type: boolean
+          default: false
+      - name: group_sessions
+        in: query
+        description: "Collapse every row sharing a session_id onto that session's earliest root request, which carries session_child_count, session_total_cost and session_total_tokens. Requires roots_only=true, and is ignored when session_id, parent_request_id or request_id is set. Sorting orders the collapsed rows by the root row's own value, not by the session total."
+        schema:
+          type: boolean
+          default: false
       - name: limit
         in: query
         description: Number of logs to return (default 50, max 1000)
@@ -128,22 +175,33 @@ logs:
           default: desc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/SearchLogsResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/SearchLogsResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete logs
-    description: Deletes logs by their IDs.
+    description: |
+      Deletes logs by their IDs.
     tags:
       - Logging
     requestBody:
@@ -151,26 +209,37 @@ logs:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/logging.yaml#/DeleteLogsRequest'
+            $ref: "../../schemas/management/logging.yaml#/DeleteLogsRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Logs deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-stats:
   get:
     operationId: getLogsStats
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get log statistics
-    description: Returns statistics for logs matching the specified filters.
+    description: |
+      Returns statistics for logs matching the specified filters.
     tags:
       - Logging
     parameters:
@@ -204,6 +273,7 @@ logs-stats:
         description: Comma-separated list of virtual key IDs to filter by
         schema:
           type: string
+      - $ref: "#/_histogram-parameters/project_ids"
       - name: routing_rule_ids
         in: query
         description: Comma-separated list of routing rule IDs to filter by
@@ -212,6 +282,26 @@ logs-stats:
       - name: routing_engine_used
         in: query
         description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
+        schema:
+          type: string
+      - name: tool_call_names
+        in: query
+        description: Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.
+        schema:
+          type: string
+      - name: complexity_tiers
+        in: query
+        description: Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)
+        schema:
+          type: string
+      - name: complexity_mechanisms
+        in: query
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        schema:
+          type: string
+      - name: session_id
+        in: query
+        description: Exact Bifrost session ID used for key stickiness and request correlation
         schema:
           type: string
       - name: start_time
@@ -266,61 +356,132 @@ logs-stats:
         description: Search in request/response content
         schema:
           type: string
+      - name: request_id
+        in: query
+        description: "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root."
+        schema:
+          type: string
+      - name: compare_to_previous
+        in: query
+        description: >-
+          When true, also return the same statistics for the immediately
+          preceding window of equal length, so callers can render
+          change-vs-previous-period. Requires a bounded window (start_time and
+          end_time, or period); an unbounded all-time filter has no preceding
+          window, and the response then omits `previous` with
+          `has_previous_period` false. A failure to compute the previous period
+          degrades to `has_previous_period` false rather than failing the request.
+        schema:
+          type: boolean
+          default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/LogStats'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/LogStatsResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-dropped:
   get:
     operationId: getDroppedRequests
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get dropped requests count
-    description: Returns the number of dropped requests.
+    description: |
+      Returns the number of dropped requests.
     tags:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/DroppedRequestsResponse'
+              $ref: "../../schemas/management/logging.yaml#/DroppedRequestsResponse"
 
 logs-filterdata:
   get:
     operationId: getAvailableFilterData
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get available filter data
-    description: Returns all unique filter data from logs (models, keys, virtual keys).
+    description: >-
+      Returns the distinct values each filter dimension offers, drawn from the
+      logs of roughly the last month.
     tags:
       - Logging
+    parameters:
+      - name: dimensions
+        in: query
+        description: >-
+          Comma-separated dimensions to return. One or more of `models`,
+          `aliases`, `selected_keys`, `virtual_keys`, `routing_rules`,
+          `routing_engines`, `stop_reasons`, `tool_call_names`, `apps`, `user_agents`,
+          `teams`, `customers`, `users`, `business_units`, `projects`, `metadata_keys`.
+          Unrecognised values are ignored, and asking for none returns every
+          dimension.
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: >-
+          Free-text search within the requested dimensions. Passing it bypasses
+          the response cache.
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/FilterDataResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/FilterDataResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-by-id:
   get:
     operationId: getLogById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a single log entry
-    description: Retrieves a single log entry by its ID.
+    description: |
+      Retrieves a single log entry by its ID.
     tags:
       - Logging
     parameters:
@@ -332,352 +493,572 @@ logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/LogEntry'
-      '404':
+              $ref: "../../schemas/management/logging.yaml#/LogEntry"
+      "404":
         description: Log not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram:
   get:
     operationId: getLogsHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get request count histogram
     description: |
       Returns time-bucketed request counts. Bucket size is auto-calculated from the time range.
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/aliases'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/team_ids'
-      - $ref: '#/_histogram-parameters/customer_ids'
-      - $ref: '#/_histogram-parameters/user_ids'
-      - $ref: '#/_histogram-parameters/business_unit_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/period'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/stop_reasons'
-      - $ref: '#/_histogram-parameters/cache_hit_types'
-      - $ref: '#/_histogram-parameters/parent_request_id'
-      - $ref: '#/_histogram-parameters/metadata_key'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/metadata_key"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/HistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/HistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-tokens:
   get:
     operationId: getLogsTokenHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get token usage histogram
-    description: Returns time-bucketed token usage (prompt, completion, total).
+    description: |
+      Returns time-bucketed token usage (prompt, completion, total).
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/TokenHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/TokenHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-cost:
   get:
     operationId: getLogsCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get cost histogram
-    description: Returns time-bucketed cost data with model breakdown.
+    description: |
+      Returns time-bucketed cost data with model breakdown.
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/CostHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/CostHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-models:
   get:
     operationId: getLogsModelHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model usage histogram
-    description: Returns time-bucketed model usage with success/error breakdown.
+    description: |
+      Returns time-bucketed model usage with success/error breakdown.
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/ModelHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/ModelHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-latency:
   get:
     operationId: getLogsLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get latency histogram
-    description: Returns time-bucketed latency percentiles (avg, p90, p95, p99).
+    description: |
+      Returns time-bucketed latency percentiles (avg, p90, p95, p99).
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/LatencyHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/LatencyHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-cost-by-provider:
   get:
     operationId: getLogsProviderCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get cost histogram by provider
-    description: Returns time-bucketed cost data with provider breakdown.
+    description: |
+      Returns time-bucketed cost data with provider breakdown.
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/ProviderCostHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/ProviderCostHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-tokens-by-provider:
   get:
     operationId: getLogsProviderTokenHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get token histogram by provider
-    description: Returns time-bucketed token usage with provider breakdown.
+    description: |
+      Returns time-bucketed token usage with provider breakdown.
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/ProviderTokenHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/ProviderTokenHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-latency-by-provider:
   get:
     operationId: getLogsProviderLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get latency histogram by provider
-    description: Returns time-bucketed latency percentiles with provider breakdown.
+    description: |
+      Returns time-bucketed latency percentiles with provider breakdown.
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/ProviderLatencyHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/ProviderLatencyHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-histogram-throughput:
+  get:
+    operationId: getLogsThroughputHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get throughput histogram
+    description: >-
+      Returns time-bucketed token-generation throughput in tokens per second.
+      The bucket size is derived from the requested window.
+    tags:
+      - Logging
+    parameters:
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      "200":
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/ThroughputHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-histogram-throughput-by-provider:
+  get:
+    operationId: getLogsProviderThroughputHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get throughput histogram by provider
+    description: >-
+      Returns time-bucketed tokens per second with a per-provider breakdown.
+    tags:
+      - Logging
+    parameters:
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      "200":
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/ProviderThroughputHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Shared histogram filter parameters
 _histogram-parameters:
@@ -747,6 +1128,12 @@ _histogram-parameters:
     description: Comma-separated list of business unit IDs to filter by
     schema:
       type: string
+  project_ids:
+    name: project_ids
+    in: query
+    description: Comma-separated list of project IDs to filter by
+    schema:
+      type: string
   routing_rule_ids:
     name: routing_rule_ids
     in: query
@@ -757,6 +1144,24 @@ _histogram-parameters:
     name: routing_engine_used
     in: query
     description: Comma-separated list of routing engines to filter by
+    schema:
+      type: string
+  complexity_tiers:
+    name: complexity_tiers
+    in: query
+    description: Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)
+    schema:
+      type: string
+  complexity_mechanisms:
+    name: complexity_mechanisms
+    in: query
+    description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+    schema:
+      type: string
+  session_id:
+    name: session_id
+    in: query
+    description: Exact Bifrost session ID used for key stickiness and request correlation
     schema:
       type: string
   start_time:
@@ -827,6 +1232,12 @@ _histogram-parameters:
     description: Comma-separated list of stop reasons to filter by
     schema:
       type: string
+  tool_call_names:
+    name: tool_call_names
+    in: query
+    description: Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.
+    schema:
+      type: string
   cache_hit_types:
     name: cache_hit_types
     in: query
@@ -849,6 +1260,12 @@ _histogram-parameters:
     name: content_search
     in: query
     description: Search in request/response content
+    schema:
+      type: string
+  request_id:
+    name: request_id
+    in: query
+    description: "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root."
     schema:
       type: string
 
@@ -876,10 +1293,23 @@ _ranking-parameters:
 logs-recalculate-cost:
   post:
     operationId: recalculateLogCosts
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Recalculate log costs
     description: |
       Starts an asynchronous background job that recalculates log costs in batches.
       The returned payload is a job status object that can be polled via the status endpoint.
+
+      Recalculation updates the cost fields on matching log records only. It does not
+      retroactively debit, credit, or otherwise adjust governance budget usage. Governance
+      budgets retain the usage recorded when each request was originally processed.
     tags:
       - Logging
     requestBody:
@@ -887,36 +1317,46 @@ logs-recalculate-cost:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/logging.yaml#/RecalculateCostRequest'
+            $ref: "../../schemas/management/logging.yaml#/RecalculateCostRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '202':
+      "202":
         description: Cost recalculation job accepted
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
-      '409':
+              $ref: "../../schemas/management/logging.yaml#/RecalculateCostResponse"
+      "409":
         description: A recalculation job is already running
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '503':
+              $ref: "../../schemas/management/logging.yaml#/RecalculateCostResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "503":
         description: Background job runner is not available
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-recalculate-cost-status:
   get:
     operationId: getRecalculateCostStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get log cost recalculation status
     description: |
       Returns the current status of a log cost recalculation job.
@@ -931,31 +1371,102 @@ logs-recalculate-cost-status:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Recalculation job status
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
-      '404':
+              $ref: "../../schemas/management/logging.yaml#/RecalculateCostResponse"
+      "404":
         description: Recalculation job not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '503':
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "503":
         description: Background job runner is not available
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-recalculate-cost-cancel:
+  post:
+    operationId: cancelRecalculateCost
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Cancel log cost recalculation
+    description: |
+      Cancels the recalculation job selected by `id`, or the current in-flight recalculation
+      when `id` is omitted. Cancellation stops further batches; cost updates already committed
+      to log records are retained and are not rolled back. Logs that the job has not processed
+      remain unchanged.
+
+      The response uses the same job-status shape as the status endpoint and includes the
+      partial progress recorded at the time of the response. The worker may still be unwinding,
+      so poll the status endpoint with the returned `id` to obtain its final counters. If the
+      selected job has already reached a terminal state, the endpoint returns it unchanged.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: query
+        description: Optional recalculation job ID. Omit to cancel the current in-flight recalculation.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      "200":
+        description: Recalculation cancellation accepted, or the selected job was already terminal
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/RecalculateCostResponse"
+      "400":
+        description: The supplied job ID belongs to a different background-job type
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "404":
+        description: The requested job was not found, or there is no in-flight recalculation to cancel
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "503":
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 mcp-logs:
   get:
     operationId: getMCPLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool logs
     description: |
       Retrieves MCP tool execution logs with filtering, search, and pagination via query parameters.
@@ -1044,22 +1555,33 @@ mcp-logs:
           default: desc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/SearchMCPLogsResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/SearchMCPLogsResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteMCPLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete MCP tool logs
-    description: Deletes MCP tool logs by their IDs.
+    description: |
+      Deletes MCP tool logs by their IDs.
     tags:
       - Logging
     requestBody:
@@ -1067,26 +1589,37 @@ mcp-logs:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/logging.yaml#/DeleteMCPLogsRequest'
+            $ref: "../../schemas/management/logging.yaml#/DeleteMCPLogsRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP tool logs deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 mcp-logs-by-id:
   get:
     operationId: getMCPLogById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool log by ID
-    description: Retrieves a single MCP tool execution log by ID, including hydrated object-storage payloads when configured.
+    description: |
+      Retrieves a single MCP tool execution log by ID, including hydrated object-storage payloads when configured.
     tags:
       - Logging
     parameters:
@@ -1098,25 +1631,36 @@ mcp-logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP tool log found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/MCPToolLogEntry'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/MCPToolLogEntry"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 mcp-logs-stats:
   get:
     operationId: getMCPLogsStats
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool log statistics
-    description: Returns statistics for MCP tool logs matching the specified filters.
+    description: |
+      Returns statistics for MCP tool logs matching the specified filters.
     tags:
       - Logging
     parameters:
@@ -1175,40 +1719,61 @@ mcp-logs-stats:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/MCPToolLogStats'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/MCPToolLogStats"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 mcp-logs-filterdata:
   get:
     operationId: getMCPLogsFilterData
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get available MCP log filter data
-    description: Returns all unique filter data from MCP tool logs (tool names, server labels).
+    description: |
+      Returns all unique filter data from MCP tool logs (tool names, server labels).
     tags:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/MCPLogsFilterDataResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/MCPLogsFilterDataResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-sessions-by-id:
   get:
     operationId: getLogSessionById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get logs for a session
     description: |
       Returns the paginated logs belonging to a single parent-request session
@@ -1244,23 +1809,34 @@ logs-sessions-by-id:
           default: asc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Session logs retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/SessionDetailResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/SessionDetailResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-sessions-summary-by-id:
   get:
     operationId: getLogSessionSummaryById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get aggregate totals for a session
-    description: Returns aggregate request count, token usage, cost, and duration for a single session.
+    description: |
+      Returns aggregate request count, token usage, cost, and duration for a single session.
     tags:
       - Logging
     parameters:
@@ -1272,21 +1848,31 @@ logs-sessions-summary-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Session summary retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/SessionSummaryResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/SessionSummaryResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-rankings:
   get:
     operationId: getModelRankings
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model usage rankings
     description: |
       Returns models ranked by usage with trend percentages versus the previous
@@ -1295,53 +1881,205 @@ logs-rankings:
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/aliases'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/team_ids'
-      - $ref: '#/_histogram-parameters/customer_ids'
-      - $ref: '#/_histogram-parameters/user_ids'
-      - $ref: '#/_histogram-parameters/business_unit_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/period'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/stop_reasons'
-      - $ref: '#/_histogram-parameters/cache_hit_types'
-      - $ref: '#/_histogram-parameters/parent_request_id'
-      - $ref: '#/_histogram-parameters/metadata_key'
-      - $ref: '#/_histogram-parameters/content_search'
-      - $ref: '#/_ranking-parameters/limit'
-      - $ref: '#/_ranking-parameters/all'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/metadata_key"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
+      - $ref: "#/_ranking-parameters/limit"
+      - $ref: "#/_ranking-parameters/all"
     security:
       - ManagementBearerAuth: []
     responses:
-      '200':
+      "200":
         description: Model rankings retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/ModelRankingResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/ModelRankingResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-rankings-by-dimension:
+  get:
+    operationId: getDimensionRankings
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get rankings by governance dimension
+    description: |
+      Returns the entities of one governance dimension ranked by spend, tokens
+      and request volume, with trend percentages versus the previous comparable
+      period. Requests carrying no value for the dimension are reported under an
+      `Unassigned` entry rather than dropped, so the rows reconcile with real
+      traffic.
+
+      Note that the accepted `dimension` values differ from the ones the
+      `/by-dimension` histogram endpoints take: rankings use `project` where the
+      histograms use `project_id`.
+    tags:
+      - Logging
+    parameters:
+      - name: dimension
+        in: query
+        required: true
+        description: The governance dimension to rank by.
+        schema:
+          $ref: "../../schemas/management/logging.yaml#/RankingDimension"
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/metadata_key"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
+      - $ref: "#/_ranking-parameters/limit"
+      - $ref: "#/_ranking-parameters/all"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Dimension rankings retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/DimensionRankingResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-rankings-users:
+  get:
+    operationId: getUserRankings
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get user usage rankings
+    description: >-
+      Returns users ranked by spend, tokens and request volume, with trend
+      percentages versus the previous comparable period. Only requests that
+      resolved to a user are counted.
+    tags:
+      - Logging
+    parameters:
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_ranking-parameters/limit"
+      - $ref: "#/_ranking-parameters/all"
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      "200":
+        description: User rankings retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/UserRankingResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-dashboard:
   get:
     operationId: getDashboard
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get consolidated dashboard data
     description: |
       Returns every metric shown on the workspace dashboard in a single
@@ -1359,34 +2097,38 @@ logs-dashboard:
     tags:
       - Logging
     parameters:
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/aliases'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/team_ids'
-      - $ref: '#/_histogram-parameters/customer_ids'
-      - $ref: '#/_histogram-parameters/user_ids'
-      - $ref: '#/_histogram-parameters/business_unit_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/period'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/stop_reasons'
-      - $ref: '#/_histogram-parameters/cache_hit_types'
-      - $ref: '#/_histogram-parameters/parent_request_id'
-      - $ref: '#/_histogram-parameters/metadata_key'
-      - $ref: '#/_histogram-parameters/content_search'
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/metadata_key"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
       - name: tool_names
         in: query
         description: Comma-separated list of MCP tool names to filter the MCP section by
@@ -1397,30 +2139,41 @@ logs-dashboard:
         description: Comma-separated list of MCP server labels to filter the MCP section by
         schema:
           type: string
-      - $ref: '#/_ranking-parameters/limit'
-      - $ref: '#/_ranking-parameters/all'
+      - $ref: "#/_ranking-parameters/limit"
+      - $ref: "#/_ranking-parameters/all"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Dashboard data retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/DashboardResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/DashboardResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-cost-by-dimension:
   get:
     operationId: getLogsDimensionCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get cost histogram by dimension
     description: |
       Returns time-bucketed cost data grouped by an arbitrary dimension
-      (`provider`, `team_id`, `customer_id`, `user_id`, `business_unit_id`).
-      The dimension is supplied via the required `dimension` query parameter.
+      (`provider`, `team_id`, `customer_id`, `user_id`, `business_unit_id`,
+      `project_id`, `app`, `user_agent`). The dimension is supplied via the
+      required `dimension` query parameter.
     tags:
       - Logging
     parameters:
@@ -1429,42 +2182,54 @@ logs-histogram-cost-by-dimension:
         required: true
         description: Grouping dimension
         schema:
-          $ref: '../../schemas/management/logging.yaml#/HistogramDimension'
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+          $ref: "../../schemas/management/logging.yaml#/HistogramDimension"
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Dimension cost histogram retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/DimensionCostHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/DimensionCostHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-tokens-by-dimension:
   get:
     operationId: getLogsDimensionTokenHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get token histogram by dimension
     description: |
       Returns time-bucketed token usage grouped by an arbitrary dimension.
@@ -1477,42 +2242,54 @@ logs-histogram-tokens-by-dimension:
         required: true
         description: Grouping dimension
         schema:
-          $ref: '../../schemas/management/logging.yaml#/HistogramDimension'
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+          $ref: "../../schemas/management/logging.yaml#/HistogramDimension"
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Dimension token histogram retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/DimensionTokenHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/DimensionTokenHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 logs-histogram-latency-by-dimension:
   get:
     operationId: getLogsDimensionLatencyHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Dashboard:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get latency histogram by dimension
     description: |
       Returns time-bucketed latency percentiles (avg, p90, p95, p99) grouped by
@@ -1525,44 +2302,57 @@ logs-histogram-latency-by-dimension:
         required: true
         description: Grouping dimension
         schema:
-          $ref: '../../schemas/management/logging.yaml#/HistogramDimension'
-      - $ref: '#/_histogram-parameters/providers'
-      - $ref: '#/_histogram-parameters/models'
-      - $ref: '#/_histogram-parameters/status'
-      - $ref: '#/_histogram-parameters/objects'
-      - $ref: '#/_histogram-parameters/selected_key_ids'
-      - $ref: '#/_histogram-parameters/virtual_key_ids'
-      - $ref: '#/_histogram-parameters/routing_rule_ids'
-      - $ref: '#/_histogram-parameters/routing_engine_used'
-      - $ref: '#/_histogram-parameters/start_time'
-      - $ref: '#/_histogram-parameters/end_time'
-      - $ref: '#/_histogram-parameters/min_latency'
-      - $ref: '#/_histogram-parameters/max_latency'
-      - $ref: '#/_histogram-parameters/min_tokens'
-      - $ref: '#/_histogram-parameters/max_tokens'
-      - $ref: '#/_histogram-parameters/min_cost'
-      - $ref: '#/_histogram-parameters/max_cost'
-      - $ref: '#/_histogram-parameters/missing_cost_only'
-      - $ref: '#/_histogram-parameters/content_search'
+          $ref: "../../schemas/management/logging.yaml#/HistogramDimension"
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Dimension latency histogram retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/DimensionLatencyHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/DimensionLatencyHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 mcp-logs-histogram:
   get:
     operationId: getMCPLogsHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP tool call volume histogram
-    description: Returns time-bucketed MCP tool call volume with success/error breakdown.
+    description: |
+      Returns time-bucketed MCP tool call volume with success/error breakdown.
     tags:
       - Logging
     parameters:
@@ -1620,23 +2410,34 @@ mcp-logs-histogram:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP histogram retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/MCPHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/MCPHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 mcp-logs-histogram-cost:
   get:
     operationId: getMCPLogsCostHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP cost histogram
-    description: Returns time-bucketed MCP tool call cost data.
+    description: |
+      Returns time-bucketed MCP tool call cost data.
     tags:
       - Logging
     parameters:
@@ -1694,23 +2495,34 @@ mcp-logs-histogram-cost:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP cost histogram retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/MCPCostHistogramResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/MCPCostHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 mcp-logs-histogram-top-tools:
   get:
     operationId: getMCPLogsTopTools
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get top MCP tools by call count
-    description: Returns the top 10 MCP tools by call count, with cost totals.
+    description: |
+      Returns the top 10 MCP tools by call count, with cost totals.
     tags:
       - Logging
     parameters:
@@ -1768,14 +2580,15 @@ mcp-logs-histogram-top-tools:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP top tools retrieved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/logging.yaml#/MCPTopToolsResult'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/logging.yaml#/MCPTopToolsResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"

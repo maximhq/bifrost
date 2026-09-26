@@ -10,45 +10,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAttachCostToNativeUsage covers the speech / transcription / OCR modalities
-// whose usage object is not aliased into TokenUsageParsed, so the breakdown has
-// to be written onto the native response explicitly.
-func TestAttachCostToNativeUsage(t *testing.T) {
-	bd := &schemas.BifrostCost{InputCost: 0.002, OutputCost: 0.001, TotalCost: 0.003}
+// TestCostBreakdownDoesNotMutateClientUsage verifies the 1A invariant: attaching
+// the cost breakdown for logging never mutates the usage object shared with the
+// client-facing response. applyNonStreamingOutputToEntry hands the log entry a
+// deep copy, so the cost write lands on the copy, not result.ChatResponse.Usage.
+func TestCostBreakdownDoesNotMutateClientUsage(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
 
-	t.Run("speech", func(t *testing.T) {
-		r := &schemas.BifrostResponse{SpeechResponse: &schemas.BifrostSpeechResponse{Usage: &schemas.SpeechUsage{}}}
-		attachCostToNativeUsage(r, bd)
-		require.NotNil(t, r.SpeechResponse.Usage.Cost)
-		assert.InDelta(t, 0.003, r.SpeechResponse.Usage.Cost.TotalCost, 1e-12)
-	})
+	const promptTokens, completionTokens = 100, 50
+	clientUsage := &schemas.BifrostLLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: clientUsage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			},
+		},
+	}
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	t.Run("transcription", func(t *testing.T) {
-		r := &schemas.BifrostResponse{TranscriptionResponse: &schemas.BifrostTranscriptionResponse{Usage: &schemas.TranscriptionUsage{}}}
-		attachCostToNativeUsage(r, bd)
-		require.NotNil(t, r.TranscriptionResponse.Usage.Cost)
-		assert.InDelta(t, 0.003, r.TranscriptionResponse.Usage.Cost.TotalCost, 1e-12)
-	})
+	plugin.applyNonStreamingOutputToEntry(entry, result, false, false)
+	plugin.attachCostBreakdown(ctx, entry, result)
 
-	t.Run("ocr", func(t *testing.T) {
-		r := &schemas.BifrostResponse{OCRResponse: &schemas.BifrostOCRResponse{UsageInfo: &schemas.OCRUsageInfo{}}}
-		attachCostToNativeUsage(r, bd)
-		require.NotNil(t, r.OCRResponse.UsageInfo.Cost)
-		assert.InDelta(t, 0.003, r.OCRResponse.UsageInfo.Cost.TotalCost, 1e-12)
-	})
+	// The log entry owns a distinct usage copy that carries the computed cost.
+	require.NotNil(t, entry.TokenUsageParsed)
+	assert.NotSame(t, clientUsage, entry.TokenUsageParsed)
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.Positive(t, entry.TokenUsageParsed.Cost.TotalCost)
 
-	t.Run("preserves provider-supplied cost", func(t *testing.T) {
-		existing := &schemas.BifrostCost{TotalCost: 9.99}
-		r := &schemas.BifrostResponse{SpeechResponse: &schemas.BifrostSpeechResponse{Usage: &schemas.SpeechUsage{Cost: existing}}}
-		attachCostToNativeUsage(r, bd)
-		assert.Same(t, existing, r.SpeechResponse.Usage.Cost)
-	})
-
-	t.Run("no usage slot is a no-op", func(t *testing.T) {
-		r := &schemas.BifrostResponse{SpeechResponse: &schemas.BifrostSpeechResponse{}}
-		attachCostToNativeUsage(r, bd)
-		assert.Nil(t, r.SpeechResponse.Usage)
-	})
+	// The client-facing usage is untouched: no cost leaked onto it.
+	assert.Nil(t, clientUsage.Cost)
 }
 
 // TestAttachCostBreakdownDenormalizesSplitWithoutUsageCarrier covers the OCR-shaped

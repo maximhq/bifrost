@@ -63,6 +63,9 @@ func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
 						Type:    schemas.Ptr(errorType),
 						Message: message,
 					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						RetryAfter: bifrostErr.ExtraFields.RetryAfter,
+					},
 				}
 				return result
 			}

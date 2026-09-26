@@ -13,9 +13,13 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/fasthttp/router"
 	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -463,9 +467,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 
 	nonTransportPaths := []string{
 		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
 		"/openai/v1/realtime/client_secrets",
-		"/openai/v1/realtime/sessions",
 		"/v1/chat/completions",
 	}
 
@@ -734,6 +736,153 @@ func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
 	})
 }
 
+// TestAuthMiddleware_EncodedTraversalDoesNotBypassAuth exercises the same raw-path
+// router dispatch as production. Authorization must never use the decoded path
+// to whitelist a request dispatched to a protected parameterized handler.
+func TestAuthMiddleware_EncodedTraversalDoesNotBypassAuth(t *testing.T) {
+	am := newTraversalAuthMiddleware()
+	cases := []struct {
+		name, method, route, uri string
+		status                   int
+	}{
+		{"provider update", "PUT", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious", 401},
+		{"provider key creation", "POST", "/api/providers/{provider}/keys", "/api/providers/..%2Fskills%2Fserve%2Fmalicious/keys", 401},
+		{"provider deletion", "DELETE", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious", 401},
+		{"plugin dev prefix", "PUT", "/api/plugins/{name}", "/api/plugins/..%2Fdev%2Fmalicious", 401},
+		{"lowercase slash", "PUT", "/api/providers/{provider}", "/api/providers/..%2fskills%2fserve%2fmalicious", 401},
+		{"encoded dots", "PUT", "/api/providers/{provider}", "/api/providers/%2e%2e%2Fskills%2Fserve%2Fmalicious", 401},
+		{"double encoding", "PUT", "/api/providers/{provider}", "/api/providers/%252e%252e%252Fskills%252Fserve%252Fmalicious", 401},
+		{"query string", "PUT", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious?source=test", 401},
+		{"public skills", "GET", "/api/skills/serve/{path:*}", "/api/skills/serve/my-skill.git/info/refs?service=git-upload-pack", 204},
+		{"public dev", "GET", "/api/dev/pprof/{profile}", "/api/dev/pprof/goroutine", 204},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertTraversalAuthRoute(t, am, tc.method, tc.route, tc.uri, "", tc.status)
+		})
+	}
+}
+
+// traversalTokenStore only implements the lookup used by the real token service.
+// An embedded interface makes any unexpected store access fail loudly.
+type traversalTokenStore struct {
+	configstore.ConfigStore
+	row tables.TempToken
+}
+
+func (s *traversalTokenStore) GetTempTokenByHash(_ context.Context, hash string) (*tables.TempToken, error) {
+	if hash != s.row.TokenHash {
+		return nil, nil
+	}
+	row := s.row
+	return &row, nil
+}
+
+func newTraversalAuthMiddleware() *AuthMiddleware {
+	SetLogger(&mockLogger{})
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+	return am
+}
+
+// Record router selection separately from the protected handler: a 404 caused
+// by a malformed fixture must not be mistaken for successful auth enforcement.
+func assertTraversalAuthRoute(t *testing.T, am *AuthMiddleware, method, route, uri, token string, status int) {
+	t.Helper()
+	matched, reached := false, false
+	r := router.New()
+	protected := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		reached = true
+		ctx.SetStatusCode(fasthttp.StatusNoContent)
+	})
+	r.Handle(method, route, func(ctx *fasthttp.RequestCtx) {
+		matched = true
+		protected(ctx)
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(method)
+	ctx.Request.SetRequestURI(uri)
+	if token != "" {
+		ctx.Request.Header.Set("X-Bifrost-Temp-Token", token)
+	}
+	r.Handler(ctx)
+	if !matched {
+		t.Fatalf("fixture did not match route %s %s: %q", method, route, uri)
+	}
+	if got := ctx.Response.StatusCode(); got != status {
+		t.Fatalf("%s %s: expected status %d, got %d (handler reached=%v)", method, uri, status, got, reached)
+	}
+	if wantReached := status == fasthttp.StatusNoContent; reached != wantReached {
+		t.Fatalf("%s %s: handler reached=%v, want %v", method, uri, reached, wantReached)
+	}
+	if reached && token != "" {
+		if ctx.UserValue(schemas.BifrostContextKeyTempTokenScope) == nil || ctx.UserValue(schemas.BifrostContextKeyTempTokenResourceID) == nil {
+			t.Fatal("successful token auth must attach the validated scope and resource ID")
+		}
+	}
+}
+
+func TestAuthMiddleware_TempTokenEncodedTraversal(t *testing.T) {
+	const token = "test-scoped-token"
+	const flowID = "flow-123"
+	for _, scope := range []temptoken.Scope{mcpAuthScope, mcpHeadersAuthScope, oauth2ConsentScope} {
+		t.Run(scope.Name, func(t *testing.T) {
+			store := &traversalTokenStore{row: tables.TempToken{
+				ID: "token-123", TokenHash: encrypt.HashSHA256(token),
+				Scope: scope.Name, ResourceID: flowID, ExpiresAt: time.Now().Add(time.Hour),
+			}}
+			am := newTraversalAuthMiddleware()
+			am.tempTokensService = temptoken.NewService(store, temptoken.NewRegistry())
+			if err := RegisterTempTokenScopes(am.tempTokensService); err != nil {
+				t.Fatal(err)
+			}
+			am.UpdateTempTokenAuthEnabled(true)
+			for _, allowed := range scope.AllowedRoutes {
+				path := strings.ReplaceAll(allowed.Path, scope.ResourceIDInPath, flowID)
+				t.Run(allowed.Method+" "+allowed.Path, func(t *testing.T) {
+					t.Run("legitimate", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path+"?source=test", token, 204)
+					})
+					for _, target := range []string{"/api/providers/{provider}", "/api/plugins/{name}"} {
+						for _, slash := range []string{"%2F", "%2f"} {
+							for _, dots := range []string{"..", "%2e%2e"} {
+								uri := target[:strings.Index(target, "{")] + dots + slash + strings.ReplaceAll(strings.TrimPrefix(path, "/api/"), "/", slash)
+								t.Run(uri, func(t *testing.T) {
+									assertTraversalAuthRoute(t, am, allowed.Method, target, uri, token, 401)
+								})
+							}
+						}
+					}
+					t.Run("wrong resource", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, strings.ReplaceAll(path, flowID, "other-flow"), token, 401)
+					})
+					t.Run("wrong method", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, "POST", allowed.Path, path, token, 401)
+					})
+					t.Run("unknown token", func(t *testing.T) {
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path, "unknown-token", 401)
+					})
+					t.Run("expired", func(t *testing.T) {
+						expiresAt := store.row.ExpiresAt
+						store.row.ExpiresAt = time.Now().Add(-time.Hour)
+						defer func() { store.row.ExpiresAt = expiresAt }()
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path, token, 401)
+					})
+					t.Run("disabled", func(t *testing.T) {
+						am.UpdateTempTokenAuthEnabled(false)
+						defer am.UpdateTempTokenAuthEnabled(true)
+						assertTraversalAuthRoute(t, am, allowed.Method, allowed.Path, path, token, 401)
+					})
+				})
+			}
+		})
+	}
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -748,6 +897,10 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	whitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
+		// Logout is idempotent (clears the cookie, revokes the session if a
+		// token is present) and must never 401, or a repeat logout cascades
+		// into a redirect loop in the dashboard.
+		"/api/session/logout",
 		"/api/oauth/callback",
 		"/health",
 	}
@@ -881,7 +1034,6 @@ func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing
 		{name: "chat completion with virtual key", uri: "/v1/chat/completions", headerKey: "x-bf-vk", headerVal: "sk-bf-abc123"},
 		{name: "chat completion without credentials", uri: "/v1/chat/completions"},
 		{name: "realtime minting (client_secrets)", uri: "/v1/realtime/client_secrets"},
-		{name: "realtime minting (sessions)", uri: "/openai/v1/realtime/sessions"},
 	}
 
 	for _, tc := range cases {
@@ -1723,7 +1875,13 @@ func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "unsupported Content-Encoding") {
+	// The wording is fasthttp's, wrapped by the middleware with %v, so match it
+	// case-insensitively rather than pinning an upstream string. fasthttp changed
+	// it from "unsupported Content-Encoding: snappy" to
+	// `unsupported content-encoding: "snappy"`; what this test cares about is that
+	// the unsupported encoding is reported, not how upstream capitalises it.
+	if bifrostErr.Error == nil ||
+		!strings.Contains(strings.ToLower(bifrostErr.Error.Message), "unsupported content-encoding") {
 		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
 	}
 }
@@ -2674,5 +2832,39 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 
 	if !nextCalled {
 		t.Error("expected the request to pass straight through when no plugin implements the hook")
+	}
+}
+
+// TestSecurityHeadersMiddleware_APINoStore verifies that /api/ responses carry
+// Cache-Control: no-store unless the handler sets its own policy, so a CDN never serves
+// one user's session or config data to another. Non-API paths are left alone.
+func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		handlerSets string
+		want        string
+	}{
+		{name: "api path gets no-store", path: "/api/session/is-auth-enabled", want: "no-store"},
+		{name: "api path keeps handler policy", path: "/api/branding/logo", handlerSets: "private, max-age=86400", want: "private, max-age=86400"},
+		{name: "non-api path untouched", path: "/ui/assets/app.js", want: ""},
+		{name: "non-api path keeps handler policy", path: "/ui/assets/app.js", handlerSets: "public, max-age=3600", want: "public, max-age=3600"},
+		{name: "prefix must match a segment", path: "/apiary", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := SecurityHeadersMiddleware()(func(ctx *fasthttp.RequestCtx) {
+				if tt.handlerSets != "" {
+					ctx.Response.Header.Set("Cache-Control", tt.handlerSets)
+				}
+				ctx.SetStatusCode(fasthttp.StatusOK)
+			})
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tt.path)
+			handler(ctx)
+			if got := string(ctx.Response.Header.Peek("Cache-Control")); got != tt.want {
+				t.Fatalf("Cache-Control for %s = %q, want %q", tt.path, got, tt.want)
+			}
+		})
 	}
 }

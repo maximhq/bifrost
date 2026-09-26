@@ -63,10 +63,26 @@ echo "🏷️ Tag name: $TAG_NAME"
 echo "🔧 Updating plugin dependencies..."
 cd "$PLUGIN_DIR"
 
-# Update core dependency
+# Update all internal dependencies together so Go never resolves a mix of old
+# plugin code and new framework packages (e.g. batchaccounting -> jobaccounting).
 if [ -f "go.mod" ]; then
-  go_get_with_backoff "github.com/maximhq/bifrost/core@${CORE_VERSION}"
-  go_get_with_backoff "github.com/maximhq/bifrost/framework@${FRAMEWORK_VERSION}"
+  DEPENDENCIES=(
+    "github.com/maximhq/bifrost/core@${CORE_VERSION}"
+    "github.com/maximhq/bifrost/framework@${FRAMEWORK_VERSION}"
+  )
+  PLUGIN_DEPENDENCIES=$(go mod edit -json | jq -r '.Require[]? | .Path | select(startswith("github.com/maximhq/bifrost/plugins/"))')
+  while IFS= read -r dependency; do
+    [ -n "$dependency" ] || continue
+    dependency_name="${dependency#github.com/maximhq/bifrost/plugins/}"
+    dependency_version_file="../${dependency_name}/version"
+    if [ ! -f "$dependency_version_file" ]; then
+      echo "❌ Version file not found for plugin dependency: $dependency"
+      exit 1
+    fi
+    dependency_version=$(tr -d '\n\r' < "$dependency_version_file")
+    DEPENDENCIES+=("${dependency}@v${dependency_version#v}")
+  done <<< "$PLUGIN_DEPENDENCIES"
+  go_get_with_backoff "${DEPENDENCIES[@]}"
   go mod tidy
   git add go.mod go.sum || true
 

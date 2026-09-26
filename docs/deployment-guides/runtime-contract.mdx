@@ -28,7 +28,7 @@ Keep the supplied entrypoint unless your own wrapper prepares `/app/data`, forwa
 
 ## Choose storage
 
-OSS Bifrost can store application configuration and request logs in SQLite or PostgreSQL. Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite.
+OSS Bifrost can store application configuration in SQLite or PostgreSQL, and request logs in SQLite, PostgreSQL, or ClickHouse. Bifrost Enterprise requires PostgreSQL 16 or later for the config store and does not support SQLite; the logs store may use PostgreSQL 16+ or ClickHouse.
 
 <Note>
 Persistent `/app/data` storage is used only when the configuration store or log store uses SQLite. When both stores use PostgreSQL, Bifrost does not create or use the SQLite databases and the Helm chart does not create the Bifrost data PVC. The container still needs access to its application directory and `config.json` during startup.
@@ -44,7 +44,7 @@ Keep one Bifrost process attached to each SQLite database. A shared SQLite file 
 
 **Bifrost requires PostgreSQL 16 or later.** Startup fails when the configured PostgreSQL server is older than version 16. Use PostgreSQL when Bifrost runs on ephemeral compute, when you prefer an external database, or for every Enterprise deployment.
 
-Configure both `config_store` and `logs_store` as PostgreSQL to remove SQLite from the deployment. Enterprise deployments must use PostgreSQL for both stores. With Helm, `storage.mode: postgres` makes both enabled stores inherit PostgreSQL unless a per-store `type` override selects another backend.
+Configure both `config_store` and `logs_store` as PostgreSQL to remove SQLite from the deployment. Enterprise deployments must use PostgreSQL for the config store; the logs store may use PostgreSQL or ClickHouse. With Helm, `storage.mode: postgres` makes both enabled stores inherit PostgreSQL unless a per-store `type` override selects another backend.
 
 The database may be hosted anywhere that Bifrost can reach. Common choices include an existing PostgreSQL server, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL, Azure Database for PostgreSQL, and provider-hosted PostgreSQL services.
 

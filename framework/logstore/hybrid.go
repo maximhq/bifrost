@@ -239,12 +239,12 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // Must be called after SerializeFields() populates the Parsed fields.
 func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	tokenUsage := dbEntry.TokenUsage
-	cacheDebug := dbEntry.CacheDebug
+	cacheMetadata := dbEntry.CacheDebug
 	tokenUsageParsed := dbEntry.TokenUsageParsed
 	cacheDebugParsed := dbEntry.CacheDebugParsed
 	restorePricingMetadata := func() {
 		dbEntry.TokenUsage = tokenUsage
-		dbEntry.CacheDebug = cacheDebug
+		dbEntry.CacheDebug = cacheMetadata
 		dbEntry.TokenUsageParsed = tokenUsageParsed
 		dbEntry.CacheDebugParsed = cacheDebugParsed
 	}
@@ -953,6 +953,12 @@ func (h *HybridLogStore) GetUserRankings(ctx context.Context, filters SearchFilt
 	return h.inner.GetUserRankings(ctx, filters)
 }
 
+// GetUserSpend delegates to the inner store and returns each user's total cost in
+// the filter window.
+func (h *HybridLogStore) GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error) {
+	return h.inner.GetUserSpend(ctx, filters)
+}
+
 func (h *HybridLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
 	return h.inner.GetDimensionRankings(ctx, filters, dimension)
 }
@@ -1026,6 +1032,12 @@ func (h *HybridLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol
 // distinct routing-engine values matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetDistinctRoutingEngines(ctx, limit, query)
+}
+
+// GetDistinctToolCallNames delegates to the inner store. tool_call_names is
+// not a payload field, so the inner row carries it even when content is offloaded.
+func (h *HybridLogStore) GetDistinctToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctToolCallNames(ctx, limit, query)
 }
 
 // GetDistinctStopReasons delegates to the inner store and returns distinct
@@ -1566,12 +1578,77 @@ func (h *HybridLogStore) FindWebhookDeliveryByID(ctx context.Context, id string)
 	return h.inner.FindWebhookDeliveryByID(ctx, id)
 }
 
-// SearchWebhookDeliveries returns one page of delivery history for an endpoint.
-func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
-	return h.inner.SearchWebhookDeliveries(ctx, endpointID, pagination)
+// SearchWebhookDeliveries returns one page of matching delivery history.
+func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+	return h.inner.SearchWebhookDeliveries(ctx, filters, pagination)
 }
 
 // DeleteExpiredWebhookDeliveries deletes delivery history whose expiry has passed.
 func (h *HybridLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
 	return h.inner.DeleteExpiredWebhookDeliveries(ctx)
+}
+
+// Warp conversation methods - delegated directly. Transcripts are stored whole
+// in the database and never offloaded: they are small, they are read as a unit
+// when a thread is reopened, and an object-store round trip per message would
+// make opening a saved chat slower than having asked the question again.
+
+// ListWarpConversations returns an owner's threads, most recent first.
+func (h *HybridLogStore) ListWarpConversations(ctx context.Context, ownerID string, limit int) ([]WarpConversation, error) {
+	return h.inner.ListWarpConversations(ctx, ownerID, limit)
+}
+
+// GetWarpConversation returns one thread with its messages in order.
+func (h *HybridLogStore) GetWarpConversation(ctx context.Context, ownerID, id string) (*WarpConversation, error) {
+	return h.inner.GetWarpConversation(ctx, ownerID, id)
+}
+
+// CreateWarpConversation starts a thread.
+func (h *HybridLogStore) CreateWarpConversation(ctx context.Context, conversation *WarpConversation) error {
+	return h.inner.CreateWarpConversation(ctx, conversation)
+}
+
+// AppendWarpMessages adds turns to a thread and bumps its updated time.
+func (h *HybridLogStore) AppendWarpMessages(ctx context.Context, ownerID, conversationID string, messages []WarpMessage) error {
+	return h.inner.AppendWarpMessages(ctx, ownerID, conversationID, messages)
+}
+
+// DeleteWarpConversation removes a thread and its messages.
+func (h *HybridLogStore) DeleteWarpConversation(ctx context.Context, ownerID, id string) error {
+	return h.inner.DeleteWarpConversation(ctx, ownerID, id)
+}
+
+// SetDistributedLocker hands the locker to the inner store when it has use for
+// one (ClickHouse); the SQL stores serialize with row locks instead.
+func (h *HybridLogStore) SetDistributedLocker(locker DistributedLocker) {
+	if lockable, ok := h.inner.(interface{ SetDistributedLocker(DistributedLocker) }); ok {
+		lockable.SetDistributedLocker(locker)
+	}
+}
+
+// DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
+func (h *HybridLogStore) DeleteWarpConversationIfEmpty(ctx context.Context, ownerID, id string) (bool, error) {
+	return h.inner.DeleteWarpConversationIfEmpty(ctx, ownerID, id)
+}
+
+// PruneWarpConversations drops an owner's oldest threads beyond keep.
+func (h *HybridLogStore) PruneWarpConversations(ctx context.Context, ownerID string, keep int) (int64, error) {
+	return h.inner.PruneWarpConversations(ctx, ownerID, keep)
+}
+
+// DeleteWarpConversationsOlderThan drops threads last touched before the cutoff,
+// across all owners, one bounded batch per call - callers loop until a call
+// returns zero.
+func (h *HybridLogStore) DeleteWarpConversationsOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	return h.inner.DeleteWarpConversationsOlderThan(ctx, cutoff)
+}
+
+// CountWarpMessages returns message counts for the given threads in one query.
+func (h *HybridLogStore) CountWarpMessages(ctx context.Context, conversationIDs []string) (map[string]int, error) {
+	return h.inner.CountWarpMessages(ctx, conversationIDs)
+}
+
+// SumWarpMessageUsage returns each thread's total tokens and cost in one query.
+func (h *HybridLogStore) SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error) {
+	return h.inner.SumWarpMessageUsage(ctx, conversationIDs)
 }

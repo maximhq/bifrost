@@ -424,6 +424,19 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		return nil, fmt.Errorf("client not found for server name: %s", clientName)
 	}
 
+	// Enforce the allow-lists at the actual invocation chokepoint, not just via the
+	// pre-flight source-text scan in agent.go: generated code can reach any bound tool
+	// through indirection (getattr, a dispatch table, etc.) that scan doesn't recognize,
+	// so this is the only point that sees the real tool being called regardless of how
+	// the Starlark code referenced it. Every Starlark tool invocation passes through this
+	// function (it's the sole callee of the builtin closures the sandbox is populated
+	// with), so this one check covers every syntax shape at once. ToolsToAutoExecute
+	// applies only to unattended (agent loop) runs; approved runs are bound by
+	// ToolsToExecute. A pre-hook rename is re-checked inside the op closure below.
+	if err := codemcp.AuthorizeCodeModeToolCall(ctx, toolName, client.ExecutionConfig); err != nil {
+		return nil, err
+	}
+
 	// Strip the client name prefix from tool name before calling MCP server
 	originalToolName := stripClientPrefix(toolName, clientName)
 
@@ -504,6 +517,11 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			toolCallReq = *preReq.ChatAssistantMessageToolCall
 			if toolCallReq.Function.Name != nil && *toolCallReq.Function.Name != "" {
 				effectiveToolName = stripClientPrefix(*toolCallReq.Function.Name, clientName)
+				// The pre-hook may have rewritten the name: authorize the tool that
+				// CallTool will actually invoke, not only the one the code asked for.
+				if err := codemcp.AuthorizeCodeModeToolCall(nestedCtx, *toolCallReq.Function.Name, client.ExecutionConfig); err != nil {
+					return nil, err
+				}
 			}
 			if strings.TrimSpace(toolCallReq.Function.Arguments) == "" {
 				effectiveArgs = map[string]interface{}{}

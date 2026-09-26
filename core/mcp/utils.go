@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -91,6 +92,7 @@ var ProbeRetryConfig = RetryConfig{
 	MaxRetries:     3,
 	InitialBackoff: 500 * time.Millisecond,
 	MaxBackoff:     4 * time.Second,
+	IsRetryable:    isTransientProbeError,
 }
 
 // ToolCallRetryConfig backs the live tool-call invocation itself
@@ -256,23 +258,24 @@ func isTransientError(err error) bool {
 		return false
 	}
 
-	// Permanent errors that should NOT be retried
-	permanentErrors := []string{
-		// Authentication/authorization errors
-		"401", "403", "unauthorized", "forbidden", "invalid auth", "invalid credential",
-		// HTTP client errors
-		"400", "405", "422", "bad request", "method not allowed",
-		// Configuration errors
-		"command not found", "no such file", "not found", "permission denied",
-		"invalid config",
-		// Command execution errors
-		"executable file not found", "permission denied", "command failed",
-		// Timeout errors - if something times out, retrying won't help
-		"timeout", "deadline exceeded", "waiting for endpoint",
+	for _, permanentErr := range permanentErrorPhrases {
+		if strings.Contains(strings.ToLower(errStr), permanentErr) {
+			return false
+		}
 	}
 
-	for _, permanentErr := range permanentErrors {
-		if strings.Contains(strings.ToLower(errStr), permanentErr) {
+	// Bare digits, deliberately: a collision cannot change this classifier's
+	// answer, because the timeout loop below would reject the same text anyway.
+	for _, status := range dialBarePermanentStatusCodes {
+		if strings.Contains(strings.ToLower(errStr), status) {
+			return false
+		}
+	}
+
+	// Timeouts are permanent here specifically because this classifier backs
+	// connection establishment; see timeoutErrorSubstrings.
+	for _, timeoutErr := range timeoutErrorSubstrings {
+		if strings.Contains(strings.ToLower(errStr), timeoutErr) {
 			return false
 		}
 	}
@@ -300,6 +303,77 @@ func isTransientError(err error) bool {
 	// but flips this default.
 	return true
 }
+
+// permanentErrorPhrases is what "retrying cannot help" looks like in words:
+// a rejected credential, a misconfiguration, a command that cannot run. Every
+// classifier in this file treats these as permanent, and they outrank a timeout
+// appearing in the same text, because "command failed: timeout" is a dead
+// command that happens to mention a timeout rather than a slow one.
+var permanentErrorPhrases = []string{
+	// Authentication/authorization errors
+	"unauthorized", "forbidden", "invalid auth", "invalid credential",
+	// HTTP client errors
+	"bad request", "method not allowed",
+	// Configuration errors
+	"command not found", "no such file", "not found", "permission denied",
+	"invalid config",
+	// Command execution errors
+	"executable file not found", "permission denied", "command failed",
+}
+
+// permanentHTTPStatusCodes is the same idea by status code rather than by
+// wording, held apart from the phrases because three digits collide with
+// ordinary parts of an error message in a way a phrase never does: a port
+// (8422), a latency (400ms), a byte count.
+//
+// The two classifiers therefore match them differently. isTransientError uses
+// bare substrings, which is harmless there because it also treats every
+// timeout as permanent, so a collision cannot change its answer.
+// isTransientProbeError cannot afford that, because it checks permanent
+// markers *before* deciding a timeout is retryable: see its own comment.
+var permanentHTTPStatusCodes = []string{"400", "401", "403", "404", "405", "422"}
+
+// dialBarePermanentStatusCodes is isTransientError's historical set, matched as
+// bare digits. It deliberately excludes 404, which the keyword-anchored read
+// above does include: a bare scan would take the "404" inside a port like :4040
+// for a status, and a genuine 404 response already carries "not found" from the
+// phrase list anyway.
+var dialBarePermanentStatusCodes = []string{"400", "401", "403", "405", "422"}
+
+// httpStatusPattern reads a three-digit status that some keyword marks AS a
+// status, rather than any three digits that happen to appear in the text. That
+// keyword requirement is the whole point: it is what makes it safe to check
+// statuses ahead of the timeout rule, because a port (8422) or a latency
+// (400ms) carries no keyword and so is never mistaken for one. The digits must
+// follow the keyword directly, separated by nothing but spaces and an optional
+// colon, so "HTTP transport error: ... 8422" does not match either.
+var httpStatusPattern = regexp.MustCompile(`(?i)\b(?:http|status(?:\s+code)?)\s*:?\s*(\d{3})\b`)
+
+// extractHTTPStatus returns the status code an error text reports, or "" when
+// it reports none. Covers "status 422", "status: 422", "status code: 401" and
+// "HTTP 404" alike, so the matcher is not limited to the spellings whoever
+// wrote it happened to think of.
+func extractHTTPStatus(errStr string) string {
+	match := httpStatusPattern.FindStringSubmatch(errStr)
+	if match == nil {
+		return ""
+	}
+	return match[1]
+}
+
+// timeoutErrorSubstrings is what "did not complete in time" looks like. The two
+// classifiers split on it rather than on its contents: isTransientError treats
+// every entry as permanent, because for connection establishment a timeout
+// usually means the endpoint is wrong or unreachable and the same dial will
+// time out again, while isTransientProbeError treats every entry as retryable,
+// because over an already-established connection a timeout is the most
+// retryable failure there is.
+//
+// Both iterate this one list on purpose. Spelling the phrases out at either
+// call site invites exactly the asymmetry that existed before: a probe that
+// retried "timeout" and "deadline exceeded" but not "waiting for endpoint",
+// which then fell through and was classified permanent.
+var timeoutErrorSubstrings = []string{"timeout", "deadline exceeded", "waiting for endpoint"}
 
 // transientErrorSubstrings is the shared substring list both isTransientError
 // (connection-establishment, default-retry-unknown) and
@@ -385,6 +459,170 @@ func isAuthFailureErrorText(errStr string) bool {
 		}
 	}
 	return false
+}
+
+// deadSessionErrorSubstrings is what "the upstream has abandoned this MCP
+// session" looks like by the time it reaches a CallTool error. Like
+// isAuthFailureErrorText above, substring matching on flattened text is the
+// only option: mcp-go collapses HTTP status codes and its own sentinels into a
+// plain error string before any call site sees them. What it does keep is the
+// *transport.Error frame around anything the transport (as opposed to the
+// tool) produced, and isDeadSessionError matches these needles only inside
+// that frame.
+//
+// The spec's signal is HTTP 404 on a request carrying Mcp-Session-Id, which
+// mcp-go turns into ErrSessionTerminated ("session terminated (404). need to
+// re-initialize"), so the first two entries cover every compliant server. The
+// rest are wordings real servers use when they answer a dead session with
+// something other than a 404.
+//
+// Deliberately narrow. Generic transport failures (connection refused, broken
+// pipe, 5xx) are left out even though a reconnect would sometimes help: they
+// are already retried by ToolCallRetryConfig, the periodic connection checker
+// repairs the ones a reconnect can fix, and a false positive here costs a
+// needless session swap plus one extra attempt at the tool.
+var deadSessionErrorSubstrings = []string{
+	"session terminated", "need to re-initialize",
+	"expect initialize request", "session not found",
+	"invalid session", "unknown session", "no transport found for session",
+}
+
+// isDeadSessionError reports whether an upstream tool-call error says the MCP
+// session behind the connection is gone. Retrying over the same connection
+// cannot fix that; only a fresh one can. Prefer this over the text-only form
+// below whenever the error value itself is in hand.
+//
+// The typed check comes first because it does not depend on how the sentinel is
+// worded: mcp-go returns ErrSessionTerminated for the spec's signal (a 404 on a
+// request carrying Mcp-Session-Id) and preserves it through its own wrapping,
+// so errors.Is sees it at the call site.
+//
+// The text fallback is not redundant, and cannot be removed. It is the only
+// signal a server gives when it answers a dead session with something other
+// than a 404: the 422 carrying "Unexpected message, expect initialize request"
+// that prompted this work has no typed error anywhere, because mcp-go formats
+// non-404 statuses straight into prose. Today the two checks agree on every
+// input, since the sentinel's own text contains one of the needles below; the
+// typed check is what keeps that true if the wording ever changes upstream.
+//
+// The text fallback only reads errors the transport produced. client.sendRequest
+// returns exactly two shapes: a transport failure, which it wraps in
+// *transport.Error, or the tool's own JSON-RPC error, which it flattens to the
+// tool's message with no wrapper at all (mcp.JSONRPCErrorDetails.AsError). Every
+// dead-session wording above comes from the first shape, an HTTP status the
+// transport formatted into prose. The second shape is the tool talking about
+// its own domain, and a tool that legitimately answers "invalid session" or
+// "session not found" must not be mistaken for a dead MCP session: the recovery
+// this gates reconnects a healthy client and, for a retry-safe tool, replays
+// the call. errors.As rather than a type assertion, because ExecuteWithRetry
+// and callers may wrap the transport error further before it gets here.
+func isDeadSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, transport.ErrSessionTerminated) {
+		return true
+	}
+	var transportErr *transport.Error
+	if !errors.As(err, &transportErr) {
+		return false
+	}
+	return isDeadSessionErrorText(transportErr.Error())
+}
+
+// isDeadSessionErrorText is the text half of isDeadSessionError, kept separate
+// for callers that only hold the flattened message.
+func isDeadSessionErrorText(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	for _, needle := range deadSessionErrorSubstrings {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTransientProbeError is ProbeRetryConfig's classifier, for the periodic
+// connection checker's own ping / list_tools calls. It differs from the shared
+// isTransientError in two ways, both because a probe runs over an
+// already-established connection instead of establishing one:
+//
+//   - A timeout is retryable here. isTransientError's blanket "if something
+//     times out, retrying won't help" fits a dial, where a timeout usually
+//     means the endpoint is wrong or unreachable. ConnectionCheckTimeout is 5
+//     seconds, so without this one slow response from a busy upstream spends
+//     none of the retry budget the probe exists to absorb blips with, marking
+//     the client Unstable on the first attempt and, now that a failed check
+//     reconnects, churning a working session over a single hiccup. The worst
+//     case this admits (four 5-second attempts plus the config's ~3.5s of
+//     backoff per operation) is what any unrecognized connection error already
+//     costs on this path.
+//   - A dead session is permanent, via the same classifier the reactive
+//     tool-call path uses. mcp-go clears its session id and returns
+//     ErrSessionTerminated on a 404 without re-initializing, so every retry
+//     over this connection fails identically; only a reconnect repairs it, and
+//     retrying first just delays that by the whole backoff schedule.
+//
+// Auth rejections are checked before the timeout rule for the same reason
+// isTransientToolCallError checks them first: error text like "403 forbidden:
+// timeout" must not fall into the timeout branch.
+func isTransientProbeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	if isDeadSessionErrorText(errStr) {
+		return false
+	}
+	// Checked before the timeout rule, not after: an error carrying any
+	// permanent marker is permanent even when its text also says "timeout"
+	// (auth rejections among them, since they are phrases on this list).
+	// Letting the timeout branch run first would make "status 422: timeout" or
+	// "command failed: timeout" retryable, which is strictly worse than the
+	// shared classifier they would otherwise fall through to.
+	for _, permanentErr := range permanentErrorPhrases {
+		if strings.Contains(errStr, permanentErr) {
+			return false
+		}
+	}
+	// Status codes only in status position, never as bare digits. Checking
+	// permanent markers ahead of the timeout rule is what makes that
+	// distinction load-bearing: a bare match would read the port in "dial tcp
+	// 127.0.0.1:8422: i/o timeout", or the latency in "i/o timeout after
+	// 400ms", as a permanent status and mark a client Unstable on the first
+	// attempt, spending none of the retry budget this classifier exists to
+	// spend. Matching narrowly is the safer error of the two: a status form
+	// this misses costs a few wasted retries, while a false positive recreates
+	// that bug.
+	if status := extractHTTPStatus(errStr); status != "" && slices.Contains(permanentHTTPStatusCodes, status) {
+		return false
+	}
+	// Cancellation is not a timeout, and has to be ruled out before the
+	// timeout rule for the same reason the permanent markers above are: left to
+	// isTransientError at the bottom, it never gets a say once the text also
+	// mentions a timeout. A timeout says the upstream was slow, which the next
+	// attempt may not be; a cancellation says someone stopped this request on
+	// purpose. The checker never cancels its own probes (their outer ctx is
+	// context.Background()), but mcp-go does when a client is closed mid-probe
+	// (a reconnect swapping the connection out, RemoveClient, Cleanup), and the
+	// timeout wording needs nothing more exotic than a URL containing it.
+	// Typed and text forms both, as in isTransientError, since a %v anywhere
+	// up the chain leaves only the text. mcp-go's own "context cancelled while
+	// waiting for endpoint" is deliberately not caught by either: it carries no
+	// %w and its own spelling, and on this path it only ever means the
+	// attempt's deadline expired.
+	if errors.Is(err, context.Canceled) || strings.Contains(errStr, "context canceled") {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	for _, timeoutErr := range timeoutErrorSubstrings {
+		if strings.Contains(errStr, timeoutErr) {
+			return true
+		}
+	}
+	return isTransientError(err)
 }
 
 // ExecuteWithRetry executes a function with exponential backoff retry logic.
@@ -601,9 +839,9 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 	return true // Tool is skipped (nil is treated as [] - no tools)
 }
 
-// canAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
+// CanAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
 // Returns true if the tool can be auto-executed, false otherwise.
-func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
+func CanAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// First check if tool is in ToolsToExecute (must be executable first)
 	if shouldSkipToolForConfig(toolName, config) {
 		return false // Tool is not in ToolsToExecute, so it cannot be auto-executed
@@ -631,6 +869,25 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	}
 
 	return false // Tool is not auto-executed (nil is treated as [] - no tools)
+}
+
+// AuthorizeCodeModeToolCall is the invocation-time allow-list check for a tool that
+// Code Mode is about to call. It runs at the actual chokepoint (callMCPTool), not as a
+// heuristic over generated code text: a model can reach a bound tool through syntactic
+// indirection (e.g. getattr(server, name)) that a source-text scan won't recognize.
+//
+// tools_to_execute always applies. tools_to_auto_execute applies only when the call runs
+// unattended, which the agent loop marks with BifrostContextKeyMCPUnattendedExecution.
+// A call a human approved, or one the application executes itself, keeps the documented
+// "manual approval required" semantics instead of being denied outright.
+func AuthorizeCodeModeToolCall(ctx *schemas.BifrostContext, toolName string, config *schemas.MCPClientConfig) error {
+	if shouldSkipToolForConfig(toolName, config) {
+		return fmt.Errorf("tool %q is not in tools_to_execute for this client", toolName)
+	}
+	if unattended, _ := ctx.Value(schemas.BifrostContextKeyMCPUnattendedExecution).(bool); unattended && !CanAutoExecuteTool(toolName, config) {
+		return fmt.Errorf("tool %q requires approval and cannot be auto-executed via Code Mode", toolName)
+	}
+	return nil
 }
 
 // shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
@@ -674,12 +931,11 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// Fix array schemas on the source map before copying to OrderedMap
 		FixArraySchemas(mcpTool.InputSchema.Properties, logger)
 
-		orderedProps := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Properties))
-		for k, v := range mcpTool.InputSchema.Properties {
-			orderedProps.Set(k, v)
-		}
-
-		properties = orderedProps
+		// mcp-go decodes properties into a Go map, so the server's key order is
+		// already lost here. Sort the keys: ranging over the map would give a
+		// different order on each tools/list sync, which changes the tool JSON
+		// sent to providers (breaking prompt caching) and the tools hash.
+		properties = schemas.OrderedMapFromMap(mcpTool.InputSchema.Properties)
 	} else {
 		// For tools with no parameters, initialize an empty properties map
 		// This is required by some providers (e.g., OpenAI) which expect
@@ -698,11 +954,8 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// to Properties above.
 		FixArraySchemas(mcpTool.InputSchema.Defs, logger)
 
-		orderedDefs := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Defs))
-		for k, v := range mcpTool.InputSchema.Defs {
-			orderedDefs.Set(k, v)
-		}
-		defs = orderedDefs
+		// Sorted for the same reason as properties above.
+		defs = schemas.OrderedMapFromMap(mcpTool.InputSchema.Defs)
 	}
 
 	// Preserve MCP tool annotations if any are set.

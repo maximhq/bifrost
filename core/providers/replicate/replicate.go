@@ -163,17 +163,24 @@ func createPrediction(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		logger.Debug(fmt.Sprintf("error from replicate provider: status %d", resp.StatusCode()))
-		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
+		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp), latency)
 	}
 
 	// Parse response
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
 	if decodeErr != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, decodeErr.Error())
+		}
 		return nil, nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	var prediction ReplicatePredictionResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &prediction, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, nil, latency, providerResponseHeaders, bifrostErr
 	}
@@ -218,17 +225,24 @@ func getPrediction(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from replicate provider: status %d", resp.StatusCode()))
-		return nil, nil, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
+		return nil, nil, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp), latency)
 	}
 
 	// Parse response
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		}
 		return nil, nil, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	prediction := &ReplicatePredictionResponse{}
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, prediction, nil, false, sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, prediction, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, nil, providerResponseHeaders, bifrostErr
 	}
@@ -346,7 +360,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			errorResponse := providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
+			errorResponse := providerUtils.SetErrorLatency(parseReplicateError(resp), latency)
 			fasthttp.ReleaseResponse(resp)
 			return nil, errorResponse
 		}
@@ -1328,8 +1342,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		body := resp.Body()
-		return nil, providerUtils.EnrichError(ctx, parseReplicateError(body, resp.StatusCode()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseReplicateError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
@@ -1733,6 +1746,11 @@ func (provider *ReplicateProvider) Speech(ctx *schemas.BifrostContext, key schem
 // Rerank is not supported by the Replicate provider.
 func (provider *ReplicateProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Replicate provider.
+func (provider *ReplicateProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Replicate provider.
@@ -2673,8 +2691,12 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 	}
 
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	// Build URL to fetch the prediction by ID.
-	predictionURL := provider.buildRequestURL(ctx, "/v1/predictions/"+videoID, schemas.VideoRetrieveRequest)
+	predictionURL := provider.buildRequestURL(ctx, "/v1/predictions/"+escapedVideoID, schemas.VideoRetrieveRequest)
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2698,7 +2720,7 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, providerUtils.EnrichError(
 			ctx,
-			parseReplicateError(resp.Body(), resp.StatusCode()),
+			parseReplicateError(resp),
 			nil,
 			nil,
 			provider.sendBackRawRequest,
@@ -2710,14 +2732,21 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	var prediction ReplicatePredictionResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, nil, false, sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &prediction, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2978,7 +3007,7 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
-		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
+		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3067,7 +3096,7 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
-		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
+		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp), latency)
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -3134,6 +3163,10 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -3146,7 +3179,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + url.PathEscape(request.FileID))
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -3167,7 +3200,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
-			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
+			lastErr = parseReplicateError(resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -3211,6 +3244,10 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -3223,7 +3260,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + url.PathEscape(request.FileID))
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -3261,7 +3298,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
-			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
+			lastErr = parseReplicateError(resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue

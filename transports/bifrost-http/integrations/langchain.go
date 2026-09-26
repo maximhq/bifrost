@@ -16,7 +16,7 @@ type LangChainRouter struct {
 }
 
 // NewLangChainRouter creates a new LangChainRouter with the given bifrost client.
-func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *LangChainRouter {
+func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *LangChainRouter {
 	routes := []RouteConfig{}
 
 	// Add OpenAI routes to LangChain for OpenAI API compatibility
@@ -38,7 +38,7 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateCohereRouteConfigs("/langchain")...)
 
 	return &LangChainRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 

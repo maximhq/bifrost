@@ -36,6 +36,7 @@ const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
+	endpoint_slug: "",
 	is_code_mode_client: false,
 	is_ping_available: true,
 	connection_type: "http",
@@ -166,6 +167,28 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 										<FormControl>
 											<Input id="client-name" data-testid="client-name-input" placeholder="Server name" maxLength={50} {...field} />
 										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Endpoint slug: optional on create, immutable after. Served at /mcp/<slug>. */}
+							<FormField
+								control={control}
+								name="endpoint_slug"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Endpoint slug</FormLabel>
+										<FormControl>
+											<Input
+												id="client-endpoint-slug"
+												data-testid="client-endpoint-slug-input"
+												placeholder="Leave blank to derive from the name"
+												{...field}
+												value={field.value ?? ""}
+											/>
+										</FormControl>
+										<p className="text-muted-foreground text-xs">{"Served at /mcp/<slug>. Immutable after creation."}</p>
 										<FormMessage />
 									</FormItem>
 								)}

@@ -95,8 +95,9 @@ class TestCohereRerank:
     def test_02_rerank_object_documents(self, cohere_client, provider, model):
         """Object documents: Cohere ranks only `text`, other keys ride along.
 
-        Documents are requested back so the id and metadata are actually checked - asserting
-        the ranking alone would pass even if a converter kept `text` and dropped the rest.
+        Documents are requested back so the echoed body is actually checked. `text` must always
+        match; id and metadata may be absent (a raw Cohere response to the stringified request
+        omits them) but must match when present.
         """
         skip_if_no_api_key(provider)
 
@@ -111,10 +112,18 @@ class TestCohereRerank:
         assert_valid_rerank_results(result_pairs(response))
 
         for result in response.results:
-            assert result.document == documents[result.index], (
-                f"document at index {result.index} did not round-trip: "
-                f"got {result.document!r}, sent {documents[result.index]!r}"
+            sent = documents[result.index]
+            got = result.document
+            assert isinstance(got, dict) and got.get("text") == sent["text"], (
+                f"document text at index {result.index} did not round-trip: "
+                f"got {got!r}, sent {sent!r}"
             )
+            for key in ("id", "metadata"):
+                if key in got:
+                    assert got[key] == sent[key], (
+                        f"document {key} at index {result.index} did not round-trip: "
+                        f"got {got!r}, sent {sent!r}"
+                    )
 
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("rerank")

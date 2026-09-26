@@ -190,6 +190,18 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: MarshalConfigForStorage / RedactConfig (ConfigMarshallerPlugin) (for Secret Var)
+	if sym, err := pluginObj.Lookup("MarshalConfigForStorage"); err == nil {
+		if dp.marshalConfigForStorage, ok = sym.(func(config map[string]any) (map[string]any, error)); !ok {
+			return nil, fmt.Errorf("failed to cast MarshalConfigForStorage to expected signature")
+		}
+	}
+	if sym, err := pluginObj.Lookup("RedactConfig"); err == nil {
+		if dp.redactConfig, ok = sym.(func(config map[string]any) (map[string]any, error)); !ok {
+			return nil, fmt.Errorf("failed to cast RedactConfig to expected signature")
+		}
+	}
+
 	return dp, nil
 }
 

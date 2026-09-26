@@ -482,20 +482,22 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		t.Skip("Could not make successful request")
 	}
 
-	// Wait for async PostHook goroutine to complete budget update
-	time.Sleep(2 * time.Second)
-
-	// Check budget usage - should have changed
-	getBudgetsResp3 := MakeRequest(t, APIRequest{
-		Method: "GET",
-		Path:   "/api/governance/budgets?from_memory=true",
-	})
-
-	budgetData3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
-	if budgetData3 == nil {
-		t.Fatalf("Budget %s not found in in-memory store", budgetID)
-	}
-	usageAfterSuccess, _ := budgetData3["current_usage"].(float64)
+	// Check budget usage - should have changed. The budgets endpoint reads the
+	// database, which trails the in-memory counters by up to the 10s dump
+	// ticker, so poll instead of a fixed sleep.
+	var usageAfterSuccess float64
+	WaitForCondition(t, func() bool {
+		getBudgetsResp3 := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/budgets?from_memory=true",
+		})
+		budgetData3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
+		if budgetData3 == nil {
+			return false
+		}
+		usageAfterSuccess, _ = budgetData3["current_usage"].(float64)
+		return usageAfterSuccess > usageAfterFailed+0.0001
+	}, 15*time.Second, "successful request cost lands in the budgets endpoint")
 
 	t.Logf("Budget usage after successful request: $%.6f", usageAfterSuccess)
 

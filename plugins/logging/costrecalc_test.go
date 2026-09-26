@@ -29,6 +29,9 @@ type fakeRecalcStore struct {
 	failBulkOnCall    int   // 1-based bulk call number to fail; 0 = never
 	hydrateChunkSizes []int // sizes handed to HydrateBillingChunk, in order
 	backfilled        []int // sizes handed to BulkBackfillBillingPayloads, in order
+	// updates captures single-row Update() writes, which is how a job kind's cost
+	// and its debug blob are persisted together.
+	updates map[string]map[string]any
 }
 
 func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
@@ -38,7 +41,21 @@ func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
 		split:       make(map[string]logstore.CostUpdate),
 		hasCost:     make(map[string]bool),
 		updateCount: make(map[string]int),
+		updates:     make(map[string]map[string]any),
 	}
+}
+
+func (s *fakeRecalcStore) Update(_ context.Context, id string, entry any) error {
+	fields, ok := entry.(map[string]any)
+	if !ok {
+		return fmt.Errorf("fakeRecalcStore.Update: want map[string]any, got %T", entry)
+	}
+	s.updates[id] = fields
+	if c, ok := fields["cost"].(float64); ok {
+		s.cost[id] = c
+		s.hasCost[id] = true
+	}
+	return nil
 }
 
 // SearchLogsForBilling is what the recalc job actually calls. The fake has nothing
@@ -471,5 +488,218 @@ func TestRunCostRecalcJob_HydratesInBoundedChunks(t *testing.T) {
 	}
 	if total != rows {
 		t.Fatalf("chunks covered %d rows, want every one of %d: %v", total, rows, store.hydrateChunkSizes)
+	}
+}
+
+// A job kind reprices an aggregate row to a single scalar total and leaves
+// breakdown nil; the generic path is the other way round. persistRecalcOutcomes
+// reading the nil breakdown for a kind-owned outcome wrote CostUpdate{} — zeros —
+// over a real provider-reported cost, and still counted the row as priced. This
+// exercises the seam end to end rather than what RepriceFromLog returns, which is
+// where that bug hid.
+func TestPersistRecalcOutcomes_KindOwnedCostSurvivesPersistence(t *testing.T) {
+	const id = "runware-settlement"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	// What VideoSettler.RepriceFromLog returns for a provider-reported cost: a
+	// positive total, and no debug blob to write alongside it.
+	outcomes := []billingOutcome{{cost: 0.42, kindOwned: true}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	if got := store.cost[id]; got != 0.42 {
+		t.Errorf("provider cost did not survive the reprice: got %v, want 0.42", got)
+	}
+	if got := store.split[id].Total; got != 0.42 {
+		t.Errorf("split total = %v, want 0.42", got)
+	}
+	if !tally.priced[0] {
+		t.Error("a repriced row must count as priced")
+	}
+}
+
+// The generic path carries a per-category split. Resolving both paths through one
+// helper must not flatten it into a bare total.
+func TestPersistRecalcOutcomes_GenericBreakdownKeepsItsSplit(t *testing.T) {
+	const id = "chat-row"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	outcomes := []billingOutcome{{
+		cost:      0.30,
+		breakdown: &schemas.BifrostCost{InputCost: 0.10, OutputCost: 0.20, TotalCost: 0.30},
+	}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	got := store.split[id]
+	if got.Total != 0.30 || got.Input != 0.10 || got.Output != 0.20 {
+		t.Errorf("the split collapsed: got total=%v input=%v output=%v, want 0.30/0.10/0.20",
+			got.Total, got.Input, got.Output)
+	}
+	if !tally.priced[0] {
+		t.Error("a repriced row must count as priced")
+	}
+}
+
+// priced[i] means the row now carries a POSITIVE cost and will drop out of a
+// MissingCostOnly scan; the caller advances its offset only past rows that stay.
+// Marking a settled zero as priced stalls that cursor — the row keeps matching
+// cost <= 0, reappears at the head of the next page, and the page repeats forever.
+func TestPersistRecalcOutcomes_SettledZeroDoesNotStallTheCursor(t *testing.T) {
+	const id = "failed-video"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	outcomes := []billingOutcome{{cost: 0, kindOwned: true, settledZero: true}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	if tally.priced[0] {
+		t.Error("a settled zero still matches cost <= 0, so it must not be reported as priced")
+	}
+	if !store.hasCost[id] {
+		t.Error("the zero must still be written, not skipped")
+	}
+	if got := store.cost[id]; got != 0 {
+		t.Errorf("cost = %v, want 0", got)
+	}
+}
+
+// A job kind can reprice an aggregate to zero and still have a refreshed debug
+// blob to persist — a batch whose models priced but whose usage was zero. The
+// zero branch used to return early and drop that blob, leaving stale breakdowns.
+func TestPersistRecalcOutcomes_ZeroCostStillWritesDebugBlob(t *testing.T) {
+	const id = "zero-usage-batch"
+	store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+	plugin := newRecalcPlugin(t, store)
+
+	outcomes := []billingOutcome{{
+		cost:        0,
+		kindOwned:   true,
+		settledZero: true,
+		debugUpdate: `{"batch_id":"b1","accounting":{"model_breakdowns":{}}}`,
+		debugColumn: "batch_debug",
+	}}
+
+	tally, err := plugin.persistRecalcOutcomes(context.Background(), []logstore.Log{{ID: id}}, outcomes)
+	if err != nil {
+		t.Fatalf("persistRecalcOutcomes: %v", err)
+	}
+	if tally.updated != 1 {
+		t.Errorf("updated = %d, want 1 — the debug blob must be written even at zero cost", tally.updated)
+	}
+	if got := store.updates[id]["batch_debug"]; got == nil {
+		t.Error("batch_debug was not persisted; the refreshed breakdowns are lost")
+	}
+	if tally.priced[0] {
+		t.Error("zero cost must not be reported as priced")
+	}
+}
+
+// persistRecalcOutcomes is a shipped path that the job-kind refactor restructured,
+// so every outcome shape it can receive is pinned here against the behaviour it
+// had before. The one deliberate difference is noted on its case.
+func TestPersistRecalcOutcomes_ShapeMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		outcome     billingOutcome
+		wantSkipped int
+		wantUpdated int
+		wantBulk    bool // written via BulkUpdateCost
+		wantDebug   bool // batch_debug/video_debug persisted
+		wantPriced  bool
+	}{
+		{
+			name:        "pricing error is skipped and counted unpriceable",
+			outcome:     billingOutcome{err: errPricingInputsUnavailable},
+			wantSkipped: 1,
+		},
+		{
+			name:        "cache hit resolved to zero writes an explicit zero, stays unpriced",
+			outcome:     billingOutcome{cost: 0, knownZeroCost: true},
+			wantUpdated: 1,
+			wantBulk:    true,
+			wantPriced:  false,
+		},
+		{
+			name:        "unresolved zero is skipped",
+			outcome:     billingOutcome{cost: 0},
+			wantSkipped: 1,
+		},
+		{
+			name:        "generic positive cost goes through the bulk path",
+			outcome:     billingOutcome{cost: 0.3, breakdown: &schemas.BifrostCost{TotalCost: 0.3}},
+			wantUpdated: 1,
+			wantBulk:    true,
+			wantPriced:  true,
+		},
+		{
+			name: "kind aggregate writes cost and debug together",
+			outcome: billingOutcome{
+				cost: 0.42, kindOwned: true,
+				debugUpdate: `{"x":1}`, debugColumn: "batch_debug",
+			},
+			wantUpdated: 1,
+			wantDebug:   true,
+			wantPriced:  true,
+		},
+		{
+			name: "echo row refreshes its display only and never bills",
+			outcome: billingOutcome{
+				cost: 0.42, kindOwned: true, displayOnly: true,
+				debugUpdate: `{"x":1}`, debugColumn: "batch_debug",
+			},
+			wantUpdated: 1,
+			wantDebug:   true,
+			wantPriced:  false,
+		},
+		{
+			// The one deliberate change from the previous behaviour: a zero-cost row
+			// carrying a refreshed blob used to be skipped, dropping the blob and
+			// leaving stale model breakdowns behind.
+			name: "zero cost with a refreshed blob still persists the blob",
+			outcome: billingOutcome{
+				cost: 0, kindOwned: true, settledZero: true,
+				debugUpdate: `{"x":1}`, debugColumn: "batch_debug",
+			},
+			wantUpdated: 1,
+			wantDebug:   true,
+			wantPriced:  false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const id = "row"
+			store := newFakeRecalcStore([]logstore.Log{{ID: id}})
+			plugin := newRecalcPlugin(t, store)
+
+			tally, err := plugin.persistRecalcOutcomes(
+				context.Background(), []logstore.Log{{ID: id}}, []billingOutcome{tc.outcome})
+			if err != nil {
+				t.Fatalf("persistRecalcOutcomes: %v", err)
+			}
+			if tally.skipped != tc.wantSkipped {
+				t.Errorf("skipped = %d, want %d", tally.skipped, tc.wantSkipped)
+			}
+			if tally.updated != tc.wantUpdated {
+				t.Errorf("updated = %d, want %d", tally.updated, tc.wantUpdated)
+			}
+			if got := store.updateCount[id] > 0; got != tc.wantBulk {
+				t.Errorf("bulk-written = %v, want %v", got, tc.wantBulk)
+			}
+			if got := store.updates[id] != nil; got != tc.wantDebug {
+				t.Errorf("debug persisted = %v, want %v", got, tc.wantDebug)
+			}
+			if tally.priced[0] != tc.wantPriced {
+				t.Errorf("priced = %v, want %v", tally.priced[0], tc.wantPriced)
+			}
+		})
 	}
 }

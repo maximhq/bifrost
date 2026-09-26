@@ -3,7 +3,9 @@ package semanticcache
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -450,8 +452,8 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 	}
 }
 
-// TestPreLLMHookStoresEmbeddingDebug verifies a successful semantic lookup remains billable if the main request later fails.
-func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
+// TestPreLLMHookStoresEmbeddingMetadata verifies a successful semantic lookup remains billable if the main request later fails.
+func TestPreLLMHookStoresEmbeddingMetadata(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{
@@ -470,18 +472,18 @@ func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-	cacheDebug, ok := schemas.CacheDebugFromContext(ctx)
+	cacheMetadata, ok := schemas.CacheMetadataFromContext(ctx)
 	if !ok {
-		t.Fatal("expected semantic embedding debug on request context")
+		t.Fatal("expected semantic embedding metadata on request context")
 	}
-	if cacheDebug.ProviderUsed == nil || *cacheDebug.ProviderUsed != string(plugin.config.Provider) {
-		t.Fatalf("cache debug provider = %v, want %q", cacheDebug.ProviderUsed, plugin.config.Provider)
+	if cacheMetadata.ProviderUsed == nil || *cacheMetadata.ProviderUsed != string(plugin.config.Provider) {
+		t.Fatalf("cache metadata provider = %v, want %q", cacheMetadata.ProviderUsed, plugin.config.Provider)
 	}
-	if cacheDebug.ModelUsed == nil || *cacheDebug.ModelUsed != plugin.config.EmbeddingModel {
-		t.Fatalf("cache debug model = %v, want %q", cacheDebug.ModelUsed, plugin.config.EmbeddingModel)
+	if cacheMetadata.ModelUsed == nil || *cacheMetadata.ModelUsed != plugin.config.EmbeddingModel {
+		t.Fatalf("cache metadata model = %v, want %q", cacheMetadata.ModelUsed, plugin.config.EmbeddingModel)
 	}
-	if cacheDebug.InputTokens == nil || *cacheDebug.InputTokens != 12 {
-		t.Fatalf("cache debug input tokens = %v, want 12", cacheDebug.InputTokens)
+	if cacheMetadata.InputTokens == nil || *cacheMetadata.InputTokens != 12 {
+		t.Fatalf("cache metadata input tokens = %v, want 12", cacheMetadata.InputTokens)
 	}
 }
 
@@ -645,6 +647,7 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	ctx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
@@ -674,8 +677,6 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 		schemas.BifrostContextKeyDirectKey,
 		schemas.BifrostContextKeySkipKeySelection,
 		schemas.BifrostContextKeyUseRawRequestBody,
-		schemas.BifrostContextKeySendBackRawRequest,
-		schemas.BifrostContextKeySendBackRawResponse,
 		schemas.BifrostContextKeyPassthroughOverridesPresent,
 		schemas.BifrostContextKeyLargePayloadMode,
 		schemas.BifrostContextKeyLargeResponseMode,
@@ -684,6 +685,18 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	} {
 		if v := captured.Value(key); v != nil {
 			t.Fatalf("expected %q cleared on internal embedding context, got %v", key, v)
+		}
+	}
+
+	// Raw capture is deliberately false, rather than absent: these values
+	// override provider-level raw-capture configuration for internal embeddings.
+	for _, key := range []schemas.BifrostContextKey{
+		schemas.BifrostContextKeySendBackRawRequest,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyStoreRawRequestResponse,
+	} {
+		if enabled, _ := captured.Value(key).(bool); enabled {
+			t.Fatalf("expected %q disabled on internal embedding context", key)
 		}
 	}
 
@@ -785,5 +798,534 @@ func TestPostLLMHook_WritesWhenVectorRequiredAndEmbeddingPresent(t *testing.T) {
 	defer base.mu.Unlock()
 	if len(base.addIDs) != 1 {
 		t.Fatalf("expected one cache write when embedding is present, got %d", len(base.addIDs))
+	}
+}
+
+// -----------------------------------------------------------------------------
+// PostLLMHook response ownership (issue #7233)
+// -----------------------------------------------------------------------------
+
+// TestPostLLMHook_ResponseOwnershipAfterReturn reproduces issue #7233: the
+// async cache writer marshals the caller-owned *BifrostResponse after
+// PostLLMHook returns, racing with core's raw-field cleanup (core/bifrost.go
+// nils ExtraFields.RawRequest/RawResponse right after RunPostLLMHooks). The
+// cache write must snapshot the response before PostLLMHook returns; the
+// stored payload must contain the raw_response value that was present at
+// hook time.
+func TestPostLLMHook_ResponseOwnershipAfterReturn(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+
+	store := newObservableStore()
+	plugin := newTestPlugin(t, store)
+
+	ctx := CreateContextWithCacheKeyAndType(t, "ownership-unary", CacheTypeDirect)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("ownership check", 0.7, 50),
+	}
+	if _, sc, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	} else if sc != nil {
+		t.Fatalf("expected miss, got short-circuit %+v", sc)
+	}
+
+	content := "stable snapshot"
+	res := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: &content},
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RawResponse: json.RawMessage(`{"synthetic":true}`),
+			},
+		},
+	}
+	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+
+	// Core performs this cleanup after RunPostLLMHooks returns (core/bifrost.go
+	// onResult: extraField.RawResponse = nil when drop-raw is set). The async
+	// writer must not observe it.
+	res.ChatResponse.ExtraFields.RawResponse = nil
+
+	plugin.WaitForPendingOperations()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one cache write, got %d", len(store.addIDs))
+	}
+	payload, _ := store.chunks[store.addIDs[0]].Properties["response"].(string)
+	if !strings.Contains(payload, `"raw_response":{"synthetic":true}`) {
+		t.Fatalf("async cache writer read the caller's response after raw-field cleanup; stored payload: %s", payload)
+	}
+}
+
+// TestPostLLMHook_StreamChunkOwnershipAfterReturn is the streaming variant of
+// issue #7233: the accumulator retains caller-owned chunk pointers across the
+// whole stream and marshals them on the final chunk, so core's post-hook
+// mutation of any earlier chunk corrupts (or races with) the cached entry.
+func TestPostLLMHook_StreamChunkOwnershipAfterReturn(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+
+	store := newObservableStore()
+	plugin := newTestPlugin(t, store)
+
+	ctx := CreateContextWithCacheKeyAndType(t, "ownership-stream", CacheTypeDirect)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: CreateBasicChatRequest("ownership stream check", 0.7, 50),
+	}
+	if _, sc, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	} else if sc != nil {
+		t.Fatalf("expected miss, got short-circuit %+v", sc)
+	}
+
+	first := newChatStreamChunk(0, "chunk zero", json.RawMessage(`{"chunk":0}`))
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
+	if _, _, err := plugin.PostLLMHook(ctx, first, nil); err != nil {
+		t.Fatalf("PostLLMHook failed for chunk 0: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+
+	// Core mutates the delivered chunk after the post-hook chain returns
+	// (raw-field strip / PopulateExtraFields). The accumulator still holds
+	// this pointer until the final chunk flushes.
+	first.ChatResponse.ExtraFields.RawResponse = nil
+
+	final := newChatStreamChunk(1, "chunk one", json.RawMessage(`{"chunk":1}`))
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := plugin.PostLLMHook(ctx, final, nil); err != nil {
+		t.Fatalf("PostLLMHook failed for final chunk: %v", err)
+	}
+	// Same post-return cleanup on the final chunk, racing the async flush.
+	final.ChatResponse.ExtraFields.RawResponse = nil
+
+	plugin.WaitForPendingOperations()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one cache write for the flushed stream, got %d", len(store.addIDs))
+	}
+	chunks, ok := store.chunks[store.addIDs[0]].Properties["stream_chunks"].([]string)
+	if !ok || len(chunks) != 2 {
+		t.Fatalf("expected 2 cached stream chunks, got %v", store.chunks[store.addIDs[0]].Properties["stream_chunks"])
+	}
+	if !strings.Contains(chunks[0], `"raw_response":{"chunk":0}`) {
+		t.Fatalf("cached chunk 0 lost raw_response after core's post-hook cleanup; cached: %s", chunks[0])
+	}
+	if !strings.Contains(chunks[1], `"raw_response":{"chunk":1}`) {
+		t.Fatalf("cached final chunk lost raw_response after core's post-hook cleanup; cached: %s", chunks[1])
+	}
+}
+
+// newChatStreamChunk builds one chat-completion stream chunk carrying the
+// given delta text and chunk index. raw, when non-nil, is stamped as
+// ExtraFields.RawResponse so tests can watch it survive (or not) into the
+// cached payload.
+func newChatStreamChunk(chunkIndex int, text string, raw json.RawMessage) *schemas.BifrostResponse {
+	res := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &text},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				ChunkIndex:  chunkIndex,
+			},
+		},
+	}
+	if raw != nil {
+		res.ChatResponse.ExtraFields.RawResponse = raw
+	}
+	return res
+}
+
+// -----------------------------------------------------------------------------
+// PostLLMHook write failure modes (issue #7450)
+// -----------------------------------------------------------------------------
+
+// capturingLogger records Warn and Error lines so tests can assert on what
+// the plugin reports when a cache write is skipped or a panic is recovered.
+type capturingLogger struct {
+	mu       sync.Mutex
+	warnings []string
+	errors   []string
+}
+
+func (l *capturingLogger) Debug(string, ...any) {}
+func (l *capturingLogger) Info(string, ...any)  {}
+func (l *capturingLogger) Warn(msg string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warnings = append(l.warnings, fmt.Sprintf(msg, args...))
+}
+func (l *capturingLogger) Error(msg string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errors = append(l.errors, fmt.Sprintf(msg, args...))
+}
+func (l *capturingLogger) Fatal(string, ...any)                   {}
+func (l *capturingLogger) SetLevel(schemas.LogLevel)              {}
+func (l *capturingLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (l *capturingLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func (l *capturingLogger) snapshot() (warnings, errors []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.warnings...), append([]string(nil), l.errors...)
+}
+
+// panickingAddStore fails the async writer the way a broken cache backend
+// would: Add panics instead of returning an error.
+type panickingAddStore struct {
+	*observableStore
+}
+
+func (s *panickingAddStore) Add(context.Context, string, string, []float32, map[string]interface{}) error {
+	panic("cache store exploded")
+}
+
+// newLoggedTestPlugin wires a capturingLogger into a test plugin.
+func newLoggedTestPlugin(t *testing.T, store vectorstore.VectorStore) (*Plugin, *capturingLogger) {
+	t.Helper()
+	logger := &capturingLogger{}
+	plugin := newTestPlugin(t, store)
+	plugin.logger = logger
+	return plugin, logger
+}
+
+// newResponsesCacheResponse builds a minimal non-streaming Responses API
+// response that PostLLMHook will try to cache.
+func newResponsesCacheResponse(text string) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Object: "response",
+			Model:  "gpt-4o",
+			Output: []schemas.ResponsesMessage{{
+				Content: &schemas.ResponsesMessageContent{ContentStr: &text},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ResponsesRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+			},
+		},
+	}
+}
+
+// mustPreLLMHookMiss runs PreLLMHook and fails the test unless it was a
+// clean cache miss, which is what the PostLLMHook write path expects.
+func mustPreLLMHookMiss(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	t.Helper()
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+	if shortCircuit != nil {
+		t.Fatalf("expected cache miss, got short-circuit %+v", shortCircuit)
+	}
+}
+
+// waitForWriters drains the async writers with a deadline. An unrecovered
+// panic aborts the whole test binary, so this cannot observe it directly;
+// the deadline guards the other failure shape, a writer that never returns.
+func waitForWriters(t *testing.T, plugin *Plugin) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		plugin.WaitForPendingOperations()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("async cache writer did not finish")
+	}
+}
+
+func assertRecoveredWritePanicLogged(t *testing.T, logger *capturingLogger) {
+	t.Helper()
+	_, errors := logger.snapshot()
+	if len(errors) != 1 {
+		t.Fatalf("expected exactly one recovered-panic error log, got %v", errors)
+	}
+	if !strings.Contains(errors[0], "Semantic cache write panicked") || !strings.Contains(errors[0], "cache store exploded") {
+		t.Fatalf("recovered panic was not reported: %s", errors[0])
+	}
+}
+
+func assertNoCacheWrites(t *testing.T, store *observableStore) {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != 0 {
+		t.Fatalf("expected zero cache writes, got %d", len(store.addIDs))
+	}
+}
+
+// TestPostLLMHook_SkipsWriteWhenResponseCannotBeMarshaled: a response that
+// cannot be serialized is returned to the caller untouched, the write is
+// skipped with a single warning, and cache_debug stays stamped so the miss
+// remains observable.
+func TestPostLLMHook_SkipsWriteWhenResponseCannotBeMarshaled(t *testing.T) {
+	store := newObservableStore()
+	plugin, logger := newLoggedTestPlugin(t, store)
+	ctx := CreateContextWithCacheKey(t, "marshal-failure-unary")
+	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: CreateBasicResponsesRequest("What is Bifrost?", 0.1, 32),
+	})
+
+	res := newResponsesCacheResponse("should not be cached")
+	// A channel has no JSON encoding, so serialization fails deterministically.
+	res.ResponsesResponse.ExtraFields.RawResponse = make(chan int)
+
+	got, bifrostErr, err := plugin.PostLLMHook(ctx, res, nil)
+	if err != nil || bifrostErr != nil {
+		t.Fatalf("PostLLMHook failed: err=%v bifrostErr=%v", err, bifrostErr)
+	}
+	if got != res {
+		t.Fatal("serialization failure changed the response returned to the caller")
+	}
+	plugin.WaitForPendingOperations()
+
+	assertNoCacheWrites(t, store)
+	warnings, errors := logger.snapshot()
+	if len(errors) != 0 {
+		t.Fatalf("expected no error log, got %v", errors)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to marshal response") {
+		t.Fatalf("expected exactly one marshal warning, got %v", warnings)
+	}
+	if res.ResponsesResponse.ExtraFields.CacheDebug == nil {
+		t.Fatal("expected cache_debug to stay stamped when the write is skipped")
+	}
+}
+
+// TestPostLLMHook_StreamMarshalFailureWarnsOnceAndSkipsWrite: PostLLMHook
+// runs once per chunk, so a stream whose chunks cannot be serialized must
+// warn once, on the first failure, never reach the store, and leave no
+// accumulator behind for the reaper.
+func TestPostLLMHook_StreamMarshalFailureWarnsOnceAndSkipsWrite(t *testing.T) {
+	store := newObservableStore()
+	plugin, logger := newLoggedTestPlugin(t, store)
+	ctx := CreateContextWithCacheKeyAndType(t, "marshal-failure-stream", CacheTypeDirect)
+	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: CreateBasicChatRequest("marshal failure stream", 0.7, 50),
+	})
+
+	for i, final := range []bool{false, true} {
+		chunk := newChatStreamChunk(i, "unserializable", nil)
+		chunk.ChatResponse.ExtraFields.RawResponse = make(chan int)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, final)
+		if _, _, err := plugin.PostLLMHook(ctx, chunk, nil); err != nil {
+			t.Fatalf("PostLLMHook failed for chunk %d: %v", i, err)
+		}
+	}
+	plugin.WaitForPendingOperations()
+
+	assertNoCacheWrites(t, store)
+	assertNoStreamAccumulator(t, plugin, ctx)
+	warnings, errors := logger.snapshot()
+	if len(errors) != 0 {
+		t.Fatalf("expected no error log, got %v", errors)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to marshal response") {
+		t.Fatalf("expected exactly one marshal warning (first failure only), got %v", warnings)
+	}
+}
+
+// assertNoStreamAccumulator fails if the plugin still holds an accumulator
+// for the request: a stream that will never be flushed must not linger for
+// the reaper.
+func assertNoStreamAccumulator(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext) {
+	t.Helper()
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if _, ok := plugin.streamAccumulators.Load(requestID); ok {
+		t.Fatalf("stream accumulator for request %s was not dropped", requestID)
+	}
+}
+
+// TestPostLLMHook_StreamWithUnserializableMiddleChunkIsNotCached: one lost
+// chunk makes the whole replay wrong, so a stream in which any chunk fails
+// to serialize must never be flushed, even when every other chunk (including
+// the final one) serializes fine. The failure is reported once, with the
+// failing chunk's error, and the accumulator is dropped on the final chunk.
+func TestPostLLMHook_StreamWithUnserializableMiddleChunkIsNotCached(t *testing.T) {
+	store := newObservableStore()
+	plugin, logger := newLoggedTestPlugin(t, store)
+	ctx := CreateContextWithCacheKeyAndType(t, "marshal-failure-middle-chunk", CacheTypeDirect)
+	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: CreateBasicChatRequest("middle chunk failure", 0.7, 50),
+	})
+
+	texts := []string{"chunk zero", "unserializable", "chunk two"}
+	for i, text := range texts {
+		chunk := newChatStreamChunk(i, text, nil)
+		if i == 1 {
+			chunk.ChatResponse.ExtraFields.RawResponse = make(chan int)
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, i == len(texts)-1)
+		if _, _, err := plugin.PostLLMHook(ctx, chunk, nil); err != nil {
+			t.Fatalf("PostLLMHook failed for chunk %d: %v", i, err)
+		}
+	}
+	plugin.WaitForPendingOperations()
+
+	assertNoCacheWrites(t, store)
+	assertNoStreamAccumulator(t, plugin, ctx)
+	warnings, errors := logger.snapshot()
+	if len(errors) != 0 {
+		t.Fatalf("expected no error log, got %v", errors)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to marshal response") {
+		t.Fatalf("expected exactly one marshal warning for the failed chunk, got %v", warnings)
+	}
+}
+
+// TestPostLLMHook_RecoversUnaryWriterPanic reproduces issue #7450's stated
+// expectation: a cache write failure is logged and skipped, never fatal. A
+// store that panics inside the async writer must not take the process down
+// and must not leave writersWg hanging.
+func TestPostLLMHook_RecoversUnaryWriterPanic(t *testing.T) {
+	store := &panickingAddStore{observableStore: newObservableStore()}
+	plugin, logger := newLoggedTestPlugin(t, store)
+	ctx := CreateContextWithCacheKey(t, "writer-panic-unary")
+	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: CreateBasicResponsesRequest("What is Bifrost?", 0.1, 32),
+	})
+
+	res := newResponsesCacheResponse("writer panic")
+	got, bifrostErr, err := plugin.PostLLMHook(ctx, res, nil)
+	if err != nil || bifrostErr != nil {
+		t.Fatalf("PostLLMHook failed: err=%v bifrostErr=%v", err, bifrostErr)
+	}
+	if got != res {
+		t.Fatal("PostLLMHook returned a different response")
+	}
+	waitForWriters(t, plugin)
+
+	assertRecoveredWritePanicLogged(t, logger)
+}
+
+// TestPostLLMHook_RecoversStreamFlushPanic is the streaming counterpart: the
+// final-chunk flush runs on its own writer goroutine and gets the same
+// recovery.
+func TestPostLLMHook_RecoversStreamFlushPanic(t *testing.T) {
+	store := &panickingAddStore{observableStore: newObservableStore()}
+	plugin, logger := newLoggedTestPlugin(t, store)
+	ctx := CreateContextWithCacheKeyAndType(t, "writer-panic-stream", CacheTypeDirect)
+	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: CreateBasicChatRequest("writer panic stream", 0.7, 50),
+	})
+
+	for i, final := range []bool{false, true} {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, final)
+		if _, _, err := plugin.PostLLMHook(ctx, newChatStreamChunk(i, "chunk", nil), nil); err != nil {
+			t.Fatalf("PostLLMHook failed for chunk %d: %v", i, err)
+		}
+	}
+	waitForWriters(t, plugin)
+
+	assertRecoveredWritePanicLogged(t, logger)
+}
+
+// backdateStreamAccumulator makes the request's accumulator look idle for
+// longer than streamAccumulatorMaxAge, so the next reaper pass evicts it
+// unless a chunk arrival has refreshed LastSeenAt since.
+func backdateStreamAccumulator(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext) {
+	t.Helper()
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	value, ok := plugin.streamAccumulators.Load(requestID)
+	if !ok {
+		t.Fatalf("no stream accumulator for request %s to backdate", requestID)
+	}
+	accumulator := value.(*StreamAccumulator)
+	accumulator.mu.Lock()
+	accumulator.LastSeenAt = time.Now().Add(-2 * streamAccumulatorMaxAge)
+	accumulator.mu.Unlock()
+}
+
+// TestPostLLMHook_FailedStreamOutlivesReaperUntilFinalChunk: the reaper
+// evicts accumulators idle for streamAccumulatorMaxAge, judged by
+// LastSeenAt. A failed stream must keep refreshing that timestamp on every
+// chunk arrival — the failing chunk itself and the good chunks after it —
+// or a long stream loses its Failed marker mid-flight, the next chunk starts
+// a clean accumulator, and the final chunk flushes a partial entry.
+func TestPostLLMHook_FailedStreamOutlivesReaperUntilFinalChunk(t *testing.T) {
+	const failingChunk = 1
+	cases := []struct {
+		name string
+		// refreshingChunk is the chunk whose arrival alone must keep the
+		// accumulator alive: LastSeenAt is backdated just before it and the
+		// reaper runs right after it.
+		refreshingChunk int
+	}{
+		{name: "FailingChunkRefreshes", refreshingChunk: failingChunk},
+		{name: "LaterGoodChunkRefreshes", refreshingChunk: failingChunk + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newObservableStore()
+			plugin, logger := newLoggedTestPlugin(t, store)
+			ctx := CreateContextWithCacheKeyAndType(t, "failed-stream-reaper-"+tc.name, CacheTypeDirect)
+			mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				ChatRequest: CreateBasicChatRequest("failed stream outlives reaper", 0.7, 50),
+			})
+
+			texts := []string{"chunk zero", "unserializable", "chunk two", "chunk three"}
+			for i, text := range texts {
+				if i == tc.refreshingChunk {
+					backdateStreamAccumulator(t, plugin, ctx)
+				}
+				chunk := newChatStreamChunk(i, text, nil)
+				if i == failingChunk {
+					chunk.ChatResponse.ExtraFields.RawResponse = make(chan int)
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, i == len(texts)-1)
+				if _, _, err := plugin.PostLLMHook(ctx, chunk, nil); err != nil {
+					t.Fatalf("PostLLMHook failed for chunk %d: %v", i, err)
+				}
+				if i == tc.refreshingChunk {
+					plugin.cleanupOldStreamAccumulators()
+				}
+			}
+			plugin.WaitForPendingOperations()
+
+			assertNoCacheWrites(t, store)
+			assertNoStreamAccumulator(t, plugin, ctx)
+			warnings, errors := logger.snapshot()
+			if len(errors) != 0 {
+				t.Fatalf("expected no error log, got %v", errors)
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to marshal response") {
+				t.Fatalf("expected exactly one marshal warning, got %v", warnings)
+			}
+		})
 	}
 }

@@ -13,7 +13,7 @@ Enterprise v2.0.0 is built on the OSS v2.0.0 base and inherits its breaking chan
 
 ## Inherited OSS v2.0.0 Breaking Changes
 
-Enterprise v2.0.0 ships on the OSS v2.0.0 base, so all five OSS breaking changes apply. See the [OSS v2.0.0 Migration Guide](/migration-guides/v2.0.0) for full before/after examples and the migration checklist.
+Enterprise v2.0.0 ships on the OSS v2.0.0 base, so all six OSS breaking changes apply. See the [OSS v2.0.0 Migration Guide](/migration-guides/v2.0.0) for full before/after examples and the migration checklist.
 
 | OSS # | Change | What you must do |
 |-------|--------|------------------|
@@ -22,6 +22,7 @@ Enterprise v2.0.0 ships on the OSS v2.0.0 base, so all five OSS breaking changes
 | 3 | **Governance APIs moved to the `/api/governance` namespace** | Move API clients, scripts, Postman collections, and UI callers to the canonical `/api/governance/*` paths, and switch Team/User list endpoints to `limit`/`offset` pagination. Legacy paths remain deprecated aliases for one GA release |
 | 4 | **`HTTPTransportPreHook` now runs after authentication** | If a custom plugin injects a credential from `HTTPTransportPreHook`, rename that function to `HTTPTransportPreAuthHook`. See [Plugin Transport Hooks](#plugin-transport-hooks-new-pre-auth-phase) below for the SCIM/identity-provider specifics |
 | 5 | **Request cost is now a per-category breakdown** | If any integration parses the `cost` / `token_usage.cost` object, remap the flat fields to the nested input/output/additional shape. Custom log store wrappers implementing `framework/logstore.LogStore` must update `BulkUpdateCost` to take `map[string]CostUpdate` |
+| 6 | **Legacy observability attribute aliases were removed** | Update dashboards, alerts, collector processors, and queries to use the canonical `bifrost.*` or OpenTelemetry semantic-convention keys; replace `x-bf-prom-*` custom-label headers with `x-bf-dim-*` |
 
 ---
 

@@ -286,6 +286,22 @@ func (e *SecretVar) Redacted() *SecretVar {
 	return &SecretVar{Val: prefix + middle + suffix, ref: e.ref, SecretType: e.SecretType}
 }
 
+// RedactedIfSecret returns a copy holding the literal value when the SecretVar
+// is plain text, and a Redacted copy when it is env/vault-backed. Use it for
+// fields that are identifiers or network addresses rather than credentials — a
+// region or a service URL is not worth hiding, but the resolved contents of a
+// secret reference still are. Like Redacted it always returns a fresh pointer,
+// so a redacted API response never aliases the live config.
+func (e *SecretVar) RedactedIfSecret() *SecretVar {
+	if e == nil {
+		return nil
+	}
+	if e.IsFromSecret() {
+		return e.Redacted()
+	}
+	return e.Clone()
+}
+
 // FullyRedacted returns a copy of the SecretVar with Val replaced by a fixed placeholder
 // so no substring of the original value is exposed. Use for API responses where
 // Redacted is unsafe (e.g. literal proxy passwords). secretRef and secretType are

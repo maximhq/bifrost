@@ -2,6 +2,8 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -1380,7 +1382,7 @@ func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing
 	}
 
 	var reasoningItemID string
-	var reasoningOutputIndex, textOutputIndex = -1, -1
+	reasoningOutputIndex, textOutputIndex := -1, -1
 	reasoningAddedIdx, reasoningDoneIdx, textAddedIdx := -1, -1, -1
 	firstReasoningDeltaIdx := -1
 
@@ -1449,7 +1451,6 @@ func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing
 	}
 }
 
-
 // responseFormatAsMap reads a converted chat response_format regardless of its
 // representation. The Responses to Chat conversion emits raw JSON (the same
 // representation the chat wire decode produces), so tests read it through the
@@ -1470,4 +1471,329 @@ func nestedMap(t *testing.T, parent map[string]interface{}, key string) map[stri
 		t.Fatalf("expected %q to be an object, got %T", key, parent[key])
 	}
 	return om.ToMap()
+}
+
+func responsesTextOutput(text string) []ResponsesMessage {
+	return []ResponsesMessage{
+		{
+			Type: Ptr(ResponsesMessageTypeMessage),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: &text},
+				},
+			},
+		},
+	}
+}
+
+func TestToBifrostChatResponse_MapsCompletedToStop(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: responsesTextOutput("ok"),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if chatResp.Choices[0].FinishReason == nil {
+		t.Fatal("expected finish_reason to be set")
+	}
+	if got := *chatResp.Choices[0].FinishReason; got != string(BifrostFinishReasonStop) {
+		t.Fatalf("expected finish_reason %q, got %q", BifrostFinishReasonStop, got)
+	}
+}
+
+func TestToBifrostChatResponse_MapsFunctionCallToToolCalls(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: []ResponsesMessage{
+			{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				Role: Ptr(ResponsesInputMessageRoleAssistant),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    Ptr("call_1"),
+					Name:      Ptr("search"),
+					Arguments: Ptr(`{"q":"x"}`),
+				},
+			},
+		},
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if chatResp.Choices[0].FinishReason == nil {
+		t.Fatal("expected finish_reason to be set")
+	}
+	if got := *chatResp.Choices[0].FinishReason; got != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("expected finish_reason %q, got %q", BifrostFinishReasonToolCalls, got)
+	}
+}
+
+func TestToBifrostChatResponse_MapsIncompleteDetails(t *testing.T) {
+	cases := map[string]string{
+		ResponsesResponseIncompleteReasonMaxOutputTokens: string(BifrostFinishReasonLength),
+		ResponsesResponseIncompleteReasonContentFilter:   "content_filter",
+	}
+
+	for reason, expected := range cases {
+		t.Run(reason, func(t *testing.T) {
+			chatResp := (&BifrostResponsesResponse{
+				Status:            Ptr(ResponsesResponseStatusIncomplete),
+				IncompleteDetails: &ResponsesResponseIncompleteDetails{Reason: reason},
+				Output:            responsesTextOutput("partial"),
+			}).ToBifrostChatResponse()
+
+			if chatResp == nil || len(chatResp.Choices) == 0 {
+				t.Fatal("expected at least one choice")
+			}
+			if chatResp.Choices[0].FinishReason == nil {
+				t.Fatal("expected finish_reason to be set")
+			}
+			if got := *chatResp.Choices[0].FinishReason; got != expected {
+				t.Fatalf("expected finish_reason %q, got %q", expected, got)
+			}
+		})
+	}
+}
+
+func TestToBifrostChatResponse_PrefersExplicitStopReason(t *testing.T) {
+	// A recognized stop_reason wins over the status-derived reason.
+	chatResp := (&BifrostResponsesResponse{
+		Status:     Ptr(ResponsesResponseStatusCompleted),
+		StopReason: Ptr("guardrail_intervened"),
+		Output:     responsesTextOutput("blocked"),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if chatResp.Choices[0].FinishReason == nil || *chatResp.Choices[0].FinishReason != "guardrail_intervened" {
+		t.Fatalf("expected finish_reason %q, got %v", "guardrail_intervened", chatResp.Choices[0].FinishReason)
+	}
+}
+
+func TestToBifrostChatResponse_LeavesFinishReasonUnsetForNonTerminalState(t *testing.T) {
+	for _, status := range []string{ResponsesResponseStatusInProgress, ResponsesResponseStatusQueued} {
+		t.Run(status, func(t *testing.T) {
+			// The stop_reason is deliberately set and recognized: an in-flight status
+			// must outrank it, otherwise this test passes for the wrong reason.
+			chatResp := (&BifrostResponsesResponse{
+				Status:     Ptr(status),
+				StopReason: Ptr(string(BifrostFinishReasonStop)),
+				Output:     responsesTextOutput("partial"),
+			}).ToBifrostChatResponse()
+
+			if chatResp == nil || len(chatResp.Choices) == 0 {
+				t.Fatal("expected at least one choice")
+			}
+			if chatResp.Choices[0].FinishReason != nil {
+				t.Fatalf("expected finish_reason to be nil, got %q", *chatResp.Choices[0].FinishReason)
+			}
+		})
+	}
+}
+
+func TestResponsesStreamToBifrostChatResponse_MapsIncompleteContentFilter(t *testing.T) {
+	chunk := &BifrostResponsesStreamResponse{
+		Type: ResponsesStreamResponseTypeIncomplete,
+		Response: &BifrostResponsesResponse{
+			Status:            Ptr(ResponsesResponseStatusIncomplete),
+			IncompleteDetails: &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonContentFilter},
+		},
+	}
+
+	resp := chunk.ToBifrostChatResponse()
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if resp.Choices[0].FinishReason == nil || *resp.Choices[0].FinishReason != "content_filter" {
+		t.Fatalf("expected finish_reason %q, got %v", "content_filter", resp.Choices[0].FinishReason)
+	}
+}
+
+// Cohere never sets Status and Gemini sets it only on error, so a nil or "failed"
+// status must still resolve through stop_reason rather than falling through to unset.
+func TestToBifrostChatResponse_MapsStopReasonWithoutTerminalStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     *string
+		stopReason string
+		expected   string
+	}{
+		{"nil status (cohere)", nil, string(BifrostFinishReasonStop), string(BifrostFinishReasonStop)},
+		{"nil status tool calls", nil, string(BifrostFinishReasonToolCalls), string(BifrostFinishReasonToolCalls)},
+		{"failed status (gemini safety)", Ptr(ResponsesResponseStatusFailed), "content_filter", "content_filter"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chatResp := (&BifrostResponsesResponse{
+				Status:     tc.status,
+				StopReason: Ptr(tc.stopReason),
+				Output:     responsesTextOutput("hi"),
+			}).ToBifrostChatResponse()
+
+			if chatResp == nil || len(chatResp.Choices) == 0 {
+				t.Fatal("expected at least one choice")
+			}
+			if chatResp.Choices[0].FinishReason == nil {
+				t.Fatal("expected finish_reason to be set")
+			}
+			if got := *chatResp.Choices[0].FinishReason; got != tc.expected {
+				t.Fatalf("expected finish_reason %q, got %q", tc.expected, got)
+			}
+		})
+	}
+}
+
+// The Responses schema requires reasoning.summary to be an array. A nil slice marshals
+// to null, which upstreams reject with "Invalid 'input': value did not match any
+// expected variant" — breaking multi-turn tool loops that replay encrypted reasoning.
+func TestToResponsesMessages_EncryptedReasoningMarshalsSummaryAsArray(t *testing.T) {
+	encrypted := "rsn_abc123"
+	cm := &ChatMessage{
+		Role: ChatMessageRoleAssistant,
+		ChatAssistantMessage: &ChatAssistantMessage{
+			ReasoningDetails: []ChatReasoningDetails{
+				{Index: 0, Type: BifrostReasoningDetailsTypeEncrypted, Data: &encrypted},
+			},
+		},
+	}
+
+	out := cm.ToResponsesMessages()
+	if len(out) == 0 {
+		t.Fatal("expected a reasoning message")
+	}
+	if out[0].Type == nil || *out[0].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected a reasoning item, got %#v", out[0].Type)
+	}
+	if out[0].ResponsesReasoning == nil {
+		t.Fatal("expected reasoning payload to be set")
+	}
+	if out[0].ResponsesReasoning.Summary == nil {
+		t.Fatal("summary must be a non-nil slice so it marshals as [] rather than null")
+	}
+
+	encoded, err := json.Marshal(out[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"summary":[]`) {
+		t.Fatalf(`expected "summary":[] in %s`, encoded)
+	}
+	if strings.Contains(string(encoded), `"summary":null`) {
+		t.Fatalf("summary must never marshal as null: %s", encoded)
+	}
+}
+
+// Every response family carrying a Usage must be reachable through
+// NormalizedUsage, or be listed as a known exclusion. DecisionResponse was added
+// to the logging plugin's switch but not here, so decision rows silently lost
+// their token counts.
+func TestNormalizedUsageCoversEveryUsageBearingFamily(t *testing.T) {
+	handled := map[string]bool{}
+	for _, name := range normalizedUsageFamilies {
+		handled[name] = true
+	}
+	// Pre-existing gaps, present in the hand-rolled switch this replaced too.
+	// Streams are accumulated into their non-stream family before they reach a
+	// logging or span path; video has never been wired to either.
+	knownExcluded := map[string]string{
+		"SpeechStreamResponse":          "accumulated into SpeechResponse",
+		"TranscriptionStreamResponse":   "accumulated into TranscriptionResponse",
+		"ImageGenerationStreamResponse": "accumulated into ImageGenerationResponse",
+		"VideoGenerationResponse":       "never wired to logging or spans",
+	}
+
+	rt := reflect.TypeOf(BifrostResponse{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if !strings.HasSuffix(f.Name, "Response") || f.Type.Kind() != reflect.Ptr {
+			continue
+		}
+		inner := f.Type.Elem()
+		if inner.Kind() != reflect.Struct {
+			continue
+		}
+		if _, hasUsage := inner.FieldByName("Usage"); !hasUsage {
+			continue
+		}
+		if handled[f.Name] {
+			if _, excluded := knownExcluded[f.Name]; excluded {
+				t.Errorf("%s is both handled and listed as excluded", f.Name)
+			}
+			continue
+		}
+		if _, excluded := knownExcluded[f.Name]; !excluded {
+			t.Errorf("%s carries a Usage field but NormalizedUsage does not read it; "+
+				"a request of that family would report zero tokens", f.Name)
+		}
+	}
+	// A stale exclusion is drift too.
+	for name := range knownExcluded {
+		if _, ok := rt.FieldByName(name); !ok {
+			t.Errorf("knownExcluded lists %s, which is no longer a BifrostResponse field", name)
+		}
+	}
+}
+
+// normalizedUsageFamilies lists what NormalizedUsage reads.
+var normalizedUsageFamilies = []string{
+	"TextCompletionResponse", "ChatResponse", "ResponsesResponse", "CompactionResponse",
+	"EmbeddingResponse", "RerankResponse", "DecisionResponse", "TranscriptionResponse",
+	"SpeechResponse", "ImageGenerationResponse", "PassthroughResponse",
+}
+
+// A provider may report total_tokens: 0 alongside real input/output counts.
+// Speech derived the total in that case; transcription only did so when the
+// pointer was nil, so it returned zero. Both now agree.
+func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
+	i64 := func(v int) *int { return &v }
+
+	for _, tc := range []struct {
+		name      string
+		resp      *BifrostResponse
+		wantTotal int
+	}{
+		{
+			"transcription, total reported zero",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(0)},
+			}},
+			10,
+		},
+		{
+			"transcription, total nil",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3)},
+			}},
+			10,
+		},
+		{
+			"transcription, total reported and correct",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(10)},
+			}},
+			10,
+		},
+		{
+			"transcription, provider total wins when non-zero",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(99)},
+			}},
+			99,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := tc.resp.NormalizedUsage()
+			if u == nil {
+				t.Fatal("NormalizedUsage returned nil")
+			}
+			if u.TotalTokens != tc.wantTotal {
+				t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, tc.wantTotal)
+			}
+		})
+	}
 }

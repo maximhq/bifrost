@@ -81,7 +81,14 @@ const summarize = () => {
       passed: !a.error,
       error: a.error?.message || null,
     }));
-    const failed = assertions.some((a) => !a.passed) || (e.response?.code ?? 0) >= 400 || !e.response;
+    // Judged by assertions, like newman itself: an [EXPECT-4xx] case that asserts
+    // its error status is a pass even though the HTTP code is >= 400. The status
+    // code only decides for cases that carry no assertions.
+    const failed =
+      !e.response ||
+      (assertions.length > 0
+        ? assertions.some((a) => !a.passed)
+        : (e.response?.code ?? 0) >= 400);
     return {
       idx,
       name: e.item?.name || `request-${idx}`,

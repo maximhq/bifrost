@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 type testRealtimeObservabilityPlugin struct {
@@ -74,6 +75,34 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 
 	if got := tracer.store.GetTrace(traceID); got != nil {
 		t.Fatalf("trace %q was not released after flush", traceID)
+	}
+}
+
+// TestTracer_TransformPausedStreamBufferForwardsToAccumulator verifies the production tracer exposes the gate transformation capability.
+func TestTracer_TransformPausedStreamBufferForwardsToAccumulator(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	const traceID = "trace-transform-paused"
+	tracer.PauseStream(traceID)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	called := false
+	err := ctx.TransformPausedStreamBuffer(func(chunks []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		called = true
+		return schemas.PausedStreamBufferTransformResult{Chunks: chunks}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
+	}
+	if !called {
+		t.Fatal("TransformPausedStreamBuffer() did not reach the streaming accumulator")
 	}
 }
 
@@ -417,6 +446,70 @@ func TestTracer_SetAttribute(t *testing.T) {
 	}
 }
 
+// A cancelled stream reaches PopulateLLMResponseAttributes with an accumulated
+// response whose usage exists but reads zero (the final usage chunk never
+// arrived) and an error carrying the authoritative BilledUsage. The response
+// side's zero aggregates must not survive onto the span: PopulateErrorAttributes
+// gates its emissions on > 0, so a details-only BilledUsage would otherwise
+// leave a false zero in gen_ai.usage.*.
+func TestTracer_PopulateLLMResponseAttributesDropsZeroAggregatesWhenBilled(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0},
+		},
+	}
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "client cancelled the stream"}}
+	bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 120},
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, bifrostErr)
+
+	span := store.GetTrace(traceID).RootSpan
+	for _, key := range []string{schemas.AttrInputTokens, schemas.AttrOutputTokens, schemas.AttrTotalTokens} {
+		if v, ok := span.Attributes[key]; ok {
+			t.Errorf("zero-valued response aggregate %s = %v survived onto the billed failed span", key, v)
+		}
+	}
+	if got := span.Attributes[schemas.AttrPromptTokenDetailsCachedWrite5m]; got != 120 {
+		t.Errorf("attribute %s = %v, want 120", schemas.AttrPromptTokenDetailsCachedWrite5m, got)
+	}
+}
+
+func TestTracer_PopulateLLMResponseAttributesRecordsComplexityScore(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.875)
+
+	_, handle := tracer.StartSpan(ctx, "llm-call", schemas.SpanKindLLMCall)
+	tracer.PopulateLLMResponseAttributes(ctx, handle, nil, nil)
+
+	trace := store.GetTrace(traceID)
+	require.NotNil(t, trace)
+	require.Equal(t, 0.875, trace.RootSpan.Attributes[schemas.AttrBifrostComplexityScore])
+}
+
 func TestTracer_GetSpanHandleByID_RootSpan(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
@@ -650,3 +743,307 @@ func TestIntegration_FullDistributedTraceFlow(t *testing.T) {
 	t.Logf("      -> LLM Span: %s (ParentID: %s)", llmSpan.SpanID, llmSpan.ParentID)
 	t.Logf("        -> Plugin Span: %s (ParentID: %s)", pluginSpan.SpanID, pluginSpan.ParentID)
 }
+
+// Span-derived connectors read the classification off the span, so it must land there.
+func TestTracer_PopulateLLMResponseAttributesStampsErrorType(t *testing.T) {
+	newSpan := func(t *testing.T, requestType schemas.RequestType) (*Tracer, *TraceStore, string, schemas.SpanHandle, *schemas.BifrostContext) {
+		t.Helper()
+		store := NewTraceStore(5*time.Minute, nil)
+		t.Cleanup(store.Stop)
+		tracer := NewTracer(store, nil, nil)
+		t.Cleanup(tracer.Stop)
+
+		traceID := tracer.CreateTrace("")
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+		_, handle := tracer.StartSpan(ctx, "llm-call", schemas.SpanKindLLMCall)
+		// Mirrors core/bifrost.go, which stamps request.type at span creation.
+		tracer.SpanFromHandle(handle).SetAttribute(schemas.AttrLegacyRequestType, string(requestType))
+		return tracer, store, traceID, handle, ctx
+	}
+
+	t.Run("provider 404 on an embedding", func(t *testing.T) {
+		tracer, store, traceID, handle, ctx := newSpan(t, schemas.EmbeddingRequest)
+		status := 404
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, &schemas.BifrostError{
+			StatusCode: &status,
+			// The raw provider type must not win over the classification.
+			Error: &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error")},
+		})
+
+		got := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]
+		if got != string(schemas.ErrorTypeCallerModelUnknown) {
+			t.Errorf("attribute %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypeCallerModelUnknown)
+		}
+	})
+
+	t.Run("a declaration wins over the status", func(t *testing.T) {
+		tracer, store, traceID, handle, ctx := newSpan(t, schemas.ChatCompletionRequest)
+		status := 403
+		bifrostErr := &schemas.BifrostError{StatusCode: &status}
+		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypePolicyModelBlocked
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostErr)
+
+		got := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]
+		if got != string(schemas.ErrorTypePolicyModelBlocked) {
+			t.Errorf("attribute %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypePolicyModelBlocked)
+		}
+	})
+
+	t.Run("absent on success", func(t *testing.T) {
+		tracer, store, traceID, handle, ctx := newSpan(t, schemas.ChatCompletionRequest)
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, nil)
+
+		if _, ok := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]; ok {
+			t.Errorf("attribute %s present on a successful span", schemas.AttrBifrostErrorType)
+		}
+	})
+}
+
+// pluginSpanDemandStub declares its plugin-span and overhead demand explicitly.
+type pluginSpanDemandStub struct {
+	name           string
+	wantsPlugin    bool
+	statesPlugin   bool
+	wantsOverhead  bool
+	statesOverhead bool
+}
+
+func (p *pluginSpanDemandStub) GetName() string                                  { return p.name }
+func (p *pluginSpanDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
+func (p *pluginSpanDemandStub) Cleanup() error                                   { return nil }
+
+// ConsumesPluginSpans is only consulted when statesPlugin is set; a stub that
+// leaves it unset stands in for a connector predating the interface.
+func (p *pluginSpanDemandStub) ConsumesPluginSpans() bool {
+	if !p.statesPlugin {
+		return true
+	}
+	return p.wantsPlugin
+}
+
+func (p *pluginSpanDemandStub) ConsumesOverheadSpans() bool {
+	if !p.statesOverhead {
+		return false
+	}
+	return p.wantsOverhead
+}
+
+// TestPluginSpanDemandGate pins when plugin hook spans are created. Skipping is
+// irreversible, so the default in every ambiguous case must be to create them.
+func TestPluginSpanDemandGate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		plugins []schemas.ObservabilityPlugin
+		want    bool
+	}{
+		{
+			name:    "no connector attached",
+			plugins: []schemas.ObservabilityPlugin{},
+			want:    false,
+		},
+		{
+			name:    "connector silent on plugin spans",
+			plugins: []schemas.ObservabilityPlugin{&pluginSpanDemandStub{name: "silent"}},
+			want:    true,
+		},
+		{
+			name: "connector declines plugin spans",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "declines", statesPlugin: true, wantsPlugin: false},
+			},
+			want: false,
+		},
+		{
+			name: "connector declines spans but consumes the overhead breakdown",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "overhead", statesPlugin: true, wantsPlugin: false,
+					statesOverhead: true, wantsOverhead: true},
+			},
+			want: true,
+		},
+		{
+			name: "one connector declines, another does not",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "declines", statesPlugin: true, wantsPlugin: false},
+				&pluginSpanDemandStub{name: "silent"},
+			},
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewTraceStore(5*time.Minute, nil)
+			tracer := NewTracer(store, nil, nil)
+			defer tracer.Stop()
+			tracer.SetObservabilityPlugins(tc.plugins, nil)
+
+			traceID := tracer.CreateTrace("")
+			ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+			ctx, root := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+			if root == nil {
+				t.Fatal("root span was skipped; only plugin spans are gated")
+			}
+
+			_, pluginHandle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin)
+			if got := pluginHandle != nil; got != tc.want {
+				t.Errorf("plugin span created = %v, want %v", got, tc.want)
+			}
+
+			// An LLM span is never gated, whatever the demand.
+			if _, llm := tracer.StartSpanID(ctx, "chat gpt-4o", schemas.SpanKindLLMCall); llm == nil {
+				t.Error("LLM span was skipped; only plugin spans are gated")
+			}
+		})
+	}
+}
+
+// TestPluginSpanDemandUnknownCreatesSpans covers the boot window: a tracer whose
+// plugins have not been registered yet must create plugin spans, since unknown
+// demand is not the same as no demand.
+func TestPluginSpanDemandUnknownCreatesSpans(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	ctx, _ = tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+
+	if _, handle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin); handle == nil {
+		t.Error("plugin span skipped before SetObservabilityPlugins ran; unknown demand must not drop spans")
+	}
+}
+
+// TestPluginSpanDemandRecomputedOnReload covers adding a connector after boot:
+// the transport calls SetObservabilityPlugins again (server.reloadObservabilityPlugins),
+// which recomputes demand, so requests starting after that create plugin spans.
+// Requests already in flight keep whatever the demand was when their spans were
+// created, which is why an empty plugin set is only ever declared deliberately.
+func TestPluginSpanDemandRecomputedOnReload(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	startPluginSpan := func() bool {
+		traceID := tracer.CreateTrace("")
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+		ctx, _ = tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+		_, handle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin)
+		return handle != nil
+	}
+
+	// Boot with no connectors: plugin spans are skipped.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if startPluginSpan() {
+		t.Error("plugin span created with no connector attached")
+	}
+
+	// A connector is configured at runtime.
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{&pluginSpanDemandStub{name: "late"}}, nil)
+	if !startPluginSpan() {
+		t.Error("plugin span skipped after a connector was added; demand must be recomputed on reload")
+	}
+
+	// And removed again.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if startPluginSpan() {
+		t.Error("plugin span created after the last connector was removed")
+	}
+}
+
+// A Responses API refusal must reach the llm.call span as both the spec'd
+// gen_ai.response.finish_reasons list and the legacy singular
+// gen_ai.response.finish_reason, exactly like a chat completion does. Before
+// the fix the Responses populator never emitted the key, so the tracer had
+// nothing to derive the singular from and both attributes were absent.
+func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReason(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID:         schemas.Ptr("resp_refusal"),
+			Model:      "gpt-4o-mini",
+			StopReason: schemas.Ptr("refusal"),
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, nil)
+
+	span := store.GetTrace(traceID).RootSpan
+	require.Equal(t, []string{"refusal"}, span.Attributes[schemas.AttrFinishReasons])
+	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
+}
+
+// Before SetObservabilityPlugins runs, demand is unknown rather than absent. A
+// request in flight during boot must still get its attributes; declaring an
+// empty plugin set is what expresses "nothing is listening".
+func TestDemandUnknownBeforeRegistrationIsFull(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	if d := tracer.Demand(); !d.Any || !d.Content {
+		t.Errorf("unregistered tracer demand = %+v, want full", d)
+	}
+
+	// An explicit empty set is the opposite: nothing is listening.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if d := tracer.Demand(); d.Any || d.Content {
+		t.Errorf("empty plugin set demand = %+v, want zero", d)
+	}
+}
+
+// Raw demand must be recomputed on reload, like plugin-span demand: a connector
+// added after boot gets raw, and removing the last one stops building it.
+func TestRawPayloadDemandRecomputedOnReload(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	// Before registration, demand is unknown — raw must stay off.
+	if tracer.Demand().RawPayloads {
+		t.Error("raw demanded before any connector registered")
+	}
+
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{&rawDemandStub{name: "quiet", wants: false}}, nil)
+	if tracer.Demand().RawPayloads {
+		t.Error("raw demanded when the only connector declined")
+	}
+
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{
+			&rawDemandStub{name: "quiet", wants: false},
+			&rawDemandStub{name: "loud", wants: true},
+		}, nil)
+	if !tracer.Demand().RawPayloads {
+		t.Error("raw not demanded after a consuming connector was added")
+	}
+
+	tracer.SetObservabilityPlugins(nil, nil)
+	if tracer.Demand().RawPayloads {
+		t.Error("raw still demanded after the last connector was removed")
+	}
+}
+
+type rawDemandStub struct {
+	name  string
+	wants bool
+}
+
+func (p *rawDemandStub) GetName() string                                  { return p.name }
+func (p *rawDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
+func (p *rawDemandStub) Cleanup() error                                   { return nil }
+func (p *rawDemandStub) ConsumesRawPayloads() bool                        { return p.wants }

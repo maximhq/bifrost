@@ -57,9 +57,6 @@ Plugin:
     created_at:
       type: string
       format: date-time
-    version:
-      type: integer
-      format: int16
     updated_at:
       type: string
       format: date-time

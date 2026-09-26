@@ -68,14 +68,22 @@ function MarketplacePopover() {
 
 	const items = [
 		{
+			key: "claude-desktop",
+			label: "Claude Desktop / Cowork",
+			value: `${marketplaceBaseUrl}/skills/serve/claude-code.git`,
+			ariaLabel: "Copy Claude Desktop and Cowork marketplace Git URL",
+		},
+		{
 			key: "claude",
 			label: "Claude Code",
-			command: `claude plugin marketplace add ${marketplaceBaseUrl}/skills/serve/claude-code/.claude-plugin/marketplace.json`,
+			value: `claude plugin marketplace add ${marketplaceBaseUrl}/skills/serve/claude-code/.claude-plugin/marketplace.json`,
+			ariaLabel: "Copy Claude Code command",
 		},
 		{
 			key: "codex",
 			label: "Codex",
-			command: `codex plugin marketplace add ${marketplaceBaseUrl}/skills/serve/codex`,
+			value: `codex plugin marketplace add ${marketplaceBaseUrl}/skills/serve/codex`,
+			ariaLabel: "Copy Codex command",
 		},
 	];
 
@@ -103,7 +111,7 @@ function MarketplacePopover() {
 			</PopoverTrigger>
 			<PopoverContent align="end" className="w-[calc(100vw-2rem)] max-w-md p-0 md:w-auto">
 				<div className="border-b px-3 py-2">
-					<p className="text-muted-foreground text-xs font-medium">Copy CLI command to register this repository</p>
+					<p className="text-muted-foreground text-xs font-medium">Copy a marketplace URL or CLI command</p>
 				</div>
 				<div className="py-1">
 					{items.map((item) => (
@@ -111,12 +119,12 @@ function MarketplacePopover() {
 							key={item.key}
 							data-testid={`skill-copy-marketplace-${item.key}`}
 							className="hover:bg-muted/50 flex w-full cursor-pointer items-center gap-3 px-3 py-2 text-left transition-colors"
-							aria-label={`Copy ${item.label} command`}
-							onClick={() => handleCopy(item.key, item.command)}
+							aria-label={item.ariaLabel}
+							onClick={() => handleCopy(item.key, item.value)}
 						>
 							<div className="min-w-0 flex-1">
 								<p className="text-xs font-medium">{item.label}</p>
-								<p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{item.command}</p>
+								<p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{item.value}</p>
 							</div>
 							{copiedKey === item.key ? (
 								<Check className="h-3.5 w-3.5 shrink-0 text-green-500" />
@@ -399,8 +407,9 @@ export function SkillsListView({
 							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 						</Button>
 						{hasCreateAccess && (
-							<Button aria-label="Create your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
-								Create Skill
+							<Button aria-label="Add your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
+								<Plus className="h-4 w-4" />
+								Add Skill
 							</Button>
 						)}
 					</div>
@@ -535,9 +544,9 @@ export function SkillsListView({
 							<span className="hidden md:inline">{isDownloadingAll ? "Downloading..." : "Download All Skills"}</span>
 						</Button>
 						{hasCreateAccess && (
-							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="New skill" aria-label="New skill">
+							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="Add skill" aria-label="Add skill">
 								<Plus className="h-4 w-4" />
-								<span className="hidden md:inline">New Skill</span>
+								<span className="hidden md:inline">Add Skill</span>
 							</Button>
 						)}
 					</div>

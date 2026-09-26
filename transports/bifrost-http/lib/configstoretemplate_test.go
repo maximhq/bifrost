@@ -9,25 +9,14 @@ import (
 	"testing"
 )
 
-// The first LoadConfig against an empty directory costs ~4s: it runs the
-// migration chain and then seeds the database, the model catalog rows being the
-// bulk of it. A second LoadConfig against that same database costs ~0.25s. Tests
-// in this package take a fresh temp dir apiece and most boot LoadConfig two or
-// three times, so the package used to pay that ~4s over a hundred times - 344s
-// for one plain `go test ./bifrost-http/lib`, several times that under -race.
-// That is what made CI's "Run bifrost-http tests" step sit silent for tens of
-// minutes: go test buffers a package's output until the package finishes, so a
-// slow package is indistinguishable from a hung one.
+// Reuse one default-boot database per test binary so config reload tests do
+// not rerun the migration chain and initial catalog seeding for every case.
+// Each test gets an independent file copy; subsequent LoadConfig calls still
+// exercise normal opening, config reconciliation, and catalog initialization.
+// The catalog HTTP responses are fixed by catalogfixture_test.go.
 //
-// Everything that first boot writes is deterministic, so build one such database
-// per test binary and copy it into each temp dir. Later boots find the schema
-// migrated and the catalog seeded, and take the ~0.25s path. Measured on the
-// same package: 344s -> 49s.
-//
-// The template is built from a directory with no config.json, so it holds
-// exactly what a default boot produces. Building it from a populated config
-// would leak that config into every test, including the ones asserting
-// fresh-start defaults.
+// Build without config.json so no test-specific providers, credentials, or
+// governance settings leak into another test's initial state.
 
 var (
 	templateConfigDBOnce sync.Once
@@ -66,15 +55,13 @@ func buildTemplateConfigDB() {
 		templateConfigDBErr = err
 		return
 	}
-	store := config.ConfigStore
+	// Stop catalog and credential workers before snapshotting their database.
+	// Closing only the store leaves those workers running against a closed DB.
+	config.Close(ctx)
 	// Close before reading the files. The store opens SQLite in WAL mode, and
 	// closing the last connection is what checkpoints the WAL back into the main
 	// database file - copying it while open would hand out a database missing
 	// every migration still sitting in the log.
-	if err := store.Close(ctx); err != nil {
-		templateConfigDBErr = err
-		return
-	}
 
 	sidecars, err := filepath.Glob(basePath + "*")
 	if err != nil {

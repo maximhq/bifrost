@@ -76,7 +76,7 @@ providers:
     transcription: "whisper"
     embeddings: "text-embedding-3-small"
     image_generation: "gpt-image-1"
-    thinking: "o1"
+    thinking: "gpt-5.5"
     batch_file_upload: "gpt-4o-2"
     batch_list: "gpt-4o-2"
     batch_retrieve: "gpt-4o-2"

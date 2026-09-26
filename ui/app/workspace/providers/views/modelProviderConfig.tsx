@@ -6,7 +6,6 @@ import { SettingsIcon, Trash } from "lucide-react";
 import { useMemo, useState } from "react";
 import ProviderConfigSheet from "../dialogs/providerConfigSheet";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
-import ProviderGovernanceTable from "./providerGovernanceTable";
 
 interface Props {
 	provider: ModelProvider;
@@ -15,7 +14,6 @@ interface Props {
 
 export default function ModelProviderConfig({ provider, onRequestDelete }: Props) {
 	const [showConfigSheet, setShowConfigSheet] = useState(false);
-	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 
@@ -60,7 +58,6 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 		<div className="flex w-full flex-col gap-2">
 			<ProviderConfigSheet show={showConfigSheet} onCancel={() => setShowConfigSheet(false)} provider={provider} />
 			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
-			{hasGovernanceAccess ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
 		</div>
 	);
 }

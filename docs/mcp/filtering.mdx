@@ -224,10 +224,10 @@ This consistent naming convention ensures clear separation between tools from di
 
 ## Level 3: Virtual Key Filtering (Gateway Only)
 
-Virtual Keys can have their own MCP tool access configuration, which **takes precedence** over request-level headers.
+Virtual Keys can have their own MCP tool access configuration, which is the ceiling for request-level headers: a header can narrow the key's allow-list, never widen it.
 
 <Note>
-When a Virtual Key has no MCP configurations, **no MCP tools are available** (deny-by-default). You must explicitly add MCP client configurations to allow tools. When a Virtual Key has MCP configurations, it generates the `x-bf-mcp-include-tools` header automatically, overriding any manually sent header.
+When a Virtual Key has no MCP configurations, **no MCP tools are available** (deny-by-default) except from clients marked **Allow by Default**. You must explicitly add MCP client configurations to allow other tools. When the caller sends no `x-bf-mcp-include-tools` header, Bifrost generates one from the key's configuration, unless `disable_auto_tool_inject` is enabled; when the caller sends one, every entry the key does not allow is dropped from it.
 </Note>
 
 ### Configuration
@@ -299,7 +299,7 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 | `tools_to_execute: ["*"]` | All tools from this client |
 | `tools_to_execute: []` | No tools from this client |
 | `tools_to_execute: ["a", "b"]` | Only specified tools |
-| Client not configured | All tools blocked from that client |
+| Client not configured | All tools blocked from that client, unless the client is marked **Allow by Default** |
 
 Learn more in [MCP Tool Filtering for Virtual Keys](../features/governance/mcp-tools).
 
@@ -310,8 +310,8 @@ Learn more in [MCP Tool Filtering for Virtual Keys](../features/governance/mcp-t
 ### How Filters Combine
 
 1. **Client config** is the baseline (must include the tool)
-2. **Request filters** further narrow down (if specified)
-3. **VK filters** override request filters (if VK has MCP configs)
+2. **VK config** is the ceiling for the request (if the VK has MCP configs, or the client is marked Allow by Default)
+3. **Request filters** narrow within that ceiling; an entry the VK does not allow is dropped
 
 ### Example Scenario
 
@@ -321,13 +321,14 @@ Learn more in [MCP Tool Filtering for Virtual Keys](../features/governance/mcp-t
 
 **Request with `prod-key`:**
 ```bash
+## filesystem-write_file is outside the key's allow-list
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer vk_prod_key" \
-  -H "x-bf-mcp-include-tools: filesystem-write_file" \  # This is IGNORED
+  -H "x-bf-mcp-include-tools: filesystem-write_file" \
   -d '...'
 ```
 
-**Result:** Only `read_file` is available (VK config overrides request header)
+**Result:** No tools are attached. `write_file` is outside the key's allow-list, so the header prunes to nothing. Send `filesystem-read_file`, or omit the header, to get `read_file`.
 
 **Request without VK (if allowed):**
 ```bash

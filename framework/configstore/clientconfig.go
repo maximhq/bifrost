@@ -28,6 +28,13 @@ const (
 	EnvKeyTypeMCPHeader     EnvKeyType = "mcp_header"
 )
 
+// MaxVKRotationCooldown is the hard ceiling on the virtual key rotation grace
+// period. Anything longer keeps a retired credential authenticating for over a
+// month, which defeats the point of rotating it. Enforced at every config
+// entry point (PUT /api/config and the config.json load path), mirroring
+// MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
+const MaxVKRotationCooldown = 30 * 24 * time.Hour
+
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
 	SecretVar  string                // The environment variable name (without env. prefix)
@@ -43,6 +50,7 @@ type CompatConfig struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+	AzureDeepseek          bool `json:"azure_deepseek"`
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -52,6 +60,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
+		AzureDeepseek          *bool `json:"azure_deepseek"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -61,6 +70,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	return nil
 }
 
@@ -76,6 +86,7 @@ type ClientConfig struct {
 	AllowPerRequestContentStorageOverride bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride            bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
 	AllowDirectKeys                       bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
+	VKRotationCooldown                    schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
 	DisableDBPingsInHealth                bool                                  `json:"disable_db_pings_in_health"`
 	LogRetentionDays                      int                                   `json:"log_retention_days" validate:"min=1"`         // Number of days to retain logs (minimum 1 day)
 	EnforceAuthOnInference                bool                                  `json:"enforce_auth_on_inference"`                   // Require auth (VK, API key, or user token) on inference endpoints
@@ -98,6 +109,7 @@ type ClientConfig struct {
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
+	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`              // How /mcp authenticates inbound clients: headers (default), both, or oauth.
@@ -123,6 +135,7 @@ func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 			ConvertChatToResponses: true,
 			ShouldDropParams:       true,
 			ShouldConvertParams:    true,
+			AzureDeepseek:          true,
 		},
 	}
 	if err := sonic.Unmarshal(data, &alias); err != nil {
@@ -252,6 +265,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("allowDirectKeys:true"))
 	}
 
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.VKRotationCooldown > 0 {
+		hash.Write([]byte("vkRotationCooldown:" + strconv.FormatInt(int64(c.VKRotationCooldown), 10)))
+	}
+
 	if c.AsyncJobResultTTL > 0 {
 		hash.Write([]byte("asyncJobResultTTL:" + strconv.Itoa(c.AsyncJobResultTTL)))
 	} else {
@@ -338,6 +356,20 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("loggingHeaders:"))
+		hash.Write(data)
+	}
+
+	// Hash HiddenRequestTypes (sorted for deterministic hashing). Only hashed when
+	// set so existing config hashes do not churn on upgrade.
+	if len(c.HiddenRequestTypes) > 0 {
+		sortedHidden := make([]string, len(c.HiddenRequestTypes))
+		copy(sortedHidden, c.HiddenRequestTypes)
+		sort.Strings(sortedHidden)
+		data, err := sonic.Marshal(sortedHidden)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("hiddenRequestTypes:"))
 		hash.Write(data)
 	}
 
@@ -468,6 +500,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -488,6 +521,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
+		PromptCache:              p.PromptCache,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -536,6 +570,12 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		} else {
 			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
 		}
+		// Add back use openai endpoints
+		if key.UseOpenAIEndpoints != nil {
+			redactedConfig.Keys[i].UseOpenAIEndpoints = key.UseOpenAIEndpoints
+		} else {
+			redactedConfig.Keys[i].UseOpenAIEndpoints = new(false)
+		}
 
 		// Add model discovery status and error
 		redactedConfig.Keys[i].Status = key.Status
@@ -544,11 +584,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			if key.AzureKeyConfig.Endpoint.IsFromSecret() {
-				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			} else {
-				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
-			}
+			// The endpoint is a hostname, not a credential — surface it in plaintext.
+			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.RedactedIfSecret()
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
 			}
@@ -569,7 +606,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig := &schemas.VertexKeyConfig{}
 			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
 			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
-			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
+			// The region is a public identifier, not a credential — surface it in plaintext.
+			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
@@ -583,8 +621,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.SessionToken != nil {
 				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
 			}
+			// The region is a public identifier, not a credential — surface it in plaintext.
 			if key.BedrockKeyConfig.Region != nil {
-				bedrockConfig.Region = key.BedrockKeyConfig.Region.Redacted()
+				bedrockConfig.Region = key.BedrockKeyConfig.Region.RedactedIfSecret()
 			}
 			if key.BedrockKeyConfig.ARN != nil {
 				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
@@ -624,8 +663,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockMantleKeyConfig.SessionToken != nil {
 				mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
 			}
+			// The region is a public identifier, not a credential — surface it in plaintext.
 			if key.BedrockMantleKeyConfig.Region != nil {
-				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.Redacted()
+				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.RedactedIfSecret()
 			}
 			if key.BedrockMantleKeyConfig.RoleARN != nil {
 				mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
@@ -651,7 +691,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig := &schemas.VLLMKeyConfig{
 				ModelName: key.VLLMKeyConfig.ModelName,
 			}
-			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			vllmConfig.URL = *key.VLLMKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
 
@@ -664,14 +705,46 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		if key.OllamaKeyConfig != nil {
 			ollamaConfig := &schemas.OllamaKeyConfig{}
-			ollamaConfig.URL = *key.OllamaKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			ollamaConfig.URL = *key.OllamaKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
 		}
 
 		if key.SGLKeyConfig != nil {
 			sglConfig := &schemas.SGLKeyConfig{}
-			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			sglConfig.URL = *key.SGLKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
+		}
+
+		// Redact Databricks key config if present
+		if key.DatabricksKeyConfig != nil {
+			databricksConfig := &schemas.DatabricksKeyConfig{
+				APIFormat:          key.DatabricksKeyConfig.APIFormat,
+				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+			}
+			// The workspace URL is a hostname, not a credential — surface it in
+			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
+			databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.RedactedIfSecret()
+			if key.DatabricksKeyConfig.ClientID != nil {
+				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
+			}
+			if key.DatabricksKeyConfig.ClientSecret != nil {
+				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
+			}
+			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
+		}
+
+		if key.GithubCopilotKeyConfig != nil {
+			// The private key is the whole credential, so it is redacted like any other
+			// secret rather than surfaced in a config read.
+			redactedConfig.Keys[i].GithubCopilotKeyConfig = &schemas.GithubCopilotKeyConfig{
+				AppID:          *key.GithubCopilotKeyConfig.AppID.Redacted(),
+				InstallationID: *key.GithubCopilotKeyConfig.InstallationID.Redacted(),
+				RepositoryID:   *key.GithubCopilotKeyConfig.RepositoryID.Redacted(),
+				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
+				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
+			}
 		}
 	}
 	return &redactedConfig
@@ -725,6 +798,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PromptCache
+	if p.PromptCache != nil {
+		data, err := sonic.Marshal(p.PromptCache)
 		if err != nil {
 			return "", err
 		}
@@ -863,6 +945,22 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash DatabricksKeyConfig
+	if key.DatabricksKeyConfig != nil {
+		data, err := sonic.Marshal(key.DatabricksKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash GithubCopilotKeyConfig
+	if key.GithubCopilotKeyConfig != nil {
+		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Enabled (nil = false, only true produces different hash)
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
@@ -936,6 +1034,23 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	} else {
 		hash.Write([]byte("isActive:false"))
 	}
+	// Hash AllowAllProviders so a config.json flip triggers re-sync
+	if vk.AllowAllProviders {
+		hash.Write([]byte("allowAllProviders:true"))
+	} else {
+		hash.Write([]byte("allowAllProviders:false"))
+	}
+	// Hash DisableContentLogging only when the key says something. Nil is inherit, and writing
+	// nothing for it keeps every key that predates the column on the hash it already has, so
+	// config sync sees no drift on upgrade (the unconditional AllowAllProviders write above is
+	// what forced a backfill migration).
+	if vk.DisableContentLogging != nil {
+		if *vk.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
@@ -947,6 +1062,11 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash CustomerID
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
+	}
+	// Hash BusinessUnitID. Written only when set, like the owners above, so every key that
+	// predates business-unit ownership keeps the hash it already has and config sync sees no drift.
+	if vk.BusinessUnitID != nil {
+		hash.Write([]byte("businessUnitID:" + *vk.BusinessUnitID))
 	}
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {
@@ -1281,30 +1401,64 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
 	}
-	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
-	}
-	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
-	}
-	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
-	}
 	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
 	}
+	mediumHash, err := hashComplexityValue(normalized.Keywords.MediumKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash medium keywords: %w", err)
+	}
+	complexHash, err := hashComplexityValue(normalized.Keywords.ComplexKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash complex keywords: %w", err)
+	}
 
-	return ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    tierHash,
+	hashes := ComplexityAnalyzerConfigHashes{
+		TierBoundaries:  tierHash,
+		SimpleKeywords:  simpleHash,
+		MediumKeywords:  mediumHash,
+		ComplexKeywords: complexHash,
+	}
+
+	if normalized.Semantic != nil {
+		settingsHash, err := hashComplexityValue(normalized.Semantic)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash semantic settings: %w", err)
+		}
+		hashes.SemanticSettings = settingsHash
+	}
+
+	if normalized.LLM != nil {
+		settingsHash, err := hashComplexityValue(normalized.LLM)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash llm settings: %w", err)
+		}
+		hashes.LLMSettings = settingsHash
+	}
+
+	if normalized.Session != nil {
+		settingsHash, err := hashComplexityValue(normalized.Session)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash session settings: %w", err)
+		}
+		hashes.SessionSettings = settingsHash
+	}
+
+	return hashes, nil
+}
+
+func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (string, error) {
+	if codeHash == "" && technicalHash == "" {
+		return "", nil
+	}
+	return hashComplexityValue(struct {
+		CodeKeywords      string `json:"code_keywords"`
+		TechnicalKeywords string `json:"technical_keywords"`
+	}{
 		CodeKeywords:      codeHash,
-		ReasoningKeywords: reasoningHash,
 		TechnicalKeywords: technicalHash,
-		SimpleKeywords:    simpleHash,
-	}, nil
+	})
 }
 
 func hashComplexityValue(value any) (string, error) {
@@ -1710,12 +1864,24 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 		}
 	}
 
-	// Hash Version
-	data, err := sonic.Marshal(p.Version)
-	if err != nil {
-		return "", err
+	// Hash Version when set, so hashes already persisted by the config_hash migration stay valid.
+	if p.Version != 0 {
+		data, err := sonic.Marshal(p.Version)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
 	}
-	hash.Write(data)
+
+	// Hash Placement and Order when set. config.json owns whichever of the two it declares,
+	// so changing one has to read as a file edit; declaring neither contributes nothing and
+	// leaves the stored ordering untouched.
+	if p.Placement != nil {
+		hash.Write([]byte("placement:" + string(*p.Placement)))
+	}
+	if p.Order != nil {
+		hash.Write([]byte("order:" + strconv.Itoa(*p.Order)))
+	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

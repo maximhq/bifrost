@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -14,14 +15,25 @@ import (
 
 // UsageUpdate contains data for VK-level usage tracking
 type UsageUpdate struct {
-	VirtualKey string                `json:"virtual_key"`
-	Provider   schemas.ModelProvider `json:"provider"`
-	Model      string                `json:"model"`
-	Success    bool                  `json:"success"`
-	TokensUsed int64                 `json:"tokens_used"`
-	Cost       float64               `json:"cost"` // Cost in dollars
-	RequestID  string                `json:"request_id"`
-	UserID     string                `json:"user_id,omitempty"` // User ID for enterprise user-level governance
+	Success    bool    `json:"success"`
+	TokensUsed int64   `json:"tokens_used"`
+	Cost       float64 `json:"cost"` // Cost in dollars
+	RequestID  string  `json:"request_id"`
+
+	// BillingNonce is minted internally per physical HTTP request (never read
+	// from headers). It is part of the billing-idempotency key because
+	// RequestID may be caller-supplied via x-request-id: without the nonce,
+	// two unrelated requests sharing a chosen ID would collide on the key and
+	// the second would settle without being charged. Empty for SDK-direct and
+	// internal callers, whose request IDs are core-minted UUIDs.
+	BillingNonce string `json:"billing_nonce,omitempty"`
+
+	// Budgets and RateLimits are the limits this attempt answers to, settled when its provider and
+	// model were known and carried here rather than worked out again at charging time. They travel
+	// on the update because charging is asynchronous: by the time it runs the request may be on a
+	// later attempt, whose limits are not the ones this usage was incurred under.
+	Budgets    []schemas.Limit `json:"-"`
+	RateLimits []schemas.Limit `json:"-"`
 
 	// Streaming optimization fields
 	IsStreaming  bool `json:"is_streaming"`   // Whether this is a streaming response
@@ -69,7 +81,7 @@ type UsageTracker struct {
 	// idempotent within one process, not across a restart or another node. A
 	// batch whose report succeeded but whose durable marker write failed stays
 	// retryable, and a retry elsewhere has an empty map and will bill it again.
-	// That gap is accepted — see framework/batchaccounting's package doc for why
+	// That gap is accepted — see framework/jobaccounting's package doc for why
 	// and what closing it would cost. Note the synchronous path's `billed` map
 	// above has the same property with no durable marker at all.
 	batchBilled map[string]time.Time
@@ -127,7 +139,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// prior behavior.
 	isTerminal := !update.IsStreaming || update.IsFinalChunk
 	if isTerminal && !t.tryClaimBilling(update) {
-		t.logger.Debug("Usage already billed for request %s attempt %d, skipping", update.RequestID, update.AttemptNumber)
+		t.logger.Debug("Usage already billed for request %s attempt %d (billing nonce %q), skipping", update.RequestID, update.AttemptNumber, update.BillingNonce)
 		return
 	}
 
@@ -139,95 +151,22 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	shouldUpdateRequests := update.Success && (!update.IsStreaming || (update.IsStreaming && update.IsFinalChunk))
 	shouldUpdateBudget := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
 
-	// 1. Update rate limit usage for both provider-level and model-level
-	// This applies even when virtual keys are disabled or not present
-	// Guard: only update when Model is set (MCP paths may not have it); provider is optional —
-	// the underlying function handles empty provider by skipping provider-level and still
-	// updating any matching global model-only configs.
-	if update.Model != "" {
-		if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
+	// Everything this request answers to was resolved when its provider and model were settled, and
+	// checked as one list. Charging reads that same list, so a limit cannot be enforced on a request
+	// and then not billed for it, or billed and never enforced, which is what several independent
+	// walks over the holder's shape used to risk, one per level that could be paying.
+	//
+	// The list already names the deployment's provider limits, the model configs that apply in every
+	// scope, and whatever funds the holder. Nothing here asks which of those a limit is.
+	if len(update.RateLimits) > 0 && (shouldUpdateTokens || shouldUpdateRequests) {
+		if err := t.store.ChargeRateLimits(ctx, update.RateLimits, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			t.logger.Error("failed to count request %s against its rate limits: %v", update.RequestID, err)
 		}
 	}
 
-	// 2. Update budget usage for both provider-level and model-level
-	// This applies even when virtual keys are disabled or not present
-	// Guard: only update when Model is set (MCP paths may not have it); provider is optional —
-	// the underlying function handles empty provider by skipping provider-level and still
-	// updating any matching global model-only configs.
-	if update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
-		if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
-			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
-		}
-	}
-
-	// 3. Update user-level governance (enterprise-only, before VK-level)
-	if update.UserID != "" {
-		// Update user rate limit usage
-		if err := t.store.UpdateUserRateLimitUsageInMemory(ctx, update.UserID, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			t.logger.Error("failed to update user rate limit usage for user %s: %v", update.UserID, err)
-		}
-		// Update user budget usage
-		if shouldUpdateBudget && update.Cost > 0 {
-			if err := t.store.UpdateUserBudgetUsageInMemory(ctx, update.UserID, update.Cost); err != nil {
-				t.logger.Error("failed to update user budget usage for user %s: %v", update.UserID, err)
-			}
-		}
-		// Update per-user-scoped model config rate limits and budgets. Mirrors the
-		// VK-scoped model block below. Gated on model being present — MCP tool
-		// execution paths (no model) are excluded naturally by this guard.
-		if update.Model != "" {
-			if err := t.store.UpdateScopedModelRateLimitUsageInMemory(ctx, configstoreTables.ModelConfigScopeUser, update.UserID, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-				t.logger.Error("failed to update scoped model rate limit usage for user %s: %v", update.UserID, err)
-			}
-			if shouldUpdateBudget && update.Cost > 0 {
-				if err := t.store.UpdateScopedModelBudgetUsageInMemory(ctx, configstoreTables.ModelConfigScopeUser, update.UserID, update.Model, update.Provider, update.Cost); err != nil {
-					t.logger.Error("failed to update scoped model budget usage for user %s: %v", update.UserID, err)
-				}
-			}
-		}
-	}
-
-	// 4. Now handle virtual key-level updates (if virtual key exists)
-	if update.VirtualKey == "" {
-		// No virtual key, provider-level and model-level updates already done above
-		return
-	}
-
-	// Get virtual key
-	vk, exists := t.store.GetVirtualKey(ctx, update.VirtualKey)
-	if !exists {
-		t.logger.Debug(fmt.Sprintf("Virtual key not found: %s", update.VirtualKey))
-		return
-	}
-
-	// Update per-VK-scoped model config usage (counterpart to the global model updates above).
-	// Without this, per-VK model limits never increment and so never trip.
-	if update.Model != "" {
-		if err := t.store.UpdateScopedModelRateLimitUsageInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			t.logger.Error("failed to update scoped model rate limit usage for VK %s: %v", vk.ID, err)
-		}
-		if shouldUpdateBudget && update.Cost > 0 {
-			if err := t.store.UpdateScopedModelBudgetUsageInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, update.Model, update.Provider, update.Cost); err != nil {
-				t.logger.Error("failed to update scoped model budget usage for VK %s: %v", vk.ID, err)
-			}
-		}
-	}
-
-	// Update rate limit usage (VK-level, provider-config-level, team-level, customer-level) if applicable
-	// Include TeamID and CustomerID checks since rate limits can be configured at those levels
-	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 || vk.TeamID != nil || vk.CustomerID != nil {
-		if err := t.store.UpdateVirtualKeyRateLimitUsageInMemory(ctx, vk, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			t.logger.Error("failed to update rate limit usage for VK %s: %v", vk.ID, err)
-		}
-	}
-
-	// Update budget usage in hierarchy (VK → Team → Customer) only if we have usage data
-	if shouldUpdateBudget && update.Cost > 0 {
-		t.logger.Debug("updating budget usage for VK %s", vk.ID)
-		// Use atomic budget update to prevent race conditions and ensure consistency
-		if err := t.store.UpdateVirtualKeyBudgetUsageInMemory(ctx, vk, update.Provider, update.Cost); err != nil {
-			t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
+	if len(update.Budgets) > 0 && shouldUpdateBudget && update.Cost > 0 {
+		if err := t.store.ChargeBudgets(ctx, update.Budgets, update.Cost); err != nil {
+			t.logger.Error("failed to bill request %s to its budgets: %v", update.RequestID, err)
 		}
 	}
 }
@@ -247,6 +186,12 @@ func (t *UsageTracker) resetWorker(ctx context.Context) {
 	for {
 		select {
 		case <-t.resetTicker.C:
+			// Cleanup cancels trackerCtx before waiting for this worker. If a
+			// queued tick wins the select alongside done, do not start another
+			// reset cycle during shutdown.
+			if ctx.Err() != nil {
+				return
+			}
 			t.resetExpiredCounters(ctx)
 
 		case <-t.done:
@@ -267,25 +212,49 @@ func (t *UsageTracker) resetWorker(ctx context.Context) {
 // boundary falls further behind, so the only symptom is a stale last_reset.
 // The overrun warning below exists to make that state say so out loud.
 func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	start := time.Now()
 
 	// ==== PART 1: Reset Rate Limits ====
 	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to reset expired rate limits: %v", err)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// ==== PART 2: Reset Budgets ====
 	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to reset expired budgets: %v", err)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// ==== PART 3: Dump all rate limits and budgets to database ====
 	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to dump rate limits to database: %v", err)
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	if err := t.store.DumpBudgets(ctx, nil); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to dump budgets to database: %v", err)
 	}
 
@@ -301,16 +270,24 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 }
 
 // tryClaimBilling records that the physical provider call identified by
-// (RequestID, AttemptNumber) is being billed and returns true if this is the
-// first claim. Subsequent calls for the same key return false so the same
-// physical call is never billed twice An empty RequestID is treated as
-// non-dedupable (always returns true) to preserve behavior for SDK-direct
+// (BillingNonce, RequestID, AttemptNumber) is being billed and returns true if
+// this is the first claim. Subsequent calls for the same key return false so
+// the same physical call is never billed twice. An empty RequestID is treated
+// as non-dedupable (always returns true) to preserve behavior for SDK-direct
 // callers that carry no request id.
+//
+// All three components are load-bearing: the nonce alone is not enough because
+// MCP agent mode and codemode mint a fresh RequestID per nested inference call
+// while sharing one HTTP request (one nonce), and those nested calls must each
+// bill; RequestID+attempt alone is not enough because RequestID may be
+// caller-supplied (x-request-id) and two unrelated requests sharing a chosen
+// ID must not collide. The success-vs-cancellation race for one physical call
+// matches on all three, which is what this dedup exists to guard.
 func (t *UsageTracker) tryClaimBilling(update *UsageUpdate) bool {
 	if update.RequestID == "" {
 		return true
 	}
-	key := fmt.Sprintf("%s:%d", update.RequestID, update.AttemptNumber)
+	key := fmt.Sprintf("%s:%s:%d", update.BillingNonce, update.RequestID, update.AttemptNumber)
 	t.billedMu.Lock()
 	defer t.billedMu.Unlock()
 	if _, seen := t.billed[key]; seen {
@@ -439,25 +416,28 @@ func (t *UsageTracker) validateStartupResetDurations(ctx context.Context) []erro
 
 // Cleanup stops all background workers and flushes pending operations
 func (t *UsageTracker) Cleanup() error {
-	// Final flush of in-memory deltas to DB before shutdown. Without this,
-	// any deltas accumulated since the last `workerInterval` tick are lost.
+	// Stop and join the periodic worker before taking the final snapshots. A
+	// final dump must be the last database writer: otherwise an in-flight cycle
+	// can be cancelled after mutating in-memory reset state, or can race the
+	// final rate-limit dump with a stale snapshot.
+	if t.trackerCancel != nil {
+		t.trackerCancel()
+	}
+	if t.resetTicker != nil {
+		t.resetTicker.Stop()
+	}
+	close(t.done)
+	t.wg.Wait()
+
+	// Flush all in-memory state after the worker has fully stopped. The plugin
+	// waits for its asynchronous accounting goroutines before calling Cleanup,
+	// so these snapshots include every accepted update since the last tick.
 	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
 		t.logger.Error("final budget dump on shutdown failed: %v", err)
 	}
 	if err := t.store.DumpRateLimits(context.Background(), nil, nil); err != nil {
 		t.logger.Error("final rate-limit dump on shutdown failed: %v", err)
 	}
-
-	// Stop background workers
-	if t.trackerCancel != nil {
-		t.trackerCancel()
-	}
-	close(t.done)
-	if t.resetTicker != nil {
-		t.resetTicker.Stop()
-	}
-	// Wait for workers to finish
-	t.wg.Wait()
 
 	t.logger.Debug("usage tracker cleanup completed")
 	return nil

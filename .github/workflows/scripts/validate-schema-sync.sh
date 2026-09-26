@@ -32,14 +32,17 @@ if [ ! -f "$REPO_ROOT/go.work" ]; then
   (
     cd "$REPO_ROOT"
     go work init
-    for mod in ./core ./framework \
-               ./plugins/compat ./plugins/governance ./plugins/jsonparser \
-               ./plugins/logging ./plugins/maxim ./plugins/mocker \
-               ./plugins/otel ./plugins/prompts ./plugins/semanticcache \
-               ./plugins/telemetry \
-               ./transports ./cli; do
+    for mod in ./core ./framework ./transports ./cli; do
       if [ -f "$REPO_ROOT/$mod/go.mod" ]; then
         go work use "$mod"
+      fi
+    done
+    # Discover plugin modules instead of listing them (mirrors
+    # setup-go-workspace.sh), so a newly added plugin never needs a matching
+    # CI edit here.
+    for plugin_dir in ./plugins/*/; do
+      if [ -f "$REPO_ROOT/$plugin_dir/go.mod" ]; then
+        go work use "$plugin_dir"
       fi
     done
   )

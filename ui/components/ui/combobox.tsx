@@ -1,5 +1,5 @@
 import { Command as CommandPrimitive } from "cmdk";
-import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, Loader2Icon, SearchIcon, XIcon } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +38,8 @@ interface ComboboxRootProps {
 	itemToStringLabel?: (value: string | null) => string;
 	open?: boolean;
 	defaultOpen?: boolean;
+	/** Controls the search text, so a consumer can reset it (e.g. on close). */
+	inputValue?: string;
 }
 
 function Combobox({
@@ -51,11 +53,13 @@ function Combobox({
 	itemToStringLabel,
 	open: controlledOpen,
 	defaultOpen = false,
+	inputValue: controlledInputValue,
 }: ComboboxRootProps) {
 	const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
-	const [inputValue, setInputValueState] = React.useState("");
+	const [internalInputValue, setInputValueState] = React.useState("");
 
 	const open = controlledOpen !== undefined ? controlledOpen : internalOpen;
+	const inputValue = controlledInputValue !== undefined ? controlledInputValue : internalInputValue;
 
 	const setOpen = React.useCallback(
 		(v: boolean) => {
@@ -172,12 +176,23 @@ function ComboboxContent({
 	className,
 	children,
 	noPortalForContent,
+	shouldFilter,
+	highlightedValue,
+	onHighlightedValueChange,
 	...props
 }: {
 	className?: string;
 	children?: React.ReactNode;
 	anchor?: React.RefObject<HTMLElement | null>;
 	noPortalForContent?: boolean;
+	/**
+	 * False leaves the list exactly as rendered: cmdk neither drops rows nor reorders them.
+	 * For a list whose membership and order already came from the server.
+	 */
+	shouldFilter?: boolean;
+	/** Takes over the keyboard highlight. Needed when the rows themselves come and go. */
+	highlightedValue?: string;
+	onHighlightedValueChange?: (value: string) => void;
 	[key: string]: any;
 }) {
 	const { filter } = useComboboxContext();
@@ -188,10 +203,27 @@ function ComboboxContent({
 			align="start"
 			sideOffset={4}
 			noPortal={noPortalForContent}
-			onOpenAutoFocus={(e) => e.preventDefault()}
+			/*
+			 * Focus is taken here rather than through the input's own autoFocus. Inside a Sheet,
+			 * autoFocus fires during commit, before this scope has registered itself and paused
+			 * the sheet's focus trap, so the trap sees focus land outside its container and pulls
+			 * it straight back to the trigger. By the time radix dispatches this event the scope
+			 * is on the stack and the trap is paused, so the focus sticks.
+			 */
+			onOpenAutoFocus={(e) => {
+				e.preventDefault();
+				const input = (e.currentTarget as HTMLElement | null)?.querySelector<HTMLInputElement>("[cmdk-input]");
+				input?.focus();
+				// Caret at the end, not over the text: a field opened with the current selection in it
+				// is there to be extended, and a select-all would have the next keystroke wipe it.
+				if (input?.value) input.setSelectionRange(input.value.length, input.value.length);
+			}}
 			{...props}
 		>
 			<CommandPrimitive
+				shouldFilter={shouldFilter}
+				value={highlightedValue}
+				onValueChange={onHighlightedValueChange}
 				filter={
 					filter === null
 						? () => 1 // disable internal filtering — consumer controls it
@@ -204,19 +236,62 @@ function ComboboxContent({
 	);
 }
 
-function ComboboxList({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.List>) {
+function ComboboxList({
+	className,
+	searchPlaceholder = "Search...",
+	showSearchIcon = false,
+	isSearching = false,
+	onInputKeyDown,
+	clearableSearch = false,
+	...props
+}: React.ComponentProps<typeof CommandPrimitive.List> & {
+	searchPlaceholder?: string;
+	/** Renders a magnifier ahead of the input so the list reads as searchable at a glance. */
+	showSearchIcon?: boolean;
+	/** Swaps the magnifier for a spinner while a search is in flight. */
+	isSearching?: boolean;
+	/** Runs before cmdk's own key handling on the search field, e.g. backspace over chips. */
+	onInputKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
+	/**
+	 * Puts an X at the end of the search field. For a field that can open with text already in
+	 * it, where getting back to the full list would otherwise mean holding backspace.
+	 */
+	clearableSearch?: boolean;
+}) {
 	const { inputValue, setInputValue } = useComboboxContext();
+	const inputRef = React.useRef<HTMLInputElement>(null);
 
 	return (
 		<>
-			<div className="flex items-center border-b px-3">
+			<div className="flex items-center gap-2 border-b px-3">
+				{showSearchIcon &&
+					(isSearching ? (
+						<Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+					) : (
+						<SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
+					))}
 				<CommandPrimitive.Input
-					placeholder="Search..."
+					placeholder={searchPlaceholder}
 					className="placeholder:text-muted-foreground flex h-8 w-full bg-transparent py-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
+					ref={inputRef}
 					value={inputValue}
-					autoFocus
 					onValueChange={setInputValue}
+					onKeyDown={onInputKeyDown}
 				/>
+				{clearableSearch && inputValue.length > 0 && (
+					<button
+						type="button"
+						aria-label="Clear search"
+						data-testid="combobox-search-clear"
+						className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+						onClick={() => {
+							setInputValue("");
+							inputRef.current?.focus();
+						}}
+					>
+						<XIcon className="size-3.5" />
+					</button>
+				)}
 			</div>
 			<CommandPrimitive.List data-slot="combobox-list" className={cn("max-h-[300px] overflow-y-auto p-1", className)} {...props} />
 		</>
@@ -307,6 +382,10 @@ interface ComboboxSelectBaseProps {
 	creatable?: boolean;
 	createLabel?: (value: string) => React.ReactNode;
 	"data-testid"?: string;
+	// Per-option test id, so a test can pick a choice without matching its label text.
+	optionTestId?: (value: string) => string;
+	// Forwarded to the trigger button so a form label (FormControl / htmlFor) can target it.
+	id?: string;
 }
 
 interface ComboboxCreatableProps {
@@ -456,6 +535,8 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		createLabel,
 		"data-testid": dataTestId,
 		searchPlaceholder,
+		optionTestId,
+		id,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -494,6 +575,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						role="combobox"
 						aria-expanded={open}
 						disabled={disabled}
+						id={id}
 						data-testid={dataTestId}
 						className={cn(
 							"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
@@ -553,6 +635,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 											const next = isSelected ? selectedValues.filter((v) => v !== option.value) : [...selectedValues, option.value];
 											props.onValueChange?.(next);
 										}}
+										data-testid={optionTestId?.(option.value)}
 									>
 										{option.icon ? <span className="text-muted-foreground flex shrink-0 items-center">{option.icon}</span> : null}
 										<span>{option.label}</span>
@@ -598,6 +681,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					role="combobox"
 					aria-expanded={open}
 					disabled={disabled}
+					id={id}
 					data-testid={dataTestId}
 					className={cn(
 						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
@@ -648,6 +732,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 									props.onValueChange?.(option.value);
 									setOpen(false);
 								}}
+								data-testid={optionTestId?.(option.value)}
 							>
 								{option.label}
 								<span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">

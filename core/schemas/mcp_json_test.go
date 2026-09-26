@@ -129,7 +129,6 @@ func TestMCPClientConfigUnmarshalToolExecutionTimeoutNegativeString(t *testing.T
 	}
 }
 
-
 // TestMCPClientConfigMarshalToolSyncIntervalEmitsNanoseconds pins the wire unit of
 // tool_sync_interval. MarshalJSON overrides tool_execution_timeout into a duration
 // string but lets tool_sync_interval fall through to time.Duration's default
@@ -171,6 +170,61 @@ func TestMCPClientConfigToolSyncIntervalRoundTrips(t *testing.T) {
 		}
 		if got.ToolSyncInterval != interval {
 			t.Fatalf("round-trip changed tool_sync_interval: want %v, got %v (wire: %s)", interval, got.ToolSyncInterval, raw)
+		}
+	}
+}
+
+// TestMCPClientConfigAllowByDefaultReadsBothKeys pins the compatibility rule for the flag's two wire
+// names: allow_by_default decides when present, and allow_on_all_virtual_keys is read in its absence.
+// The last case carries a duration string so the second decode path is exercised as well.
+func TestMCPClientConfigAllowByDefaultReadsBothKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"current key only", `{"name":"demo","allow_by_default":true}`, true},
+		{"earlier key only", `{"name":"demo","allow_on_all_virtual_keys":true}`, true},
+		{"both sent, current wins when false", `{"name":"demo","allow_by_default":false,"allow_on_all_virtual_keys":true}`, false},
+		{"both sent, current wins when true", `{"name":"demo","allow_by_default":true,"allow_on_all_virtual_keys":false}`, true},
+		{"neither sent", `{"name":"demo"}`, false},
+		{"earlier key with duration string", `{"name":"demo","tool_sync_interval":"10m","allow_on_all_virtual_keys":true}`, true},
+		{"both sent with duration string", `{"name":"demo","tool_sync_interval":"10m","allow_by_default":false,"allow_on_all_virtual_keys":true}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg MCPClientConfig
+			if err := sonic.Unmarshal([]byte(tc.raw), &cfg); err != nil {
+				t.Fatalf("unexpected unmarshal error: %v", err)
+			}
+			if cfg.AllowByDefault != tc.want {
+				t.Fatalf("allow_by_default: want %v, got %v (wire: %s)", tc.want, cfg.AllowByDefault, tc.raw)
+			}
+		})
+	}
+}
+
+// TestMCPClientConfigMarshalMirrorsAllowOnAllVirtualKeys pins that the earlier wire name is still
+// written with the same value, and that what is written reads back to the same flag.
+func TestMCPClientConfigMarshalMirrorsAllowOnAllVirtualKeys(t *testing.T) {
+	for _, value := range []bool{true, false} {
+		cfg := MCPClientConfig{Name: "demo", ConnectionType: MCPConnectionTypeHTTP, AllowByDefault: value}
+		raw, err := sonic.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("unexpected marshal error: %v", err)
+		}
+		for _, key := range []string{"allow_by_default", "allow_on_all_virtual_keys"} {
+			want := `"` + key + `":` + map[bool]string{true: "true", false: "false"}[value]
+			if !strings.Contains(string(raw), want) {
+				t.Fatalf("expected %s in output, got: %s", want, raw)
+			}
+		}
+		var got MCPClientConfig
+		if err := sonic.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if got.AllowByDefault != value {
+			t.Fatalf("round-trip changed allow_by_default: want %v, got %v (wire: %s)", value, got.AllowByDefault, raw)
 		}
 	}
 }

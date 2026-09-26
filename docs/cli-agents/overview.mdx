@@ -6,13 +6,30 @@ icon: "Book"
 
 ## Overview
 
-Bifrost provides **100% compatible endpoints** for OpenAI, Anthropic, and Gemini APIs, making it seamless to integrate with any agent that uses these providers. Point each agent at the Bifrost URL shape it expects (see [Configuration](#configuration) below and the guide for your tool). That unlocks:
+Bifrost provides OpenAI-, Anthropic-, and Gemini-compatible endpoints for coding
+agents. Point each agent at the URL shape it expects (see
+[Configuration](#configuration) below and the guide for your tool).
 
-- **Universal Model Access**: Use **any provider/model** configured in Bifrost with any agent (e.g., use GPT-5 with Claude Code, or Claude Sonnet 4.5 with Codex CLI)
+<Tip>
+Use [Bifrost CLI](/quickstart/cli/getting-started) to configure gateway contexts,
+sign in, discover permitted models, and launch Claude Code, Codex CLI, Gemini
+CLI, or OpenCode without editing each harness's configuration manually.
+</Tip>
+
+That unlocks:
+
+- **Cross-provider model access**: Use provider-qualified Bifrost models when the selected model supports the protocol and tool capabilities required by the agent
 - **MCP Tools Integration**: All Model Context Protocol tools configured in Bifrost become available to your agents
 - **Built-in Observability**: Monitor all agent interactions in real-time through Bifrost's logging dashboard
 - **Load Balancing**: Automatically distribute requests across multiple providers and regions
 - **Advanced Features**: Governance, caching, failover, and more - all transparent to your agent
+
+<Warning>
+Compatibility is not identical across every agent and model. Coding agents rely
+on tool calls, streaming, reasoning metadata, and provider-specific wire
+features. A model that works for chat can still be unsuitable for an agentic
+coding session. Review the harness-specific caveats before deployment.
+</Warning>
 
 <Note>
 If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with your CLI agent, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
@@ -48,7 +65,7 @@ If your Allowed Headers are already set to `*`, you can skip this note. If not a
   <Card title="Qwen Code" icon="q" href="/cli-agents/qwen-code">
     Alibaba's coding assistant
   </Card>
-  <Card title="Opencode" icon="square-code" href="/cli-agents/opencode">
+  <Card title="OpenCode" icon="square-code" href="/cli-agents/opencode">
     Terminal-based coding assistant by SST
   </Card>
 </CardGroup>
@@ -78,6 +95,19 @@ Agent integrations work with your existing Bifrost configuration. Ensure you hav
 - **Providers configured**: See [Provider Configuration](/quickstart/gateway/provider-configuration) for setup details
 - **Optional: MCP tools**: See [MCP Integration](/mcp/overview) to enhance agent capabilities
 
+### Bifrost CLI authentication support
+
+| Harness | Enterprise SSO agent token | Virtual key | Important caveat |
+| --- | --- | --- | --- |
+| Claude Code | Yes | Yes | Uses a refresh-aware temporary token helper |
+| Codex CLI | Yes | Yes | Relaunch after token expiry; select arbitrary Bifrost models at launch |
+| OpenCode | Yes | Yes | Relaunch after token expiry; Bifrost may supply the OpenCode `system` theme |
+| Gemini CLI | Not currently | Yes | Requires a virtual key when gateway inference auth is enabled |
+
+Enterprise browser SSO is user-scoped. Administrative commands still require a
+scoped management API key. See the
+[Bifrost CLI authentication guide](/quickstart/cli/getting-started#choose-an-authentication-method).
+
 ## Monitoring Agent Traffic
 
 All agent interactions are automatically logged and can be monitored at `http://localhost:8080/logs`. You can filter by provider, model, or search through conversation content to track your agents' performance.
@@ -106,10 +136,10 @@ claude mcp add --transport http bifrost http://localhost:8080/mcp
 If you have virtual key authentication enabled in Bifrost, connect using the JSON configuration format:
 
 ```bash
-claude mcp add-json bifrost '{"type":"http","url":"http://localhost:8080/mcp","headers":{"Authorization":"Bearer bf-virtual-key"}}'
+claude mcp add-json bifrost '{"type":"http","url":"http://localhost:8080/mcp","headers":{"Authorization":"Bearer sk-bf-your-virtual-key"}}'
 ```
 
-Replace `bf-virtual-key` with your actual Bifrost virtual key.
+Replace `sk-bf-your-virtual-key` with your actual Bifrost virtual key.
 
 Claude Code will only have access to the specific MCP tools permitted by the virtual key's configuration. To grant access to additional tools, verify or modify the virtual key's MCP tool permissions in the Bifrost dashboard.
 
@@ -129,7 +159,7 @@ Control which tools each client can access using Virtual Keys:
 - Configure which MCP servers and tools the key can access
 - Bifrost automatically enforces these permissions
 
-For complete setup instructions and tool filtering options, see [MCP Gateway](/mcp/gateway).
+For complete setup instructions and tool filtering options, see [MCP Gateway](/mcp/overview#bifrost-as-an-mcp-gateway).
 
 ## Next Steps
 

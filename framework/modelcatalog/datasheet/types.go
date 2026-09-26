@@ -208,6 +208,14 @@ type Options struct {
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
+	// Resolution-banded video output rates, matched on the short edge of the response's
+	// size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
+	OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
+	OutputCostPerVideoPerSecond720p  *float64 `json:"output_cost_per_video_per_second_720p,omitempty"`
+	OutputCostPerVideoPerSecond1024p *float64 `json:"output_cost_per_video_per_second_1024p,omitempty"`
+	OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
+	OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
+
 	// Costs - Other.
 	//
 	// SearchContextCostPerQuery is stored as a single float64, but the upstream datasheet
@@ -230,7 +238,26 @@ type Options struct {
 	// Costs - OCR
 	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
 	AnnotationCostPerPage *float64 `json:"annotation_cost_per_page,omitempty"`
+
+	// Costs - Time of day
+	//
+	// OffPeakCostMultiplier scales every usage-based charge when the request
+	// falls outside the PeakHours windows. Every other rate on this struct is
+	// the PEAK price, so the multiplier is expected to be in (0, 1] — 0.5 for
+	// DeepSeek's 50% off-peak discount. Both fields must be present for a
+	// discount to apply; either one alone bills at peak.
+	OffPeakCostMultiplier *float64           `json:"off_peak_cost_multiplier,omitempty"`
+	PeakHours             *PeakHoursSchedule `json:"peak_hours,omitempty"`
 }
+
+// PeakHoursSchedule and PeakHoursWindow are defined in the configstore tables
+// package (TableModelPricing has to reference them and datasheet already
+// imports tables, so the dependency can only run that way). Aliased here so
+// the datasheet JSON shape reads as one self-contained type set.
+type (
+	PeakHoursSchedule = configstoreTables.PeakHoursSchedule
+	PeakHoursWindow   = configstoreTables.PeakHoursWindow
+)
 
 // LookupScopes carries the runtime identifiers used to resolve scoped pricing
 // overrides during cost calculation.
@@ -239,6 +266,14 @@ type LookupScopes struct {
 	VirtualKeyID  string
 	SelectedKeyID string
 	Provider      string
+	// BilledAt is the instant used to decide peak vs off-peak for models that
+	// carry a PeakHours schedule. It is the request's START time, not the
+	// completion time: that keeps pricing deterministic and reproducible, makes
+	// streaming and non-streaming agree, and matches the timestamp users see in
+	// logs. A long stream that crosses a window boundary bills entirely at its
+	// start-time rate. The zero value means "unknown" and falls back to the
+	// wall clock at evaluation time.
+	BilledAt time.Time
 }
 
 // LookupScopesFromContext builds a LookupScopes from a BifrostContext. Reads
@@ -258,11 +293,13 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+	billedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
 	return &LookupScopes{
 		UserID:        userID,
 		VirtualKeyID:  virtualKeyID,
 		SelectedKeyID: selectedKeyID,
 		Provider:      provider,
+		BilledAt:      billedAt,
 	}
 }
 
@@ -325,14 +362,19 @@ type serviceTier struct {
 type costInput struct {
 	usage               *schemas.BifrostLLMUsage
 	audioTextInputChars int
-	audioSeconds        *int
+	audioSeconds        *float64
 	audioTokenDetails   *schemas.TranscriptionUsageInputTokenDetails
 	imageUsage          *schemas.ImageUsage
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
 	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
 	videoSeconds        *int
-	ocrProcessedPages   *int
-	ocrIsAnnotated      *bool
+	videoSize           string // e.g. "1920x1080", used for resolution-banded video pricing
+	videoCount          int    // generated clips on the response; 0 until the job returns them
+	// videoStatus is the job's lifecycle status. A video is billed at settlement,
+	// not at submission, so a non-terminal status prices to nothing.
+	videoStatus       schemas.VideoStatus
+	ocrProcessedPages *int
+	ocrIsAnnotated    *bool
 	// containerIdentifierString, when non-empty, replaces the actual requested/resolved
 	// model names during pricing lookup. Used for request types whose cost is not
 	// tied to a specific model. Currently only used for container creates.
@@ -403,6 +445,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "embedding"
 	case schemas.RerankRequest:
 		return "rerank"
+	case schemas.DecisionRequest:
+		return "decisions"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return "audio_speech"
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
@@ -728,6 +772,12 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond: entry.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         entry.OutputCostPerSecond,
 
+		OutputCostPerVideoPerSecond480p:  entry.OutputCostPerVideoPerSecond480p,
+		OutputCostPerVideoPerSecond720p:  entry.OutputCostPerVideoPerSecond720p,
+		OutputCostPerVideoPerSecond1024p: entry.OutputCostPerVideoPerSecond1024p,
+		OutputCostPerVideoPerSecond1080p: entry.OutputCostPerVideoPerSecond1080p,
+		OutputCostPerVideoPerSecond4k:    entry.OutputCostPerVideoPerSecond4k,
+
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
 		InputCostPerQuery:             entry.InputCostPerQuery,
@@ -736,6 +786,9 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
+
+		OffPeakCostMultiplier: entry.OffPeakCostMultiplier,
+		PeakHours:             entry.PeakHours,
 	}
 }
 
@@ -842,6 +895,12 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond: pricing.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         pricing.OutputCostPerSecond,
 
+		OutputCostPerVideoPerSecond480p:  pricing.OutputCostPerVideoPerSecond480p,
+		OutputCostPerVideoPerSecond720p:  pricing.OutputCostPerVideoPerSecond720p,
+		OutputCostPerVideoPerSecond1024p: pricing.OutputCostPerVideoPerSecond1024p,
+		OutputCostPerVideoPerSecond1080p: pricing.OutputCostPerVideoPerSecond1080p,
+		OutputCostPerVideoPerSecond4k:    pricing.OutputCostPerVideoPerSecond4k,
+
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		InputCostPerQuery:             pricing.InputCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
@@ -850,6 +909,9 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
+
+		OffPeakCostMultiplier: pricing.OffPeakCostMultiplier,
+		PeakHours:             pricing.PeakHours,
 	}
 	entry := &Entry{
 		BaseModel:            pricing.BaseModel,

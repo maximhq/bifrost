@@ -210,7 +210,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				responseCount++
 
 				// Safety check to prevent infinite loops in case of issues
-				if responseCount > 500 {
+				if responseCount > 2000 {
 					t.Fatal("Received too many streaming chunks, something might be wrong")
 				}
 

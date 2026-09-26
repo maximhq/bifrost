@@ -44,8 +44,8 @@ func getenv(k, fallback string) string {
 	return fallback
 }
 
-// cacheDebug mirrors schemas.BifrostCacheDebug as it arrives over the wire.
-type cacheDebug struct {
+// cacheMetadata mirrors schemas.BifrostCacheMetadata as it arrives over the wire.
+type cacheMetadata struct {
 	CacheHit          bool     `json:"cache_hit"`
 	CacheID           *string  `json:"cache_id,omitempty"`
 	HitType           *string  `json:"hit_type,omitempty"`
@@ -61,9 +61,9 @@ type cacheDebug struct {
 
 // extraFields subset — only what we read in assertions.
 type extraFields struct {
-	RequestType string      `json:"request_type,omitempty"`
-	Provider    string      `json:"provider,omitempty"`
-	CacheDebug  *cacheDebug `json:"cache_debug,omitempty"`
+	RequestType   string         `json:"request_type,omitempty"`
+	Provider      string         `json:"provider,omitempty"`
+	CacheMetadata *cacheMetadata `json:"cache_debug,omitempty"`
 }
 
 type chatChoice struct {
@@ -84,11 +84,11 @@ type chatResponse struct {
 	statusCode int
 }
 
-func (c *chatResponse) cacheDebug() *cacheDebug {
+func (c *chatResponse) cacheMetadata() *cacheMetadata {
 	if c.ExtraFields == nil {
 		return nil
 	}
-	return c.ExtraFields.CacheDebug
+	return c.ExtraFields.CacheMetadata
 }
 
 // chatRequest is the minimum we need on the wire — OpenAI-compatible. Optional
@@ -254,7 +254,7 @@ func postChat(t *testing.T, lc logCtx, step int, req chatRequest, ch cacheHeader
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("decode chat response: %v\nbody=%s", err, truncate(string(body), 500))
 	}
-	cd := out.cacheDebug()
+	cd := out.cacheMetadata()
 	fields := map[string]any{"status": status}
 	if cd != nil {
 		fields["cache_hit"] = cd.CacheHit
@@ -298,11 +298,11 @@ type textCompletionResponse struct {
 	statusCode  int
 }
 
-func (r *textCompletionResponse) cacheDebug() *cacheDebug {
+func (r *textCompletionResponse) cacheMetadata() *cacheMetadata {
 	if r.ExtraFields == nil {
 		return nil
 	}
-	return r.ExtraFields.CacheDebug
+	return r.ExtraFields.CacheMetadata
 }
 
 func postTextCompletion(t *testing.T, lc logCtx, step int, req textCompletionRequest, ch cacheHeaders) *textCompletionResponse {
@@ -327,7 +327,7 @@ func postTextCompletion(t *testing.T, lc logCtx, step int, req textCompletionReq
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("decode text completion response: %v\nbody=%s", err, truncate(string(body), 500))
 	}
-	logCacheDebugFields(t, lc.at(step), out.cacheDebug())
+	logCacheMetadataFields(t, lc.at(step), out.cacheMetadata())
 	return out
 }
 
@@ -346,11 +346,11 @@ type embeddingResponse struct {
 	statusCode  int
 }
 
-func (r *embeddingResponse) cacheDebug() *cacheDebug {
+func (r *embeddingResponse) cacheMetadata() *cacheMetadata {
 	if r.ExtraFields == nil {
 		return nil
 	}
-	return r.ExtraFields.CacheDebug
+	return r.ExtraFields.CacheMetadata
 }
 
 func postEmbedding(t *testing.T, lc logCtx, step int, req embeddingRequest, ch cacheHeaders) *embeddingResponse {
@@ -375,7 +375,7 @@ func postEmbedding(t *testing.T, lc logCtx, step int, req embeddingRequest, ch c
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("decode embedding response: %v\nbody=%s", err, truncate(string(body), 500))
 	}
-	logCacheDebugFields(t, lc.at(step), out.cacheDebug())
+	logCacheMetadataFields(t, lc.at(step), out.cacheMetadata())
 	return out
 }
 
@@ -396,11 +396,11 @@ type imageGenResponse struct {
 	statusCode  int
 }
 
-func (r *imageGenResponse) cacheDebug() *cacheDebug {
+func (r *imageGenResponse) cacheMetadata() *cacheMetadata {
 	if r.ExtraFields == nil {
 		return nil
 	}
-	return r.ExtraFields.CacheDebug
+	return r.ExtraFields.CacheMetadata
 }
 
 func postImageGen(t *testing.T, lc logCtx, step int, req imageGenRequest, ch cacheHeaders) *imageGenResponse {
@@ -425,7 +425,7 @@ func postImageGen(t *testing.T, lc logCtx, step int, req imageGenRequest, ch cac
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("decode image gen response: %v\nbody=%s", err, truncate(string(body), 500))
 	}
-	logCacheDebugFields(t, lc.at(step), out.cacheDebug())
+	logCacheMetadataFields(t, lc.at(step), out.cacheMetadata())
 	return out
 }
 
@@ -446,11 +446,11 @@ type responsesResponse struct {
 	statusCode  int
 }
 
-func (r *responsesResponse) cacheDebug() *cacheDebug {
+func (r *responsesResponse) cacheMetadata() *cacheMetadata {
 	if r.ExtraFields == nil {
 		return nil
 	}
-	return r.ExtraFields.CacheDebug
+	return r.ExtraFields.CacheMetadata
 }
 
 func postResponses(t *testing.T, lc logCtx, step int, req responsesRequest, ch cacheHeaders) *responsesResponse {
@@ -475,7 +475,7 @@ func postResponses(t *testing.T, lc logCtx, step int, req responsesRequest, ch c
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("decode responses API response: %v\nbody=%s", err, truncate(string(body), 500))
 	}
-	logCacheDebugFields(t, lc.at(step), out.cacheDebug())
+	logCacheMetadataFields(t, lc.at(step), out.cacheMetadata())
 	return out
 }
 
@@ -492,11 +492,11 @@ type streamChunk struct {
 	Done        bool // true for the terminal [DONE] sentinel
 }
 
-func (c *streamChunk) cacheDebug() *cacheDebug {
+func (c *streamChunk) cacheMetadata() *cacheMetadata {
 	if c.ExtraFields == nil {
 		return nil
 	}
-	return c.ExtraFields.CacheDebug
+	return c.ExtraFields.CacheMetadata
 }
 
 // chunkText extracts choices[0].delta.content (or .message.content) as a
@@ -527,7 +527,7 @@ func (c *streamChunk) chunkText() string {
 }
 
 // streamResponse aggregates every chunk received from one streamed chat
-// completion. cacheDebug() returns the stamp from the final chunk — that's
+// completion. cacheMetadata() returns the stamp from the final chunk — that's
 // the only chunk the plugin tags (search.go:628 guard).
 type streamResponse struct {
 	Chunks     []streamChunk
@@ -535,9 +535,9 @@ type streamResponse struct {
 	headers    http.Header
 }
 
-func (s *streamResponse) cacheDebug() *cacheDebug {
+func (s *streamResponse) cacheMetadata() *cacheMetadata {
 	for i := len(s.Chunks) - 1; i >= 0; i-- {
-		if cd := s.Chunks[i].cacheDebug(); cd != nil {
+		if cd := s.Chunks[i].cacheMetadata(); cd != nil {
 			return cd
 		}
 	}
@@ -636,7 +636,7 @@ func postChatStream(t *testing.T, lc logCtx, step int, req chatRequest, ch cache
 		"status":      resp.StatusCode,
 		"chunk_count": len(out.dataChunks()),
 	}
-	if cd := out.cacheDebug(); cd != nil {
+	if cd := out.cacheMetadata(); cd != nil {
 		fields["cache_hit"] = cd.CacheHit
 		if cd.CacheID != nil {
 			fields["cache_id"] = *cd.CacheID
@@ -651,9 +651,9 @@ func postChatStream(t *testing.T, lc logCtx, step int, req chatRequest, ch cache
 	return out
 }
 
-// logCacheDebugFields emits a single response-event log line with the standard
+// logCacheMetadataFields emits a single response-event log line with the standard
 // cache_debug fields, used by every postXxx helper above.
-func logCacheDebugFields(t *testing.T, lc logCtx, cd *cacheDebug) {
+func logCacheMetadataFields(t *testing.T, lc logCtx, cd *cacheMetadata) {
 	t.Helper()
 	fields := map[string]any{"status": 200}
 	if cd != nil {

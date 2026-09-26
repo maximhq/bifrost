@@ -176,6 +176,7 @@ export const baseApi = createApi({
 		"RoutingRules",
 		"PricingOverrides",
 		"MCPToolGroups",
+		"VirtualMCPs",
 		"AuditLogs",
 		"UserGovernance",
 		"LargePayloadConfig",
@@ -185,6 +186,10 @@ export const baseApi = createApi({
 		"Versions",
 		"Sessions",
 		"AccessProfiles",
+		// The profile a team, business unit or customer holds. Separate from AccessProfiles so
+		// attaching to one entity does not refetch every template list on the page.
+		"EntityAccessProfiles",
+		"Projects",
 		"BusinessUnits",
 		"PromptDeployments",
 		"AuthType",
@@ -209,6 +214,8 @@ export const baseApi = createApi({
 		"EdgeMCPServers",
 		"EdgeConfig",
 		"Notifications",
+		"WarpConfig",
+		"WarpConversations",
 	],
 	endpoints: () => ({}),
 });

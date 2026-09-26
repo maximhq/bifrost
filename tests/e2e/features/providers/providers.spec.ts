@@ -912,7 +912,7 @@ test.describe("Provider specific configuration", () => {
     await providersPage.goto();
   });
 
-  test("should display vLLM-specific key fields when adding key to vLLM provider", async ({
+  test("should display complete vLLM key configuration when adding a key", async ({
     providersPage,
   }) => {
     const vllmAvailable = await providersPage.providerExists("vllm");
@@ -941,6 +941,21 @@ test.describe("Provider specific configuration", () => {
     }
     await expect(vllmUrlInput).toBeVisible();
     await expect(vllmModelInput).toBeVisible();
+    await expect(
+      providersPage.page.getByTestId("api-keys-models-multiselect"),
+    ).toBeVisible();
+    await expect(
+      providersPage.page.getByTestId("apikey-blacklisted-models-field"),
+    ).toBeVisible();
+    await expect(
+      providersPage.page.getByTestId("api-keys-blocked-models-multiselect"),
+    ).toBeVisible();
+    await expect(
+      providersPage.page.getByTestId("apikey-deployments-field"),
+    ).toBeVisible();
+    await expect(
+      providersPage.page.getByTestId("apikey-deployments-table"),
+    ).toBeVisible();
 
     await providersPage.keyCancelBtn.click();
   });

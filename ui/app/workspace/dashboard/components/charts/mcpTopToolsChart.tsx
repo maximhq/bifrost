@@ -3,6 +3,7 @@ import { memo, useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { formatCost, getModelColor } from "../../utils/chartUtils";
+import { rankingBarShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 
 interface MCPTopToolsChartProps {
@@ -69,7 +70,7 @@ function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
 						interval={0}
 					/>
 					<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-					<Bar isAnimationActive={false} dataKey="count" radius={[0, 2, 2, 0]} barSize={20}>
+					<Bar isAnimationActive={false} dataKey="count" shape={rankingBarShape} barSize={20}>
 						{chartData.map((_, index) => (
 							<Cell key={`cell-${index}`} fill={getModelColor(index)} fillOpacity={0.9} />
 						))}

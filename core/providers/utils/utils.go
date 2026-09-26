@@ -223,6 +223,31 @@ func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
 	return sjson.SetBytes(data, path, value)
 }
 
+// setJSONStringFieldInPlaceOptions enables SJSON's owned-buffer fast path.
+// Keep this immutable because provider requests can be rewritten concurrently.
+var setJSONStringFieldInPlaceOptions = sjson.Options{
+	// Optimistic tells SJSON that the path already exists, enabling its faster
+	// direct search-and-replace path; it does not permit mutation by itself.
+	Optimistic: true,
+	// ReplaceInPlace permits SJSON to reuse and mutate caller-owned bytes when
+	// the replacement fits; otherwise SJSON returns a newly allocated buffer.
+	ReplaceInPlace: true,
+}
+
+// SetJSONStringFieldInPlace updates an existing JSON string in caller-owned bytes.
+// It is currently used only for native raw-request redaction on passthrough
+// integrations such as Claude Code/Anthropic and Gemini GenAI. Callers must use
+// the returned slice because SJSON may reuse the input or allocate a new buffer.
+// This reduces allocations and GC pressure, but each field still requires a path
+// search and may shift trailing bytes; this is not a bulk update.
+func SetJSONStringFieldInPlace(data []byte, path string, value string) ([]byte, error) {
+	encodedValue, err := sonic.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal JSON string field: %w", err)
+	}
+	return sjson.SetRawBytesOptions(data, path, encodedValue, &setJSONStringFieldInPlaceOptions)
+}
+
 // SetRawJSONField sets a field in JSON bytes to an already-encoded JSON document,
 // inserting it verbatim instead of re-marshaling it.
 func SetRawJSONField(data []byte, path string, value []byte) ([]byte, error) {
@@ -329,10 +354,11 @@ func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *s
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.
 //
-// IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
-// context is done. The fasthttp client call will continue in its goroutine until it completes
-// or times out based on its own settings. This function merely stops *waiting* for the
-// fasthttp call and returns an error related to the context.
+// Cancellation reaches the socket: the callers bind ctx to the request
+// (bindRequestContext) and the client's contextTransport closes the upstream
+// connection when ctx ends, so the fasthttp call in the goroutine returns
+// promptly instead of running on until its own ReadTimeout. This function
+// still returns as soon as ctx is done rather than waiting for that.
 //
 // The wait function MUST be called (typically via defer) before releasing the request or
 // response objects. On the normal path it is a no-op. On the context-cancellation path it
@@ -432,14 +458,25 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	// Bound to the goroutine that runs client.Do: the binding must outlive a
+	// ctx-cancelled return of makeRequestWithDoFunc and be gone before the
+	// caller's wait() returns, since req is pooled.
+	unbind := bindRequestContext(req, ctx)
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+		defer unbind()
+		return client.Do(req, resp)
+	})
 	return latency, bifrostErr, wait
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	unbind := bindRequestContext(req, ctx)
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+		defer unbind()
+		return client.DoRedirects(req, resp, maxRedirects)
+	})
 	return latency, bifrostErr, wait
 }
 
@@ -452,11 +489,21 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // is measured separately, inside idleTimeoutReader.Read. Both are needed;
 // counting only one attributes the other to Bifrost.
 //
+// The wait for headers is bounded: ctx is bound to req for the duration of the
+// call, and the client's contextTransport applies the client's ReadTimeout
+// (default_request_timeout_in_seconds) and the ctx deadline to the header wait,
+// closes the socket when ctx is cancelled, and lifts the deadline once headers
+// arrive so the body is governed only by the stream idle timeout
+// (maximhq/bifrost#7034). A silent upstream therefore fails with
+// fasthttp.ErrTimeout instead of pinning the worker until it closes.
+//
 // Returns client.Do's error untouched so callers keep their own error
 // classification and latency bookkeeping.
 func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	unbind := bindRequestContext(req, ctx)
 	startTime := time.Now()
 	err := client.Do(req, resp)
+	unbind()
 	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
 	return err
 }
@@ -526,6 +573,11 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
+
+	// Every Bifrost client goes through the context-aware transport: it applies
+	// the client's timeouts to the header phase only on streamed responses and
+	// closes the socket when the request context ends (see roundtripper.go).
+	client.Transport = NewContextTransport()
 
 	existingDial := client.Dial
 	existingDialTimeout := client.DialTimeout
@@ -867,7 +919,10 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 }
 
 // providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
-// These are transport-level headers that don't apply when re-serving the response.
+// These are transport-level headers that don't apply when re-serving the response, plus the
+// exact credential names from the /genai_passthrough leak (#3954). It is one of the two rules
+// applied by shouldFilterProviderResponseHeader; the other catches credential names this list
+// does not enumerate.
 var providerResponseFilterHeaders = map[string]bool{
 	"content-length":                   true,
 	"content-encoding":                 true,
@@ -902,8 +957,22 @@ var providerResponseFilterHeaders = map[string]bool{
 	"access-control-max-age":           true,
 }
 
+// shouldFilterProviderResponseHeader reports whether a provider response header must not be
+// re-served to the caller. The name is expected to already be lowercased.
+//
+// Two rules apply. A header is dropped when it is a transport-level or known-credential name in
+// providerResponseFilterHeaders, or when schemas.IsSensitiveHeader classifies its name as
+// credential-bearing. The second rule exists because a name-by-name denylist necessarily lags:
+// network_config.extra_headers supports arbitrary custom authentication headers, and some
+// upstreams echo request headers back (e.g. Google's file-download 302), so the set of credential
+// names that can appear in a provider response is open-ended. Sharing the classifier already used
+// by the telemetry redaction path keeps the two definitions of "credential" from diverging.
+func shouldFilterProviderResponseHeader(nameLower string) bool {
+	return providerResponseFilterHeaders[nameLower] || schemas.IsSensitiveHeader(nameLower)
+}
+
 // ExtractProviderResponseHeaders extracts and filters response headers from a
-// fasthttp response. Transport-level headers are excluded.
+// fasthttp response. Transport-level and credential-bearing headers are excluded.
 func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
@@ -911,7 +980,7 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
-		if providerResponseFilterHeaders[strings.ToLower(k)] {
+		if shouldFilterProviderResponseHeader(strings.ToLower(k)) {
 			return
 		}
 		v := string(value)
@@ -928,7 +997,8 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 }
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
-// fasthttp response. Transport-level headers are excluded.
+// fasthttp response. Transport-level and credential-bearing headers are excluded, except
+// content-type, which the passthrough response must retain.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
@@ -937,7 +1007,7 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		kLower := strings.ToLower(k)
-		if providerResponseFilterHeaders[kLower] && kLower != "content-type" {
+		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
 			return
 		}
 		v := string(value)
@@ -954,15 +1024,15 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 }
 
 // ExtractProviderResponseHeadersFromHTTP extracts and filters response headers
-// from a standard net/http response. Transport-level headers are excluded.
-// Used by providers like Bedrock that use net/http instead of fasthttp.
+// from a standard net/http response. Transport-level and credential-bearing headers
+// are excluded. Used by providers like Bedrock that use net/http instead of fasthttp.
 func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
 	headers := make(map[string]string)
 	for k, values := range resp.Header {
-		if !providerResponseFilterHeaders[strings.ToLower(k)] && len(values) > 0 {
+		if !shouldFilterProviderResponseHeader(strings.ToLower(k)) && len(values) > 0 {
 			headers[k] = strings.Join(values, ", ")
 		}
 	}
@@ -1117,6 +1187,39 @@ func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 			}
 		}
 	}
+}
+
+// StripCallerAuthForInsecureURL removes a forwarded caller Authorization header from
+// passthrough safe headers when the resolved upstream URL is neither HTTPS nor a
+// loopback address (RFC 6750 section 5.3; loopback is exempt per the RFC 8252
+// section 8.3 rationale - the bytes never leave the machine). The transport vets
+// which providers may receive caller auth, but the provider BaseURL is resolved in
+// core, so this is the last place that sees the final scheme. Stripping fails
+// closed: key selection was skipped for caller-auth requests, so an insecure
+// upstream sees an unauthenticated request instead of a cleartext token.
+func StripCallerAuthForInsecureURL(requestURL string, safeHeaders map[string]string) {
+	if len(safeHeaders) == 0 {
+		return
+	}
+	u, err := url.Parse(requestURL)
+	if err == nil && (strings.EqualFold(u.Scheme, "https") || isLoopbackHost(u.Hostname())) {
+		return
+	}
+	for k := range safeHeaders {
+		if strings.EqualFold(k, "authorization") {
+			delete(safeHeaders, k)
+		}
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
@@ -1425,22 +1528,37 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 }
 
 // BuildStreamingClient returns a fasthttp.Client suitable for long-lived SSE
-// or EventStream responses. It clones base's dialer/proxy/TLS/pool settings,
-// then clears Read/Write timeouts and MaxConnDuration so fasthttp does not
-// pre-empt a healthy stream. StreamResponseBody is forced on.
+// or EventStream responses. It clones base's dialer/proxy/TLS/pool settings and
+// forces StreamResponseBody on.
+//
+// ReadTimeout and WriteTimeout are kept from base (default_request_timeout_in_seconds).
+// On a streaming client they bound only dial, TLS handshake, request write and
+// the wait for response headers: contextTransport clears the socket deadline as
+// soon as headers are parsed, so a healthy stream is never pre-empted, while an
+// upstream that accepts the connection and never answers fails with
+// fasthttp.ErrTimeout instead of hanging (maximhq/bifrost#7034). Streaming
+// clients must be driven through DoStreamingRequest, which binds the request
+// context the transport honors; a bare client.Do gets the same header bound but
+// no cancellation.
+//
+// MaxConnDuration is deliberately preserved. It is checked once per request
+// before the request is written (fasthttp client.go:3110) and only sets
+// Connection: close on the outgoing request, so it cannot cut a live stream.
+// What it does do is force an over-age connection to be closed rather than
+// returned to HostClient.conns. That is the streaming pool's only age-based
+// eviction: the idle cleaner evicts on lastUseTime alone, so a connection that
+// keeps being handed out never goes idle and never leaves the pool. Zeroing this
+// is what turned a transient connection fault into one that persisted until the
+// process was restarted.
 //
 // Per-chunk idle detection is enforced at the application layer via
 // NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
-// The initial TCP/TLS dial still honors the base client's ReadTimeout because
-// the Dial closure installed by ConfigureDialer reads client.ReadTimeout from
-// the base client pointer captured at ConfigureDialer call time — cloning copies
-// that closure verbatim, so zeroing the clone's ReadTimeout does not affect dial.
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
-	c.ReadTimeout = 0
-	c.WriteTimeout = 0
-	c.MaxConnDuration = 0
 	c.StreamResponseBody = true
+	if c.Transport == nil {
+		c.Transport = NewContextTransport()
+	}
 	return c
 }
 
@@ -1506,55 +1624,238 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 	}
 }
 
-// Some OpenAI-compatible backends return valid SSE frames without Content-Type:
-// text/event-stream. In that case, peek at the first field prefix without consuming
-// it so the downstream SSE parser sees the full stream.
-func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, bool) {
+// nonSSESampleLimit bounds how much of an unusable body is retained for
+// diagnostics. Large enough to hold a provider error envelope whole, small
+// enough to sit on an error object and in a log line.
+const nonSSESampleLimit = 8 * 1024
+
+// nonSSEMessageLimit bounds how much of the sample is inlined into the error
+// message. The full sample still travels on RawResponse.
+const nonSSEMessageLimit = 512
+
+// sseProbeWindow is how many leading bytes are inspected when looking for an SSE
+// field name. Enough for a UTF-8 BOM, a little whitespace, and "retry:".
+const sseProbeWindow = 16
+
+// StreamBodyKind classifies why a 200 response could not be consumed as SSE.
+// These are genuinely different failures and were previously all reported as
+// "provider returned non-SSE response", which sent operators looking for a
+// malformed provider body when the stream had in fact timed out or been closed.
+type StreamBodyKind int
+
+const (
+	// StreamBodyNonSSE: the body was readable but is not SSE (e.g. a JSON error
+	// envelope returned with a 200).
+	StreamBodyNonSSE StreamBodyKind = iota
+	// StreamBodyEmpty: a 200 with no body at all.
+	StreamBodyEmpty
+	// StreamBodyIdleTimeout: no first byte arrived within the idle window.
+	StreamBodyIdleTimeout
+	// StreamBodyClosed: the stream was closed before the first byte arrived.
+	StreamBodyClosed
+	// StreamBodyReadError: the first read failed for some other reason.
+	StreamBodyReadError
+)
+
+func (k StreamBodyKind) String() string {
+	switch k {
+	case StreamBodyNonSSE:
+		return "non-sse"
+	case StreamBodyEmpty:
+		return "empty"
+	case StreamBodyIdleTimeout:
+		return "idle-timeout"
+	case StreamBodyClosed:
+		return "closed"
+	case StreamBodyReadError:
+		return "read-error"
+	default:
+		return "unknown"
+	}
+}
+
+// NonSSEStreamBody describes a 200 response that could not be consumed as SSE,
+// carrying the evidence needed to diagnose it: the provider Content-Type, a
+// bounded sample of what actually arrived, and the underlying read error.
+type NonSSEStreamBody struct {
+	Kind        StreamBodyKind
+	ContentType string
+	Sample      []byte
+	ReadErr     error
+}
+
+// Err renders the failure as an error. The non-SSE wording is deliberately
+// preserved verbatim so existing log searches keep matching.
+func (b *NonSSEStreamBody) Err() error {
+	switch b.Kind {
+	case StreamBodyIdleTimeout:
+		return fmt.Errorf("no data received on the stream before the idle timeout (content-type %q): %w", b.ContentType, ErrStreamIdleTimeout)
+	case StreamBodyClosed:
+		return fmt.Errorf("stream closed before the first byte arrived (content-type %q): %w", b.ContentType, ErrStreamClosed)
+	case StreamBodyEmpty:
+		return fmt.Errorf("provider returned an empty body for streaming request (content-type %q)", b.ContentType)
+	case StreamBodyReadError:
+		return fmt.Errorf("failed to read the streaming response body (content-type %q): %w", b.ContentType, b.ReadErr)
+	default:
+		excerpt := b.Sample
+		if len(excerpt) > nonSSEMessageLimit {
+			excerpt = excerpt[:nonSSEMessageLimit]
+		}
+		return fmt.Errorf("provider returned non-SSE response for streaming request (content-type %q): %s", b.ContentType, excerpt)
+	}
+}
+
+// DrainNonSSEStreamReader decides whether a 200 body can be handed to the SSE
+// parser. Some OpenAI-compatible backends return valid SSE frames without a
+// text/event-stream Content-Type, so the first field prefix is peeked without
+// consuming it and the full stream still reaches the parser.
+//
+// Returns (reader, nil) when the body is usable. Otherwise it returns
+// (nil, info): the body is drained so the connection can be released cleanly,
+// and info carries a bounded sample of it. Discarding that sample outright is
+// what previously left this failure with no raw response to inspect.
+func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, *NonSSEStreamBody) {
 	ct := strings.ToLower(string(resp.Header.ContentType()))
+	// The provider declared SSE: hand the stream over untouched, exactly as
+	// before. Probing here would swallow a stream truncated before its first
+	// byte, which the SSE loop reports as a connection failure the retry loop
+	// can act on (see TestChatStreamTruncatedPreFirstByte). This guard only
+	// exists for bodies whose Content-Type does not say SSE, which is where the
+	// old code produced a misleading "non-SSE" verdict.
 	if strings.Contains(ct, "text/event-stream") {
-		return reader, false
+		return reader, nil
 	}
 	if reader == nil {
-		return nil, true
+		return nil, &NonSSEStreamBody{Kind: StreamBodyEmpty, ContentType: ct}
 	}
 
 	br := bufio.NewReaderSize(reader, sseInitialBufSize)
-	if hasSSEPrefix(br) {
-		return br, false
+	looksSSE, readErr := hasSSEPrefix(br)
+	if looksSSE {
+		return br, nil
 	}
 
-	_, _ = io.Copy(io.Discard, br)
-	return nil, true
-}
-
-func hasSSEPrefix(reader *bufio.Reader) bool {
-	first, err := reader.Peek(1)
-	if err != nil || len(first) == 0 {
-		return false
-	}
-	switch first[0] {
-	case ':', '\n', '\r':
-		return true
-	case 'd':
-		return peekHasPrefix(reader, []byte("data:"))
-	case 'e':
-		return peekHasPrefix(reader, []byte("event:"))
-	case 'i':
-		return peekHasPrefix(reader, []byte("id:"))
-	case 'r':
-		return peekHasPrefix(reader, []byte("retry:"))
+	info := &NonSSEStreamBody{ContentType: ct, ReadErr: readErr}
+	switch {
+	case readErr == nil:
+		info.Kind = StreamBodyNonSSE
+		info.Sample = drainWithSample(br)
+	case errors.Is(readErr, ErrStreamIdleTimeout):
+		info.Kind = StreamBodyIdleTimeout
+	case errors.Is(readErr, ErrStreamClosed):
+		info.Kind = StreamBodyClosed
+	case errors.Is(readErr, io.EOF):
+		info.Kind = StreamBodyEmpty
 	default:
-		return false
+		info.Kind = StreamBodyReadError
 	}
+	return nil, info
 }
 
-func peekHasPrefix(reader *bufio.Reader, prefix []byte) bool {
-	n := min(reader.Buffered(), len(prefix))
+// drainWithSample consumes the body, keeping the first nonSSESampleLimit bytes.
+// The remainder is discarded rather than buffered: the point is to leave the
+// connection drained without letting an arbitrarily large body into memory.
+func drainWithSample(r io.Reader) []byte {
+	var sample bytes.Buffer
+	if _, err := io.Copy(&sample, io.LimitReader(r, nonSSESampleLimit)); err != nil {
+		return sample.Bytes()
+	}
+	_, _ = io.Copy(io.Discard, r)
+	return sample.Bytes()
+}
+
+// hasSSEPrefix reports whether the buffered stream opens with an SSE field name,
+// and returns the read error when the first byte could not be obtained so the
+// caller can tell a timeout apart from a genuinely non-SSE body.
+//
+// It blocks only for the first byte. Everything after that is inspected from
+// whatever has already been buffered, so a slow but valid stream still starts.
+func hasSSEPrefix(reader *bufio.Reader) (bool, error) {
+	first, err := reader.Peek(1)
+	if err != nil {
+		return false, err
+	}
+	if len(first) == 0 {
+		return false, nil
+	}
+
+	n := min(reader.Buffered(), sseProbeWindow)
+	window, err := reader.Peek(n)
+	if err != nil {
+		return false, err
+	}
+	// A UTF-8 BOM and leading horizontal whitespace are both things real
+	// upstreams emit, and neither makes the stream unreadable. Skipped by
+	// reslicing the peeked window so no byte is consumed.
+	//
+	// Either can also arrive split across reads, leaving a window that says
+	// nothing about the stream: all trimmable, or ending part-way through the
+	// BOM, which trimSSELeading cannot strip until all three bytes are here.
+	// Peek one more byte at a time rather than write a valid SSE body off as
+	// non-SSE. sseProbeWindow bounds how far this goes, and the idle-timeout
+	// reader bounds the wait, so a stalled upstream surfaces as
+	// StreamBodyIdleTimeout instead of a wrong verdict.
+	trimmed := trimSSELeading(window)
+	for inconclusiveSSELeading(trimmed) {
+		if n >= sseProbeWindow {
+			return false, nil
+		}
+		n++
+		if window, err = reader.Peek(n); err != nil {
+			return false, err
+		}
+		trimmed = trimSSELeading(window)
+	}
+	window = trimmed
+	switch window[0] {
+	case ':', '\n', '\r':
+		return true, nil
+	}
+	for _, name := range sseFieldNames {
+		if hasFoldedPrefix(window, name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+var sseFieldNames = [][]byte{
+	[]byte("data:"),
+	[]byte("event:"),
+	[]byte("id:"),
+	[]byte("retry:"),
+}
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// trimSSELeading reslices b past a UTF-8 BOM and any leading spaces or tabs.
+// Newlines are left alone: they are valid SSE openings in their own right.
+func trimSSELeading(b []byte) []byte {
+	b = bytes.TrimPrefix(b, utf8BOM)
+	return bytes.TrimLeft(b, " \t")
+}
+
+// inconclusiveSSELeading reports whether b - already past trimSSELeading - still
+// says nothing about what the stream is. Two cases: nothing survived the trim,
+// or what survived is a strict prefix of the BOM, which trimSSELeading leaves
+// alone because it cannot know yet whether the remaining bytes complete a BOM or
+// begin some other content.
+func inconclusiveSSELeading(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	return len(b) < len(utf8BOM) && bytes.HasPrefix(utf8BOM, b)
+}
+
+// hasFoldedPrefix compares case-insensitively over as much of name as b holds,
+// so a short first read still identifies the field rather than being written off
+// as non-SSE.
+func hasFoldedPrefix(b, name []byte) bool {
+	n := min(len(b), len(name))
 	if n == 0 {
 		return false
 	}
-	peeked, err := reader.Peek(n)
-	return err == nil && bytes.Equal(peeked, prefix[:n])
+	return bytes.EqualFold(b[:n], name[:n])
 }
 
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
@@ -1693,9 +1994,9 @@ func startPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.S
 // StartResponseConvertorSpan opens a nil-safe "convertor" span for the provider->Bifrost
 // response mapping (ToBifrost*Response). It shares the "convertor" bucket with the
 // request-side conversion so total conversion time is attributed together, instead of
-// the response half folding into core. Symmetric to the request path: response-parse
-// times the JSON decode, this times the struct->unified mapping. Wrapped at the primary
-// chat call sites; secondary response paths fold into core. EndSpan is nil-safe.
+// the response half folding into provider-internal. Symmetric to the request path:
+// response-parse times the JSON decode, this times the struct->unified mapping. Wrapped
+// at the primary response call sites; secondary paths fold into provider-internal. EndSpan is nil-safe.
 func StartResponseConvertorSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
 	return startPhaseSpan(ctx, "convertor")
 }
@@ -1708,8 +2009,8 @@ func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHa
 }
 
 // StartPhaseSpan opens a nil-safe internal overhead phase span with an arbitrary name,
-// so provider/auth code outside this package can carve its own work out of the residual
-// "core" bucket. name becomes the breakdown bucket; keep it stable and descriptive
+// so provider/auth code outside this package can carve its own work out of the overhead
+// residual. name becomes the breakdown bucket; keep it stable and descriptive
 // (e.g. "request-sign", "credentials-fetch", "response-finalize"). EndSpan is nil-safe.
 func StartPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
 	return startPhaseSpan(ctx, name)
@@ -1837,13 +2138,36 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 	}
 }
 
+// rootErrorMessage returns a root-level "message" string from a parsed provider error
+// body, or "" when the body carries none. AWS uses this shape for every Bedrock error
+// (the exception name travels separately, in "__type" or the X-Amzn-Errortype header),
+// while providers whose errors nest the message under "error" simply have no root-level
+// "message" for this to find.
+func rootErrorMessage(raw interface{}) string {
+	body, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	message, _ := body["message"].(string)
+	return strings.TrimSpace(message)
+}
+
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
-// with the appropriate status code and error information.
+// with the appropriate status code and error information, and the retry hint from the
+// response headers (see ApplyRetryAfter).
 // HTML detection only runs if JSON parsing fails to avoid expensive regex operations
 // on responses that are almost certainly valid JSON. errorResp must be a pointer to
 // the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+	bifrostErr := handleProviderAPIError(resp, errorResp)
+	ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
+}
+
+// handleProviderAPIError builds the error from the response, leaving the retry hint to its
+// caller so every branch below picks it up.
+func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 
 	// Decode body
@@ -1912,11 +2236,17 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 
 	// Try JSON parsing first
 	if err := sonic.Unmarshal(decodedBody, errorResp); err == nil {
-		// JSON parsing succeeded, return success
+		// JSON parsing succeeded, return success. The message is seeded from a
+		// root-level "message" so a body the caller's own error shape cannot
+		// describe still reports a reason: AWS answers every Bedrock surface
+		// (bedrock-runtime and Mantle) with a flat {"message":"..."}, which
+		// neither the Anthropic error envelope nor the OpenAI one matches, and
+		// those surfaces are served by the shared Anthropic/OpenAI handlers.
+		// Callers overwrite this as soon as their own parse finds a message.
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
-			Error:          &schemas.ErrorField{},
+			Error:          &schemas.ErrorField{Message: rootErrorMessage(rawErrorResponse)},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RawResponse: rawErrorResponse,
 			},
@@ -1995,7 +2325,7 @@ func EnrichError(
 // Used at the primary completion call sites (chat / responses / text) where parse
 // time is on the latency hot path; the ctx-less HandleProviderResponse remains for
 // the many secondary sites (files, batches, containers) whose parse time is not
-// worth a span and simply folds into the "core" bucket.
+// worth a span and simply folds into provider-internal.
 func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	if t, h := startPhaseSpan(ctx, "response-parse"); t != nil {
 		// Inspect the named bifrostErr so a failed parse ends the span as an error
@@ -2452,6 +2782,9 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 		Error: &schemas.ErrorField{
 			Message: message,
 			Type:    &errorType,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 		},
 	}
 }
@@ -2916,58 +3249,59 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 
 	go func() {
 		defer close(closed)
+		// closeBodyStream can panic when the connection is already gone: fasthttp's
+		// CloseWithError nil-derefs in (*HostClient).CloseConn. The ownership claim
+		// below makes that ordering unlikely, but this runs in its own goroutine,
+		// so an unrecovered panic takes the whole process down instead of ending
+		// one stream (same reasoning as the idle-timeout timer path in
+		// NewIdleTimeoutReader). Log the value so an unrelated panic leaves a trace.
+		defer func() {
+			if rec := recover(); rec != nil {
+				if logger == nil {
+					logger = getLogger()
+				}
+				logger.Debug("recovered panic in stream cancellation closeBodyStream: %v", rec)
+			}
+		}()
 		select {
 		case <-ctx.Done():
-			// Atomically claim the close. Only one owner (this goroutine, the
-			// idle-timeout timer, or ReleaseStreamingResponse) may close the
-			// non-idempotent fasthttp body stream: a second CloseWithError
-			// re-runs releaseRequestStream, double-Putting the pooled
-			// requestStream so a later request aliases it concurrently and
-			// panics with a negative chunkLeft slice bound. GetAndSetValue is a
-			// single locked compare-and-swap, unlike the previous racy
-			// Value-then-SetValue check.
+			// Claim the close so only one owner (this goroutine, the idle-timeout
+			// timer, or ReleaseStreamingResponse) drives it. The claim orders the
+			// close against ReleaseStreamingResponse's drain; fasthttp itself is
+			// idempotent here (clientStreamBody.CloseWithError is guarded by a
+			// sync.Once), so a lost race is no longer destructive.
 			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 				return
 			}
-			// Context cancelled or deadline exceeded - close the body stream to unblock reads
-			if closer, ok := bodyStream.(io.Closer); ok {
-				if err := closer.Close(); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
-			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-				if err := wce.CloseWithError(ctx.Err()); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
-			}
+			// Closing here interrupts a read that is still in flight. That is safe
+			// only on a fasthttp carrying upstream commit fb3b29e ("wait for
+			// streaming reads before releasing pooled resources", #2353), where
+			// clientStreamBody interrupts the connection and then waits on its
+			// readLock before returning the *requestStream and the connection's
+			// *bufio.Reader to their pools.
+			//
+			// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
+			// underneath an active reader, so a later request acquired an aliased
+			// object and read another request's bytes. That is maximhq/bifrost#6143,
+			// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
+			// under -race on any fasthttp without that fix.
+			closeBodyStream(bodyStream, ctx.Err())
 		case <-done:
-			// Race between done and ctx.Done: the streaming goroutine has reached its defer
-			// chain (Read has returned), and ctx is also cancelled. The body may already be
-			// at EOF and fasthttp may have released the underlying conn to the idle pool.
-			// We still attempt a close to unblock any pending drain in ReleaseStreamingResponse,
-			// but we set BifrostContextKeyConnectionClosed unconditionally (matching the
-			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
-			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
+			// The streaming goroutine reached its defer chain and ctx is also
+			// cancelled. Claim and close so ReleaseStreamingResponse does not drain
+			// a body nobody wants, and so a half-read connection is closed rather
+			// than returned to the idle pool.
 			if ctx.Err() != nil {
-				// Same atomic claim as the ctx.Done branch: skip if another
-				// owner already closed/released the stream.
 				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 					return
 				}
-				if closer, ok := bodyStream.(io.Closer); ok {
-					if err := closer.Close(); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
-				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-					if err := wce.CloseWithError(ctx.Err()); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
-				}
+				closeBodyStream(bodyStream, ctx.Err())
 			}
 		}
 	}()
 	return func() {
 		close(done)
-		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
+		<-closed // Wait for the close to finish before ReleaseStreamingResponse runs.
 	}
 }
 
@@ -3162,6 +3496,10 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 // stream_idle_timeout_in_seconds window.
 var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured window")
 
+// errStreamParkedAfterFinish closes a body stream that ended on finish_reason while the
+// upstream kept the connection open. Internal to ReleaseStreamingResponse; never surfaced.
+var errStreamParkedAfterFinish = errors.New("stream ended on finish_reason with the connection still open")
+
 // ErrStreamClosed is returned when a stream has already been closed by
 // cancellation or cleanup before the next read starts.
 var ErrStreamClosed = errors.New("stream closed")
@@ -3296,10 +3634,55 @@ func HandleStreamTimeout(
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
 }
 
+// ProcessAndSendNonSSEStreamError reports a 200 response that could not be read
+// as SSE. Unlike ProcessAndSendError it preserves the evidence: the captured
+// body sample travels on RawResponse when raw capture is enabled, and the
+// provider Content-Type is named in the message. Without this the failure
+// reached operators with no body and no raw response to look at.
+func ProcessAndSendNonSSEStreamError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	info *NonSSEStreamBody,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	err := info.Err()
+	// This is an upstream failure, not a Bifrost one: executeRequestWithRetries
+	// peeks at the first stream chunk and halts before retry classification when
+	// IsBifrostError is set, so leaving it false lets the 502 take the transient
+	// retry path and lets a rate-limit envelope in the message rotate keys.
+	bifrostError := &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+		Error: &schemas.ErrorField{
+			Message: err.Error(),
+			Error:   err,
+		},
+	}
+	if len(info.Sample) > 0 && ShouldSendBackRawResponse(ctx, false) {
+		bifrostError.ExtraFields.RawResponse = string(info.Sample)
+	}
+	attachBilledUsageFromContext(ctx, bifrostError)
+	ProcessAndSendBifrostError(ctx, postHookRunner, bifrostError, responseChan, logger, postHookSpanFinalizer)
+}
+
 // ProcessAndSendError handles post-hook processing and sends the error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
+// BifrostErrorCarrier is implemented by stream-reader errors that already carry
+// a fully classified *schemas.BifrostError (retryability, status code, upstream
+// error type). ProcessAndSendError forwards such an error unchanged instead of
+// wrapping it in a terminal "Error reading stream" error, so a reader plugged
+// into a shared stream loop through SSEReaderFactory (e.g. the Bedrock
+// InvokeModel event-stream reader) keeps the same retry semantics as a provider
+// loop that calls ProcessAndSendBifrostError directly.
+type BifrostErrorCarrier interface {
+	error
+	BifrostError() *schemas.BifrostError
+}
+
 func ProcessAndSendError(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -3308,6 +3691,13 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) {
+	var carrier BifrostErrorCarrier
+	if errors.As(err, &carrier) {
+		if typed := carrier.BifrostError(); typed != nil {
+			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
+			return
+		}
+	}
 	// Send scanner error through channel
 	bifrostError := &schemas.BifrostError{
 		IsBifrostError: true,
@@ -3463,15 +3853,39 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // ProviderSendsDoneMarker returns true if the provider sends the [DONE] marker in streaming responses.
 // Some OpenAI-compatible providers (like Cerebras) don't send [DONE] and instead end the stream
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
-func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
+// A custom provider can opt into the same treatment via custom_provider_config.does_not_send_done_marker,
+// which only ever ends the read loop earlier - it cannot make a provider wait for a marker it never sends.
+func ProviderSendsDoneMarker(ctx *schemas.BifrostContext, providerName schemas.ModelProvider) bool {
+	if ctx != nil {
+		if doesNotSendDoneMarker, ok := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool); ok && doesNotSendDoneMarker {
+			return false
+		}
+	}
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.Bedrock, schemas.BedrockMantle:
-		// Cerebras, Perplexity, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity:
+		// Cerebras and Perplexity don't send [DONE] marker, ends stream after finish_reason.
+		// Bedrock Mantle (the bedrock_mantle provider and the legacy Mantle route under the
+		// bedrock key) does send [DONE]. With include_usage it sends the usage-only chunk after
+		// the finish_reason chunk, so breaking on finish_reason drops usage and cost (#7065).
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
 		return true
 	}
+}
+
+// WaitForStreamUsage reports whether custom_provider_config.wait_for_usage is set.
+// It only has meaning alongside a provider that ends on finish_reason (see
+// ProviderSendsDoneMarker): the read loop then keeps reading past finish_reason so the
+// trailing usage-only chunk - which Bifrost always asks for via stream_options.include_usage -
+// is collected instead of dropped (#7143). Termination is still bounded: the usage chunk,
+// two post-finish heartbeat comments, EOF, or network_config.stream_idle_timeout_in_seconds.
+func WaitForStreamUsage(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	waitForUsage, ok := ctx.Value(schemas.BifrostContextKeyWaitForUsage).(bool)
+	return ok && waitForUsage
 }
 
 func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
@@ -3508,11 +3922,42 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
 	}()
+	// Cancelled or timed out: abandon the connection instead of draining it.
+	// Draining here would read the rest of an upstream response nobody wants,
+	// holding the connection for the remainder of the stream. Closing with a
+	// non-nil error makes fasthttp's callback take CloseConn rather than
+	// ReleaseConn (client.go:3176), so a half-read connection is never returned
+	// to the idle pool. The response itself is left to GC for the same reason as
+	// the early return above: fasthttp.ReleaseResponse would Reset and fire the
+	// close callback a second time.
+	if ctx.Err() != nil {
+		closeBodyStream(bodyStream, ctx.Err())
+		return
+	}
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+	//
+	// Skipped when the reader already consumed the body to EOF: there is nothing
+	// left to drain, and on a keep-alive connection io.Copy blocks in
+	// parseChunkSize waiting for a chunk the upstream will never send, which
+	// deadlocks this deferred cleanup and stops the stream channel from closing.
+	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		// An upstream declared via custom_provider_config.does_not_send_done_marker ends on
+		// finish_reason and may then park the connection, heartbeating instead of closing.
+		// Draining that blocks here forever, so abandon the connection: closing with a
+		// non-nil error takes fasthttp's CloseConn path and keeps the half-read stream
+		// out of the idle pool. The response is left to GC as in the branches above.
+		// The same applies when the read loop itself stopped on a post-finish heartbeat.
+		parked, _ := ctx.Value(schemas.BifrostContextKeyStreamParkedAfterFinish).(bool)
+		doesNotSendDoneMarker, _ := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool)
+		if parked || doesNotSendDoneMarker {
+			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
+			return
+		}
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
 	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close
@@ -3977,4 +4422,424 @@ func ModelMatchesDenylist(denylist []string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+// jsonSchemaPatternKey is the JSON Schema keyword whose value is a regex.
+const jsonSchemaPatternKey = "pattern"
+
+// NormalizeRegexNULEscape rewrites the `\0` NUL escape to `\x00`.
+//
+// The two denote the same character in every engine that accepts both, but some
+// model backends reject the `\0` spelling when they validate tool schemas, and
+// they fail the whole request rather than reporting a bad pattern. They also fail
+// differently: DeepSeek answers 400 `"^[^\0]*$" is not a "regex"`, while
+// moonshotai.kimi-k3 on Bedrock answers 200 with an empty event stream and says
+// nothing at all. This is those validators' behaviour, not a regex-engine rule:
+// Go's own regexp accepts `\0` as a one-digit octal escape, and OpenAI, Anthropic
+// and Gemini accept it unchanged. `\x00` is accepted by every backend tested, so
+// the rewrite is lossless; which models receive it is decided by the caller (see
+// toolSchemaPatternRewriter in core), not here.
+//
+// Only a `\0` that is not the start of a legacy octal escape is rewritten, so
+// `\012` is left alone, and escape pairs are consumed two at a time so the `0` in
+// `\\0` (a literal backslash then a zero) is never mistaken for a NUL.
+func NormalizeRegexNULEscape(pattern string) string {
+	if !strings.Contains(pattern, `\0`) {
+		return pattern
+	}
+	var b strings.Builder
+	b.Grow(len(pattern) + 8)
+	for i := 0; i < len(pattern); {
+		if pattern[i] != '\\' || i+1 >= len(pattern) {
+			b.WriteByte(pattern[i])
+			i++
+			continue
+		}
+		// Only 0-7 are octal digits: `\012` is a legacy octal escape and stays,
+		// but `\08` is a NUL escape followed by a literal 8 and must be rewritten.
+		if pattern[i+1] == '0' && (i+2 >= len(pattern) || pattern[i+2] < '0' || pattern[i+2] > '7') {
+			b.WriteString(`\x00`)
+		} else {
+			b.WriteByte(pattern[i])
+			b.WriteByte(pattern[i+1])
+		}
+		i += 2
+	}
+	return b.String()
+}
+
+// normalizeSchemaValue normalizes any nested JSON Schema value. It returns the
+// input untouched, and reports false, when nothing changed -- the common case,
+// which must not allocate.
+func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
+	switch typed := value.(type) {
+	case *schemas.OrderedMap:
+		return normalizeSchemaMap(typed, rewrite)
+	case map[string]any:
+		// Nested schemas built in code arrive as plain maps (BuildDecisionSchema
+		// stores each question's schema this way inside an OrderedMap), so they
+		// need the same pattern handling. Copy-on-write like the other cases: the
+		// map is duplicated only when a value changes.
+		var updated map[string]any
+		for key, nested := range typed {
+			normalized, changed := nested, false
+			if key == jsonSchemaPatternKey {
+				if pattern, ok := nested.(string); ok {
+					if rewritten := rewrite(pattern); rewritten != pattern {
+						normalized, changed = rewritten, true
+					}
+				}
+			}
+			if !changed {
+				normalized, changed = normalizeSchemaValue(nested, rewrite)
+			}
+			if !changed {
+				continue
+			}
+			if updated == nil {
+				updated = make(map[string]any, len(typed))
+				for k, v := range typed {
+					updated[k] = v
+				}
+			}
+			updated[key] = normalized
+		}
+		if updated == nil {
+			return typed, false
+		}
+		return updated, true
+	case []any:
+		var updated []any
+		for i := range typed {
+			normalized, changed := normalizeSchemaValue(typed[i], rewrite)
+			if !changed {
+				continue
+			}
+			if updated == nil {
+				updated = make([]any, len(typed))
+				copy(updated, typed)
+			}
+			updated[i] = normalized
+		}
+		if updated == nil {
+			return typed, false
+		}
+		return updated, true
+	}
+	return value, false
+}
+
+// normalizeSchemaMap walks one schema object. OrderedMap.Clone is shallow, so a
+// clone is taken only when this level actually changes and untouched subtrees stay
+// shared with the caller's schema. Set replaces a value without disturbing key
+// order, which the prompt cache depends on.
+func normalizeSchemaMap(schema *schemas.OrderedMap, rewrite PatternRewriter) (*schemas.OrderedMap, bool) {
+	if schema == nil || schema.Len() == 0 {
+		return schema, false
+	}
+	var updated *schemas.OrderedMap
+	for _, key := range schema.Keys() {
+		value, _ := schema.Get(key)
+
+		normalized, changed := value, false
+		if key == jsonSchemaPatternKey {
+			if pattern, ok := value.(string); ok {
+				if rewritten := rewrite(pattern); rewritten != pattern {
+					normalized, changed = rewritten, true
+				}
+			}
+		}
+		if !changed {
+			normalized, changed = normalizeSchemaValue(value, rewrite)
+		}
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = schema.Clone()
+		}
+		updated.Set(key, normalized)
+	}
+	if updated == nil {
+		return schema, false
+	}
+	return updated, true
+}
+
+// RewriteToolSchemaPatterns applies rewrite to every regex `pattern` in the tool
+// parameter schema, copy-on-write: a schema with nothing to rewrite is returned
+// as-is and allocates nothing.
+func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite PatternRewriter) (*schemas.ToolFunctionParameters, bool) {
+	if params == nil {
+		return params, false
+	}
+
+	// Struct assignment carries the unexported keyOrder and explicitEmptyObject
+	// fields across, so a rewritten schema still serializes in the client's key
+	// order and an explicit `{}` stays `{}`.
+	updated := *params
+	changed := false
+
+	if params.Pattern != nil {
+		if rewritten := rewrite(*params.Pattern); rewritten != *params.Pattern {
+			updated.Pattern = &rewritten
+			changed = true
+		}
+	}
+
+	for _, field := range []struct {
+		value  *schemas.OrderedMap
+		assign func(*schemas.OrderedMap)
+	}{
+		{params.Properties, func(m *schemas.OrderedMap) { updated.Properties = m }},
+		{params.Items, func(m *schemas.OrderedMap) { updated.Items = m }},
+		{params.Defs, func(m *schemas.OrderedMap) { updated.Defs = m }},
+		{params.Definitions, func(m *schemas.OrderedMap) { updated.Definitions = m }},
+	} {
+		if normalized, fieldChanged := normalizeSchemaMap(field.value, rewrite); fieldChanged {
+			field.assign(normalized)
+			changed = true
+		}
+	}
+
+	// additionalProperties is a schema in its own right, not just a boolean, so a
+	// pattern under it must be rewritten too. The struct is copied only when its
+	// map changes; the boolean variant is carried through untouched.
+	if additional := params.AdditionalProperties; additional != nil && additional.AdditionalPropertiesMap != nil {
+		if normalized, fieldChanged := normalizeSchemaMap(additional.AdditionalPropertiesMap, rewrite); fieldChanged {
+			additionalCopy := *additional
+			additionalCopy.AdditionalPropertiesMap = normalized
+			updated.AdditionalProperties = &additionalCopy
+			changed = true
+		}
+	}
+
+	for _, composition := range []struct {
+		value  []schemas.OrderedMap
+		assign func([]schemas.OrderedMap)
+	}{
+		{params.AnyOf, func(s []schemas.OrderedMap) { updated.AnyOf = s }},
+		{params.OneOf, func(s []schemas.OrderedMap) { updated.OneOf = s }},
+		{params.AllOf, func(s []schemas.OrderedMap) { updated.AllOf = s }},
+	} {
+		var rewritten []schemas.OrderedMap
+		for i := range composition.value {
+			normalized, elementChanged := normalizeSchemaMap(&composition.value[i], rewrite)
+			if !elementChanged {
+				continue
+			}
+			if rewritten == nil {
+				rewritten = make([]schemas.OrderedMap, len(composition.value))
+				copy(rewritten, composition.value)
+			}
+			rewritten[i] = *normalized
+		}
+		if rewritten != nil {
+			composition.assign(rewritten)
+			changed = true
+		}
+	}
+
+	if !changed {
+		return params, false
+	}
+	return &updated, true
+}
+
+// RewriteResponsesToolSchemas applies rewrite to the regex patterns in every
+// Responses tool's parameter schema, copy-on-write. Tools with nothing to rewrite
+// are shared with the caller's slice rather than copied, and ResponsesToolFunction
+// is embedded by pointer, so a rewritten one is replaced rather than written
+// through.
+func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternRewriter) ([]schemas.ResponsesTool, bool) {
+	var updated []schemas.ResponsesTool
+	for i := range tools {
+		if tools[i].ResponsesToolFunction == nil || tools[i].ResponsesToolFunction.Parameters == nil {
+			continue
+		}
+		normalized, changed := RewriteToolSchemaPatterns(tools[i].ResponsesToolFunction.Parameters, rewrite)
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = make([]schemas.ResponsesTool, len(tools))
+			copy(updated, tools)
+		}
+		function := *tools[i].ResponsesToolFunction
+		function.Parameters = normalized
+		updated[i].ResponsesToolFunction = &function
+	}
+	if updated == nil {
+		return tools, false
+	}
+	return updated, true
+}
+
+// PatternRewriter rewrites one regex `pattern` value. It must return its input
+// unchanged when it has nothing to do, so callers can detect a no-op by equality
+// and keep the original schema bytes.
+type PatternRewriter func(pattern string) string
+
+// ComposePatternRewriters applies rewriters left to right.
+func ComposePatternRewriters(rewriters ...PatternRewriter) PatternRewriter {
+	return func(pattern string) string {
+		for _, rewrite := range rewriters {
+			pattern = rewrite(pattern)
+		}
+		return pattern
+	}
+}
+
+// StripRegexLookaround removes every zero-width lookaround assertion, `(?=...)`,
+// `(?!...)`, `(?<=...)` and `(?<!...)`, from a regex pattern.
+//
+// This is a lossy relaxation and is deliberately not applied to every provider.
+// Some model backends reject lookaround outright: moonshotai.kimi-k3 on Bedrock
+// answers a tool whose schema uses `(?!` with HTTP 200 and an empty event
+// stream, and Claude Code's ArtifactData tool ships four such patterns, so every
+// Claude Code request to kimi-k3 died. OpenAI and Anthropic accept lookaround,
+// and for them the assertion is real guidance, so the rewrite is gated to models
+// outside those families (see regexLookaroundSupported in core).
+//
+// Removing a zero-width assertion can only widen what the pattern matches, never
+// narrow it, so the result is always a valid relaxation of the original: the
+// character-class and length constraints survive and only the exclusion the
+// lookaround expressed is lost. Non-capturing `(?:...)` and named `(?<name>...)`
+// groups are not lookaround and are left alone. An unbalanced pattern is
+// returned unchanged rather than truncated.
+func StripRegexLookaround(pattern string) string {
+	if !strings.Contains(pattern, "(?") {
+		return pattern
+	}
+	var b strings.Builder
+	b.Grow(len(pattern))
+	changed := false
+	for i := 0; i < len(pattern); {
+		c := pattern[i]
+		switch {
+		case c == '\\' && i+1 < len(pattern):
+			b.WriteByte(c)
+			b.WriteByte(pattern[i+1])
+			i += 2
+		case c == '[':
+			end := regexClassEnd(pattern, i)
+			b.WriteString(pattern[i:end])
+			i = end
+		case c == '(' && isRegexLookaroundStart(pattern, i):
+			end := regexGroupEnd(pattern, i)
+			if end < 0 {
+				return pattern
+			}
+			changed = true
+			// A quantifier attached to the removed assertion would otherwise land on
+			// the previous atom, or lead the pattern and fail to parse, so it goes too.
+			i = regexQuantifierEnd(pattern, end)
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	if !changed {
+		return pattern
+	}
+	return b.String()
+}
+
+// regexQuantifierEnd returns the index just past a quantifier starting at
+// pattern[start] (`*`, `+`, `?`, or a well-formed `{n}`, `{n,}`, `{n,m}`), plus an
+// optional lazy `?`. Anything else, including a malformed brace, is left in place
+// and start is returned unchanged.
+func regexQuantifierEnd(pattern string, start int) int {
+	if start >= len(pattern) {
+		return start
+	}
+	i := start
+	switch pattern[i] {
+	case '*', '+', '?':
+		i++
+	case '{':
+		j := i + 1
+		digits := func() bool {
+			n := j
+			for j < len(pattern) && pattern[j] >= '0' && pattern[j] <= '9' {
+				j++
+			}
+			return j > n
+		}
+		if !digits() {
+			return start
+		}
+		if j < len(pattern) && pattern[j] == ',' {
+			j++
+			digits()
+		}
+		if j >= len(pattern) || pattern[j] != '}' {
+			return start
+		}
+		i = j + 1
+	default:
+		return start
+	}
+	if i < len(pattern) && pattern[i] == '?' {
+		i++
+	}
+	return i
+}
+
+// isRegexLookaroundStart reports whether pattern[i:] opens a lookaround group.
+func isRegexLookaroundStart(pattern string, i int) bool {
+	rest := pattern[i:]
+	return strings.HasPrefix(rest, "(?=") || strings.HasPrefix(rest, "(?!") ||
+		strings.HasPrefix(rest, "(?<=") || strings.HasPrefix(rest, "(?<!")
+}
+
+// regexClassEnd returns the index just past the character class opening at
+// pattern[start]. A `]` in first position (after an optional `^`) is a literal,
+// and escapes are skipped, so a `(` inside the class is never read as a group.
+func regexClassEnd(pattern string, start int) int {
+	j := start + 1
+	if j < len(pattern) && pattern[j] == '^' {
+		j++
+	}
+	if j < len(pattern) && pattern[j] == ']' {
+		j++
+	}
+	for j < len(pattern) {
+		switch pattern[j] {
+		case '\\':
+			j += 2
+		case ']':
+			return j + 1
+		default:
+			j++
+		}
+	}
+	return len(pattern)
+}
+
+// regexGroupEnd returns the index just past the `)` that closes the group opening
+// at pattern[start], honouring escapes, character classes and nesting. It returns
+// -1 when the group never closes.
+func regexGroupEnd(pattern string, start int) int {
+	depth := 0
+	for j := start; j < len(pattern); {
+		switch pattern[j] {
+		case '\\':
+			j += 2
+		case '[':
+			j = regexClassEnd(pattern, j)
+		case '(':
+			depth++
+			j++
+		case ')':
+			depth--
+			j++
+			if depth == 0 {
+				return j
+			}
+		default:
+			j++
+		}
+	}
+	return -1
 }

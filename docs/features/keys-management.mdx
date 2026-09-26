@@ -36,6 +36,7 @@ Keys can be restricted to specific models for access control and cost management
 - **Empty `models` array (`[]`)**: Denies ALL models (deny-by-default, v1.5.0+) - use `["*"]` to allow all
 - **Populated `models` array**: Key only supports listed models
 - **`blacklisted_models`**: Optional per-key denylist. If non-empty and the requested model appears in it, the key is excluded-even if that model is also in `models` (denylist wins over the allowlist)
+- **`regex:` entries**: In `models` or `blacklisted_models`, an entry such as `"regex:^gpt-4.*"` is an RE2 pattern matched case-insensitively against the whole model name. Other entries stay exact. A pattern that is empty, `*`, or does not compile is refused with 400
 - **Model mismatch**: Key is excluded from selection for that request
 
 **Use Cases:**

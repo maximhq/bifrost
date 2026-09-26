@@ -12,7 +12,8 @@
       "convert_text_to_chat": true,
       "convert_chat_to_responses": true,
       "should_drop_params": true,
-      "should_convert_params": false
+      "should_convert_params": false,
+      "azure_deepseek": true
     },
     "enable_logging": true,
     "initial_pool_size": 300,

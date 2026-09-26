@@ -102,6 +102,7 @@ bifrost:
             weight: 1
             allowed_models:
               - "gpt-4o-mini"
+            key_ids: ["*"]
       - id: "vk-beta-research-primary"
         name: "Beta Research Primary Key"
         description: "VK for Beta research workloads"
@@ -114,3 +115,4 @@ bifrost:
             weight: 1
             allowed_models:
               - "claude-3-5-sonnet-latest"
+            key_ids: ["*"]

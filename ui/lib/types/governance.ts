@@ -84,6 +84,8 @@ export interface DBKey {
 	provider_id: string; // identifier for the provider
 	models: string[]; // List of models this key can access
 	provider: ModelProviderName; // Provider name
+	// Omitted by the API when unset, which the Go side reads as enabled.
+	enabled?: boolean;
 }
 
 export interface RedactedDBKey {
@@ -100,14 +102,27 @@ export interface VirtualKey {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
+	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
+	virtual_mcp_ids?: number[];
 	team_id?: string;
 	customer_id?: string;
 	rate_limit_id?: string;
 	is_active: boolean;
 	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
+	previous_value_expires_at?: string | null; // When set, the pre-rotation value still authenticates until this time
+	rotated_at?: string | null; // Timestamp of the last value rotation
 	calendar_aligned?: boolean;
+	// When true, every provider is allowed; provider_configs remain optional per-provider overrides
+	allow_all_providers?: boolean;
+	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
+	// this key's traffic, false forces it on for the log store.
+	disable_content_logging?: boolean | null;
 	created_at: string;
 	updated_at: string;
+	// The third owner a key can have, alongside a team and a customer. Carried as an id only:
+	// business units are an enterprise table this model does not preload, so there is no
+	// `business_unit` relation to read a name from.
+	business_unit_id?: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
@@ -117,6 +132,11 @@ export interface VirtualKey {
 	// Lets the UI lock edits and show the managed-key notice without the separately
 	// RBAC-gated access-profile lookup.
 	is_access_profile_managed?: boolean;
+	// Read-only, server-computed: the user this key is assigned to, or null when it
+	// is assigned to a team, a customer, or nothing. Absent (rather than null) when
+	// the response came from a path that does not resolve assignees, so callers can
+	// tell "unassigned" from "unknown". Always null in OSS, which has no users.
+	assigned_user?: { id: string; name: string; email: string } | null;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
@@ -213,11 +233,15 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
+	business_unit_id?: string;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
+	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -227,12 +251,16 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string | null;
 	customer_id?: string | null;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
+	business_unit_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -321,6 +349,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only owner kind; a key names at most one owner, so this ORs with the other two. */
+	business_unit_id?: string;
 	/** Enterprise-only: filters to virtual keys assigned to this user. */
 	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
@@ -419,6 +449,12 @@ export interface ModelConfig {
 	scope?: string; // "global" (default) or "virtual_key"
 	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
 	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
+	// What externally manages this config, e.g. the access profile that materialized
+	// it (read-only). source_id addresses the SOURCE, not scope_id — for an
+	// access-profile-scoped row scope_id is the user's association row.
+	source_type?: string;
+	source_id?: string;
+	source_name?: string;
 	calendar_aligned?: boolean; // Snap budget resets to calendar boundaries (inherited from VK for vk scope)
 	rate_limit_id?: string;
 	// Populated relationships
@@ -580,6 +616,11 @@ export interface PricingOverridePatch {
 	output_cost_per_audio_token?: number;
 	output_cost_per_video_per_second?: number;
 	output_cost_per_second?: number;
+	output_cost_per_video_per_second_480p?: number;
+	output_cost_per_video_per_second_720p?: number;
+	output_cost_per_video_per_second_1024p?: number;
+	output_cost_per_video_per_second_1080p?: number;
+	output_cost_per_video_per_second_4k?: number;
 	// Other
 	search_context_cost_per_query?: number;
 	input_cost_per_query?: number;
@@ -589,6 +630,29 @@ export interface PricingOverridePatch {
 	// OCR
 	ocr_cost_per_page?: number;
 	annotation_cost_per_page?: number;
+	// Time of day
+	off_peak_cost_multiplier?: number;
+	peak_hours?: PeakHoursSchedule;
+}
+
+/**
+ * Recurring weekly windows during which a model is billed at its peak (base)
+ * rates. Any instant outside every window is off-peak and is discounted by
+ * `off_peak_cost_multiplier`.
+ */
+export interface PeakHoursSchedule {
+	/** IANA location name (e.g. "UTC", "Asia/Shanghai"). Empty means UTC. */
+	timezone?: string;
+	windows?: PeakHoursWindow[];
+}
+
+export interface PeakHoursWindow {
+	/** Weekdays, 0 = Sunday through 6 = Saturday. */
+	days: number[];
+	/** "HH:MM" in the schedule's timezone, inclusive. */
+	start: string;
+	/** "HH:MM" in the schedule's timezone, exclusive; <= start wraps midnight. */
+	end: string;
 }
 
 export interface PricingOverride {

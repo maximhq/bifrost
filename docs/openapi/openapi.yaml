@@ -63,6 +63,10 @@ servers:
         default: http://localhost:8080
         description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)
 
+# Fallback only. Every operation MUST declare its own `security` (use `security: []`
+# for genuinely public endpoints) - `spec_invariants_test.py` enforces this. This
+# default exists so that an operation which somehow slips through fails closed in
+# the docs rather than rendering as unauthenticated.
 security:
   - BearerAuth: []
   - BasicAuth: []
@@ -82,6 +86,8 @@ tags:
     description: Optical character recognition for documents and images
   - name: Rerank
     description: Document reranking by relevance to a query
+  - name: Decisions
+    description: Structured decisions evaluated against annotated function-tool definitions
   - name: Embeddings
     description: Text embedding generation
   - name: Images
@@ -115,6 +121,8 @@ tags:
     description: AWS Bedrock compatible API endpoints (/bedrock/*)
   - name: Cohere Integration
     description: Cohere compatible API endpoints (/cohere/*)
+  - name: Typesafe Integration
+    description: Typesafe compatible API endpoints (/typesafe/*)
   - name: LiteLLM Integration
     description: LiteLLM proxy endpoints with multi-provider support (/litellm/*)
   - name: LangChain Integration
@@ -152,6 +160,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: Warp
+    description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
 
 paths:
   # ==================== Unified Inference API ====================
@@ -167,6 +177,8 @@ paths:
     $ref: "./paths/inference/ocr.yaml#/ocr"
   /v1/rerank:
     $ref: "./paths/inference/rerank.yaml#/rerank"
+  /v1/decisions:
+    $ref: "./paths/inference/decisions.yaml#/decisions"
   /v1/embeddings:
     $ref: "./paths/inference/embeddings.yaml#/embeddings"
   /v1/audio/speech:
@@ -515,6 +527,12 @@ paths:
   /cohere/v2/rerank:
     $ref: "./paths/integrations/cohere/rerank.yaml#/rerank"
 
+  # Typesafe Integration
+  /typesafe/v1/systemone:
+    $ref: "./paths/integrations/typesafe/systemone.yaml#/systemone"
+  /typesafe/v1/models:
+    $ref: "./paths/integrations/typesafe/systemone.yaml#/models"
+
   # Tokenize (v1)
   /cohere/v1/tokenize:
     $ref: "./paths/integrations/cohere/tokenize.yaml#/tokenize"
@@ -733,6 +751,8 @@ paths:
     $ref: "./paths/management/users.yaml#/users-by-id"
   /api/governance/users/me/permissions:
     $ref: "./paths/management/users.yaml#/users-me-permissions"
+  /api/governance/users/me/vk-creation-policy:
+    $ref: "./paths/management/governanceextensions.yaml#/user-vk-creation-policy"
   /api/governance/users/{user_id}/role:
     $ref: "./paths/management/users.yaml#/users-role"
   /api/governance/users/{user_id}/teams:
@@ -801,12 +821,16 @@ paths:
     $ref: "./paths/management/mcp.yaml#/client-by-id"
   /api/mcp/client/{id}/reconnect:
     $ref: "./paths/management/mcp.yaml#/client-reconnect"
+  /api/mcp/client/{id}/refresh-tools:
+    $ref: "./paths/management/mcp.yaml#/client-refresh-tools"
   /api/mcp/client/{id}/complete-oauth:
     $ref: "./paths/management/mcp.yaml#/client-complete-oauth"
   /api/mcp/client/{id}/initiate-verification:
     $ref: "./paths/management/mcp.yaml#/client-initiate-verification"
   /api/mcp/client/{id}/reauthorize:
     $ref: "./paths/management/mcp.yaml#/client-reauthorize"
+  /api/mcp/client/{id}/reregister:
+    $ref: "./paths/management/mcp.yaml#/client-reregister"
   /api/mcp/client/{id}/verify-headers:
     $ref: "./paths/management/mcp.yaml#/client-verify-headers"
   /api/mcp/client/{id}/verify-exchange:
@@ -847,12 +871,18 @@ paths:
     $ref: "./paths/management/governance.yaml#/virtual-keys-quota"
   /api/governance/virtual-keys/{vk_id}:
     $ref: "./paths/management/governance.yaml#/virtual-keys-by-id"
+  /api/governance/virtual-keys/{vk_id}/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate-by-id"
   /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override:
     $ref: "./paths/management/governance.yaml#/virtual-keys-budget-override"
   /api/governance/virtual-keys/{vk_id}/users:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-users"
   /api/governance/virtual-keys/{vk_id}/users/{user_id}:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-user"
+  /api/governance/virtual-keys/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate"
+  /api/governance/virtual-keys/{vk_id}/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-by-id-rotate"
 
   # Governance - Teams
   /api/governance/teams:
@@ -879,10 +909,10 @@ paths:
     $ref: "./paths/management/businessunits.yaml#/business-units"
   /api/governance/business-units/{business_unit_id}:
     $ref: "./paths/management/businessunits.yaml#/business-units-by-id"
-  /api/governance/business-units/{business_unit_id}/teams:
-    $ref: "./paths/management/businessunits.yaml#/business-units-teams"
-  /api/governance/business-units/{business_unit_id}/teams/{team_id}:
-    $ref: "./paths/management/businessunits.yaml#/business-units-team-by-id"
+  /api/governance/business-units/{business_unit_id}/users:
+    $ref: "./paths/management/businessunits.yaml#/business-units-users"
+  /api/governance/business-units/{business_unit_id}/users/{user_id}:
+    $ref: "./paths/management/businessunits.yaml#/business-units-user-by-id"
   /api/governance/business-units/{business_unit_id}/governance:
     $ref: "./paths/management/businessunits.yaml#/business-units-governance"
   /api/governance/business-units/{business_unit_id}/customers:
@@ -963,6 +993,18 @@ paths:
     $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys"
   /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id"
+
+  # Governance - Projects (Enterprise)
+  /api/governance/projects:
+    $ref: "./paths/management/projects.yaml#/projects"
+  /api/governance/projects/{project_id}:
+    $ref: "./paths/management/projects.yaml#/projects-by-id"
+  /api/governance/projects/{project_id}/members:
+    $ref: "./paths/management/projects.yaml#/projects-members"
+  /api/governance/projects/{project_id}/members/{member_id}:
+    $ref: "./paths/management/projects.yaml#/projects-member-by-id"
+  /api/governance/users/{user_id}/projects:
+    $ref: "./paths/management/projects.yaml#/users-projects"
 
   # Deprecated Governance aliases (Enterprise compatibility; remove in the following major release)
   /api/virtual-keys/{vk_id}/users:
@@ -1092,6 +1134,14 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity"
   /api/routing/complexity-analyzer-config/reset:
     $ref: "./paths/management/routing.yaml#/complexity-reset"
+  /api/routing/complexity-analyzer-status:
+    $ref: "./paths/management/routing.yaml#/complexity-status"
+  /api/routing/complexity-analyzer-status/retry:
+    $ref: "./paths/management/routing.yaml#/complexity-status-retry"
+  /api/routing/complexity-analyzer-generations:
+    $ref: "./paths/management/routing.yaml#/complexity-generations"
+  /api/routing/complexity-analyzer-generations/{namespace}:
+    $ref: "./paths/management/routing.yaml#/complexity-generation-delete"
 
   # Routing - deprecated paths, kept so existing clients keep working
   /api/governance/routing-rules:
@@ -1140,14 +1190,24 @@ paths:
     $ref: "./paths/management/logging.yaml#/logs-dropped"
   /api/logs/filterdata:
     $ref: "./paths/management/logging.yaml#/logs-filterdata"
+  /api/logs/histogram/throughput:
+    $ref: "./paths/management/logging.yaml#/logs-histogram-throughput"
+  /api/logs/histogram/throughput/by-provider:
+    $ref: "./paths/management/logging.yaml#/logs-histogram-throughput-by-provider"
   /api/logs/rankings:
     $ref: "./paths/management/logging.yaml#/logs-rankings"
+  /api/logs/rankings/by-dimension:
+    $ref: "./paths/management/logging.yaml#/logs-rankings-by-dimension"
+  /api/logs/rankings/users:
+    $ref: "./paths/management/logging.yaml#/logs-rankings-users"
   /api/logs/dashboard:
     $ref: "./paths/management/logging.yaml#/logs-dashboard"
   /api/logs/recalculate-cost:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost"
   /api/logs/recalculate-cost/status:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-status"
+  /api/logs/recalculate-cost/cancel:
+    $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-cancel"
 
   # MCP Logs
   /api/mcp-logs:
@@ -1230,6 +1290,14 @@ paths:
     $ref: "./paths/management/infrastructure.yaml#/mcp-server"
   /metrics:
     $ref: "./paths/management/infrastructure.yaml#/metrics"
+  /inspect:
+    $ref: "./paths/management/inspect.yaml#/inspect"
+
+  # API Keys
+  /api/api-keys:
+    $ref: "./paths/management/apikeys.yaml#/api-keys"
+  /api/api-keys/{id}:
+    $ref: "./paths/management/apikeys.yaml#/api-keys-by-id"
 
   # Webhooks
   /api/webhooks:
@@ -1242,12 +1310,32 @@ paths:
     $ref: "./paths/management/webhooks.yaml#/webhooks-test"
   /api/webhooks/{id}/deliveries:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries"
+  /api/webhooks/deliveries:
+    $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-search"
   /api/webhooks/deliveries/{id}/redeliver:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-redeliver"
 
   # Notifications
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
+
+  # Warp
+  /api/warp/config:
+    $ref: "./paths/management/warp.yaml#/warp-config"
+  /api/warp/log-index/backfill:
+    $ref: "./paths/management/warp.yaml#/warp-backfill"
+  /api/warp/log-index/backfill/status:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-status"
+  /api/warp/log-index/backfill/cancel:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
+  /api/warp/chat:
+    $ref: "./paths/management/warp.yaml#/warp-session"
+  /api/warp/log-index/status:
+    $ref: "./paths/management/warp.yaml#/warp-log-index-status"
+  /api/warp/conversations:
+    $ref: "./paths/management/warp.yaml#/warp-conversations"
+  /api/warp/conversations/{id}:
+    $ref: "./paths/management/warp.yaml#/warp-conversation-by-id"
 
 components:
   securitySchemes:
@@ -1261,19 +1349,40 @@ components:
       type: http
       scheme: bearer
       description: |
-        Management API authentication for `/api/*` endpoints. Use the `Authorization` header with `Bearer <API key>`.
-        Virtual keys, dashboard/user/session tokens, and `x-api-key` headers are not supported on management APIs.
+        Management API authentication for `/api/*` endpoints. Use the `Authorization` header
+        with `Bearer <token>`, where `<token>` is one of:
+
+        - a Bifrost management API key,
+        - a dashboard session token issued by `POST /api/session/login`,
+        - base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).
+
+        Virtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -
+        the sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.
+
+        Authentication alone is not sufficient in Bifrost Enterprise: each operation page shows a
+        **Required Permissions** table (`Resource:Operation`, for example `Dashboard:View`) above
+        its Authorizations section, and the caller's RBAC role or management API key scopes must
+        include what it lists, otherwise the request is rejected with `403 Forbidden`.
+
+        A local admin — authenticated with the admin password, or any caller on a deployment with
+        dashboard auth disabled — bypasses these checks and can call every management endpoint.
+        See [Required permissions](/api/procuring-api-keys#required-permissions) for how
+        permissions are derived and which endpoints are exempt.
     BasicAuth:
       type: http
       scheme: basic
       description: |
-        Basic authentication using username and password.
+        Basic authentication using the Bifrost admin username and password
+        (`auth_config.admin_username` / `auth_config.admin_password`).
+        Accepted on management APIs (`/api/*`, `/metrics`, `/ws`) only - the inference
+        middleware never validates Basic credentials.
     VirtualKeyAuth:
       type: apiKey
       in: header
       name: x-bf-vk
       description: |
-        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).
+        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`) - with the single
+        exception of the self-service `GET /api/governance/virtual-keys/quota`, where the virtual key is the credential.
         Example: `sk-bf-*` prefixed keys.
     ApiKeyAuth:
       type: apiKey
@@ -1282,6 +1391,34 @@ components:
       description: |
         API key authentication via the `x-api-key` header.
         Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    VirtualKeyBearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Virtual key passed as a bearer token. The value MUST be an `sk-bf-` prefixed Bifrost
+        virtual key - provider API keys and Bifrost management/session tokens are not accepted
+        on endpoints that use this scheme.
+    VirtualKeyApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: |
+        Virtual key passed via the `x-api-key` header. The value MUST be `sk-bf-` prefixed;
+        provider API keys are not accepted on endpoints that use this scheme.
+    VirtualKeyGoogleAuth:
+      type: apiKey
+      in: header
+      name: x-goog-api-key
+      description: |
+        Virtual key passed via the Google GenAI `x-goog-api-key` header. The value MUST be
+        `sk-bf-` prefixed.
+    VirtualKeyAzureAuth:
+      type: apiKey
+      in: header
+      name: api-key
+      description: |
+        Virtual key passed via the Azure-style `api-key` header. The value MUST be
+        `sk-bf-` prefixed.
     SessionCookieAuth:
       type: apiKey
       in: cookie
@@ -1289,8 +1426,11 @@ components:
       description: |
         Dashboard session authentication via the HTTPOnly `token` cookie that is
         set by `POST /api/session/login`. Used by the Bifrost UI for same-origin
-        requests in place of an `Authorization` header. Accepted on session
-        endpoints (`logout`, `ws-ticket`) as an alternative to the management API key.
+        requests in place of an `Authorization` header, and honoured as a fallback
+        on every `/api/*` management route when no `Authorization` header is sent.
+        It is listed explicitly only on the endpoints where a non-browser client
+        realistically uses it (`/api/session/logout`, `/api/session/ws-ticket`, `/ws`);
+        elsewhere prefer `ManagementBearerAuth`.
 
   parameters:
     AsyncJobId:
@@ -1426,6 +1566,16 @@ components:
       $ref: "./schemas/inference/rerank.yaml#/RerankDocument"
     RerankResult:
       $ref: "./schemas/inference/rerank.yaml#/RerankResult"
+
+    # ==================== Decisions ====================
+    DecisionRequest:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionRequest"
+    DecisionResponse:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionResponse"
+    DecisionQuestion:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionQuestion"
+    DecisionAnswer:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionAnswer"
 
     # ==================== Embeddings ====================
     EmbeddingRequest:
@@ -1637,6 +1787,10 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPClient"
     MCPClientConfig:
       $ref: "./schemas/management/mcp.yaml#/MCPClientConfig"
+    MCPConnectionFailure:
+      $ref: "./schemas/management/mcp.yaml#/MCPConnectionFailure"
+    MCPInstanceState:
+      $ref: "./schemas/management/mcp.yaml#/MCPInstanceState"
     ExecuteToolRequest:
       $ref: "./schemas/management/mcp.yaml#/ExecuteToolRequest"
     MCPAuthType:
@@ -1835,6 +1989,8 @@ components:
       $ref: "./schemas/management/logging.yaml#/SearchLogsResponse"
     LogStats:
       $ref: "./schemas/management/logging.yaml#/LogStats"
+    LogStatsResponse:
+      $ref: "./schemas/management/logging.yaml#/LogStatsResponse"
     DeleteLogsRequest:
       $ref: "./schemas/management/logging.yaml#/DeleteLogsRequest"
     RecalculateCostRequest:
@@ -1874,6 +2030,22 @@ components:
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
 
+    # API Keys
+    APIKey:
+      $ref: "./schemas/management/apikeys.yaml#/APIKey"
+    APIKeyScopes:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyScopes"
+    APIKeyCreateRequest:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyCreateRequest"
+    APIKeyUpdateRequest:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyUpdateRequest"
+    APIKeyResponse:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyResponse"
+    APIKeyCreatedResponse:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyCreatedResponse"
+    APIKeyList:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyList"
+
     # Webhooks
     WebhookEvent:
       $ref: "./schemas/management/webhooks.yaml#/WebhookEvent"
@@ -1911,3 +2083,32 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # Warp
+    WarpConfig:
+      $ref: "./schemas/management/warp.yaml#/WarpConfig"
+    WarpConfigInput:
+      $ref: "./schemas/management/warp.yaml#/WarpConfigInput"
+    WarpBackfillRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillRequest"
+    WarpBackfillStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillStatus"
+    WarpUnavailable:
+      $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
+    WarpSessionRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpSessionRequest"
+    WarpSessionResponse:
+      $ref: "./schemas/management/warp.yaml#/WarpSessionResponse"
+    WarpLogIndexStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpLogIndexStatus"
+    WarpConversation:
+      $ref: "./schemas/management/warp.yaml#/WarpConversation"
+    WarpConversationList:
+      $ref: "./schemas/management/warp.yaml#/WarpConversationList"
+    WarpConversationDetail:
+      $ref: "./schemas/management/warp.yaml#/WarpConversationDetail"
+    WarpStoredMessage:
+      $ref: "./schemas/management/warp.yaml#/WarpStoredMessage"
+    WarpStoredToolCall:
+      $ref: "./schemas/management/warp.yaml#/WarpStoredToolCall"
+    WarpStoredQuestion:
+      $ref: "./schemas/management/warp.yaml#/WarpStoredQuestion"

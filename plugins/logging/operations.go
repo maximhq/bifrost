@@ -12,7 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -124,7 +124,7 @@ func applySerializedLogUpdates(
 	updates map[string]interface{},
 	entry *logstore.Log,
 	data *UpdateLogData,
-	cacheDebug *schemas.BifrostCacheDebug,
+	cacheMetadata *schemas.BifrostCacheMetadata,
 	contentLoggingEnabled bool,
 ) {
 	if data.ChatOutput != nil && contentLoggingEnabled {
@@ -184,7 +184,7 @@ func applySerializedLogUpdates(
 		updates["cached_read_tokens"] = entry.CachedReadTokens
 	}
 
-	if cacheDebug != nil {
+	if cacheMetadata != nil {
 		updates["cache_debug"] = entry.CacheDebug
 	}
 	if data.ErrorDetails != nil {
@@ -204,7 +204,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	routingRuleID string,
 	routingRuleName string,
 	numberOfRetries int,
-	cacheDebug *schemas.BifrostCacheDebug,
+	cacheMetadata *schemas.BifrostCacheMetadata,
 	routingEngineLogs string,
 	data *UpdateLogData,
 	contentLoggingEnabled bool,
@@ -326,9 +326,9 @@ func (p *LoggerPlugin) updateLogEntry(
 		updates["cost"] = *data.Cost
 	}
 
-	// Handle cache debug
-	if cacheDebug != nil {
-		tempEntry.CacheDebugParsed = cacheDebug
+	// Handle cache metadata.
+	if cacheMetadata != nil {
+		tempEntry.CacheDebugParsed = cacheMetadata
 		needsSerialization = true
 	}
 
@@ -342,7 +342,7 @@ func (p *LoggerPlugin) updateLogEntry(
 		if err := tempEntry.SerializeFields(); err != nil {
 			p.logger.Error("failed to serialize log update fields: %v", err)
 		} else {
-			applySerializedLogUpdates(updates, tempEntry, data, cacheDebug, contentLoggingEnabled)
+			applySerializedLogUpdates(updates, tempEntry, data, cacheMetadata, contentLoggingEnabled)
 		}
 	}
 
@@ -375,19 +375,13 @@ func (p *LoggerPlugin) updateLogEntry(
 // It receives the already-inserted entry directly (no DB re-read needed).
 func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(entry *logstore.Log) {
 	return func(entry *logstore.Log) {
-		p.mu.Lock()
-		callback := p.logCallback
-		p.mu.Unlock()
-		if callback == nil {
-			return
-		}
 		if entry == nil {
 			return
 		}
 		if enrichFn != nil {
 			enrichFn(entry)
 		}
-		callback(p.ctx, entry)
+		p.notifyLogCallbacks(p.ctx, entry)
 	}
 }
 
@@ -415,10 +409,11 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 
 	// Token usage
 	if streamResponse.Data.TokenUsage != nil {
-		entry.TokenUsageParsed = streamResponse.Data.TokenUsage
-		entry.PromptTokens = streamResponse.Data.TokenUsage.PromptTokens
-		entry.CompletionTokens = streamResponse.Data.TokenUsage.CompletionTokens
-		entry.TotalTokens = streamResponse.Data.TokenUsage.TotalTokens
+		usage := streamResponse.Data.TokenUsage.DeepCopy()
+		entry.TokenUsageParsed = usage
+		entry.PromptTokens = usage.PromptTokens
+		entry.CompletionTokens = usage.CompletionTokens
+		entry.TotalTokens = usage.TotalTokens
 	}
 	if streamResponse.Data.ServiceTier != nil {
 		entry.ServiceTier = new(string(*streamResponse.Data.ServiceTier))
@@ -497,6 +492,9 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			}
 		}
 	}
+
+	// Tool calls - names are always persisted, the full payload follows content policy
+	applyToolCallsToEntry(entry, collectToolCalls(streamResponse.Data.OutputMessage, streamResponse.Data.OutputMessages), contentLoggingEnabled)
 }
 
 // applyServedTierToEntry records the billing tier the provider actually served —
@@ -573,56 +571,11 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	if result == nil {
 		return
 	}
-	// Token usage
-	var usage *schemas.BifrostLLMUsage
-	switch {
-	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-		usage = result.TextCompletionResponse.Usage
-	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-		usage = result.ChatResponse.Usage
-	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-		usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
-	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
-		usage = result.CompactionResponse.Usage.ToBifrostLLMUsage()
-	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-		usage = result.EmbeddingResponse.Usage
-	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
-		usage = &schemas.BifrostLLMUsage{}
-		if result.TranscriptionResponse.Usage.InputTokens != nil {
-			usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
-		}
-		if result.TranscriptionResponse.Usage.OutputTokens != nil {
-			usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
-		}
-		if result.TranscriptionResponse.Usage.TotalTokens != nil {
-			usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
-		} else {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
-		usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     result.SpeechResponse.Usage.InputTokens,
-			CompletionTokens: result.SpeechResponse.Usage.OutputTokens,
-			TotalTokens:      result.SpeechResponse.Usage.TotalTokens,
-		}
-		if usage.TotalTokens == 0 {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-	case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
-		usage = &schemas.BifrostLLMUsage{}
-		usage.PromptTokens = result.ImageGenerationResponse.Usage.InputTokens
-		usage.CompletionTokens = result.ImageGenerationResponse.Usage.OutputTokens
-		if result.ImageGenerationResponse.Usage.TotalTokens > 0 {
-			usage.TotalTokens = result.ImageGenerationResponse.Usage.TotalTokens
-		} else {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-	case result.PassthroughResponse != nil:
-		if su := result.PassthroughResponse.PassthroughUsage; su != nil {
-			usage = su.LLMUsage
-		}
-	}
+	// Token usage, via the normalizer the span path also uses, so this row and
+	// the span for the same request cannot report different token counts.
+	usage := result.NormalizedUsage()
 	if usage != nil {
+		usage = usage.DeepCopy()
 		entry.TokenUsageParsed = usage
 		entry.PromptTokens = usage.PromptTokens
 		entry.CompletionTokens = usage.CompletionTokens
@@ -699,6 +652,17 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		if result.RerankResponse != nil && len(result.RerankResponse.Results) > 0 {
 			entry.RerankOutputParsed = result.RerankResponse.Results
 		}
+		if result.DecisionResponse != nil && len(result.DecisionResponse.Answers) > 0 {
+			if answersJSON, err := sonic.Marshal(result.DecisionResponse.Answers); err == nil {
+				answers := string(answersJSON)
+				entry.OutputMessageParsed = &schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: &answers,
+					},
+				}
+			}
+		}
 		if result.OCRResponse != nil {
 			entry.OCROutputParsed = result.OCRResponse
 		}
@@ -739,6 +703,29 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 			params.StatusCode = result.PassthroughResponse.StatusCode
 		}
 	}
+
+	// Tool calls - names are always persisted, the full payload follows content policy
+	applyToolCallsToEntry(entry, nonStreamingToolCalls(result), contentLoggingEnabled)
+}
+
+// nonStreamingToolCalls pulls the tool calls out of whichever response shape a
+// non-streaming result carries.
+func nonStreamingToolCalls(result *schemas.BifrostResponse) []schemas.ChatAssistantMessageToolCall {
+	if result == nil {
+		return nil
+	}
+	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
+		if choice := result.ChatResponse.Choices[0].ChatNonStreamResponseChoice; choice != nil {
+			return collectToolCalls(choice.Message, nil)
+		}
+	}
+	if result.ResponsesResponse != nil {
+		return collectToolCalls(nil, result.ResponsesResponse.Output)
+	}
+	if result.CompactionResponse != nil {
+		return collectToolCalls(nil, result.CompactionResponse.Output)
+	}
+	return nil
 }
 
 func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
@@ -765,6 +752,8 @@ func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *s
 			entry.OutputMessageParsed = outputMessage
 		}
 	}
+	// Tool calls - names are always persisted, the full payload follows content policy
+	applyToolCallsToEntry(entry, collectToolCalls(nil, result.ResponsesResponse.Output), contentLoggingEnabled)
 
 	extraFields := result.GetExtraFields()
 	applyRealtimeRawRequestBackfill(entry, extraFields.RawRequest, contentLoggingEnabled, shouldStoreRaw)
@@ -1036,40 +1025,18 @@ func collectRealtimeRawTextFragments(value any, parts *[]string) {
 
 func extractRealtimeOutputMessage(output []schemas.ResponsesMessage) *schemas.ChatMessage {
 	var contentParts []string
-	toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0)
 	for _, item := range output {
-		if item.Type == nil {
+		if item.Type == nil || *item.Type != schemas.ResponsesMessageTypeMessage {
 			continue
 		}
-		switch *item.Type {
-		case schemas.ResponsesMessageTypeMessage:
-			if item.Role == nil || *item.Role != schemas.ResponsesInputMessageRoleAssistant {
-				continue
-			}
-			if text := extractRealtimeResponsesContent(item.Content); text != "" {
-				contentParts = append(contentParts, text)
-			}
-		case schemas.ResponsesMessageTypeFunctionCall:
-			if item.ResponsesToolMessage == nil || item.ResponsesToolMessage.Name == nil {
-				continue
-			}
-			toolType := "function"
-			toolCall := schemas.ChatAssistantMessageToolCall{
-				Index: uint16(len(toolCalls)),
-				Type:  &toolType,
-				Function: schemas.ChatAssistantMessageToolCallFunction{
-					Name:      item.ResponsesToolMessage.Name,
-					Arguments: derefString(item.ResponsesToolMessage.Arguments),
-				},
-			}
-			if item.CallID != nil && strings.TrimSpace(*item.CallID) != "" {
-				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.CallID))
-			} else if item.ID != nil && strings.TrimSpace(*item.ID) != "" {
-				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.ID))
-			}
-			toolCalls = append(toolCalls, toolCall)
+		if item.Role == nil || *item.Role != schemas.ResponsesInputMessageRoleAssistant {
+			continue
+		}
+		if text := extractRealtimeResponsesContent(item.Content); text != "" {
+			contentParts = append(contentParts, text)
 		}
 	}
+	toolCalls := chatToolCallsFromResponsesOutput(output)
 
 	if len(contentParts) == 0 && len(toolCalls) == 0 {
 		return nil
@@ -1285,6 +1252,16 @@ func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context, limit int,
 	return keyPairResultsToKeyPairs(results), nil
 }
 
+// GetAvailableProjects returns all unique project ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "project_id", "project_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available projects: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
 func (p *LoggerPlugin) GetDimensionCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
@@ -1321,6 +1298,15 @@ func (p *LoggerPlugin) GetAvailableStopReasons(ctx context.Context, limit int, q
 		return nil, fmt.Errorf("failed to get available stop reasons: %w", err)
 	}
 	return stopReasons, nil
+}
+
+// GetAvailableToolCallNames returns all unique function names that responses called.
+func (p *LoggerPlugin) GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	names, err := p.store.GetDistinctToolCallNames(ctx, limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available tool call names: %w", err)
+	}
+	return names, nil
 }
 
 // GetAvailableUserAgents returns all unique raw User-Agent strings from logs.
@@ -1611,7 +1597,7 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 // recovered, as distinct from one that merely priced to zero. The recalc job
 // reports the two separately so operators can tell "nothing to charge" from
 // "could not compute a charge".
-var errPricingInputsUnavailable = errors.New("pricing inputs unavailable")
+var errPricingInputsUnavailable = jobaccounting.ErrPricingInputsUnavailable
 
 // billingOutcome is the per-row result of pricing a batch: the computed cost, or the
 // reason the row was left alone.
@@ -1622,19 +1608,42 @@ type billingOutcome struct {
 	breakdown *schemas.BifrostCost
 	err       error
 	// knownZeroCost is captured while the row's payload is still hydrated, because it
-	// is derived from CacheDebugParsed and ReleaseBillingPayloads clears that. Callers
+	// is derived from the cache metadata compatibility field and ReleaseBillingPayloads clears that. Callers
 	// run after the release, so they cannot re-derive it.
 	knownZeroCost bool
-	// batchDebugUpdate is the serialized batch_debug JSON to persist alongside cost,
-	// set only for a batch aggregate row repriced via calculateBatchAggregateCost.
-	// BulkUpdateCost cannot write batch_debug, so without this the row's
-	// model_breakdowns would stay stuck showing the pre-recalculation (unpriced)
-	// state even after cost is fixed.
-	batchDebugUpdate string
-	// batchDebugOnly marks a repriced batch echo row: batch_debug is refreshed so
-	// the displayed price is current, but the cost column is left NULL. Writing a
-	// cost there would bill the batch once per /results fetch.
-	batchDebugOnly bool
+	// debugUpdate is a job kind's re-serialized debug blob to persist alongside the
+	// cost, and debugColumn is which column it belongs in. BulkUpdateCost writes
+	// neither, so without this a repriced aggregate's detail would stay stuck
+	// showing its pre-recalculation state while the cost moved.
+	debugUpdate string
+	debugColumn string
+	// displayOnly marks a row that reprices for display but must leave its cost
+	// column NULL — a batch /results echo row would otherwise bill once per fetch.
+	displayOnly bool
+	// settledZero marks a row a job kind priced at a real, final zero — a failed
+	// video is not billed, and that is an answer about the money, not the absence
+	// of one. Without it the row is skipped as "resolved cost is zero", never marked
+	// priced, and matches MissingCostOnly (cost <= 0) on every subsequent pass.
+	settledZero bool
+	// kindOwned marks an outcome produced by a job kind rather than the generic
+	// pricing path. The two carry their cost differently — see costUpdate.
+	kindOwned bool
+}
+
+// costUpdate resolves what this outcome writes to the row's cost columns.
+//
+// The two pricing paths express a cost differently and must not be confused: the
+// generic path fills in a per-category breakdown, while a job kind reprices an
+// aggregate to a single scalar total and leaves breakdown nil. Reading the nil
+// breakdown for a kind-owned outcome yielded CostUpdate{} — zeros — which
+// overwrote real provider-reported costs and still reported the row as priced.
+//
+// Both persistence branches go through here so they can never disagree again.
+func (o billingOutcome) costUpdate() logstore.CostUpdate {
+	if o.kindOwned {
+		return logstore.CostUpdateFromBreakdown(&schemas.BifrostCost{TotalCost: o.cost})
+	}
+	return logstore.CostUpdateFromBreakdown(o.breakdown)
 }
 
 // recalcTally is what persisting one page of billing outcomes did.
@@ -1671,49 +1680,44 @@ func (p *LoggerPlugin) persistRecalcOutcomes(ctx context.Context, batch []logsto
 			p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
 			continue
 		}
-		if cost <= 0 {
-			if outcomes[i].knownZeroCost {
-				costUpdates[logEntry.ID] = logstore.CostUpdate{}
-			} else {
-				tally.skipped++
-				p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
-			}
+		// Four reasons to write: a real cost, a cache hit resolved to zero, a job
+		// kind that settled at zero, or a refreshed debug blob. None of them and
+		// there is nothing to record, so leave the row for a later pass.
+		if cost <= 0 && !outcomes[i].knownZeroCost && !outcomes[i].settledZero && outcomes[i].debugUpdate == "" {
+			tally.skipped++
+			p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
 			continue
 		}
-		if outcomes[i].batchDebugUpdate != "" && outcomes[i].batchDebugOnly {
-			// Echo row: refresh only what it displays. Its cost stays NULL, so it
-			// contributes to no total and priced stays false for the cursor.
-			if err := p.store.Update(ctx, logEntry.ID, map[string]any{
-				"batch_debug": outcomes[i].batchDebugUpdate,
-			}); err != nil {
-				return recalcTally{}, fmt.Errorf("failed to update batch display cost for log %s: %w", logEntry.ID, err)
+		if outcomes[i].debugUpdate != "" {
+			// The cost and the kind's debug blob go in one write so a row's detail
+			// can never disagree with what it was billed — including at zero, where
+			// skipping the blob left stale model breakdowns behind. A display-only
+			// row refreshes its detail alone and keeps a NULL cost.
+			update := map[string]any{outcomes[i].debugColumn: outcomes[i].debugUpdate}
+			if !outcomes[i].displayOnly {
+				split := outcomes[i].costUpdate()
+				update["cost"] = split.Total
+				update["input_cost"] = split.Input
+				update["output_cost"] = split.Output
+				update["additional_cost"] = split.Additional
+			}
+			if err := p.store.Update(ctx, logEntry.ID, update); err != nil {
+				return recalcTally{}, fmt.Errorf("failed to update settled cost for log %s: %w", logEntry.ID, err)
 			}
 			tally.updated++
-			continue
+		} else {
+			costUpdates[logEntry.ID] = outcomes[i].costUpdate()
 		}
-		if outcomes[i].batchDebugUpdate != "" {
-			// A repriced batch aggregate row needs cost and batch_debug written
-			// together so model_breakdowns never disagrees with the row's own
-			// cost, and batch_debug can only be written through a dedicated update
-			// (BulkUpdateCost writes cost and the split columns, but not
-			// batch_debug). This row carries a scalar total only, so derive the
-			// split columns from it the same way CostUpdateFromBreakdown does.
-			update := logstore.CostUpdateFromBreakdown(&schemas.BifrostCost{TotalCost: cost})
-			if err := p.store.Update(ctx, logEntry.ID, map[string]any{
-				"cost":            update.Total,
-				"input_cost":      update.Input,
-				"output_cost":     update.Output,
-				"additional_cost": update.Additional,
-				"batch_debug":     outcomes[i].batchDebugUpdate,
-			}); err != nil {
-				return recalcTally{}, fmt.Errorf("failed to update batch cost for log %s: %w", logEntry.ID, err)
-			}
-			tally.updated++
+
+		// priced means the row now carries a POSITIVE cost and will therefore drop
+		// out of a MissingCostOnly scan. A zero — settled or cached — still matches
+		// cost <= 0 and reappears at the head of the next page, so marking it priced
+		// would stop the caller advancing its offset past it and the page would
+		// repeat forever. Draining those rows needs the scan to exclude them, not
+		// this flag to lie about them.
+		if cost > 0 && !outcomes[i].displayOnly {
 			tally.priced[i] = true
-			continue
 		}
-		costUpdates[logEntry.ID] = logstore.CostUpdateFromBreakdown(outcomes[i].breakdown)
-		tally.priced[i] = true
 	}
 
 	if len(costUpdates) > 0 {
@@ -1782,14 +1786,22 @@ func (p *LoggerPlugin) priceLogsInChunks(ctx context.Context, batch []logstore.L
 				outcomes[i].err = fmt.Errorf("%w: log %s", errPricingInputsUnavailable, batch[i].ID)
 				continue
 			}
-			if role := batchRowRoleOf(&batch[i]); role != batchRowRoleNone {
-				// Batch aggregate rows reprice per model and carry only a scalar
-				// total (no input/output split), persisted via the batchDebugUpdate
-				// path below. An echo row reprices identically, but only to refresh
-				// what it displays; the bill stays on the aggregate row alone.
-				isEcho := role == batchRowRoleEcho
-				outcomes[i].batchDebugOnly = isEcho
-				outcomes[i].cost, outcomes[i].batchDebugUpdate, outcomes[i].err = p.calculateBatchAggregateCost(&batch[i], isEcho)
+			// An aggregate row is synthesized at settlement, not logged from a
+			// provider response: no payload, no usage, and an Object naming the read
+			// that produced it rather than the request that was priced. The generic
+			// path below would reprice every one of them to nothing, so each kind
+			// reprices its own from the debug blob it wrote.
+			if repriced, err := jobaccounting.RepriceLog(&batch[i], p.pricingManager); err != nil || repriced != nil {
+				outcomes[i].err = err
+				if repriced != nil {
+					outcomes[i].cost = repriced.Cost
+					outcomes[i].debugUpdate = repriced.DebugJSON
+					outcomes[i].debugColumn = repriced.DebugColumn
+					outcomes[i].displayOnly = repriced.DisplayOnly
+					outcomes[i].kindOwned = true
+					// The kind answered, so a zero here is settled, not unresolved.
+					outcomes[i].settledZero = repriced.Cost <= 0 && !repriced.DisplayOnly
+				}
 			} else {
 				outcomes[i].breakdown, outcomes[i].err = p.calculateCostBreakdownForLog(&batch[i])
 				if outcomes[i].breakdown != nil {
@@ -1824,132 +1836,6 @@ func (p *LoggerPlugin) priceLogsInChunks(ctx context.Context, batch []logstore.L
 	return outcomes, nil
 }
 
-// batchRowRole distinguishes the two kinds of row that carry batch accounting.
-type batchRowRole int
-
-const (
-	// batchRowRoleNone is any row that is not a batch accounting row.
-	batchRowRoleNone batchRowRole = iota
-	// batchRowRoleAggregate is the single settlement row that owns the batch's bill.
-	batchRowRoleAggregate
-	// batchRowRoleEcho is a /results HTTP call's own log row, which carries a
-	// read-only copy of the aggregate row's price for display.
-	batchRowRoleEcho
-)
-
-// batchRowRoleOf classifies a row that carries per-model batch usage.
-//
-// A repeated /results fetch gets its own row stamped with the settled breakdowns,
-// and its object is "batch_results" just like the settlement row's — so repricing
-// both as owners billed the batch once per fetch. Only the aggregate row's id is
-// derived from (provider, batch id), which separates them exactly.
-func batchRowRoleOf(logEntry *logstore.Log) batchRowRole {
-	if logEntry.BatchDebugParsed == nil && logEntry.BatchDebug != "" {
-		if err := logEntry.DeserializeFields(); err != nil {
-			return batchRowRoleNone
-		}
-	}
-	if logEntry.Object != string(schemas.BatchResultsRequest) ||
-		logEntry.BatchDebugParsed == nil ||
-		logEntry.BatchDebugParsed.Accounting == nil ||
-		len(logEntry.BatchDebugParsed.Accounting.ModelBreakdowns) == 0 {
-		return batchRowRoleNone
-	}
-	if logEntry.BatchDebugParsed.Accounting.Echo {
-		return batchRowRoleEcho
-	}
-	// Rows written before the echo marker existed are classified by id. Without a
-	// batch id there is nothing to derive the aggregate id from, so keep the
-	// pre-split behaviour of treating the row as the owner.
-	batchID := logEntry.BatchDebugParsed.BatchID
-	if batchID == "" {
-		return batchRowRoleAggregate
-	}
-	if logEntry.ID == batchaccounting.AccountingLogID(schemas.ModelProvider(logEntry.Provider), batchID) {
-		return batchRowRoleAggregate
-	}
-	return batchRowRoleEcho
-}
-
-// calculateBatchAggregateCost reprices a batch aggregate row from its per-model
-// breakdowns rather than the row's single blended token_usage. A batch can span
-// multiple models, and the row's own Model field is "mixed" in that case —
-// pricing that literal string against the catalog never finds an entry, so the
-// row prices at zero forever through the generic calculateCostForLog path.
-// Repricing per model, the same way settlement (batchaccounting.summarizeResults)
-// originally priced each result item, is the only way a mixed-model batch — or a
-// single-model batch whose rate only arrived after settlement — can recover a
-// cost here.
-//
-// Mutates logEntry.BatchDebugParsed.Accounting.ModelBreakdowns in place (each
-// entry's Cost refreshed, nil if that model still has no rate) and returns the
-// row's total cost — the sum of every model that priced this time — plus the
-// batch_debug JSON to persist alongside it, since BulkUpdateCost only ever
-// writes the cost column and would otherwise leave model_breakdowns stuck
-// showing the pre-recalculation state.
-//
-// refreshSnapshotCost updates Accounting.Cost, which is where an echo row's
-// displayed price lives; the aggregate row keeps it nil and bills via its cost
-// column.
-func (p *LoggerPlugin) calculateBatchAggregateCost(logEntry *logstore.Log, refreshSnapshotCost bool) (float64, string, error) {
-	accounting := logEntry.BatchDebugParsed.Accounting
-	scopes := pricingScopesForLog(logEntry)
-	// The row's Object is always "batch_results", which normalizes to "chat" — so
-	// repricing by it alone charged every batch at chat rates and could never find
-	// an embedding model's catalog entry at all. Settlement now records the batch's
-	// endpoint, so use the same endpoint→request-type mapping it priced with. Rows
-	// written before that field existed have no endpoint; they keep the old behavior
-	// rather than being guessed at.
-	requestType := schemas.RequestType(logEntry.Object)
-	if endpoint := logEntry.BatchDebugParsed.Endpoint; endpoint != "" {
-		requestType = batchaccounting.BatchRequestType(schemas.BatchEndpoint(endpoint))
-	}
-
-	var total float64
-	priced := 0
-	for model, breakdown := range accounting.ModelBreakdowns {
-		usage := breakdown.Usage
-		details := p.pricingManager.CalculateBatchCostDetailsForUsage(&usage, schemas.ModelProvider(logEntry.Provider), model, requestType, &scopes)
-		if details.Priced {
-			cost := details.Cost
-			breakdown.Cost = &cost
-			total += cost
-			priced++
-		} else {
-			breakdown.Cost = nil
-		}
-		accounting.ModelBreakdowns[model] = breakdown
-	}
-	if priced == 0 {
-		return 0, "", fmt.Errorf("%w: log %s", errPricingInputsUnavailable, logEntry.ID)
-	}
-	// Recovering some of the cost is worth persisting — refusing to write anything
-	// would leave the operator with nothing — but the total must not present itself
-	// as whole while models are still rateless. Settlement uses the same flag for
-	// the same reason, so the two agree on what the number means.
-	//
-	// Only ever set, never cleared: the flag can also stand for usage that is not in
-	// ModelBreakdowns at all (rows whose model the provider never named, rows lost to
-	// parse errors), and repricing the breakdowns that did land says nothing about
-	// those. Clearing it here would close a gap this pass cannot see.
-	if priced < len(accounting.ModelBreakdowns) {
-		accounting.Incomplete = true
-	}
-	if refreshSnapshotCost {
-		refreshed := total
-		accounting.Cost = &refreshed
-		// Stamp the marker while the row is being rewritten anyway, so a row written
-		// before it existed stops relying on the id comparison to be classified.
-		accounting.Echo = true
-	}
-
-	batchDebugJSON, err := sonic.Marshal(logEntry.BatchDebugParsed)
-	if err != nil {
-		return 0, "", fmt.Errorf("failed to serialize batch_debug for log %s: %w", logEntry.ID, err)
-	}
-	return total, string(batchDebugJSON), nil
-}
-
 func isKnownZeroCostLog(logEntry *logstore.Log) bool {
 	if logEntry == nil || logEntry.CacheDebugParsed == nil || !logEntry.CacheDebugParsed.CacheHit {
 		return false
@@ -1972,10 +1858,10 @@ func normalizeLogRequestType(object string) schemas.RequestType {
 
 // attachCostBreakdown fills entry.TokenUsageParsed.Cost with the per-category
 // cost split (input / output / cache) computed from result, so log detail views
-// can surface it alongside the total, and also writes it onto the native typed
-// usage for modalities not aliased into TokenUsageParsed (speech, transcription,
-// OCR) so their client-facing responses carry cost too. A provider-supplied
-// breakdown already present on either target is preserved.
+// can surface it alongside the total. entry.TokenUsageParsed is a logging-owned
+// deep copy (see applyNonStreamingOutputToEntry / applyStreamingOutputToEntry),
+// so this write never touches the usage object shared with the client-facing
+// response. A provider-supplied breakdown already present is preserved.
 func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *logstore.Log, result *schemas.BifrostResponse) {
 	if p.pricingManager == nil || result == nil {
 		return
@@ -1995,31 +1881,6 @@ func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *l
 		entry.InputCost = breakdown.InputCost
 		entry.OutputCost = breakdown.OutputCost
 		entry.AdditionalCost = breakdown.AdditionalCost
-	}
-	attachCostToNativeUsage(result, breakdown)
-}
-
-// attachCostToNativeUsage writes the cost breakdown onto the native typed usage
-// for speech, transcription, and OCR responses. Unlike chat/embedding (whose
-// usage pointer is aliased into TokenUsageParsed and thus already carries cost),
-// these modalities build a separate usage object, so the client-facing response
-// would otherwise never see cost. No-op when the usage slot is absent or a
-// provider already supplied a breakdown.
-func attachCostToNativeUsage(result *schemas.BifrostResponse, breakdown *schemas.BifrostCost) {
-	if result == nil || breakdown == nil {
-		return
-	}
-	switch {
-	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil && result.SpeechResponse.Usage.Cost == nil:
-		result.SpeechResponse.Usage.Cost = breakdown
-	case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil && result.SpeechStreamResponse.Usage.Cost == nil:
-		result.SpeechStreamResponse.Usage.Cost = breakdown
-	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil && result.TranscriptionResponse.Usage.Cost == nil:
-		result.TranscriptionResponse.Usage.Cost = breakdown
-	case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.Cost == nil:
-		result.TranscriptionStreamResponse.Usage.Cost = breakdown
-	case result.OCRResponse != nil && result.OCRResponse.UsageInfo != nil && result.OCRResponse.UsageInfo.Cost == nil:
-		result.OCRResponse.UsageInfo.Cost = breakdown
 	}
 }
 
@@ -2051,11 +1912,11 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	}
 
 	usage := logEntry.TokenUsageParsed
-	cacheDebug := logEntry.CacheDebugParsed
-	guardrailDebug := logEntry.GuardrailDebugParsed
+	cacheMetadata := logEntry.CacheDebugParsed
+	guardrailMetadata := logEntry.GuardrailDebugParsed
 
 	// If no cache hit, guardrail call, or usage, we can't calculate cost.
-	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
+	if usage == nil && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil {
 		return nil, fmt.Errorf("%w: token usage not available for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
@@ -2065,7 +1926,7 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	// unpriceable and revisited by every MissingCostOnly pass. A guardrail judge
 	// call is billed separately (AdditionalCost) even on a cache hit, so fall
 	// through when one ran instead of discarding that charge.
-	if isKnownZeroCostLog(logEntry) && guardrailDebug == nil {
+	if isKnownZeroCostLog(logEntry) && guardrailMetadata == nil {
 		return nil, nil
 	}
 
@@ -2082,7 +1943,7 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	}
 
 	requestType := normalizeLogRequestType(logEntry.Object)
-	if requestType == "" && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
+	if requestType == "" && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil {
 		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
 		return nil, fmt.Errorf("%w: object type is empty for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
@@ -2099,8 +1960,8 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 		Provider:               schemas.ModelProvider(logEntry.Provider),
 		OriginalModelRequested: originalModelRequested,
 		ResolvedModelUsed:      logEntry.Model,
-		CacheDebug:             cacheDebug,
-		GuardrailDebug:         guardrailDebug,
+		CacheDebug:             cacheMetadata,
+		GuardrailDebug:         guardrailMetadata,
 		RoutingInfo: schemas.RoutingInfo{
 			Provider: schemas.ModelProvider(logEntry.Provider),
 			Model:    originalModelRequested,
@@ -2134,6 +1995,15 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	}
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields, servedTierFromLog(logEntry))
+
+	// Put the served model back on the response body, which the reconstructed
+	// response leaves empty. Pricing reads it in one place — the Azure Model Router
+	// split, which bills the router's own row plus the model it routed to — so
+	// without this a recalc drops the underlying model's leg. Every other row is
+	// priced off RoutingInfo and is unaffected.
+	if logEntry.ServedModel != nil {
+		setResponseModel(resp, *logEntry.ServedModel)
+	}
 
 	// Patch modality-specific output fields that are not captured in BifrostLLMUsage
 	// but are required for accurate cost calculation.
@@ -2216,6 +2086,24 @@ func servedTierFromLog(logEntry *logstore.Log) servedTier {
 	return tier
 }
 
+// setResponseModel writes model onto whichever response field the reconstructed
+// response carries, covering the types schemas.BifrostResponse.ServedModel reads.
+func setResponseModel(resp *schemas.BifrostResponse, model string) {
+	if resp == nil {
+		return
+	}
+	switch {
+	case resp.ChatResponse != nil:
+		resp.ChatResponse.Model = model
+	case resp.ResponsesResponse != nil:
+		resp.ResponsesResponse.Model = model
+	case resp.ResponsesStreamResponse != nil && resp.ResponsesStreamResponse.Response != nil:
+		resp.ResponsesStreamResponse.Response.Model = model
+	case resp.TextCompletionResponse != nil:
+		resp.TextCompletionResponse.Model = model
+	}
+}
+
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response
 // field so that CalculateCost's extractCostInput routes it properly.
 func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas.BifrostLLMUsage, extra schemas.BifrostResponseExtraFields, tier servedTier) *schemas.BifrostResponse {
@@ -2237,6 +2125,13 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 	case schemas.RerankRequest:
 		return &schemas.BifrostResponse{
 			RerankResponse: &schemas.BifrostRerankResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.DecisionRequest:
+		return &schemas.BifrostResponse{
+			DecisionResponse: &schemas.BifrostDecisionResponse{
 				Usage:       usage,
 				ExtraFields: extra,
 			},
@@ -2380,5 +2275,11 @@ func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScope
 		SelectedKeyID: logEntry.SelectedKeyID,
 		VirtualKeyID:  virtualKeyID,
 		UserID:        userID,
+		// Price against when the request ran, not when the reprice runs. The row's
+		// Timestamp is stamped in PreLLMHook, so it is the same instant the live
+		// path reads off the context. Without it a model on a peak/off-peak
+		// schedule reprices against the wall clock and the same row yields a
+		// different cost on every run.
+		BilledAt: logEntry.Timestamp,
 	}
 }

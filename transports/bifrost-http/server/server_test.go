@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -83,71 +82,41 @@ func (reloadVirtualKeyToolManager) ExecuteResponsesMCPTool(context.Context, *sch
 	return nil, nil
 }
 
-// hasVKMCPServer reports whether the handler still caches a server for a secret.
-func hasVKMCPServer(handler *handlers.MCPServerHandler, value string) bool {
-	servers := reflect.ValueOf(handler).Elem().FieldByName("vkMCPServers")
-	return servers.MapIndex(reflect.ValueOf(value)).IsValid()
-}
-
-// TestReloadVirtualKeyDeletesOnlyRotatedOldMCPServer pins the old-secret cleanup
-// semantics and verifies the direct ID lookup avoids GetGovernanceData.
-func TestReloadVirtualKeyDeletesOnlyRotatedOldMCPServer(t *testing.T) {
+// TestReloadVirtualKeyAvoidsGovernanceSnapshot pins that reloading one key reads and replaces it
+// directly rather than through a full governance snapshot, which is what keeps a key edit cheap on
+// a deployment holding many keys.
+func TestReloadVirtualKeyAvoidsGovernanceSnapshot(t *testing.T) {
 	handlers.SetLogger(noopTestLogger{})
-	tests := []struct {
-		name          string
-		oldValue      string
-		newValue      string
-		seedOldVK     bool
-		wantOldServer bool
-	}{
-		{name: "rotated set secret deletes old server", oldValue: "sk-bf-old", newValue: "sk-bf-new", seedOldVK: true, wantOldServer: false},
-		{name: "unchanged secret keeps old server", oldValue: "sk-bf-same", newValue: "sk-bf-same", seedOldVK: true, wantOldServer: true},
-		{name: "unset old secret keeps old server", oldValue: "", newValue: "sk-bf-new", seedOldVK: true, wantOldServer: true},
-		{name: "missing old virtual key keeps old server", oldValue: "sk-bf-old", newValue: "sk-bf-new", seedOldVK: false, wantOldServer: true},
+	ctx := context.Background()
+	baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+	if err != nil {
+		t.Fatalf("create governance store: %v", err)
 	}
+	baseStore.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "old", Value: *schemas.NewSecretVar("sk-bf-old")})
+	store := &reloadVirtualKeyGovernanceStore{GovernanceStore: baseStore}
+	plugin := &reloadVirtualKeyPlugin{store: store}
+	persistedVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "new", Value: *schemas.NewSecretVar("sk-bf-new")}
+	config := &lib.Config{
+		ConfigStore:  &reloadVirtualKeyConfigStore{vk: persistedVK},
+		ClientConfig: &configstore.ClientConfig{},
+	}
+	plugins := []schemas.BasePlugin{plugin}
+	config.BasePlugins.Store(&plugins)
+	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil, store)
+	if err != nil {
+		t.Fatalf("create MCP handler: %v", err)
+	}
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config, MCPServerHandler: mcpHandler}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
-			if err != nil {
-				t.Fatalf("create governance store: %v", err)
-			}
-			oldVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "old", Value: *schemas.NewSecretVar(tt.oldValue)}
-			if tt.seedOldVK {
-				baseStore.CreateVirtualKeyInMemory(ctx, oldVK)
-			}
-			store := &reloadVirtualKeyGovernanceStore{GovernanceStore: baseStore}
-			plugin := &reloadVirtualKeyPlugin{store: store}
-			persistedVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "new", Value: *schemas.NewSecretVar(tt.newValue)}
-			config := &lib.Config{
-				ConfigStore:  &reloadVirtualKeyConfigStore{vk: persistedVK},
-				ClientConfig: &configstore.ClientConfig{},
-			}
-			plugins := []schemas.BasePlugin{plugin}
-			config.BasePlugins.Store(&plugins)
-			mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, store)
-			if err != nil {
-				t.Fatalf("create MCP handler: %v", err)
-			}
-			mcpHandler.SyncVKMCPServer(oldVK)
-			server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config, MCPServerHandler: mcpHandler}
-
-			if _, err := server.ReloadVirtualKey(ctx, persistedVK.ID); err != nil {
-				t.Fatalf("ReloadVirtualKey returned unexpected error: %v", err)
-			}
-			if store.governanceDataCalls != 0 {
-				t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
-			}
-
-			oldServerExists := hasVKMCPServer(mcpHandler, tt.oldValue)
-			if tt.wantOldServer && !oldServerExists {
-				t.Fatal("old MCP server was deleted")
-			}
-			if !tt.wantOldServer && oldServerExists {
-				t.Fatal("old MCP server still exists after secret rotation")
-			}
-		})
+	if _, err := server.ReloadVirtualKey(ctx, persistedVK.ID); err != nil {
+		t.Fatalf("ReloadVirtualKey returned unexpected error: %v", err)
+	}
+	if store.governanceDataCalls != 0 {
+		t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
+	}
+	reloaded, ok := baseStore.GetVirtualKeyByID(ctx, "vk-id")
+	if !ok || reloaded.Value.GetValue() != "sk-bf-new" {
+		t.Fatalf("store does not answer with the reloaded key: %+v", reloaded)
 	}
 }
 
@@ -1155,4 +1124,47 @@ func TestMarshalPluginConfig_WithComplexType(t *testing.T) {
 	if result.Nested.Name != "nested-config" {
 		t.Errorf("Expected nested name=nested-config, got %s", result.Nested.Name)
 	}
+}
+
+// GetConfiguredProviders hands back the live provider map uncopied, which is safe for the callers
+// that index it once. The name listing cannot be written that way: provider add, delete and status
+// updates all write to that map in place under the write lock, so a caller ranging it after the read
+// lock is released hits a concurrent map iteration and write. That is fatal rather than merely
+// stale — it takes the process down — so the slice is built under the lock instead. Run with -race.
+func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testing.T) {
+	config := &lib.Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}},
+	}
+	store := &GovernanceInMemoryStore{Config: config}
+
+	churn := []schemas.ModelProvider{"churn-a", "churn-b", "churn-c"}
+	done := make(chan struct{})
+	var writers sync.WaitGroup
+	writers.Add(1)
+	go func() {
+		defer writers.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			// The same in-place mutation AddProvider and RemoveProvider make.
+			for _, provider := range churn {
+				config.Mu.Lock()
+				config.Providers[provider] = configstore.ProviderConfig{}
+				delete(config.Providers, provider)
+				config.Mu.Unlock()
+			}
+		}
+	}()
+
+	for range 500 {
+		if names := store.GetConfiguredProviderNames(); len(names) == 0 {
+			t.Fatal("expected the configured providers to be listed")
+		}
+	}
+
+	close(done)
+	writers.Wait()
 }

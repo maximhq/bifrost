@@ -52,6 +52,11 @@ func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
 
 // LogStore is the interface for the log store.
 type LogStore interface {
+	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
+	// rather than in the config store because they are user-generated content
+	// that grows with use, not settings an install depends on.
+	WarpConversationStore
+
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
 	CreateIfNotExists(ctx context.Context, entry *Log) error
@@ -114,6 +119,10 @@ type LogStore interface {
 	GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
+	// GetUserSpend returns each user's total cost inside the filter window in one
+	// query: no previous-period comparison, no ordering, no row limit. It is the cheap
+	// read for jobs that rank every user by spend.
+	GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
@@ -143,6 +152,8 @@ type LogStore interface {
 	GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctToolCallNames returns distinct function names that responses called, for the "Tool calls" filter.
+	GetDistinctToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 	// GetDistinctUserAgents returns distinct raw User-Agent strings from logs for the "App" filter.
 	GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error)
@@ -183,7 +194,7 @@ type LogStore interface {
 	// Webhook Delivery methods
 	CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error
 	FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error)
-	SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
+	SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
 	DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error)
 }
 

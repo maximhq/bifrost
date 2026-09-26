@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -18,10 +19,10 @@ const qdrantMaxRecvMsgSize = 64 * 1024 * 1024 // 64 MB
 
 // QdrantConfig represents the configuration for the Qdrant vector store.
 type QdrantConfig struct {
-	Host             schemas.SecretVar `json:"host"`                        // Qdrant server host - REQUIRED
-	Port             schemas.SecretVar `json:"port"`                        // Qdrant server port  (fallback to 6334 for gRPC)
-	APIKey           schemas.SecretVar `json:"api_key,omitempty"`           // API key for authentication - Optional
-	UseTLS           schemas.SecretVar `json:"use_tls,omitempty"`           // Use TLS for connection - Optional
+	Host             schemas.SecretVar `json:"host"`                           // Qdrant server host - REQUIRED
+	Port             schemas.SecretVar `json:"port"`                           // Qdrant server port  (fallback to 6334 for gRPC)
+	APIKey           schemas.SecretVar `json:"api_key,omitempty"`              // API key for authentication - Optional
+	UseTLS           schemas.SecretVar `json:"use_tls,omitempty"`              // Use TLS for connection - Optional
 	MaxRecvMsgSizeMB schemas.SecretVar `json:"max_recv_msg_size_mb,omitempty"` // gRPC max receive message size in MB (default: 64). Increase when caching large payloads such as image generation responses.
 }
 
@@ -95,6 +96,23 @@ func (s *QdrantStore) CreateNamespace(ctx context.Context, namespace string, dim
 	}
 
 	return nil
+}
+
+// ListNamespaces returns the Qdrant collections beginning with prefix. Qdrant's
+// list API takes no filter, so the prefix is applied here.
+func (s *QdrantStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	collections, err := s.client.ListCollections(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collections: %w", err)
+	}
+	namespaces := make([]string, 0, len(collections))
+	for _, collection := range collections {
+		if strings.HasPrefix(collection, prefix) {
+			namespaces = append(namespaces, collection)
+		}
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
 }
 
 // DeleteNamespace deletes a collection from the Qdrant vector store.
@@ -194,10 +212,12 @@ func (s *QdrantStore) GetAll(ctx context.Context, namespace string, queries []Qu
 		}
 	}
 
-	scrollLimit := uint32(limit)
-	if limit <= 0 {
-		scrollLimit = 100
-	}
+	// Clamped rather than converted: a truncated-to-zero limit would scroll
+	// nothing, and the len(scrollResult) >= scrollLimit check below would then
+	// read 0 >= 0 as a full page and hand back a cursor pointing at the empty
+	// lastID — which the next call treats as no cursor at all, so a caller
+	// paging to completion would never advance.
+	scrollLimit := boundedPageLimit(limit, 100)
 
 	scrollResult, err := s.client.Scroll(ctx, &qdrant.ScrollPoints{
 		CollectionName: namespace,

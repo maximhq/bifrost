@@ -36,6 +36,7 @@ interface StoredOtelProfile {
 	tls_ca_cert?: string;
 	insecure?: boolean;
 	metrics_enabled?: boolean;
+	overhead_breakdown_enabled?: boolean;
 	metrics_endpoint?: string | SecretVar;
 	metrics_push_interval?: number;
 	export_timeout?: number;
@@ -104,6 +105,7 @@ const emptyProfile = (): ProfileForm => ({
 	tls_ca_cert: "",
 	insecure: true,
 	metrics_enabled: false,
+	overhead_breakdown_enabled: false,
 	metrics_endpoint: emptySecretVar(),
 	metrics_push_interval: 15,
 	export_timeout: 5,
@@ -127,6 +129,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	tls_ca_cert: p?.tls_ca_cert ?? "",
 	insecure: p?.insecure ?? true,
 	metrics_enabled: p?.metrics_enabled ?? false,
+	overhead_breakdown_enabled: p?.overhead_breakdown_enabled ?? false,
 	metrics_endpoint: toSecretVarFormValue(p?.metrics_endpoint),
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
 	export_timeout: p?.export_timeout ?? 5,
@@ -606,60 +609,60 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										)}
 									/>
 									<div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-									<FormField
-										control={control}
-										name={`${base}.trace_type`}
-										render={({ field }) => (
-											<FormItem className="w-full sm:flex-1">
-												<FormLabel>Format</FormLabel>
-												<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
+										<FormField
+											control={control}
+											name={`${base}.trace_type`}
+											render={({ field }) => (
+												<FormItem className="w-full sm:flex-1">
+													<FormLabel>Format</FormLabel>
+													<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
+														<FormControl>
+															<SelectTrigger className="w-full">
+																<SelectValue placeholder="Select trace type" />
+															</SelectTrigger>
+														</FormControl>
+														<SelectContent>
+															{traceTypeOptions.map((option) => (
+																<SelectItem
+																	key={option.value}
+																	value={option.value}
+																	disabled={option.disabled}
+																	disabledReason={option.disabledReason}
+																>
+																	{option.label}
+																</SelectItem>
+															))}
+														</SelectContent>
+													</Select>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={control}
+											name={`${base}.export_timeout`}
+											render={({ field }) => (
+												<FormItem className="w-full sm:flex-1">
+													<FormLabel>Export Timeout (seconds)</FormLabel>
 													<FormControl>
-														<SelectTrigger className="w-full">
-															<SelectValue placeholder="Select trace type" />
-														</SelectTrigger>
+														<Input
+															type="number"
+															min={1}
+															max={60}
+															disabled={!hasOtelAccess}
+															{...field}
+															value={field.value ?? ""}
+															onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
+														/>
 													</FormControl>
-													<SelectContent>
-														{traceTypeOptions.map((option) => (
-															<SelectItem
-																key={option.value}
-																value={option.value}
-																disabled={option.disabled}
-																disabledReason={option.disabledReason}
-															>
-																{option.label}
-															</SelectItem>
-														))}
-													</SelectContent>
-												</Select>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<FormField
-										control={control}
-										name={`${base}.export_timeout`}
-										render={({ field }) => (
-											<FormItem className="w-full sm:flex-1">
-												<FormLabel>Export Timeout (seconds)</FormLabel>
-												<FormControl>
-													<Input
-														type="number"
-														min={1}
-														max={60}
-														disabled={!hasOtelAccess}
-														{...field}
-														value={field.value ?? ""}
-														onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
-													/>
-												</FormControl>
-												<FormDescription>
-													Maximum time for a single trace export (1-60 seconds). Traces are dropped rather than retried past this limit, so
-													an unreachable collector cannot slow down request handling.
-												</FormDescription>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
+													<FormDescription>
+														Maximum time for a single trace export (1-60 seconds). Traces are dropped rather than retried past this limit,
+														so an unreachable collector cannot slow down request handling.
+													</FormDescription>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
 									</div>
 									<FormField
 										control={control}
@@ -783,6 +786,30 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 												<Switch
 													// First profile keeps the legacy testid for existing e2e coverage.
 													data-testid={index === 0 ? "otel-metrics-export-toggle" : `otel-profile-${index}-metrics-export-toggle`}
+													checked={field.value}
+													onCheckedChange={field.onChange}
+													disabled={!hasOtelAccess}
+												/>
+											</div>
+										</div>
+									</FormItem>
+								)}
+							/>
+
+							<FormField
+								control={control}
+								name={`${base}.overhead_breakdown_enabled`}
+								render={({ field }) => (
+									<FormItem className="flex flex-row items-center gap-2">
+										<div className="flex w-full flex-row items-center gap-2">
+											<div className="flex flex-col gap-1">
+												<h3 className="text-sm font-medium">Overhead breakdown</h3>
+												<p className="text-muted-foreground text-xs">Export per-component Bifrost overhead latency as a histogram.</p>
+											</div>
+											<div className="ml-auto">
+												<Switch
+													aria-label="Enable overhead breakdown"
+													data-testid={index === 0 ? "otel-overhead-breakdown-toggle" : `otel-profile-${index}-overhead-breakdown-toggle`}
 													checked={field.value}
 													onCheckedChange={field.onChange}
 													disabled={!hasOtelAccess}

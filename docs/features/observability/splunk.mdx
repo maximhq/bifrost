@@ -254,9 +254,9 @@ Acknowledgement trades a little overhead (per-channel poll traffic, plus unackno
 
 ## Attribution fields
 
-Bifrost attributes each request to a virtual key, user, team, customer, and business unit. Because a request can be attributed to a *set* (multi-tenant), the connector shapes attribution differently for events and metrics:
+Bifrost attributes each request to a virtual key, user, team, customer, business unit, and project. Because a request can be attributed to a *set* (multi-tenant), the connector shapes attribution differently for events and metrics:
 
-- **Events** carry one **multi-value** field per dimension (`team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, `business_unit_names`) as native JSON arrays, so `customer_ids=acme` matches a member of the set. Virtual-key and user attribution stay scalar (`virtual_key_id`, `virtual_key_name`, `user_id`, `user_name`).
+- **Events** carry one **multi-value** field per dimension (`team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, `business_unit_names`) as native JSON arrays, so `customer_ids=acme` matches a member of the set. Virtual-key, user, and project attribution stay scalar (`virtual_key_id`, `virtual_key_name`, `user_id`, `user_name`, `project_id`, `project_name`), since a request is scoped to at most one project.
 - **Metrics** dimensions must be scalar (a comma-joined value would break `mstats ... BY`), so metric dimensions keep the **singular** form (`customer_id`, `team_id`, ...). Multi-tenant metric attribution reflects the primary tenant only.
 
 <Note>

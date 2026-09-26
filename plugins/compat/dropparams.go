@@ -2,6 +2,7 @@ package compat
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -136,13 +137,6 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		}
 	}
 
-	if req.ChatRequest != nil && req.ChatRequest.Input != nil {
-		if req.ChatRequest.Provider != schemas.Bedrock || !isSupported["cachePoint"] {
-			droppedKeys := dropCachePoint(req.ChatRequest)
-			dropped = append(dropped, droppedKeys...)
-		}
-	}
-
 	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 		params := req.ResponsesRequest.Params
 
@@ -173,6 +167,10 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		}
 		if params.Reasoning != nil {
 			if !isSupported["reasoning"] {
+				params.Reasoning = nil
+				dropped = append(dropped, "reasoning")
+			} else if isAzureDeepSeekResponsesRequest(req) && !isConvertedToChatCompletions(ctx) {
+				// Azure's Responses endpoint rejects reasoning.effort for DeepSeek.
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
 			} else if params.Reasoning.Summary != nil && *params.Reasoning.Summary != "auto" &&
@@ -212,22 +210,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		}
 		if !isSupported["web_search"] {
 			droppedKeys := dropWebsearchToolCalls(req)
-			dropped = append(dropped, droppedKeys...)
-		}
-	}
-
-	if req.ResponsesRequest != nil && req.ResponsesRequest.Input != nil {
-		if req.ResponsesRequest.Provider == schemas.Bedrock && !schemas.IsAnthropicModel(req.ResponsesRequest.Model) {
-			droppedKeys := applyBedrockResponsesCompatibility(req.ResponsesRequest)
-			dropped = append(dropped, droppedKeys...)
-		}
-	}
-
-	if req.ResponsesRequest != nil {
-		// all anthropic models support cache_control
-		// for bedrock models cache_control is converted to cachePoint
-		if req.ResponsesRequest.Provider == schemas.Bedrock && !isSupported["cache_control"] {
-			droppedKeys := dropCacheControlFromResponsesMessages(req.ResponsesRequest)
+			if len(droppedKeys) > 0 {
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("dropped %d web search tool(s) - the model does not support web_search: %s", len(droppedKeys), strings.Join(droppedKeys, ", ")))
+			}
 			dropped = append(dropped, droppedKeys...)
 		}
 	}
@@ -277,6 +262,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		}
 	}
 
+	if !isSupported["assistant_prefill"] {
+		ctx.Log(schemas.LogLevelDebug, "model does not support assistant prefill, assistant messages will be trimmed")
+	}
 	ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, isSupported["assistant_prefill"])
 
 	return dropped
@@ -295,86 +283,5 @@ func dropWebsearchToolCalls(req *schemas.BifrostRequest) []string {
 		}
 	}
 	req.ResponsesRequest.Params.Tools = kept
-	return dropped
-}
-
-// dropCachePoint drops cache point (only supported by bedrock) from the request
-func dropCachePoint(req *schemas.BifrostChatRequest) []string {
-	dropped := []string{}
-	for i := range req.Input {
-		if req.Input[i].Content != nil && req.Input[i].Content.ContentBlocks != nil {
-			blocks := req.Input[i].Content.ContentBlocks
-			kept := blocks[:0]
-			for j, block := range blocks {
-				if block.CachePoint != nil {
-					dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d].cache_point", i, j))
-				} else {
-					kept = append(kept, block)
-				}
-			}
-			req.Input[i].Content.ContentBlocks = kept
-		}
-	}
-	return dropped
-}
-
-// dropCacheControlFromResponsesMessages clears cache_control from all content blocks.
-func dropCacheControlFromResponsesMessages(req *schemas.BifrostResponsesRequest) []string {
-	var dropped []string
-
-	if req.Input != nil {
-		for i := range req.Input {
-			msg := &req.Input[i]
-			if msg.CacheControl != nil {
-				msg.CacheControl = nil
-				dropped = append(dropped, fmt.Sprintf("input[%d].cache_control", i))
-			}
-			if msg.Content == nil || msg.Content.ContentBlocks == nil {
-				continue
-			}
-			for j := range msg.Content.ContentBlocks {
-				if msg.Content.ContentBlocks[j].CacheControl != nil {
-					msg.Content.ContentBlocks[j].CacheControl = nil
-					dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d].cache_control", i, j))
-				}
-			}
-		}
-	}
-
-	if req.Params != nil {
-		for i := range req.Params.Tools {
-			if req.Params.Tools[i].CacheControl != nil {
-				req.Params.Tools[i].CacheControl = nil
-				dropped = append(dropped, fmt.Sprintf("tools[%d].cache_control", i))
-			}
-		}
-	}
-	return dropped
-}
-
-// applyBedrockResponsesCompatibility sanitizes messages for OpenAI-compatible Bedrock models:
-// - drops empty text content blocks
-// - strips reasoning signatures (Anthropic-specific, not supported by OpenAI models)
-func applyBedrockResponsesCompatibility(req *schemas.BifrostResponsesRequest) []string {
-	var dropped []string
-	for i := range req.Input {
-		msg := &req.Input[i]
-		if msg.Content == nil || msg.Content.ContentBlocks == nil {
-			continue
-		}
-		kept := msg.Content.ContentBlocks[:0]
-		for j, block := range msg.Content.ContentBlocks {
-			if block.Text != nil && *block.Text == "" {
-				dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d]", i, j))
-				continue
-			}
-			if block.Signature != nil {
-				msg.Content.ContentBlocks[j].Signature = nil
-				dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d].signature", i, j))
-			}
-			kept = append(kept, msg.Content.ContentBlocks[j])
-		}
-		msg.Content.ContentBlocks = kept
-	}
 	return dropped
 }

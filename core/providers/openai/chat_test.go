@@ -295,6 +295,42 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
+			name:     "maps none to low for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-6-sol",
+			model:    "gpt-6-sol",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "preserves none for gpt-6-luna",
+			model:    "gpt-6-luna",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "maps none to minimal for gpt-5-mini",
+			model:    "gpt-5-mini",
+			effort:   "none",
+			expected: "minimal",
+		},
+		{
+			name:     "maps none to low for o4",
+			model:    "o4",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-5.4",
+			model:    "gpt-5.4",
+			effort:   "none",
+			expected: "none",
+		},
+		{
 			name:     "preserves max for deepseek-v4-pro",
 			provider: schemas.ModelProvider("deepseek"),
 			model:    "deepseek-v4-pro",
@@ -441,6 +477,67 @@ func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 			if strings.Contains(string(body), "reasoning_effort") {
 				t.Fatalf("expected marshalled body to omit reasoning_effort, got %s", string(body))
 			}
+		})
+	}
+}
+
+// TestToOpenAIChatRequest_StripsUnsupportedSamplingParams pins that sampling fields
+// OpenAI rejects at the effective reasoning effort are dropped for OpenAI and Azure.
+func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		effort   string
+		stripped bool
+	}{
+		{name: "gpt-6-astra always strips", model: "gpt-6-astra", stripped: true},
+		{name: "azure gpt-6-astra always strips", provider: schemas.Azure, model: "gpt-6-astra", effort: "low", stripped: true},
+		{name: "o3 strips", model: "o3", effort: "high", stripped: true},
+		{name: "gpt-5.5 omitted effort defaults to medium", model: "gpt-5.5", stripped: true},
+		{name: "gpt-5.4 omitted effort defaults to none", model: "gpt-5.4", stripped: false},
+		{name: "gpt-5.6 keeps while effort none", model: "gpt-5.6", effort: "none", stripped: false},
+		{name: "gpt-5.6 strips once reasoning is on", model: "gpt-5.6", effort: "low", stripped: true},
+		{name: "non-reasoning model keeps", model: "gpt-4o", stripped: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
+			params := &schemas.ChatParameters{
+				Temperature: schemas.Ptr(0.2),
+				TopP:        schemas.Ptr(0.9),
+				LogProbs:    new(true),
+				TopLogProbs: schemas.Ptr(3),
+			}
+			if tt.effort != "" {
+				params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)}
+			}
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: params,
+			})
+			require.NotNil(t, out)
+			if tt.stripped {
+				require.Nil(t, out.Temperature)
+				require.Nil(t, out.TopP)
+				require.Nil(t, out.LogProbs)
+				require.Nil(t, out.TopLogProbs)
+			} else {
+				require.NotNil(t, out.Temperature)
+				require.NotNil(t, out.TopP)
+				require.NotNil(t, out.LogProbs)
+				require.NotNil(t, out.TopLogProbs)
+			}
+			require.NotNil(t, params.Temperature, "caller's params must not be mutated")
 		})
 	}
 }
@@ -897,7 +994,6 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 		provider schemas.ModelProvider
 		model    string
 	}{
-		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
 		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
 	}
 
@@ -968,6 +1064,96 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 				t.Fatalf("expected reasoning_content to be absent from %s assistant payload, got %#v", tt.provider, assistantMessage["reasoning_content"])
 			}
 		})
+	}
+}
+
+// Groq rejects reasoning_content on assistant messages ("property 'reasoning_content'
+// is unsupported") but accepts the OpenRouter-style "reasoning" spelling, so replayed
+// reasoning has to move to that key rather than be dropped.
+func TestToOpenAIChatRequest_MovesAssistantReasoningToAliasForGroq(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{name: "groq", provider: schemas.Groq, model: "qwen/qwen3.8-27b"},
+		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
+	} {
+		t.Run(tt.name, func(t *testing.T) { assertMovesAssistantReasoningToAlias(t, tt.provider, tt.model) })
+	}
+}
+
+func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelProvider, model string) {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	assistantContent := "The weather in Paris is mild today."
+	userContent := "What is the weather in Paris?"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
+		t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
+	}
+	assistant := result.Messages[1].OpenAIChatAssistantMessage
+	if assistant.Reasoning != nil {
+		t.Fatalf("expected reasoning_content to be cleared, got %#v", assistant.Reasoning)
+	}
+	if assistant.ReasoningAlias == nil || *assistant.ReasoningAlias != reasoning {
+		t.Fatalf("expected reasoning alias %q, got %#v", reasoning, assistant.ReasoningAlias)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, bifrostReq), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var jsonMap map[string]any
+	if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled request body: %v", err)
+	}
+	messages, ok := jsonMap["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
+	}
+	assistantMessage, ok := messages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected assistant message object, got %#v", messages[1])
+	}
+	if _, ok := assistantMessage["reasoning_content"]; ok {
+		t.Fatalf("expected reasoning_content to be absent from %s assistant payload, got %#v", provider, assistantMessage["reasoning_content"])
+	}
+	if got, ok := assistantMessage["reasoning"].(string); !ok || got != reasoning {
+		t.Fatalf("expected reasoning %q in %s assistant payload, got %#v", reasoning, provider, assistantMessage["reasoning"])
 	}
 }
 
@@ -1574,13 +1760,15 @@ func TestOpenAIInbound_MaxCompletionTokensTakesPriorityOverMaxTokens(t *testing.
 	}
 }
 
-func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
+func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider schemas.ModelProvider
 	}{
 		{name: "Go", provider: schemas.OpencodeGo},
 		{name: "Zen", provider: schemas.OpencodeZen},
+		{name: "Ollama", provider: schemas.Ollama},
+		{name: "DeepSeek", provider: schemas.DeepSeek},
 	}
 
 	for _, tt := range tests {

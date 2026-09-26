@@ -50,7 +50,7 @@ func leadingAnthropicReasoningBlockCount(blocks []AnthropicContentBlock) int {
 // (schemas.ChatTool with non-nil Function) into an AnthropicTool.
 // Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
 // cleanly between function and server-tool shapes.
-func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
+func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error) {
 	anthropicTool := AnthropicTool{
 		Name: tool.Function.Name,
 	}
@@ -64,6 +64,11 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	}
 
 	if anthropicTool.InputSchema != nil {
+		var err error
+		anthropicTool.InputSchema, err = normalizeAnthropicToolInputSchema(anthropicTool.InputSchema)
+		if err != nil {
+			return AnthropicTool{}, err
+		}
 		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
 	}
 
@@ -92,7 +97,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	if tool.Function.Strict != nil {
 		anthropicTool.Strict = tool.Function.Strict
 	}
-	return anthropicTool
+	return anthropicTool, nil
 }
 
 // convertServerToolToAnthropic reconstructs an AnthropicTool from the
@@ -148,6 +153,12 @@ func convertServerToolToAnthropic(tool schemas.ChatTool, caps schemas.ModelCaps,
 			typeStr = wantType
 			if toolName == "" || toolName != wantName {
 				toolName = wantName
+			}
+			// A toolset is named by its type alone, so it is the one entry that
+			// legitimately carries no name and must skip the guard below.
+			if wantName == "" {
+				atype := AnthropicToolType(typeStr)
+				return AnthropicTool{Type: &atype, CacheControl: tool.CacheControl}, true
 			}
 		}
 	}
@@ -353,10 +364,33 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
+	// choice below — the caller's and the synthetic structured-output pin — is
+	// dropped and the model answers under the default "auto".
+	forcedToolChoiceSupported := caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel))
 
 	// Convert parameters
 	if bifrostReq.Params != nil {
 		anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
+		if safeguards, exists := anthropicReq.ExtraParams["safeguards"]; exists {
+			// Copy before consuming the key: the input may be reused for a fallback.
+			extra := make(map[string]interface{}, len(anthropicReq.ExtraParams))
+			for k, v := range anthropicReq.ExtraParams {
+				extra[k] = v
+			}
+			anthropicReq.ExtraParams = extra
+			delete(anthropicReq.ExtraParams, "safeguards")
+			switch v := safeguards.(type) {
+			case json.RawMessage:
+				anthropicReq.Safeguards = v
+			case []byte:
+				anthropicReq.Safeguards = json.RawMessage(v)
+			default:
+				if data, err := providerUtils.MarshalSorted(v); err == nil {
+					anthropicReq.Safeguards = data
+				}
+			}
+		}
 
 		// reasoningParams is the effective reasoning config for this request. It is
 		// normally just Params.Reasoning; when the caller used Anthropic's native
@@ -580,7 +614,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
+			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
@@ -590,7 +624,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						(reasoningParams.MaxTokens != nil ||
 							(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
 						promotedThinking != nil
-					if !thinkingEnabled {
+					if !thinkingEnabled && forcedToolChoiceSupported {
 						anthropicReq.ToolChoice = &AnthropicToolChoice{
 							Type: "tool",
 							Name: responseFormatTool.Name,
@@ -627,7 +661,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			tools := make([]AnthropicTool, 0, len(filtered))
 			for _, tool := range filtered {
 				if tool.Function != nil {
-					tools = append(tools, convertFunctionToolToAnthropic(tool))
+					converted, err := convertFunctionToolToAnthropic(tool)
+					if err != nil {
+						return nil, err
+					}
+					tools = append(tools, converted)
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
@@ -642,8 +680,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
+		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
+
 		// Convert tool choice
-		if bifrostReq.Params.ToolChoice != nil {
+		if bifrostReq.Params.ToolChoice != nil && !forcedToolChoiceRejected {
 			toolChoice := &AnthropicToolChoice{}
 			if bifrostReq.Params.ToolChoice.ChatToolChoiceStr != nil {
 				switch schemas.ChatToolChoiceType(*bifrostReq.Params.ToolChoice.ChatToolChoiceStr) {
@@ -664,13 +704,48 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						toolChoice.Name = bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Function.Name
 					}
 				case schemas.ChatToolChoiceTypeAllowedTools:
-					toolChoice.Type = "any"
+					// Anthropic has no "choose from this subset" form, so the
+					// restriction is expressed by removing the declarations the
+					// caller did not allow: the model can only call a tool it was
+					// given. Mapping straight to "any" kept every tool and also
+					// forced a call even when the caller's mode was "auto".
+					allowed := bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.AllowedTools
+					if allowed != nil {
+						anthropicReq.Tools = filterToolsByAllowed(anthropicReq.Tools, allowed.Tools)
+						switch {
+						case countFunctionTools(anthropicReq.Tools) == 0:
+							// The allowed list matched nothing declared. "any" or
+							// "auto" with no tools is a request Anthropic rejects,
+							// so the restriction is stated as what it means.
+							toolChoice.Type = "none"
+						case allowed.Mode == "required":
+							toolChoice.Type = "any"
+						default:
+							toolChoice.Type = "auto"
+						}
+					} else {
+						toolChoice.Type = "any"
+					}
 				case schemas.ChatToolChoiceTypeCustom:
 					toolChoice.Type = "auto"
 				default:
 					toolChoice.Type = "auto"
 				}
 			}
+			applyParallelToolUse(toolChoice, bifrostReq.Params.ParallelToolCalls)
+			anthropicReq.ToolChoice = toolChoice
+		}
+
+		// A caller can disable parallel tool calls without expressing any
+		// preference about *which* tool runs. Anthropic carries that setting on
+		// tool_choice only, so without a tool_choice to attach it to the
+		// instruction had nowhere to go and was dropped. "auto" is Anthropic's
+		// default behaviour, so naming it here restores the flag without
+		// changing which tools may be called.
+		if anthropicReq.ToolChoice == nil && len(anthropicReq.Tools) > 0 &&
+			bifrostReq.Params.ParallelToolCalls != nil && !*bifrostReq.Params.ParallelToolCalls {
+			toolChoice := &AnthropicToolChoice{Type: "auto"}
+			applyParallelToolUse(toolChoice, bifrostReq.Params.ParallelToolCalls)
 			anthropicReq.ToolChoice = toolChoice
 		}
 
@@ -790,9 +865,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
 	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
-	// top-level system block, which would invalidate the cached prefix behind it. Anthropic
-	// model family only — these call sites also serve DeepSeek/Fireworks/SGL, which keep hoisting.
-	inlineMidConvSystem := schemas.IsAnthropicModelFamily(ctx, capModel)
+	// top-level system block, which would invalidate the cached prefix behind it. Every family:
+	// these call sites also serve DeepSeek/Fireworks/SGL over the Anthropic wire shape, and
+	// DeepSeek's context cache is automatic and prefix-based (a request must fully match a
+	// cached prefix unit, api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the
+	// same way. The <system-reminder> envelope is plain text those models read fine.
+	inlineMidConvSystem := true
 
 	i := 0
 	for i < len(messages) {
@@ -1313,24 +1391,25 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 	// Convert usage information
 	if response.Usage != nil {
+		billable := billableAnthropicUsage(response.Usage)
 		promptTokensDetails := &schemas.ChatPromptTokensDetails{
-			CachedReadTokens:  response.Usage.CacheReadInputTokens,
-			CachedWriteTokens: response.Usage.CacheCreationInputTokens,
+			CachedReadTokens:  billable.CacheReadInputTokens,
+			CachedWriteTokens: billable.CacheCreationInputTokens,
 		}
-		if response.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || response.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m: response.Usage.CacheCreation.Ephemeral5mInputTokens,
-				CachedWriteTokens1h: response.Usage.CacheCreation.Ephemeral1hInputTokens,
+				CachedWriteTokens5m: billable.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: billable.CacheCreation.Ephemeral1hInputTokens,
 			}
 		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:        response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens,
+			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + billable.CacheCreationInputTokens,
 			PromptTokensDetails: promptTokensDetails,
-			CompletionTokens:    response.Usage.OutputTokens,
+			CompletionTokens:    billable.OutputTokens,
 		}
 		// Forward web search request count so server-tool use is billed.
-		if response.Usage.ServerToolUse != nil && response.Usage.ServerToolUse.WebSearchRequests > 0 {
-			n := response.Usage.ServerToolUse.WebSearchRequests
+		if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
+			n := billable.ServerToolUse.WebSearchRequests
 			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 				NumSearchQueries: &n,
 			}
@@ -1338,25 +1417,25 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
 		// ReasoningTokens <= CompletionTokens — so no folding is required here.
-		if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+		if billable.OutputTokensDetails != nil && billable.OutputTokensDetails.ThinkingTokens > 0 {
 			if bifrostResponse.Usage.CompletionTokensDetails == nil {
 				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
-			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = response.Usage.OutputTokensDetails.ThinkingTokens
+			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = billable.OutputTokensDetails.ThinkingTokens
 		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
-		if response.Usage.ServiceTier != nil {
-			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+		if billable.ServiceTier != nil {
+			mapped := MapAnthropicServiceTierToBifrost(*billable.ServiceTier)
 			bifrostResponse.ServiceTier = &mapped
 		}
 		// Forward the speed actually served (fast mode) — drives fast-mode billing.
-		if response.Usage.Speed != nil {
-			bifrostResponse.Speed = response.Usage.Speed
+		if billable.Speed != nil {
+			bifrostResponse.Speed = billable.Speed
 		}
 		// Forward the inference geography served — drives the data-residency multiplier.
-		if response.Usage.InferenceGeo != nil {
-			bifrostResponse.InferenceGeo = response.Usage.InferenceGeo
+		if billable.InferenceGeo != nil {
+			bifrostResponse.InferenceGeo = billable.InferenceGeo
 		}
 	}
 
@@ -2022,4 +2101,86 @@ func ToAnthropicChatStreamError(bifrostErr *schemas.BifrostError) string {
 	}
 	// Format as Anthropic SSE error event
 	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
+}
+
+// filterToolsByAllowed narrows a converted Anthropic tool list to the names a
+// caller permitted through tool_choice.allowed_tools.
+//
+// Anthropic's tool_choice has no subset form (auto, any, tool, none), so the
+// only place the restriction can be expressed is the declaration list itself:
+// a tool that is not declared cannot be called. Callers that pass an empty
+// allowed list are left alone rather than being stripped of every tool, since
+// sending no declarations changes the request into one that cannot use tools
+// at all - a larger change than the caller asked for.
+func filterToolsByAllowed(tools []AnthropicTool, allowed []schemas.ChatToolChoiceAllowedToolsTool) []AnthropicTool {
+	if len(tools) == 0 || len(allowed) == 0 {
+		return tools
+	}
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, a := range allowed {
+		if a.Function.Name != "" {
+			permitted[a.Function.Name] = struct{}{}
+		}
+	}
+	if len(permitted) == 0 {
+		return tools
+	}
+	kept := make([]AnthropicTool, 0, len(tools))
+	for _, t := range tools {
+		// Server tools are never named in an OpenAI allowed_tools list, which
+		// describes function tools only. Filtering them on a name they cannot
+		// have would silently switch off a capability the caller enabled
+		// elsewhere in the same request - a stated intent quietly discarded,
+		// which is the harm this function exists to prevent.
+		//
+		// Two shapes carry a server tool, and testing only one of them is the
+		// mistake to avoid here: web search, web fetch and the computer-use
+		// family set Type, while an MCP toolset leaves Type nil and carries
+		// everything in MCPToolset with an empty Name (see AnthropicTool, whose
+		// own comment records this). Checking Type alone therefore matched an
+		// MCP toolset's empty name against the allowlist and removed it.
+		if t.Type != nil || t.MCPToolset != nil {
+			kept = append(kept, t)
+			continue
+		}
+		if _, ok := permitted[t.Name]; ok {
+			kept = append(kept, t)
+		}
+	}
+	// An empty result means the allowed list named only tools this request does
+	// not declare. Returning the originals would forward every tool the caller
+	// just excluded, which is the bug this function exists to prevent, so the
+	// intersection is honoured literally: nothing may be called. The caller sees
+	// a request with no tools rather than one that quietly ignored the list.
+	return kept
+}
+
+// applyParallelToolUse carries an OpenAI-style parallel_tool_calls flag onto an
+// Anthropic tool_choice. Anthropic expresses the same instruction as
+// disable_parallel_tool_use, so the sense is inverted, and it only accepts the
+// field when a tool may actually be called.
+func applyParallelToolUse(toolChoice *AnthropicToolChoice, parallel *bool) {
+	if toolChoice == nil || parallel == nil || *parallel {
+		return
+	}
+	if toolChoice.Type == "none" {
+		return
+	}
+	disable := true
+	toolChoice.DisableParallelToolUse = &disable
+}
+
+// countFunctionTools reports how many declarations a model could be told to
+// call by name. Server tools are excluded in both their shapes - Type set, or
+// MCPToolset set with Type nil - because they survive an allowed_tools filter
+// untouched. Counting either would hide the case where every nameable tool was
+// excluded, and leave the tool choice at "any" over nothing callable.
+func countFunctionTools(tools []AnthropicTool) int {
+	n := 0
+	for _, t := range tools {
+		if t.Type == nil && t.MCPToolset == nil {
+			n++
+		}
+	}
+	return n
 }

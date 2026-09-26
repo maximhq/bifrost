@@ -119,24 +119,24 @@ request > 90               // Switch providers when request limit near max
 #### Complexity Routing
 
 ```cel
-complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", "COMPLEX", or "REASONING"
+complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", or "COMPLEX"
 ```
 
-Bifrost analyzes each request's prompt content and assigns a tier before routing rules are evaluated. This lets you route cheap/fast requests to small models and deep reasoning tasks to frontier models with no application-side changes.
+Bifrost embeds each request and assigns it the tier of its nearest reference phrase before routing rules are evaluated. This lets you route cheap/fast requests to small models and deep reasoning tasks to frontier models with no application-side changes.
 
 <Note>
-If complexity analysis is unavailable for a request (e.g. unparseable body), `complexity_tier` is treated as **unknown** by the evaluator — the rule does not match and evaluation falls through. Rules using other variables are unaffected.
+If complexity classification is unavailable for a request (classifier not configured or not ready, unsupported input, or a match below the similarity floor), `complexity_tier` is treated as **unknown** by the evaluator — the rule does not match and evaluation falls through. Rules using other variables are unaffected.
 </Note>
 
 **Examples:**
 ```cel
-complexity_tier == "REASONING"                              // Only frontier-worthy tasks
-complexity_tier in ["COMPLEX", "REASONING"]                 // Complex and above
-!(complexity_tier in ["SIMPLE", "MEDIUM"])                  // Same as above, negated form
-complexity_tier == "REASONING" && team_name == "research"   // Scoped to a team
+complexity_tier == "COMPLEX"                                // Only frontier-worthy tasks
+complexity_tier in ["MEDIUM", "COMPLEX"]                    // Medium and above
+!(complexity_tier in ["SIMPLE", "MEDIUM"])                  // Complex only, negated form
+complexity_tier == "COMPLEX" && team_name == "research"     // Scoped to a team
 ```
 
-See [Complexity Router](/features/governance/complexity-router) for how tiers are computed and how to tune the thresholds and keyword lists.
+See [Complexity Router](/features/governance/complexity-router) for how tiers are computed and how to tune the reference phrases and embedding configuration.
 
 #### How Capacity Metrics Are Resolved
 
@@ -793,6 +793,22 @@ If OpenAI fails:
 1. Level 2 load balancing evaluates Azure keys
 2. If all Azure keys fail, tries Groq
 
+A fallback can pin its own provider key, which skips load balancing for that attempt:
+
+```json
+{
+  "provider": "openai",
+  "fallbacks": [
+    "azure/gpt-4o",
+    { "provider": "vertex", "model": "gemini-2.5-pro", "key_id": "8f3c1d2e-..." }
+  ]
+}
+```
+
+Each attempt is pinned independently, so an unpinned fallback later in the chain still load balances normally. If the pinned key is not in that provider's pool, the attempt is skipped and the chain moves to the next entry.
+
+A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
+
 ---
 
 ## Execution & Performance
@@ -981,6 +997,70 @@ Enable debug logging to see routing rule evaluation:
 [RoutingEngine] Rule rule-2 evaluation result: matched=true
 [RoutingEngine] Rule matched! Selected target: provider=groq, model=gpt-3.5-turbo (weight=1), fallbacks=[azure/gpt-4o]
 ```
+
+### Routing Stops Working After a Downgrade
+
+<Info>
+This only affects a downgrade across the release that added key-pinned fallbacks, and only when a rule has a `key_id` (or, in `config.json`, a `provider_key_name`) on a fallback.
+
+- OSS: rolling back from 2.2.3 or later to 2.2.2 or earlier
+- Enterprise: rolling back from v2.2.3 or later to v2.2.2 or earlier
+
+Staying on either side of that line, or downgrading with no pinned fallback in any rule, is unaffected.
+</Info>
+
+**Symptom**: After the rollback, the log shows `failed to load plugin routing` at startup, the routing plugin reports an error status, and `GET /api/routing/rules` returns 500. If the pinned fallback is in `config.json` rather than the database, Bifrost exits at startup with `failed to unmarshal config` instead.
+
+**Cause**: Since 2.2.3, a fallback with a pinned key is a JSON object, both in `config.json` and in the `fallbacks` column of the `routing_rules` table. Earlier versions only decode string entries. In the database, the decode fails for the whole row, and because rules load in one query, that single row takes every routing rule down with it, including rules that never had a pinned fallback. In `config.json`, the decode fails for the whole file.
+
+**Solution**: Rewrite each object entry back to its `"provider/model"` string, then restart Bifrost. The pinned key is dropped, so that fallback goes back to load-balanced key selection. Every other entry is left as it is.
+
+If `config.json` defines routing rules, edit the file first: replace each fallback object under `governance.routing_rules[].fallbacks` with its `"provider/model"` string. Then run the statement for your config store backend once against the database; rows without an object entry are not touched.
+
+<Tabs>
+<Tab title="PostgreSQL">
+```sql
+UPDATE routing_rules
+SET fallbacks = (
+  SELECT jsonb_agg(
+    CASE jsonb_typeof(e.value)
+      WHEN 'object' THEN to_jsonb((e.value ->> 'provider') || '/' || COALESCE(e.value ->> 'model', ''))
+      ELSE e.value
+    END
+    ORDER BY e.ord
+  )::text
+  FROM jsonb_array_elements(routing_rules.fallbacks::jsonb) WITH ORDINALITY AS e(value, ord)
+)
+WHERE fallbacks IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM jsonb_array_elements(routing_rules.fallbacks::jsonb) AS e
+    WHERE jsonb_typeof(e.value) = 'object'
+  );
+```
+</Tab>
+<Tab title="SQLite">
+```sql
+UPDATE routing_rules
+SET fallbacks = (
+  SELECT json_group_array(entry)
+  FROM (
+    SELECT CASE e.type
+      WHEN 'object' THEN json_extract(e.value, '$.provider') || '/' || COALESCE(json_extract(e.value, '$.model'), '')
+      ELSE e.value
+    END AS entry
+    FROM json_each(routing_rules.fallbacks) AS e
+    ORDER BY e.key
+  )
+)
+WHERE fallbacks IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM json_each(routing_rules.fallbacks) AS e WHERE e.type = 'object'
+  );
+```
+</Tab>
+</Tabs>
+
+A fallback object without a `model` becomes `"provider/"`, which keeps the incoming model, the same as the string form. Back up the database before running the update. If you upgrade again later, pin the key on those fallbacks a second time through the API or UI.
 
 ---
 

@@ -402,7 +402,7 @@ type PluginConfig struct {
 	Enabled   bool             `json:"enabled"`
 	Name      string           `json:"name"`
 	Path      *string          `json:"path,omitempty"`
-	Version   *int16           `json:"version,omitempty"`
+	Version   *int16           `json:"version,omitempty"` // TODO: remove in v3.0
 	Config    any              `json:"config,omitempty"`
 	Placement *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
 	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
@@ -500,4 +500,9 @@ type ObservabilityLimits struct {
 // change is required of existing plugins.
 type OverheadSpanConsumer interface {
 	ConsumesOverheadSpans() bool
+}
+
+// RawPayloadConsumer opts a connector into raw provider bodies. Unimplemented means no.
+type RawPayloadConsumer interface {
+	ConsumesRawPayloads() bool
 }

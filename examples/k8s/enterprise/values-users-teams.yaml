@@ -112,10 +112,12 @@ bifrost:
             allowed_models:
               - "gpt-4o-mini"
               - "gpt-4o"
+            key_ids: ["*"]
           - provider: "anthropic"
             weight: 0.4
             allowed_models:
               - "claude-3-5-sonnet-latest"
+            key_ids: ["*"]
       - id: "vk-platform-ops-secondary"
         name: "Platform Ops Team Key"
         description: "Second virtual key assigned to a different team"
@@ -128,3 +130,4 @@ bifrost:
             weight: 1
             allowed_models:
               - "gpt-4o-mini"
+            key_ids: ["*"]

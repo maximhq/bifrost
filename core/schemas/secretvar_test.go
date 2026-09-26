@@ -811,3 +811,67 @@ func TestSecretVar_MarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestSecretVar_RedactedIfSecret(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var ev *SecretVar
+		if got := ev.RedactedIfSecret(); got != nil {
+			t.Fatalf("expected nil, got %+v", got)
+		}
+	})
+
+	t.Run("literal value is surfaced in plaintext", func(t *testing.T) {
+		for _, val := range []string{"", "us-east-1", "https://vllm.internal.example.com:8000"} {
+			e := &SecretVar{Val: val, SecretType: SecretTypePlainText}
+			got := e.RedactedIfSecret()
+			if got.GetValue() != val {
+				t.Errorf("RedactedIfSecret().GetValue() = %q, want %q", got.GetValue(), val)
+			}
+		}
+	})
+
+	t.Run("env-backed value is masked and keeps its reference", func(t *testing.T) {
+		e := &SecretVar{Val: "us-east-1", ref: "env.AWS_REGION", SecretType: SecretTypeEnv}
+		got := e.RedactedIfSecret()
+		if got.GetValue() == "us-east-1" {
+			t.Error("RedactedIfSecret() surfaced the resolved value of an env reference")
+		}
+		if !got.IsRedacted() {
+			t.Errorf("RedactedIfSecret().IsRedacted() = false for %q", got.GetValue())
+		}
+		if got.GetRawRef() != "env.AWS_REGION" {
+			t.Errorf("RedactedIfSecret().GetRawRef() = %q, want %q", got.GetRawRef(), "env.AWS_REGION")
+		}
+	})
+
+	t.Run("vault-backed value is masked and keeps its reference", func(t *testing.T) {
+		e := &SecretVar{Val: "https://mcp.internal.example.com/mcp", ref: "vault.bifrost/mcp-url", SecretType: SecretTypeVault}
+		got := e.RedactedIfSecret()
+		if got.GetValue() == e.Val {
+			t.Error("RedactedIfSecret() surfaced the resolved value of a vault reference")
+		}
+		if got.GetRawRef() != "vault.bifrost/mcp-url" {
+			t.Errorf("RedactedIfSecret().GetRawRef() = %q, want %q", got.GetRawRef(), "vault.bifrost/mcp-url")
+		}
+	})
+
+	t.Run("returns a fresh pointer so callers cannot reach the original", func(t *testing.T) {
+		e := &SecretVar{Val: "us-east-1", SecretType: SecretTypePlainText}
+		got := e.RedactedIfSecret()
+		if got == e {
+			t.Fatal("RedactedIfSecret() aliased the original SecretVar")
+		}
+		got.Val = "eu-west-1"
+		if e.Val != "us-east-1" {
+			t.Errorf("mutating the copy changed the original to %q", e.Val)
+		}
+	})
+
+	t.Run("does not mutate the original", func(t *testing.T) {
+		e := &SecretVar{Val: "actual-secret-value", ref: "env.SOME_URL", SecretType: SecretTypeEnv}
+		_ = e.RedactedIfSecret()
+		if e.Val != "actual-secret-value" {
+			t.Errorf("original Val mutated to %q", e.Val)
+		}
+	})
+}

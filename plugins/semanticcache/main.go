@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -88,19 +90,29 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 // StreamChunk is one chunk from a streaming response, retained until the
 // stream completes so it can be persisted as part of the cache entry.
+//
+// The chunk is stored pre-serialized: PostLLMHook marshals the response
+// synchronously, while it still owns a safe view of it. Core mutates the
+// delivered response right after the post-hook chain returns (raw-field
+// strip, PopulateExtraFields — see core/bifrost.go onResult), so retaining
+// the caller's *BifrostResponse here races with that cleanup (issue #7233).
 type StreamChunk struct {
-	// Timestamp records when this chunk arrived at PostLLMHook. Used by the
-	// reaper to drop accumulators stuck without a final chunk.
+	// Timestamp records when this chunk arrived at PostLLMHook.
 	Timestamp time.Time
-	// Response is the chunk payload as delivered by the provider.
-	Response *schemas.BifrostResponse
+	// Serialized is the chunk payload as JSON, captured at hook time.
+	Serialized string
+	// Index and ChunkIndex are the flush sort keys, captured at hook time
+	// (image-generation responses use both; other shapes use ChunkIndex
+	// with Index=0).
+	Index      int
+	ChunkIndex int
 }
 
 // StreamAccumulator collects the chunks of a single streaming response so
 // they can be flushed as one cache entry on the final chunk.
 type StreamAccumulator struct {
-	// mu serializes Chunks/IsComplete updates across the per-chunk PostLLMHook
-	// invocations and the periodic reaper.
+	// mu serializes Chunks/IsComplete/Failed updates across the per-chunk
+	// PostLLMHook invocations and the periodic reaper.
 	mu sync.Mutex
 	// RequestID is the BifrostContext request ID this accumulator is keyed by.
 	RequestID string
@@ -115,6 +127,11 @@ type StreamAccumulator struct {
 	// IsComplete is set when the final chunk has been observed; further final
 	// chunks are no-ops to keep flush idempotent.
 	IsComplete bool
+	// Failed is set when any chunk of the stream could not be serialized. A
+	// failed stream is never flushed — a cached replay missing a chunk is
+	// worse than no entry — and its accumulator is dropped on the final chunk
+	// (see failStreamAccumulator and addStreamingResponse).
+	Failed bool
 	// Embedding is the request embedding to attach to the cache entry, or nil
 	// for direct-only writes.
 	Embedding []float32
@@ -198,22 +215,27 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 	"cache_key": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The cache key from the request",
+		Filterable:  true,
 	},
 	"provider": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The provider used for the request",
+		Filterable:  true,
 	},
 	"model": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The model used for the request",
+		Filterable:  true,
 	},
 	"params_hash": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The hash of the parameters used for the request",
+		Filterable:  true,
 	},
 	"from_bifrost_semantic_cache_plugin": {
 		DataType:    vectorstore.VectorStorePropertyTypeBoolean,
 		Description: "Whether the cache entry was created by the BifrostSemanticCachePlugin",
+		Filterable:  true,
 	},
 }
 
@@ -510,8 +532,9 @@ func (plugin *Plugin) setPlaceholderVectorIfRequired(state *cacheState) {
 // in PreLLMHook (deterministic directCacheID for direct hits, request UUID
 // otherwise). The store write runs in a goroutine tracked by writersWg with
 // its own background context + CacheSetTimeout, so client cancellation
-// after the response is delivered doesn't drop the cache write. Returns the
-// response unmodified — caching never alters the request flow.
+// after the response is delivered doesn't drop the cache write (see
+// spawnCacheWriter, which also recovers store panics). Returns the response
+// unmodified — caching never alters the request flow.
 func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if bifrostErr != nil {
 		// We rely on errors always arriving as the final chunk for streams, so
@@ -527,10 +550,10 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 
 	extraFields := res.GetExtraFields()
 	requestType := extraFields.RequestType
-	cacheDebug := extraFields.CacheDebug
+	cacheMetadata := extraFields.CacheDebug
 
-	// Final-chunk signaling for cache replays: stampCacheDebugForHit only
-	// stamps CacheDebug.CacheHit=true on the LAST replay chunk (see search.go).
+	// Final-chunk signaling for cache replays: stampCacheMetadataForHit only
+	// stamps CacheHit=true on the LAST replay chunk (see search.go).
 	// When we see that stamp, we set the stream-end indicator on the root ctx
 	// synchronously — same goroutine as the rest of the post-hook chain.
 	//
@@ -538,13 +561,13 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// races: the producer can advance to its next iteration (and SetValue)
 	// while the receiver is still running PostLLMHooks for the previous
 	// chunk, poisoning that chunk's IsFinalChunk read.
-	if bifrost.IsStreamRequestType(requestType) && cacheDebug != nil && cacheDebug.CacheHit {
+	if bifrost.IsStreamRequestType(requestType) && cacheMetadata != nil && cacheMetadata.CacheHit {
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	}
 	// Cache hit replay: cache_debug was already stamped in PreLLMHook by
-	// stampCacheDebugForHit. There's nothing further to do here — no new
+	// stampCacheMetadataForHit. There's nothing further to do here — no new
 	// telemetry to stamp, no write to perform.
-	if cacheDebug != nil && cacheDebug.CacheHit {
+	if cacheMetadata != nil && cacheMetadata.CacheHit {
 		plugin.clearCacheState(requestID)
 		return res, nil, nil
 	}
@@ -577,7 +600,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 
 	// PreLLMHook short-circuited from cache (non-final stream chunks of a
 	// replay land here). Telemetry is already stamped on the final chunk by
-	// stampCacheDebugForHit; non-final chunks have no telemetry to add.
+	// stampCacheMetadataForHit; non-final chunks have no metadata to add.
 	// Without this guard non-final chunks would slip into addStreamingResponse
 	// and trigger a duplicate write at the same directCacheID
 	// (Weaviate 422 "id already exists").
@@ -593,7 +616,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// Observability shouldn't depend on the write decision — that was
 	// previously the case and made the cache layer invisible to callers
 	// using no-store.
-	plugin.stampCacheDebugForMiss(state, extraFields, storageID, isStream, isFinalChunk)
+	plugin.stampCacheMetadataForMiss(state, extraFields, storageID, isStream, isFinalChunk)
 
 	// Now decide whether to actually write. Skipping the write still
 	// leaves cache_debug stamped above.
@@ -622,25 +645,88 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		return res, nil, nil
 	}
 
+	// Serialize the response NOW, while this goroutine still owns a safe view
+	// of it. Core mutates the delivered response right after the post-hook
+	// chain returns (nils ExtraFields.RawRequest/RawResponse, restamps
+	// PopulateExtraFields — see core/bifrost.go onResult), so the async writer
+	// below must never dereference res: it gets only these owned bytes.
+	// Serialization failure is nonfatal — skip the write, keep the response
+	// flowing (issue #7233).
+	responseData, err := sonic.Marshal(res)
+	if err != nil {
+		switch {
+		case !isStream:
+			plugin.logger.Warn("Skipping cache write (namespace=%s, id=%s): failed to marshal response: %v", plugin.config.VectorStoreNamespace, storageID, err)
+		case plugin.failStreamAccumulator(requestID, storageID, isFinalChunk):
+			// First failure for this stream: report it once, with the error of
+			// the chunk that actually failed. Later chunks stay quiet, and the
+			// stream is never flushed — a replay missing one chunk would hand
+			// the client a gap.
+			plugin.logger.Warn("Skipping cache write (namespace=%s, id=%s): failed to marshal response chunk, dropping the whole stream: %v", plugin.config.VectorStoreNamespace, storageID, err)
+		}
+		return res, nil, nil
+	}
+
+	unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
+
+	if isStream {
+		// Append the owned serialized chunk synchronously — the accumulator
+		// must never hold the caller's response pointer. Sort keys are
+		// captured here too, for the same reason. Only the final flush's
+		// store write runs async.
+		index, chunkIndex := responseSortKey(res)
+		chunk := &StreamChunk{
+			Timestamp:  time.Now(),
+			Serialized: string(responseData),
+			Index:      index,
+			ChunkIndex: chunkIndex,
+		}
+		shouldFlush, err := plugin.addStreamingResponse(requestID, storageID, chunk, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk)
+		if err != nil {
+			plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
+			return res, nil, nil
+		}
+		if !shouldFlush {
+			return res, nil, nil
+		}
+		plugin.cacheWriter(storageID, func(cacheCtx context.Context) {
+			if err := plugin.processAccumulatedStream(cacheCtx, requestID); err != nil {
+				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
+			}
+		})
+		return res, nil, nil
+	}
+
+	plugin.cacheWriter(storageID, func(cacheCtx context.Context) {
+		if err := plugin.addNonStreamingResponse(cacheCtx, storageID, responseData, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+			plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
+		}
+	})
+
+	return res, nil, nil
+}
+
+// cacheWriter runs write on a goroutine tracked by writersWg, with its
+// own background context bounded by CacheSetTimeout so client cancellation
+// after the response is delivered doesn't drop the cache write. A panic
+// inside the store client is recovered and logged rather than propagated:
+// the response has already been delivered, so the only consequence of a
+// broken cache backend is that the cache_id stamped on it will not resolve
+// on subsequent lookups. A crashed process for a failed cache write is never
+// acceptable (issue #7450).
+func (plugin *Plugin) cacheWriter(storageID string, write func(ctx context.Context)) {
 	plugin.writersWg.Add(1)
 	go func() {
 		defer plugin.writersWg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				plugin.logger.Error("Semantic cache write panicked (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.\n%s", plugin.config.VectorStoreNamespace, storageID, r, debug.Stack())
+			}
+		}()
 		cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 		defer cancel()
-
-		unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
-		if isStream {
-			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
-				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
-			}
-		} else {
-			if err := plugin.addNonStreamingResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
-				plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
-			}
-		}
+		write(cacheCtx)
 	}()
-
-	return res, nil, nil
 }
 
 // shouldSkipCacheWrite returns true if the upstream response should NOT be
@@ -649,7 +735,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 // or large-payload modes are in effect. The cache-hit-replay case is handled
 // separately as an early return in PostLLMHook because it must short-circuit
 // before stamping (cache_debug for hits is already populated by
-// stampCacheDebugForHit during PreLLMHook).
+// stampCacheMetadataForHit during PreLLMHook).
 func (plugin *Plugin) shouldSkipCacheWrite(ctx *schemas.BifrostContext) bool {
 	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
 		return true
@@ -691,27 +777,27 @@ func (plugin *Plugin) resolveStorageIDAndEmbedding(ctx *schemas.BifrostContext, 
 	return storageID, embedding, shouldStoreEmbeddings
 }
 
-// stampCacheDebugForMiss attaches cache miss telemetry to the response. It
+// stampCacheMetadataForMiss attaches cache miss metadata to the response. It
 // always sets CacheHit=false and CacheID to the storage ID where the entry
 // will be written, so the caller can later invalidate via ClearCacheForCacheID.
 // Embedding-cost fields (ProviderUsed/ModelUsed/InputTokens) are only stamped
 // when semantic search actually ran. For streams, only the final chunk is
 // stamped to avoid duplicating telemetry.
-func (plugin *Plugin) stampCacheDebugForMiss(state *cacheState, extraFields *schemas.BifrostResponseExtraFields, storageID string, isStream, isFinalChunk bool) {
+func (plugin *Plugin) stampCacheMetadataForMiss(state *cacheState, extraFields *schemas.BifrostResponseExtraFields, storageID string, isStream, isFinalChunk bool) {
 	if isStream && !isFinalChunk {
 		return
 	}
 	if extraFields.CacheDebug == nil {
-		extraFields.CacheDebug = &schemas.BifrostCacheDebug{}
+		extraFields.CacheDebug = &schemas.BifrostCacheMetadata{}
 	}
-	cd := extraFields.CacheDebug
-	cd.CacheHit = false
-	cd.CacheID = bifrost.Ptr(storageID)
+	cacheMetadata := extraFields.CacheDebug
+	cacheMetadata.CacheHit = false
+	cacheMetadata.CacheID = bifrost.Ptr(storageID)
 	if state.EmbeddingsInputTokens > 0 {
 		inputTokens := state.EmbeddingsInputTokens
-		cd.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
-		cd.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
-		cd.InputTokens = &inputTokens
+		cacheMetadata.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
+		cacheMetadata.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
+		cacheMetadata.InputTokens = &inputTokens
 	}
 }
 
@@ -804,7 +890,7 @@ func (plugin *Plugin) ClearCacheForKey(cacheKey string) error {
 }
 
 // ClearCacheForCacheID deletes a single cache entry by its storage ID. The
-// caller obtains the ID from BifrostResponse.ExtraFields.CacheDebug.CacheID,
+// caller obtains the ID from the response's cache metadata compatibility field,
 // which is stamped on both cache hits and cache misses — so the same handle
 // works whether the request wrote the entry or read it.
 func (plugin *Plugin) ClearCacheForCacheID(cacheID string) error {

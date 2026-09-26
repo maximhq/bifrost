@@ -23,6 +23,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyDirectKey:               {},
 	BifrostContextKeyRequestID:               {},
 	BifrostContextKeyFallbackRequestID:       {},
+	BifrostContextKeyBillingNonce:            {},
 	BifrostContextKeySelectedKeyID:           {},
 	BifrostContextKeySelectedKeyName:         {},
 	BifrostContextKeyNumberOfRetries:         {},
@@ -37,6 +38,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyAttemptTrail:            {},
 	BifrostContextKeyStreamGated:             {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
+	BifrostContextKeyMCPUnattendedExecution:  {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
@@ -84,6 +86,7 @@ type BifrostContext struct {
 	userValues            map[any]any
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
+	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
 
 	// Plugin scoping fields
 	pluginScope   *string                        // Non-nil when this is a scoped plugin context
@@ -192,6 +195,80 @@ func (bc *BifrostContext) Root() *BifrostContext {
 		bc = bc.valueDelegate
 	}
 	return bc
+}
+
+// SetGrant installs what this request has been granted, so that Grant hands it out for the life of
+// the request. Whoever builds the request context installs it, because core declares the shape of
+// a Grant and never constructs one. Installing nothing is refused, and reported.
+func (bc *BifrostContext) SetGrant(g Grant) bool {
+	if bc == nil || g == nil {
+		return false
+	}
+	bc.Root().grant.Store(&g)
+	return true
+}
+
+// Grant returns what this request has been granted: who it is made by, what it may reach, and what
+// pays for it. There is one per request, reached from every context of that request: a
+// plugin-scoped context answers with its root's, and a context derived from another request's
+// context shares that request's. Nil when nothing was installed on this request or any it derives
+// from, which is what a request nothing governs sees.
+//
+// It is handed out as installed, with no guard on writes. A plugin that needs to change what a
+// request is attributed to, may reach, or answers to does so through the same sections everything
+// else reads, and a deployment that wants a section left alone says so in the plugin order it
+// chooses.
+func (bc *BifrostContext) Grant() Grant {
+	if bc == nil {
+		return nil
+	}
+	root := bc.Root()
+	if g := root.grant.Load(); g != nil {
+		return *g
+	}
+	ancestor := root.inheritedGrant()
+	if ancestor == nil {
+		return nil
+	}
+	// Remembered here so the next read does not walk the chain again. Shared, not copied: a
+	// request and the contexts derived from it are one request, with one answer.
+	root.grant.CompareAndSwap(nil, &ancestor)
+	if g := root.grant.Load(); g != nil {
+		return *g
+	}
+	return nil
+}
+
+// bifrostContextSelfKey is a private sentinel Value answers with the BifrostContext itself.
+// inheritedGrant reads it to find the nearest BifrostContext ancestor through a foreign wrapper -
+// a library between the transport and this code inserting its own context.WithValue, for
+// instance, as mcp-go's HandleMessage does on every request it dispatches to a registered tool.
+// Value delegates through any wrapper per the context.Context contract; a type assertion on the
+// concrete parent does not, so the direct walk below falls back to this when the immediate parent
+// is not itself a *BifrostContext.
+type bifrostContextSelfKey struct{}
+
+// inheritedGrant finds the grant of the nearest ancestor request context that has one. A
+// BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
+// giving up, since a foreign context with nothing to offer still answers nil for that key the
+// same as for any other.
+func (bc *BifrostContext) inheritedGrant() Grant {
+	parent := bc.parent
+	for parent != nil {
+		ancestor, ok := parent.(*BifrostContext)
+		if !ok {
+			ancestor, ok = parent.Value(bifrostContextSelfKey{}).(*BifrostContext)
+			if !ok {
+				return nil
+			}
+		}
+		ancestor = ancestor.Root()
+		if g := ancestor.grant.Load(); g != nil {
+			return *g
+		}
+		parent = ancestor.parent
+	}
+	return nil
 }
 
 // BlockRestrictedWrites returns true if restricted writes are blocked.
@@ -311,6 +388,11 @@ func (bc *BifrostContext) Err() error {
 func (bc *BifrostContext) Value(key any) any {
 	if bc.valueDelegate != nil {
 		return bc.valueDelegate.Value(key)
+	}
+	// A scoped context never reaches this line - it returned via its delegate above - so bc is
+	// already the root here. See bifrostContextSelfKey and inheritedGrant.
+	if _, ok := key.(bifrostContextSelfKey); ok {
+		return bc
 	}
 	bc.valuesMu.RLock()
 	if val, ok := bc.userValues[key]; ok {
@@ -436,6 +518,11 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 	bc.setReservedValue(BifrostContextKeyRoutingInfo, ri)
 }
 
+// SetFallbackPinnedAPIKeyID pins a fallback's provider key, bypassing the restricted-writes guard (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) SetFallbackPinnedAPIKeyID(keyID string) {
+	bc.setReservedValue(BifrostContextKeyAPIKeyID, keyID)
+}
+
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {
@@ -557,6 +644,22 @@ type streamBufferClearer interface {
 	ClearPausedStreamBuffer(traceID string) error
 }
 
+// PausedStreamBufferTransformResult contains rewritten chunks and the leading count safe to replay.
+type PausedStreamBufferTransformResult struct {
+	Chunks       []*BifrostStreamChunk
+	ReleaseCount int
+}
+
+// PausedStreamBufferTransform rewrites a shallow snapshot of chunks captured by one pause epoch.
+// Implementations must use copy-on-write and return the same number of chunks in the same order.
+// ReleaseCount lets the gate replay an approved prefix while keeping an unevaluated suffix paused.
+type PausedStreamBufferTransform func(chunks []*BifrostStreamChunk) (PausedStreamBufferTransformResult, error)
+
+// streamBufferTransformer is an optional tracer capability for atomically rewriting paused client chunks.
+type streamBufferTransformer interface {
+	TransformPausedStreamBuffer(traceID string, transform PausedStreamBufferTransform) error
+}
+
 // ClearPausedStreamBuffer drops chunks buffered while the active stream is paused.
 func (bc *BifrostContext) ClearPausedStreamBuffer() error {
 	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
@@ -569,6 +672,24 @@ func (bc *BifrostContext) ClearPausedStreamBuffer() error {
 		return fmt.Errorf("stream tracer does not support buffer clearing")
 	}
 	return clearer.ClearPausedStreamBuffer(tid)
+}
+
+// TransformPausedStreamBuffer atomically rewrites chunks captured since the latest pause.
+// The current PostLLMHook chunk has not reached the gate yet and is therefore not included.
+func (bc *BifrostContext) TransformPausedStreamBuffer(transform PausedStreamBufferTransform) error {
+	if transform == nil {
+		return fmt.Errorf("paused stream buffer transform is nil")
+	}
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return fmt.Errorf("stream tracer or trace ID is missing")
+	}
+	transformer, ok := any(tr).(streamBufferTransformer)
+	if !ok {
+		return fmt.Errorf("stream tracer does not support buffer transformation")
+	}
+	return transformer.TransformPausedStreamBuffer(tid, transform)
 }
 
 // EndStream terminates the active streaming response. Any buffered chunks are
@@ -684,6 +805,38 @@ func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
 		return 0
 	}
 	return catalog.CalculateRequestCost(bc, resp)
+}
+
+// CalculateCostBreakdown returns the per-category cost breakdown of a
+// completed response. It is the same computation as CalculateCost, so
+// TotalCost always equals what CalculateCost returns for the same response;
+// the difference is that the input, output and additional sides come back
+// split by category instead of collapsed into one number:
+//
+//   - InputCostDetails: TextCost, AudioCost, ImageCost, CachedReadCost,
+//     CachedWriteCost, RequestCost (flat per-request surcharge)
+//   - OutputCostDetails: TextCost, AudioCost, ImageCost, ReasoningCost,
+//     CitationCost, SearchQueriesCost
+//   - AdditionalCostDetails: GuardrailCost, MCPCost, SemanticCacheCost,
+//     RoutingCost (internal sidecar calls with no token category)
+//
+// The full pricing resolution applies exactly as in CalculateCost: long-context
+// tiers, batch/priority/flex/fast rates, cache read/write rates, the provider
+// and request-mode fallback chain, and any pricing overrides in effect.
+//
+// Returns nil when no catalog is wired or the response has no billable usage.
+// The returned value is a fresh copy owned by the caller; mutating it never
+// touches the response.
+//
+// PLUGIN AUTHORS: call this synchronously inside your hook, for the same reason
+// as CalculateCost. If you need the breakdown in a background goroutine, compute
+// it in the hook and close over the pointer.
+func (bc *BifrostContext) CalculateCostBreakdown(resp *BifrostResponse) *BifrostCost {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || resp == nil {
+		return nil
+	}
+	return catalog.CalculateRequestCostBreakdown(bc, resp)
 }
 
 // AppendRoutingEngineLog appends a routing engine log entry to the context.

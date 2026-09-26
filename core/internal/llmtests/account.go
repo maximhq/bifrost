@@ -91,10 +91,13 @@ type TestScenarios struct {
 	ContainerFileDelete          bool // Container File API delete functionality
 	PassThroughExtraParams       bool // Pass through extra params functionality
 	Rerank                       bool // Rerank functionality
+	Decision                     bool // Decision functionality (annotated function-tool evaluation)
+	DecisionEmulation            bool // Decision emulated via a general LLM (tool-calling / structured output)
 	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
 	Compaction                   bool // Server-side compaction (context management)
+	ToolSearch                   bool // Anthropic server-side tool search + defer_loading (on Bedrock via InvokeModel routing)
 	ExternalCompaction           bool // OpenAI /v1/responses/compact endpoint
 	InterleavedThinking          bool // Interleaved thinking between tool calls (beta)
 	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
@@ -113,6 +116,8 @@ type ComprehensiveTestConfig struct {
 	ReasoningModel           string
 	EmbeddingModel           string
 	RerankModel              string
+	DecisionModel            string
+	DecisionEmulationModel   string // a general LLM model used to emulate a decision
 	TranscriptionModel       string
 	SpeechSynthesisModel     string
 	ChatAudioModel           string
@@ -123,6 +128,7 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisFallbacks []schemas.Fallback         // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback         // for embedding tests
 	RerankFallbacks          []schemas.Fallback         // for rerank tests
+	DecisionFallbacks        []schemas.Fallback         // for decision tests
 	SkipReason               string                     // Reason to skip certain tests
 	ImageGenerationModel     string                     // Model for image generation
 	ImageGenerationFallbacks []schemas.Fallback         // Fallbacks for image generation
@@ -141,6 +147,7 @@ type ComprehensiveTestConfig struct {
 	ExpectRawRequestResponse bool                       // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
+	ToolSearchModel          string                     // Model for tool search tests; defaults to claude-sonnet-4-6
 	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
@@ -194,6 +201,9 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Fireworks,
 		schemas.Sarvam,
 		schemas.Wafer,
+		schemas.Databricks,
+		schemas.GithubCopilot,
+		schemas.Typesafe,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -376,7 +386,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
-				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
+				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
@@ -494,6 +504,37 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.Databricks:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.DATABRICKS_TOKEN"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar("env.DATABRICKS_WORKSPACE_URL"),
+				},
+				// Databricks has no batch surface. The flag is still required so the
+				// router hands batch and file requests to the provider, whose
+				// unsupported_operation answer is what the harness asserts on.
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.GithubCopilot:
+		// Server-to-server auth: the credential is the GitHub App bundle, not a key value.
+		// GITHUB_COPILOT_API_KEY is the alternative direct-token mode and is left unset here.
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.GITHUB_COPILOT_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+					AppID:          *schemas.NewSecretVar("env.GITHUB_COPILOT_APP_ID"),
+					InstallationID: *schemas.NewSecretVar("env.GITHUB_COPILOT_INSTALLATION_ID"),
+					RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
+					PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
+				},
+			},
+		}, nil
 	case schemas.Gemini:
 		return []schemas.Key{
 			{
@@ -559,11 +600,19 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.Typesafe:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
+			},
+		}, nil
 	case schemas.Fireworks:
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{"accounts/fireworks/models/deepseek-v4-pro", "fireworks/qwen3-embedding-8b"},
+				Models:         []string{"accounts/fireworks/models/kimi-k2p7-code", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -885,6 +934,32 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.Databricks:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.GithubCopilot:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.VLLM:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -991,6 +1066,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Runware:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Typesafe:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 300,
@@ -1391,7 +1479,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:  schemas.Groq,
-		ChatModel: "llama-3.3-70b-versatile",
+		ChatModel: "qwen/qwen3.8-27b",
 		TextModel: "", // Groq doesn't support text completion
 		Scenarios: TestScenarios{
 			TextCompletion:             false, // Not supported
@@ -1427,9 +1515,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:       schemas.Fireworks,
-		ChatModel:      "accounts/fireworks/models/deepseek-v3p2",
-		TextModel:      "accounts/fireworks/models/deepseek-v3p2",
-		EmbeddingModel: "nomic-ai/nomic-embed-text-v1.5",
+		ChatModel:      "accounts/fireworks/models/kimi-k2p7-code",
+		TextModel:      "accounts/fireworks/models/kimi-k2p7-code",
+		EmbeddingModel: "fireworks/qwen3-embedding-8b",
 		Scenarios: TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,

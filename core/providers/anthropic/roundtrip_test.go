@@ -518,3 +518,56 @@ func TestRoundTrip_ContainerUpload_Grouped(t *testing.T) {
 		t.Errorf("file_id = %v, want %q", found.FileID, fileID)
 	}
 }
+
+// TestAssistantOutputMessagesCarryStatus pins the Responses contract that every
+// assistant output message item carries status "completed" (issue #7074: Bedrock
+// Mantle's OpenAI-compatible validator rejects a replayed assistant item without it).
+// Covers the paths the grouped converter builds a message item on: plain string
+// content, an image block, a document block and a container_upload block. Text
+// blocks are covered by the fix that landed with the issue.
+func TestAssistantOutputMessagesCarryStatus(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	png := "iVBORw0KGgo="
+	pdf := "JVBERi0xLjQK"
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "hi"),
+		anthMsg(AnthropicMessageRoleAssistant, "Hello! How can I help?"),
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{{
+			Type:   AnthropicContentBlockTypeImage,
+			Source: &AnthropicBlockSource{SourceObj: &AnthropicSource{Type: "base64", MediaType: schemas.Ptr("image/png"), Data: &png}},
+		}}}},
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{{
+			Type:   AnthropicContentBlockTypeDocument,
+			Source: &AnthropicBlockSource{SourceObj: &AnthropicSource{Type: "base64", MediaType: schemas.Ptr("application/pdf"), Data: &pdf}},
+		}}}},
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{{
+			Type:   AnthropicContentBlockTypeContainerUpload,
+			FileID: schemas.Ptr("file_abc"),
+		}}}},
+	}
+
+	// Both converters emit these items: the grouped one (Bedrock ingress) and the
+	// plain one. The contract is the same on each.
+	for _, keepToolsGrouped := range []bool{false, true} {
+		out := ConvertAnthropicMessagesToBifrostMessages(ctx, messages, nil, false, keepToolsGrouped)
+
+		assistantMessages := 0
+		for i, msg := range out {
+			if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeMessage || msg.Role == nil || *msg.Role != schemas.ResponsesInputMessageRoleAssistant {
+				continue
+			}
+			assistantMessages++
+			if msg.Status == nil || *msg.Status != "completed" {
+				t.Errorf("grouped=%v output[%d]: assistant message item must carry status \"completed\", got %v", keepToolsGrouped, i, msg.Status)
+			}
+		}
+		if assistantMessages != 4 {
+			t.Fatalf("grouped=%v: expected 4 assistant message items (string, image, document, container_upload), got %d", keepToolsGrouped, assistantMessages)
+		}
+		if user := out[0]; user.Status != nil {
+			t.Errorf("grouped=%v: user input message must not carry status, got %q", keepToolsGrouped, *user.Status)
+		}
+	}
+}

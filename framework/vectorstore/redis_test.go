@@ -529,7 +529,7 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 		config: RedisConfig{
 			ContextTimeout: schemas.Duration(time.Second),
 		},
-		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -629,6 +629,140 @@ func TestRedisStore_ParseSearchResults_EmptyRESP2(t *testing.T) {
 	results, err := store.parseSearchResults(resp, TestNamespace, nil)
 	require.NoError(t, err)
 	assert.Empty(t, results)
+}
+
+// TestVectorDimensionFromFTInfo covers both protocol shapes of the FT.INFO
+// reply. The typed FTInfo helper this replaced could not decode under RESP3, so
+// the dimension check it fed silently never ran on a client speaking RESP3.
+func TestVectorDimensionFromFTInfo(t *testing.T) {
+	// What a live RESP3 server returns: each attribute entry is a map.
+	vectorAttributeMap := map[interface{}]interface{}{
+		"identifier":      "embedding",
+		"attribute":       "embedding",
+		"type":            "VECTOR",
+		"algorithm":       "HNSW",
+		"data_type":       "FLOAT32",
+		"dim":             1536,
+		"distance_metric": "COSINE",
+		"flags":           []interface{}{},
+	}
+	// RESP2 renders the same entry as a flat key/value sequence.
+	vectorAttributeFlat := []interface{}{
+		"identifier", "embedding",
+		"attribute", "embedding",
+		"type", "VECTOR",
+		"algorithm", "HNSW",
+		"data_type", "FLOAT32",
+		"dim", int64(1536),
+		"distance_metric", "COSINE",
+	}
+	tagAttribute := []interface{}{
+		"identifier", "tier",
+		"attribute", "tier",
+		"type", "TAG",
+		"SEPARATOR", ",",
+	}
+
+	tests := []struct {
+		name     string
+		reply    interface{}
+		expected int
+		found    bool
+	}{
+		{
+			name: "RESP3 map with map attribute entries",
+			reply: map[interface{}]interface{}{
+				"index_name": "BifrostComplexityRouter",
+				"attributes": []interface{}{vectorAttributeMap},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			name: "RESP3 map with flat attribute entries",
+			reply: map[interface{}]interface{}{
+				"index_name": "BifrostComplexityRouter",
+				"attributes": []interface{}{tagAttribute, vectorAttributeFlat},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			name: "RESP3 string-keyed map",
+			reply: map[string]interface{}{
+				"attributes": []interface{}{vectorAttributeMap},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			name: "RESP2 flat sequence",
+			reply: []interface{}{
+				"index_name", "BifrostComplexityRouter",
+				"attributes", []interface{}{vectorAttributeFlat},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			// Redis reports numerics as strings under RESP2 and as integers
+			// under RESP3, so both must parse.
+			name:     "dim as string",
+			reply:    map[string]interface{}{"attributes": []interface{}{[]interface{}{"type", "VECTOR", "dim", "768"}}},
+			expected: 768,
+			found:    true,
+		},
+		{
+			name:  "no vector attribute",
+			reply: map[string]interface{}{"attributes": []interface{}{tagAttribute}},
+			found: false,
+		},
+		{
+			name:  "no attributes field",
+			reply: map[string]interface{}{"index_name": "x"},
+			found: false,
+		},
+		{
+			name:  "unexpected shape",
+			reply: "not-a-reply",
+			found: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dimension, ok := vectorDimensionFromFTInfo(tt.reply)
+			assert.Equal(t, tt.found, ok)
+			if tt.found {
+				assert.Equal(t, tt.expected, dimension)
+			}
+		})
+	}
+}
+
+// TestRedisStore_CreateNamespaceRejectsDimensionChange proves the guard fires
+// against a live server: recreating an existing index with a different
+// dimension must fail rather than silently reuse the old index.
+func TestRedisStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+
+	namespace := TestNamespace + "_dimguard"
+	_ = setup.Store.DeleteNamespace(setup.ctx, namespace)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, namespace) }()
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension, nil))
+
+	// Recreating at the same dimension stays idempotent.
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension, nil))
+
+	err := setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension/2, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists with dimension")
 }
 
 func TestRedisStore_ParseSearchResults_ByteScore(t *testing.T) {
@@ -764,9 +898,9 @@ func TestParseOffsetCursor(t *testing.T) {
 }
 
 func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
-	fieldTypes := map[string]VectorStorePropertyType{
-		"size": VectorStorePropertyTypeInteger,
-		"type": VectorStorePropertyTypeString,
+	fieldTypes := map[string]VectorStoreProperties{
+		"size": {DataType: VectorStorePropertyTypeInteger},
+		"type": {DataType: VectorStorePropertyTypeString},
 	}
 
 	tests := []struct {
@@ -895,8 +1029,8 @@ func TestEscapeSearchValue(t *testing.T) {
 }
 
 func TestBuildRedisQueryCondition_TagValueEscaping(t *testing.T) {
-	fieldTypes := map[string]VectorStorePropertyType{
-		"model": VectorStorePropertyTypeString,
+	fieldTypes := map[string]VectorStoreProperties{
+		"model": {DataType: VectorStorePropertyTypeString},
 	}
 
 	tests := []struct {
@@ -1975,4 +2109,75 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		}
 		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
 	})
+}
+
+func TestEncodeDecodeTagValue(t *testing.T) {
+	for _, value := range []string{"gpt-5.6-luna", "openai/gpt-4o", "gemma31b-q6:latest", "plain", "", "héllo"} {
+		encoded := encodeTagValue(value)
+		assert.Equal(t, value, decodeTagValue(encoded), "roundtrip %q", value)
+		for _, c := range encoded {
+			assert.True(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'),
+				"encoded %q must need no escaping, got %q", value, encoded)
+		}
+		assert.Equal(t, encoded, escapeSearchValue(encoded), "encoded %q must be escape-invariant", value)
+	}
+
+	// Values written before encoding was introduced are passed through.
+	assert.Equal(t, "gpt-5.6-luna", decodeTagValue("gpt-5.6-luna"))
+	assert.Equal(t, "zzz", decodeTagValue("zzz"))
+}
+
+func TestBuildRedisQueryCondition_FilterableTagUsesHex(t *testing.T) {
+	fieldProps := map[string]VectorStoreProperties{
+		"model":    {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"response": {DataType: VectorStorePropertyTypeString},
+		"expires":  {DataType: VectorStorePropertyTypeInteger, Filterable: true},
+	}
+	hexModel := encodeTagValue("gpt-5.6-luna")
+
+	tests := []struct {
+		name        string
+		query       Query
+		expected    string
+		noBackslash bool
+	}{
+		{
+			name:        "filterable tag is hex encoded, never escaped",
+			query:       Query{Field: "model", Operator: QueryOperatorEqual, Value: "gpt-5.6-luna"},
+			expected:    "@model:{" + hexModel + "}",
+			noBackslash: true,
+		},
+		{
+			name:        "filterable tag negation is hex encoded",
+			query:       Query{Field: "model", Operator: QueryOperatorNotEqual, Value: "gpt-5.6-luna"},
+			expected:    "-@model:{" + hexModel + "}",
+			noBackslash: true,
+		},
+		{
+			name:        "contains any hex encodes each value",
+			query:       Query{Field: "model", Operator: QueryOperatorContainsAny, Value: []interface{}{"a:b", "c/d"}},
+			expected:    "(@model:{" + encodeTagValue("a:b") + "} | @model:{" + encodeTagValue("c/d") + "})",
+			noBackslash: true,
+		},
+		{
+			name:     "non-filterable field keeps escaping",
+			query:    Query{Field: "response", Operator: QueryOperatorEqual, Value: "gpt-5.6-luna"},
+			expected: `@response:{gpt\-5\.6\-luna}`,
+		},
+		{
+			name:     "filterable integer stays a numeric range",
+			query:    Query{Field: "expires", Operator: QueryOperatorEqual, Value: 1700000000},
+			expected: "@expires:[1700000000 1700000000]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRedisQueryCondition(tt.query, fieldProps)
+			assert.Equal(t, tt.expected, got)
+			if tt.noBackslash {
+				assert.NotContains(t, got, `\`, "filterable tag queries must contain no backslashes")
+			}
+		})
+	}
 }

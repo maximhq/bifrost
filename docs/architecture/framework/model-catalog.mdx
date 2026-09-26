@@ -44,7 +44,7 @@ It supports diverse pricing models across different AI operation types:
 - **Text Operations**: Token-based pricing for chat completions, text completions, responses, and embeddings. Cache-read/cache-write pricing applies to chat/text/responses when providers surface prompt cache token details.
 - **Audio Processing**: Character-based, token-based, and duration-based pricing for speech synthesis and transcription, with audio token detail breakdown. Speech responses populate `usage.input_chars` so speech can be billed by input characters in addition to tokens/duration.
 - **Image Processing**: Per-image (`input_cost_per_image`/`output_cost_per_image`), per-pixel (`input_cost_per_pixel`/`output_cost_per_pixel`), or token-based pricing with text/image token breakdown.
-- **Video Processing**: Token-based or duration-based pricing. Input can use prompt tokens or `input_cost_per_video_per_second`; output can use completion tokens or fall back to `output_cost_per_video_per_second` / `output_cost_per_second`.
+- **Video Processing**: Token-based or duration-based pricing. Input can use prompt tokens or `input_cost_per_video_per_second`; output can use completion tokens or fall back to a resolution-banded per-second rate (`output_cost_per_video_per_second_480p` / `_720p` / `_1024p` / `_1080p` / `_4k`, matched on the short edge of the video's size), then `output_cost_per_video_per_second` / `output_cost_per_second`. The per-second rate is multiplied by the number of clips returned.
 - **Reranking**: Input/output token pricing with search query cost support.
 - **Prompt Caching**: Separate rates for cache-read tokens (`cached_read_tokens`) and cache-creation tokens (`cached_write_tokens`), both surfaced under `prompt_tokens_details` (see [Prompt Cache Cost Calculation](#prompt-cache-cost-calculation)).
 
@@ -66,6 +66,14 @@ It integrates with semantic caching to provide accurate cost calculations:
 ### **5. Tiered Pricing Support**
 
 The system automatically applies different pricing rates for high-token contexts, reflecting real provider pricing models. Two tiers are supported: above 128k tokens and above 200k tokens, with the higher tier taking precedence when both are configured.
+
+### **6. Time-of-Day Pricing**
+
+Models can declare recurring weekly peak windows (`peak_hours`) and a discount (`off_peak_cost_multiplier`) that scales every usage-based charge outside them — DeepSeek's V4 lineup, for instance, bills at half rate outside Monday-Friday `01:00-04:00` and `06:00-10:00` UTC.
+
+The mechanism is generic: nothing in the cost engine names a provider, so any model whose datasheet row carries the two fields is priced this way. Base rates are the peak prices and the multiplier only ever scales downward, so a row with an incomplete or unparseable schedule bills at the full rate rather than under-billing. Flat per-request and per-query fees are excluded from the discount.
+
+Peak vs off-peak is decided by the request's **start time**, carried on `LookupScopes.BilledAt`, so pricing is deterministic and a stream crossing a boundary bills entirely at its start-time rate.
 
 ## Configuration
 
@@ -195,11 +203,21 @@ type PricingEntry struct {
     OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
     OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
+    OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
+    OutputCostPerVideoPerSecond720p  *float64 `json:"output_cost_per_video_per_second_720p,omitempty"`
+    OutputCostPerVideoPerSecond1024p *float64 `json:"output_cost_per_video_per_second_1024p,omitempty"`
+    OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
+    OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
+
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
     InputCostPerQuery             *float64 `json:"input_cost_per_query,omitempty"`
     CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
     CostPerRequest                *float64 `json:"cost_per_request,omitempty"`
+
+    // Costs - Time of day
+    OffPeakCostMultiplier *float64           `json:"off_peak_cost_multiplier,omitempty"`
+    PeakHours             *PeakHoursSchedule `json:"peak_hours,omitempty"`
 }
 ```
 

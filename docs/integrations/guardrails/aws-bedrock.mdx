@@ -106,6 +106,8 @@ The following regions support Amazon Bedrock Guardrails. Availability of individ
 - Text content
 - Images (PNG, JPEG formats)
 
+When `images_enabled` is enabled, Bifrost extracts supported image blocks from Chat and Responses traffic and sends them to Bedrock. File and PDF attachments are not sent.
+
 ## Usage Metrics Returned
 
 Bedrock guardrails return detailed usage metrics for cost tracking and monitoring:

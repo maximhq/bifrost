@@ -197,9 +197,17 @@ Here you can:
 
 ### Add STDIO Client
 
+<Note>
+  Registering a stdio client makes Bifrost run the given `command` as a subprocess of the gateway. If [dashboard
+  authentication](/quickstart/gateway/setting-up-auth) is disabled or not yet configured, this call is refused - you
+  must either enable dashboard auth and authenticate first, or define the client in `config.json` instead. This
+  restriction applies only to `connection_type: "stdio"`; HTTP and SSE clients are unaffected.
+</Note>
+
 ```bash
 curl -X POST http://localhost:8080/api/mcp/client \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-session-token>" \
   -d '{
     "name": "filesystem",
     "connection_type": "stdio",
@@ -213,6 +221,15 @@ curl -X POST http://localhost:8080/api/mcp/client \
 ```
 
 ### Add HTTP Client
+
+<Note>
+  If [dashboard authentication](/quickstart/gateway/setting-up-auth) is disabled or not yet
+  configured, an HTTP or SSE client whose `connection_string` resolves to a loopback,
+  private-network, link-local, or carrier-grade-NAT address is refused - you must either enable
+  dashboard auth and authenticate first, or define the client in `config.json` instead. The
+  `http://localhost:3001/mcp` example below is one such target. Clients pointed at a public
+  address (like the SSE example that follows) are unaffected either way.
+</Note>
 
 ```bash
 curl -X POST http://localhost:8080/api/mcp/client \
@@ -561,6 +578,14 @@ Environment variables are:
 - Redacted in API responses and UI for security
 - Validated at startup to ensure all required variables are set
 
+## Egress Proxies
+
+HTTP and SSE MCP connections honor the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` variables from the Bifrost process environment, the same way every other outbound HTTP client in the process does. This is how a deployment with no direct internet route (a locked-down VPC, or a pod behind a corporate egress proxy) reaches a public MCP server. Set the variables on the container or task definition; a `NO_PROXY` entry keeps an internal MCP server on the direct path.
+
+The `network_config.proxy_config` block in `config.json` does not apply to MCP connections. Its `enable_for_*` flags cover inference, SCIM, and API clients only.
+
+The link-local and cloud-metadata block still applies when a proxy is in use: a connection string whose host is a link-local or metadata IP literal is refused before the proxy is contacted. A hostname on the proxied path is handed to the proxy unresolved, so Bifrost itself does not need to resolve public DNS in a proxy-only deployment.
+
 ---
 
 ## Forwarding Request Headers to MCP Servers
@@ -780,6 +805,15 @@ curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 
 <Note>
 Reconnect returns `400` for any per-call client — a shared client running per-call ([`needs_session_stickiness`](./connections#two-independent-axes) false/omitted) as well as any per-user auth type — since none of them hold a shared upstream connection to re-establish. Also `400` for clients in `pending_verification` — complete the admin verification instead.
+</Note>
+
+**Refresh a client's tools:**
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/{id}/refresh-tools
+```
+
+<Note>
+Different job from reconnect: this re-discovers the client's **tool list** from its upstream server instead of recycling the connection, so it applies to every client type — including the per-call ones reconnect returns `400` for. Use it when an upstream server's tools changed and you don't want to wait for the next periodic sync. See [Manual Tool Refresh](#manual-tool-refresh).
 </Note>
 
 **Edit client configuration:**
@@ -1010,6 +1044,56 @@ Manual reconnection also uses the retry logic for robustness. Not applicable (`4
 err := client.ReconnectMCPClient("filesystem")
 if err != nil {
     log.Printf("Reconnection failed after retries: %v", err)
+}
+```
+
+</Tab>
+</Tabs>
+
+### Manual Tool Refresh
+
+Reconnecting recycles a *connection*. If what actually changed is the upstream server's **tool set** — a tool added, removed, or re-described — the connection is fine and there is nothing to reconnect; the tool list is simply stale until the next periodic sync, up to `tool_sync_interval` (10 minutes by default).
+
+Refresh it on demand instead:
+
+<Tabs>
+<Tab title="Gateway API">
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/{id}/refresh-tools
+```
+
+```json
+{
+  "status": "success",
+  "message": "MCP client tools refreshed successfully",
+  "tool_count": 12
+}
+```
+
+Unlike reconnect, this applies to **every** client type. A sticky client is re-listed over its live connection. A per-call server-level client re-resolves its own configured credential and runs a one-shot connect, `tools/list`, disconnect cycle; a per-user client (`per_user_oauth`, `per_user_headers`, `token_exchange`) runs the same cycle using its retained admin discovery credential. For the per-call and per-user clients alike it is the only on-demand refresh path.
+
+The freshly discovered set is persisted and the hosted `/mcp` surface is re-synced automatically, exactly as for a periodic sync. Rediscovering an unchanged tool set writes nothing.
+
+<Note>
+Returns `400` when the client is in a state where discovery is meaningless: `disabled` (enable it first), `needs_reauth` (reauthorize it first), or `pending_verification` (complete the one-time admin verification instead — refreshing a client awaiting that flow would bypass it). Returns `404` if no client is registered under that ID.
+</Note>
+
+</Tab>
+<Tab title="Web UI">
+
+Open the actions menu (**⋯**) on any row under **MCP Servers** and choose **Refresh tools**. The toast reports how many tools the client is serving afterwards.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+// Re-discover this client's tools now, rather than at the next periodic sync
+count, err := client.RefreshMCPClientTools(ctx, "filesystem")
+if err != nil {
+    log.Printf("Tool refresh failed: %v", err)
+} else {
+    log.Printf("filesystem is now serving %d tools", count)
 }
 ```
 

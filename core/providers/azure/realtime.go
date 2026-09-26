@@ -29,13 +29,15 @@ func (provider *AzureProvider) SupportsRealtimeAPI() bool {
 	return true
 }
 
-func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model string) string {
+func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model, intent string) (string, *schemas.BifrostError) {
 	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
 	endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
 	endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
 
-	return fmt.Sprintf("%s/openai/v1/realtime?model=%s",
-		endpoint, url.QueryEscape(model))
+	if intent != "" {
+		return fmt.Sprintf("%s/openai/v1/realtime?intent=%s", endpoint, url.QueryEscape(intent)), nil
+	}
+	return fmt.Sprintf("%s/openai/v1/realtime?model=%s", endpoint, url.QueryEscape(model)), nil
 }
 
 func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
@@ -77,6 +79,9 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 
 	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime?model=%s",
 		endpoint, url.QueryEscape(model))
+	if isRealtimeTranscriptionSession(session) {
+		upstreamURL = endpoint + "/openai/v1/realtime?intent=transcription"
+	}
 
 	// Build multipart body: sdp + optional session
 	bodyBuf := &bytes.Buffer{}
@@ -129,7 +134,7 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 
 	answerBody := resp.Body()
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp.StatusCode(), answerBody), latency)
+		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp), latency)
 	}
 
 	return string(answerBody), nil
@@ -194,26 +199,9 @@ func (provider *AzureProvider) ExtractRealtimeTurnOutput(terminalEventRaw []byte
 func (provider *AzureProvider) CreateRealtimeClientSecret(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
-	endpointType schemas.RealtimeSessionEndpointType,
 	rawRequest json.RawMessage,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	// Azure does not support the legacy /sessions endpoint.
-	if endpointType == schemas.RealtimeSessionEndpointSessions {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			StatusCode:     schemas.Ptr(fasthttp.StatusBadRequest),
-			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr("invalid_request_error"),
-				Message: "Azure does not support the legacy /sessions endpoint; use /v1/realtime/client_secrets instead",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.RealtimeRequest,
-				Provider:    provider.GetProviderKey(),
-			},
-		}
-	}
-
-	normalizedBody, _, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(rawRequest, schemas.Azure, endpointType)
+	normalizedBody, _, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(rawRequest, schemas.Azure)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -280,36 +268,26 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, statusCode int, body []byte) *schemas.BifrostError {
-	message := fmt.Sprintf("upstream realtime handshake failed for %s", provider.GetProviderKey())
-	var parsed struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
+func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
+	bifrostErr := openaiProvider.ParseOpenAIError(resp)
+	bifrostErr.ExtraFields.RequestType = schemas.RealtimeRequest
+	// The WebRTC SDP exchange bypasses the core orchestrator, so nothing later
+	// populates RoutingInfo on this error. Set the supported field here and keep
+	// the deprecated Provider in sync per its backward-compatibility contract.
+	bifrostErr.ExtraFields.RoutingInfo.Provider = provider.GetProviderKey()
+	bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+	if !providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostErr.ExtraFields.RawResponse = nil
 	}
-	if json.Unmarshal(body, &parsed) == nil && parsed.Error.Message != "" {
-		message = parsed.Error.Message
-	}
-
-	bifrostErr := &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     schemas.Ptr(statusCode),
-		Error: &schemas.ErrorField{
-			Type:    schemas.Ptr("upstream_error"),
-			Message: message,
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType: schemas.RealtimeRequest,
-			Provider:    provider.GetProviderKey(),
-		},
-	}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostErr.ExtraFields.RawResponse = map[string]any{
-			"status": statusCode,
-			"body":   string(body),
-		}
-	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
+}
+
+func isRealtimeTranscriptionSession(session json.RawMessage) bool {
+	var payload struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(session, &payload) == nil && payload.Type == "transcription"
 }
 
 func newAzureRealtimeError(status int, errorType, message string, err error) *schemas.BifrostError {
@@ -361,5 +339,6 @@ func (provider *AzureProvider) parseRealtimeClientSecretError(ctx *schemas.Bifro
 			"body":   string(body),
 		}
 	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
 }

@@ -296,7 +296,9 @@ func (s *Store) LoadModelCapabilities(ctx context.Context, provider schemas.Mode
 			continue
 		}
 		rowProvider := gjson.Get(row.Data, "provider").String()
-		if rowProvider == "" || normalizeProvider(rowProvider) != string(provider) {
+		// Exact match first: normalizeProvider folds every row that contains
+		// "bedrock" (like "bedrock_mantle") onto "bedrock".
+		if rowProvider == "" || (rowProvider != string(provider) && normalizeProvider(rowProvider) != string(provider)) {
 			continue
 		}
 		var caps schemas.ModelCapabilities

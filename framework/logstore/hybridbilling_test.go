@@ -216,7 +216,7 @@ func TestHybrid_HydrateBillingChunkSkipsRowsThatNeedNothing(t *testing.T) {
 		Status:           "success",
 		Object:           "chat.completion",
 		TokenUsageParsed: billingTestUsage(),
-		CacheDebugParsed: &schemas.BifrostCacheDebug{CacheHit: false},
+		CacheDebugParsed: &schemas.BifrostCacheMetadata{CacheHit: false},
 		InputHistoryParsed: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("a long prompt")}},
 		},

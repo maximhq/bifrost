@@ -83,12 +83,7 @@ func NewMockGovernanceStore() *MockGovernanceStore {
 	return &MockGovernanceStore{VirtualKeys: map[string]*configstoreTables.TableVirtualKey{}}
 }
 
-func (m *MockGovernanceStore) GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool) {
-	vk, ok := m.VirtualKeys[vkValue]
-	return vk, ok
-}
-
-func (m *MockGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *governance.BudgetAndRateLimitStatus {
+func (m *MockGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *governance.BudgetAndRateLimitStatus {
 	return m.Status
 }
 

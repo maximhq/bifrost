@@ -93,7 +93,7 @@ func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T)
 	require.NoError(t, os.WriteFile(pricingPath, pricingJSON, 0o600))
 	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
-	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds)}, nil, nil, nil)
+	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds)}, nil, nil, nil, nil)
 	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
 		{ID: "openai/deprecated-model"},
 		{ID: "openai/current-model"},
@@ -529,9 +529,9 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 	}
 	close(stream)
 
-	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
-	cancelCalled := false
+	rec := newCancelRecorder()
 	router.handleStreaming(ctx, nil, RouteConfig{
 		Type: RouteConfigTypeBedrock,
 		StreamConfig: &StreamConfig{
@@ -541,9 +541,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 				}
 			},
 		},
-	}, stream, func() {
-		cancelCalled = true
-	})
+	}, stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
@@ -555,7 +553,13 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
 	assert.Equal(t, "InternalServerException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
 	assert.JSONEq(t, `{"__type":"InternalServerException","message":"An error occurred while processing your request"}`, string(msg.Payload))
-	assert.False(t, cancelCalled, "fallback write should not cancel unless the client disconnects")
+	// handleStreaming cancels the request context on every exit path, a clean end-of-stream
+	// included, so the client-disconnect watcher goroutine ConvertToBifrostContext started
+	// cannot outlive the request (see Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine).
+	// The cancel therefore no longer distinguishes a successful fallback write from a real
+	// client disconnect — the frame asserted above is what does: on a disconnect the producer
+	// returns early and no InternalServerException is ever written.
+	rec.requireCancelled(t, "handleStreaming did not cancel the request context after the stream ended")
 }
 
 func eventStreamHeaderString(t *testing.T, headers eventstream.Headers, name string) string {

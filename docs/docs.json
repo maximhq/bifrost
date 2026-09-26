@@ -77,6 +77,7 @@
                   "quickstart/gateway/tool-calling",
                   "quickstart/gateway/multimodal",
                   "quickstart/gateway/reranking",
+                  "quickstart/gateway/decisions",
                   "quickstart/gateway/integrations"
                 ]
               },
@@ -92,6 +93,7 @@
                   "quickstart/go-sdk/tool-calling",
                   "quickstart/go-sdk/multimodal",
                   "quickstart/go-sdk/reranking",
+                  "quickstart/go-sdk/decisions",
                   "quickstart/go-sdk/logger"
                 ]
               }
@@ -105,11 +107,12 @@
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "migration-guides/v2.0.0",
-              "migration-guides/v1.5.0",
-              "migration-guides/litellm"
-            ]
+            "pages": ["migration-guides/v2.0.0", "migration-guides/v1.5.0"]
+          },
+          {
+            "group": "Migrate from other Gateway",
+            "icon": "arrow-up",
+            "pages": ["migration-guides/litellm"]
           },
           {
             "group": "SDK Integrations",
@@ -137,6 +140,7 @@
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
+                  "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
                   "providers/supported-providers/mistral",
@@ -152,6 +156,7 @@
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
                   "providers/supported-providers/wafer",
@@ -160,6 +165,7 @@
               },
               "providers/routing-rules",
               "providers/provider-routing",
+              "providers/session-affinity",
               "providers/aliasing-models",
               "providers/reasoning",
               "providers/performance",
@@ -176,6 +182,7 @@
               "mcp/overview",
               "mcp/connecting-to-servers",
               "mcp/connections",
+              "mcp/virtual-mcps",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
@@ -193,7 +200,6 @@
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
-              "mcp/gateway",
               "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
@@ -239,7 +245,10 @@
               },
               "features/telemetry",
               "features/otel",
+              "features/observability/content-logging",
+              "features/observability/latency-breakdown",
               "features/semantic-caching",
+              "features/prompt-caching",
               "features/skills-repository",
               {
                 "group": "Prompt Repository",
@@ -293,10 +302,13 @@
             "icon": "bolt",
             "pages": [
               "enterprise/user-provisioning",
+              "enterprise/how-identity-sync-works",
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
-              "enterprise/mcp-tool-groups",
+              "enterprise/virtual-mcps",
+              "enterprise/projects",
+              "enterprise/prompt-deployments",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -318,8 +330,9 @@
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
                       "integrations/guardrails/patronus-ai",
-                      "integrations/guardrails/lakera",
-                      "integrations/guardrails/repello-argus"
+                      "integrations/guardrails/checkpoint",
+                      "integrations/guardrails/repello-argus",
+                      "integrations/guardrails/singulr-ai"
                     ]
                   }
                 ]
@@ -372,6 +385,18 @@
             "group": "Deployment",
             "icon": "cloud-arrow-up",
             "pages": ["edge/deployment-mdm"]
+          },
+          {
+            "group": "Onboarding Instructions",
+            "pages": [
+              "edge/setup",
+              "edge/setup-bifrost",
+              "edge/setup-edge-control",
+              "edge/install-direct",
+              "edge/install-mdm",
+              "edge/sign-in-and-verify",
+              "edge/troubleshooting"
+            ]
           },
           {
             "group": "Reference",
@@ -445,6 +470,7 @@
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk",
+              "integrations/typesafe-sdk",
               "integrations/passthrough"
             ]
           },
@@ -524,8 +550,9 @@
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai",
-              "integrations/guardrails/lakera",
-              "integrations/guardrails/repello-argus"
+              "integrations/guardrails/checkpoint",
+              "integrations/guardrails/repello-argus",
+              "integrations/guardrails/singulr-ai"
             ]
           },
           {
@@ -540,8 +567,7 @@
               "features/observability/kafka",
               "features/observability/bigquery",
               "features/observability/pubsub",
-              "features/observability/splunk",
-              "features/observability/content-logging"
+              "features/observability/splunk"
             ]
           },
           {
@@ -698,6 +724,13 @@
                 "group": "Rerank",
                 "expanded": false,
                 "pages": ["POST /v1/rerank"]
+              },
+              {
+                "group": "Decisions",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/decisions"
+                ]
               },
               {
                 "group": "Embeddings",
@@ -955,6 +988,14 @@
                 ]
               },
               {
+                "group": "Typesafe Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /typesafe/v1/systemone",
+                  "GET /typesafe/v1/models"
+                ]
+              },
+              {
                 "group": "Cursor Integration",
                 "expanded": false,
                 "pages": [
@@ -1125,6 +1166,7 @@
                   "PUT /api/mcp/client/{id}",
                   "DELETE /api/mcp/client/{id}",
                   "POST /api/mcp/client/{id}/reconnect",
+                  "POST /api/mcp/client/{id}/refresh-tools",
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",
@@ -1189,15 +1231,20 @@
                   "GET /api/logs/histogram/cost/by-provider",
                   "GET /api/logs/histogram/tokens/by-provider",
                   "GET /api/logs/histogram/latency/by-provider",
+                  "GET /api/logs/histogram/throughput",
+                  "GET /api/logs/histogram/throughput/by-provider",
                   "GET /api/logs/histogram/cost/by-dimension",
                   "GET /api/logs/histogram/tokens/by-dimension",
                   "GET /api/logs/histogram/latency/by-dimension",
                   "GET /api/logs/dropped",
                   "GET /api/logs/filterdata",
                   "GET /api/logs/rankings",
+                  "GET /api/logs/rankings/by-dimension",
+                  "GET /api/logs/rankings/users",
                   "GET /api/logs/dashboard",
                   "POST /api/logs/recalculate-cost",
                   "GET /api/logs/recalculate-cost/status",
+                  "POST /api/logs/recalculate-cost/cancel",
                   "GET /api/mcp-logs",
                   "DELETE /api/mcp-logs",
                   "GET /api/mcp-logs/{id}",
@@ -1273,7 +1320,18 @@
               {
                 "group": "Infrastructure",
                 "expanded": false,
-                "pages": ["GET /ws", "GET /mcp", "POST /mcp", "GET /metrics"]
+                "pages": ["GET /ws", "GET /mcp", "POST /mcp", "GET /metrics", "POST /inspect"]
+              },
+              {
+                "group": "API Keys",
+                "expanded": false,
+                "pages": [
+                  "GET /api/api-keys",
+                  "POST /api/api-keys",
+                  "GET /api/api-keys/{id}",
+                  "PUT /api/api-keys/{id}",
+                  "DELETE /api/api-keys/{id}"
+                ]
               },
               {
                 "group": "Webhooks",
@@ -1287,16 +1345,19 @@
                   "POST /api/webhooks/{id}/rotate-secret",
                   "POST /api/webhooks/{id}/test",
                   "GET /api/webhooks/{id}/deliveries",
+                  "GET /api/webhooks/deliveries",
                   "POST /api/webhooks/deliveries/{id}/redeliver"
                 ]
               },
               {
                 "group": "Notifications",
                 "expanded": false,
-                "pages": [
-                  "GET /api/notifications",
-                  "POST /api/notifications"
-                ]
+                "pages": ["GET /api/notifications", "POST /api/notifications"]
+              },
+              {
+                "group": "Warp",
+                "expanded": false,
+                "pages": ["GET /api/warp/config", "PUT /api/warp/config", "POST /api/warp/log-index/backfill", "GET /api/warp/log-index/backfill/status", "POST /api/warp/log-index/backfill/cancel", "POST /api/warp/chat", "GET /api/warp/log-index/status", "GET /api/warp/conversations", "GET /api/warp/conversations/{id}", "DELETE /api/warp/conversations/{id}"]
               }
             ]
           },
@@ -1320,10 +1381,7 @@
                   "GET /api/governance/teams/{team_id}/customers",
                   "POST /api/governance/teams/{team_id}/customers",
                   "DELETE /api/governance/teams/{team_id}/customers/{customer_id}",
-                  "GET /api/governance/customers/{customer_id}/teams",
-                  "GET /api/governance/business-units/{business_unit_id}/teams",
-                  "POST /api/governance/business-units/{business_unit_id}/teams",
-                  "DELETE /api/governance/business-units/{business_unit_id}/teams/{team_id}"
+                  "GET /api/governance/customers/{customer_id}/teams"
                 ]
               },
               {
@@ -1333,15 +1391,18 @@
                   "GET /api/governance/virtual-keys",
                   "POST /api/governance/virtual-keys",
                   "GET /api/governance/virtual-keys/quota",
+                  "POST /api/governance/virtual-keys/rotate",
                   "GET /api/governance/virtual-keys/{vk_id}",
                   "PUT /api/governance/virtual-keys/{vk_id}",
                   "DELETE /api/governance/virtual-keys/{vk_id}",
+                  "POST /api/governance/virtual-keys/{vk_id}/rotate",
                   "GET /api/governance/virtual-keys/{vk_id}/users",
                   "POST /api/governance/virtual-keys/{vk_id}/users",
                   "DELETE /api/governance/virtual-keys/{vk_id}/users/{user_id}",
                   "PUT /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override",
                   "DELETE /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override",
                   "GET /api/governance/users/{user_id}/virtual-keys",
+                  "POST /api/governance/users/{user_id}/virtual-keys",
                   "GET /api/governance/users/email/{email}/virtual-keys"
                 ]
               },
@@ -1366,6 +1427,7 @@
                   "DELETE /api/governance/users/{user_id}",
                   "GET /api/governance/users/email/{email}",
                   "GET /api/governance/users/me/permissions",
+                  "GET /api/governance/users/me/vk-creation-policy",
                   "PUT /api/governance/users/{user_id}/role",
                   "POST /api/governance/users/{user_id}/governance",
                   "PUT /api/governance/users/{user_id}/governance",
@@ -1381,6 +1443,9 @@
                   "GET /api/governance/business-units/{business_unit_id}",
                   "PUT /api/governance/business-units/{business_unit_id}",
                   "DELETE /api/governance/business-units/{business_unit_id}",
+                  "GET /api/governance/business-units/{business_unit_id}/users",
+                  "POST /api/governance/business-units/{business_unit_id}/users",
+                  "DELETE /api/governance/business-units/{business_unit_id}/users/{user_id}",
                   "POST /api/governance/business-units/{business_unit_id}/governance",
                   "PUT /api/governance/business-units/{business_unit_id}/governance",
                   "DELETE /api/governance/business-units/{business_unit_id}/governance",
@@ -1415,6 +1480,22 @@
                   "DELETE /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
                   "POST /api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys",
                   "DELETE /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}"
+                ]
+              },
+              {
+                "group": "Projects",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/projects",
+                  "POST /api/governance/projects",
+                  "GET /api/governance/projects/{project_id}",
+                  "PUT /api/governance/projects/{project_id}",
+                  "DELETE /api/governance/projects/{project_id}",
+                  "GET /api/governance/projects/{project_id}/members",
+                  "POST /api/governance/projects/{project_id}/members",
+                  "PUT /api/governance/projects/{project_id}/members/{member_id}",
+                  "DELETE /api/governance/projects/{project_id}/members/{member_id}",
+                  "GET /api/governance/users/{user_id}/projects"
                 ]
               },
               {
@@ -1501,7 +1582,9 @@
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
                   "PUT /api/routing/complexity-analyzer-config",
-                  "POST /api/routing/complexity-analyzer-config/reset"
+                  "POST /api/routing/complexity-analyzer-config/reset",
+                  "GET /api/routing/complexity-analyzer-status",
+                  "POST /api/routing/complexity-analyzer-status/retry"
                 ]
               }
             ]
@@ -1681,11 +1764,23 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.6.11",
-              "changelogs/v2.0.0-prerelease3",
-              "changelogs/v1.6.10",
-              "changelogs/v1.6.9",
-              "changelogs/v1.6.8",
+              "changelogs/v2.2.3",
+              "changelogs/v2.2.2",
+              "changelogs/v2.2.1",
+              "changelogs/v2.2.0",
+              "changelogs/v2.1.1",
+              "changelogs/v2.1.0",
+              {
+                "group": "August 2026",
+                "pages": [
+                  "changelogs/v2.0.0",
+                  "changelogs/v2.0.0-prerelease3",
+                  "changelogs/v1.6.11",
+                  "changelogs/v1.6.10",
+                  "changelogs/v1.6.9",
+                  "changelogs/v1.6.8"
+                ]
+              },
               {
                 "group": "July 2026",
                 "pages": [
@@ -1889,12 +1984,26 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
-              "changelogs/ent-v1.5.12",
-              "changelogs/ent-v1.5.11",
-              "changelogs/ent-v2.0.0-prerelease3",
-              "changelogs/ent-v1.5.10",
-              "changelogs/ent-v1.5.9",
-              "changelogs/ent-v1.5.8",
+              "changelogs/ent-v2.2.3",
+              "changelogs/ent-v2.2.2",
+              "changelogs/ent-v2.2.1",
+              "changelogs/ent-v2.2.0",
+              "changelogs/ent-v2.1.1",
+              "changelogs/ent-v2.1.0",
+              "changelogs/ent-v2.0.1",
+              {
+                "group": "August 2026",
+                "pages": [
+                  "changelogs/ent-v1.5.13",
+                  "changelogs/ent-v2.0.0",
+                  "changelogs/ent-v1.5.12",
+                  "changelogs/ent-v1.5.11",
+                  "changelogs/ent-v2.0.0-prerelease3",
+                  "changelogs/ent-v1.5.10",
+                  "changelogs/ent-v1.5.9",
+                  "changelogs/ent-v1.5.8"
+                ]
+              },
               {
                 "group": "July 2026",
                 "pages": [
@@ -1972,10 +2081,22 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
-              "changelogs/edge-v0.4.0",
-              "changelogs/edge-v0.3.0",
-              "changelogs/edge-v0.2.0",
-              "changelogs/edge-v0.1.0"
+              "changelogs/edge-v0.9.0",
+              "changelogs/edge-v0.8.0",
+              "changelogs/edge-v0.7.0",
+              "changelogs/edge-v0.6.0",
+              {
+                "group": "August 2026",
+                "pages": ["changelogs/edge-v0.5.6", "changelogs/edge-v0.4.0"]
+              },
+              {
+                "group": "July 2026",
+                "pages": [
+                  "changelogs/edge-v0.3.0",
+                  "changelogs/edge-v0.2.0",
+                  "changelogs/edge-v0.1.0"
+                ]
+              }
             ]
           },
           {
@@ -2002,6 +2123,12 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.43",
+              "changelogs/helm-v2.1.42",
+              "changelogs/helm-v2.1.41",
+              "changelogs/helm-v2.1.40",
+              "changelogs/helm-v2.1.39",
+              "changelogs/helm-v2.1.38",
               "changelogs/helm-v2.1.37",
               "changelogs/helm-v2.1.36",
               "changelogs/helm-v2.1.35",
@@ -2099,6 +2226,14 @@
   },
   "redirects": [
     {
+      "source": "/integrations/guardrails/lakera",
+      "destination": "/integrations/guardrails/checkpoint"
+    },
+    {
+      "source": "/enterprise/mcp-tool-groups",
+      "destination": "/enterprise/virtual-mcps"
+    },
+    {
       "source": "/migration-guides/governance-api-namespace",
       "destination": "/migration-guides/v2.0.0#breaking-change-3-governance-apis-moved-to-the-api-governance-namespace"
     },
@@ -2176,11 +2311,15 @@
     },
     {
       "source": "/features/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/mcp/gateway",
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/oauth",

@@ -603,3 +603,14 @@ export function cleanPathOverrides(overrides?: Record<string, string | undefined
 
 	return entries.length ? (Object.fromEntries(entries) as Record<string, string>) : undefined;
 }
+
+// hasCopilotApiToken reports whether a Copilot API token is present on a provider key.
+//
+// key.value is a bare string in the provider-level form and a SecretVar object in the
+// per-key form, so both shapes have to be understood. Getting this wrong makes the GitHub
+// App fields claim to be required while the section note says they can be left blank.
+export function hasCopilotApiToken(value: string | { value?: string; ref?: string; type?: string } | null | undefined): boolean {
+	if (!value) return false;
+	if (typeof value === "string") return value.trim() !== "";
+	return !!value.value?.trim() || !!value.ref?.trim();
+}

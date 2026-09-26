@@ -12,6 +12,7 @@ import {
 	ProxyFormFragment,
 } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
+import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 
@@ -56,6 +57,10 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 		});
 	}
 	tabs.push({
+		id: "prompt-cache",
+		label: "Prompt Caching",
+	});
+	tabs.push({
 		id: "debugging",
 		label: "Debugging",
 	});
@@ -97,7 +102,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 			}}
 		>
 			<SheetContent className="p-0 pt-4 sm:max-w-[50%]">
-				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<div className="flex items-center">
@@ -146,6 +151,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="beta-headers">
 								<BetaHeadersFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="prompt-cache">
+								<PromptCacheFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="debugging">
 								<DebuggingFormFragment provider={provider} />

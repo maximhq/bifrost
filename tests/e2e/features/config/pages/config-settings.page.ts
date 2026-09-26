@@ -1,4 +1,4 @@
-import { Locator, Page } from '@playwright/test'
+import { Locator, Page, expect } from '@playwright/test'
 import { BasePage } from '../../../core/pages/base.page'
 import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
@@ -31,6 +31,7 @@ export class ConfigSettingsPage extends BasePage {
   readonly rateLimitingSection: Locator
   readonly enforceAuthOnInferenceSwitch: Locator
   readonly requiredHeadersTextarea: Locator
+  readonly vkRotationCooldownInput: Locator
 
   // Performance Tuning Settings
   readonly workerPoolSizeInput: Locator
@@ -68,6 +69,7 @@ export class ConfigSettingsPage extends BasePage {
     this.rateLimitingSection = page.locator('text=Rate Limiting').locator('..')
     this.enforceAuthOnInferenceSwitch = page.getByTestId('enforce-auth-on-inference-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
+    this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
 
     // Performance Tuning locators
     this.workerPoolSizeInput = page.getByLabel(/Worker Pool Size/i)
@@ -129,6 +131,52 @@ export class ConfigSettingsPage extends BasePage {
    */
   async getInputValue(inputLocator: Locator): Promise<string> {
     return await inputLocator.inputValue()
+  }
+
+  /**
+   * Dismiss the first-run onboarding checklist. It renders as a fixed card in
+   * the bottom-right corner, which is exactly where the config pages put their
+   * Save button, so while it is open a click on Save silently times out on
+   * Playwright's actionability check rather than failing with a useful message.
+   * "Remind me later" snoozes it across navigations and reloads.
+   */
+  async dismissOnboardingWidget(): Promise<void> {
+    // The widget snoozes itself with the bifrost_onboarding_remind_at cookie
+    // (see ui/hooks/useOnboardingChecklist.ts). Setting it directly is
+    // deterministic; driving the UI instead means opening the "Remind me later"
+    // picker and choosing a date, which leaves the widget on screen in between.
+    const remindAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    await this.page.context().addCookies([
+      {
+        name: 'bifrost_onboarding_remind_at',
+        value: remindAt.toISOString(),
+        url: new URL(this.page.url()).origin,
+      },
+    ])
+    // The checklist is decided at render time, so reload with the snooze set.
+    await this.page.reload()
+    await waitForNetworkIdle(this.page)
+    await expect(this.page.getByTestId('onboarding-later')).not.toBeVisible({ timeout: 5000 })
+  }
+
+  /**
+   * Set the virtual key rotation cooldown. An empty string is a meaningful
+   * value here: it disables the grace period, so the previous key value stops
+   * authenticating as soon as the key is rotated.
+   */
+  async setVkRotationCooldown(value: string): Promise<void> {
+    await this.vkRotationCooldownInput.clear()
+    if (value !== '') {
+      await this.vkRotationCooldownInput.fill(value)
+    }
+  }
+
+  /**
+   * Read the rotation cooldown as displayed. The API stores nanoseconds, so
+   * this is the duration string the UI formats back for the operator.
+   */
+  async getVkRotationCooldown(): Promise<string> {
+    return await this.vkRotationCooldownInput.inputValue()
   }
 
   /**

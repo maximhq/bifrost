@@ -50,7 +50,12 @@ ResponsesRequest:
     background:
       type: boolean
     conversation:
-      type: string
+      oneOf:
+        - type: string
+        - type: object
+          properties:
+            id:
+              type: string
     context_management:
       $ref: "#/ContextManagement"
     include:
@@ -148,10 +153,14 @@ ResponsesMessage:
               type: string
             image_url:
               type: string
+    async:
+      type: boolean
     action:
       type: object
     error:
-      type: string
+      oneOf:
+        - type: string
+        - type: object
     queries:
       type: array
       items:
@@ -423,12 +432,16 @@ ResponsesTool:
       type: string
     description:
       type: string
+    async:
+      type: boolean
     cache_control:
       $ref: "./common.yaml#/CacheControl"
     parameters:
       $ref: "./chat.yaml#/ToolFunctionParameters"
     strict:
       type: boolean
+    output_schema:
+      type: object
     vector_store_ids:
       type: array
       items:
@@ -455,8 +468,14 @@ ResponsesTool:
       type: string
     server_url:
       type: string
+    tunnel_id:
+      type: string
     allowed_tools:
-      type: object
+      oneOf:
+        - type: array
+          items:
+            type: string
+        - type: object
     authorization:
       type: string
     connector_id:

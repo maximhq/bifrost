@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { OtelFormSchema } from "@/lib/types/schemas";
 import { toHeaderStringMap } from "@/lib/utils/secretVarForm";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Activity } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -18,6 +19,7 @@ export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 	const currentConfig = useMemo(() => ({ config: selectedPlugin?.config, enabled: selectedPlugin?.enabled }), [selectedPlugin]);
 	const [updatePlugin] = useUpdatePluginMutation();
 	const [isTracingSheetOpen, setIsTracingSheetOpen] = useState(false);
+	const hasUpdateAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 
 	const handleOtelConfigSave = (config: OtelFormSchema): Promise<void> => {
 		// The backend stores headers as a plain "env.VAR"/literal string map, so flatten the
@@ -54,18 +56,20 @@ export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<div className="flex w-full flex-col gap-3">
-				<div className="flex justify-end">
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						onClick={() => setIsTracingSheetOpen(true)}
-						data-testid="otel-configure-tracing-button"
-					>
-						<Activity className="h-4 w-4" />
-						Configure Plugin Tracing
-					</Button>
-				</div>
+				{hasUpdateAccess && (
+					<div className="flex justify-end">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={() => setIsTracingSheetOpen(true)}
+							data-testid="otel-configure-tracing-button"
+						>
+							<Activity className="h-4 w-4" />
+							Configure Tracing
+						</Button>
+					</div>
+				)}
 				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} onDelete={onDelete} isDeleting={isDeleting} />
 			</div>
 			<PluginTracingSheet

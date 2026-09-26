@@ -1315,6 +1315,18 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		copyRole := *original.Role
 		copy.Role = &copyRole
 	}
+	if original.CacheControl != nil {
+		copyCacheControl := &CacheControl{Type: original.CacheControl.Type}
+		if original.CacheControl.TTL != nil {
+			copyTTL := *original.CacheControl.TTL
+			copyCacheControl.TTL = &copyTTL
+		}
+		if original.CacheControl.Scope != nil {
+			copyScope := *original.CacheControl.Scope
+			copyCacheControl.Scope = &copyScope
+		}
+		copy.CacheControl = copyCacheControl
+	}
 
 	// Deep copy Author and Recipient (multi-agent collab_tool_call items).
 	// json.RawMessage is a []byte slice; copy the bytes so callers don't share
@@ -1330,6 +1342,10 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	}
 	if original.AdditionalTools != nil {
 		copy.AdditionalTools = append(json.RawMessage(nil), original.AdditionalTools...)
+	}
+	// Deep copy ProviderNativeParts.
+	if original.ProviderNativeParts != nil {
+		copy.ProviderNativeParts = append(json.RawMessage(nil), original.ProviderNativeParts...)
 	}
 	// Raw-preserved items re-marshal from these bytes; without them the copy
 	// falls back to a field-by-field encode and loses the item's payload.
@@ -1373,6 +1389,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
 
+		if original.ResponsesToolMessage.ResponsesCustomToolCall != nil {
+			copyCustomToolCall := *original.ResponsesToolMessage.ResponsesCustomToolCall
+			copy.ResponsesToolMessage.ResponsesCustomToolCall = &copyCustomToolCall
+		}
+
 		if original.ResponsesToolMessage.Namespace != nil {
 			copyNamespace := *original.ResponsesToolMessage.Namespace
 			copy.ResponsesToolMessage.Namespace = &copyNamespace
@@ -1383,8 +1404,29 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Execution = &copyExecution
 		}
 
+		if original.ResponsesToolMessage.Async != nil {
+			copy.ResponsesToolMessage.Async = new(*original.ResponsesToolMessage.Async)
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
-			copyError := *original.ResponsesToolMessage.Error
+			copyError := ResponsesToolMessageError{}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr != nil {
+				copyErrorStr := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr
+				copyError.ResponsesToolMessageErrorStr = &copyErrorStr
+			}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct != nil {
+				copyErrorStruct := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+				if copyErrorStruct.Code != nil {
+					copyCode := *copyErrorStruct.Code
+					copyErrorStruct.Code = &copyCode
+				}
+				if copyErrorStruct.Message != nil {
+					copyMessage := *copyErrorStruct.Message
+					copyErrorStruct.Message = &copyMessage
+				}
+				copyErrorStruct.Content = append(json.RawMessage(nil), copyErrorStruct.Content...)
+				copyError.ResponsesToolMessageErrorStruct = &copyErrorStruct
+			}
 			copy.ResponsesToolMessage.Error = &copyError
 		}
 
@@ -1413,6 +1455,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		// Deep copy Action
 		if original.ResponsesToolMessage.Action != nil {
 			copy.ResponsesToolMessage.Action = &ResponsesToolMessageActionStruct{}
+			// Deep copy bare-string action.
+			if original.ResponsesToolMessage.Action.ResponsesToolCallActionStr != nil {
+				copyActionString := *original.ResponsesToolMessage.Action.ResponsesToolCallActionStr
+				copy.ResponsesToolMessage.Action.ResponsesToolCallActionStr = &copyActionString
+			}
 
 			if original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction
@@ -1493,6 +1540,247 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.ResponsesWebFetchCall = &copyCall
 		}
 
+		// Deep copy ResponsesComputerToolCall.
+		if original.ResponsesToolMessage.ResponsesComputerToolCall != nil {
+			copyToolCall := *original.ResponsesToolMessage.ResponsesComputerToolCall
+			if original.ResponsesToolMessage.ResponsesComputerToolCall.PendingSafetyChecks != nil {
+				copyToolCall.PendingSafetyChecks = append([]ResponsesComputerToolCallPendingSafetyCheck(nil), original.ResponsesToolMessage.ResponsesComputerToolCall.PendingSafetyChecks...)
+			}
+			copy.ResponsesToolMessage.ResponsesComputerToolCall = &copyToolCall
+		}
+
+		// Deep copy ResponsesComputerToolCallOutput.
+		if original.ResponsesToolMessage.ResponsesComputerToolCallOutput != nil {
+			copyToolCallOutput := *original.ResponsesToolMessage.ResponsesComputerToolCallOutput
+			if original.ResponsesToolMessage.ResponsesComputerToolCallOutput.AcknowledgedSafetyChecks != nil {
+				copyToolCallOutput.AcknowledgedSafetyChecks = make([]ResponsesComputerToolCallAcknowledgedSafetyCheck, len(original.ResponsesToolMessage.ResponsesComputerToolCallOutput.AcknowledgedSafetyChecks))
+				for i, safetyCheck := range original.ResponsesToolMessage.ResponsesComputerToolCallOutput.AcknowledgedSafetyChecks {
+					copySafetyCheck := ResponsesComputerToolCallAcknowledgedSafetyCheck{ID: safetyCheck.ID}
+					if safetyCheck.Code != nil {
+						copyCode := *safetyCheck.Code
+						copySafetyCheck.Code = &copyCode
+					}
+					if safetyCheck.Message != nil {
+						copyMessage := *safetyCheck.Message
+						copySafetyCheck.Message = &copyMessage
+					}
+					copyToolCallOutput.AcknowledgedSafetyChecks[i] = copySafetyCheck
+				}
+			}
+			copy.ResponsesToolMessage.ResponsesComputerToolCallOutput = &copyToolCallOutput
+		}
+
+		// Deep copy ResponsesCodeInterpreterToolCall.
+		if original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall != nil {
+			copyToolCall := *original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+			if original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Code != nil {
+				copyCode := *original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Code
+				copyToolCall.Code = &copyCode
+			}
+			if original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Outputs != nil {
+				copyToolCall.Outputs = make([]ResponsesCodeInterpreterOutput, len(original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Outputs))
+				for i, output := range original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Outputs {
+					copyOutput := ResponsesCodeInterpreterOutput{}
+					if output.ResponsesCodeInterpreterOutputLogs != nil {
+						copyLogs := *output.ResponsesCodeInterpreterOutputLogs
+						copyOutput.ResponsesCodeInterpreterOutputLogs = &copyLogs
+					}
+					if output.ResponsesCodeInterpreterOutputImage != nil {
+						copyImage := *output.ResponsesCodeInterpreterOutputImage
+						copyOutput.ResponsesCodeInterpreterOutputImage = &copyImage
+					}
+					copyToolCall.Outputs[i] = copyOutput
+				}
+			}
+			copy.ResponsesToolMessage.ResponsesCodeInterpreterToolCall = &copyToolCall
+		}
+
+		// Deep copy ResponsesMCPToolCall.
+		if original.ResponsesToolMessage.ResponsesMCPToolCall != nil {
+			copyToolCall := *original.ResponsesToolMessage.ResponsesMCPToolCall
+			copy.ResponsesToolMessage.ResponsesMCPToolCall = &copyToolCall
+		}
+
+		// Deep copy ResponsesImageGenerationCall.
+		if original.ResponsesToolMessage.ResponsesImageGenerationCall != nil {
+			copyToolCall := *original.ResponsesToolMessage.ResponsesImageGenerationCall
+			if original.ResponsesToolMessage.ResponsesImageGenerationCall.Background != nil {
+				copyBackground := *original.ResponsesToolMessage.ResponsesImageGenerationCall.Background
+				copyToolCall.Background = &copyBackground
+			}
+			if original.ResponsesToolMessage.ResponsesImageGenerationCall.OutputFormat != nil {
+				copyOutputFormat := *original.ResponsesToolMessage.ResponsesImageGenerationCall.OutputFormat
+				copyToolCall.OutputFormat = &copyOutputFormat
+			}
+			if original.ResponsesToolMessage.ResponsesImageGenerationCall.Quality != nil {
+				copyQuality := *original.ResponsesToolMessage.ResponsesImageGenerationCall.Quality
+				copyToolCall.Quality = &copyQuality
+			}
+			if original.ResponsesToolMessage.ResponsesImageGenerationCall.RevisedPrompt != nil {
+				copyRevisedPrompt := *original.ResponsesToolMessage.ResponsesImageGenerationCall.RevisedPrompt
+				copyToolCall.RevisedPrompt = &copyRevisedPrompt
+			}
+			if original.ResponsesToolMessage.ResponsesImageGenerationCall.Size != nil {
+				copySize := *original.ResponsesToolMessage.ResponsesImageGenerationCall.Size
+				copyToolCall.Size = &copySize
+			}
+			copy.ResponsesToolMessage.ResponsesImageGenerationCall = &copyToolCall
+		}
+
+		// Deep copy ResponsesMCPListTools.
+		if original.ResponsesToolMessage.ResponsesMCPListTools != nil {
+			copyToolList := *original.ResponsesToolMessage.ResponsesMCPListTools
+			if original.ResponsesToolMessage.ResponsesMCPListTools.Tools != nil {
+				copyToolList.Tools = make([]ResponsesMCPTool, len(original.ResponsesToolMessage.ResponsesMCPListTools.Tools))
+				for i, tool := range original.ResponsesToolMessage.ResponsesMCPListTools.Tools {
+					copyTool := tool
+					if tool.InputSchema != nil {
+						copyTool.InputSchema = DeepCopy(tool.InputSchema).(map[string]any)
+					}
+					if tool.Description != nil {
+						copyDescription := *tool.Description
+						copyTool.Description = &copyDescription
+					}
+					if tool.Annotations != nil {
+						var copyAnnotations map[string]any
+						if *tool.Annotations != nil {
+							copyAnnotations = DeepCopy(*tool.Annotations).(map[string]any)
+						}
+						copyTool.Annotations = &copyAnnotations
+					}
+					copyToolList.Tools[i] = copyTool
+				}
+			}
+			copy.ResponsesToolMessage.ResponsesMCPListTools = &copyToolList
+		}
+
+		// Deep copy ResponsesMCPApprovalResponse.
+		if original.ResponsesToolMessage.ResponsesMCPApprovalResponse != nil {
+			copyApprovalResponse := *original.ResponsesToolMessage.ResponsesMCPApprovalResponse
+			if original.ResponsesToolMessage.ResponsesMCPApprovalResponse.Reason != nil {
+				copyReason := *original.ResponsesToolMessage.ResponsesMCPApprovalResponse.Reason
+				copyApprovalResponse.Reason = &copyReason
+			}
+			copy.ResponsesToolMessage.ResponsesMCPApprovalResponse = &copyApprovalResponse
+		}
+
+		// Deep copy ResponsesAdvisorCall.
+		if original.ResponsesToolMessage.ResponsesAdvisorCall != nil {
+			copyAdvisorCall := *original.ResponsesToolMessage.ResponsesAdvisorCall
+			if original.ResponsesToolMessage.ResponsesAdvisorCall.Text != nil {
+				copyText := *original.ResponsesToolMessage.ResponsesAdvisorCall.Text
+				copyAdvisorCall.Text = &copyText
+			}
+			if original.ResponsesToolMessage.ResponsesAdvisorCall.EncryptedContent != nil {
+				copyEncryptedContent := *original.ResponsesToolMessage.ResponsesAdvisorCall.EncryptedContent
+				copyAdvisorCall.EncryptedContent = &copyEncryptedContent
+			}
+			if original.ResponsesToolMessage.ResponsesAdvisorCall.ErrorCode != nil {
+				copyErrorCode := *original.ResponsesToolMessage.ResponsesAdvisorCall.ErrorCode
+				copyAdvisorCall.ErrorCode = &copyErrorCode
+			}
+			if original.ResponsesToolMessage.ResponsesAdvisorCall.StopReason != nil {
+				copyStopReason := *original.ResponsesToolMessage.ResponsesAdvisorCall.StopReason
+				copyAdvisorCall.StopReason = &copyStopReason
+			}
+			copy.ResponsesToolMessage.ResponsesAdvisorCall = &copyAdvisorCall
+		}
+
+		// Deep copy ResponsesToolSearchCall.
+		if original.ResponsesToolMessage.ResponsesToolSearchCall != nil {
+			copyToolSearchCall := *original.ResponsesToolMessage.ResponsesToolSearchCall
+			copyToolSearchCall.ToolReferences = append([]string(nil), original.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences...)
+			copy.ResponsesToolMessage.ResponsesToolSearchCall = &copyToolSearchCall
+		}
+
+		// Deep copy ResponsesCodeExecutionCall.
+		if original.ResponsesToolMessage.ResponsesCodeExecutionCall != nil {
+			copyCodeExecutionCall := *original.ResponsesToolMessage.ResponsesCodeExecutionCall
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Input != nil {
+				copyInput := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.Input
+				copyCodeExecutionCall.Input = &copyInput
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Stdout != nil {
+				copyStdout := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.Stdout
+				copyCodeExecutionCall.Stdout = &copyStdout
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Stderr != nil {
+				copyStderr := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.Stderr
+				copyCodeExecutionCall.Stderr = &copyStderr
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.ReturnCode != nil {
+				copyReturnCode := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.ReturnCode
+				copyCodeExecutionCall.ReturnCode = &copyReturnCode
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.EncryptedStdout != nil {
+				copyEncryptedStdout := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.EncryptedStdout
+				copyCodeExecutionCall.EncryptedStdout = &copyEncryptedStdout
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.FileType != nil {
+				copyFileType := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.FileType
+				copyCodeExecutionCall.FileType = &copyFileType
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.FileContent != nil {
+				copyFileContent := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.FileContent
+				copyCodeExecutionCall.FileContent = &copyFileContent
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.StartLine != nil {
+				copyStartLine := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.StartLine
+				copyCodeExecutionCall.StartLine = &copyStartLine
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.NumLines != nil {
+				copyNumLines := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.NumLines
+				copyCodeExecutionCall.NumLines = &copyNumLines
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.TotalLines != nil {
+				copyTotalLines := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.TotalLines
+				copyCodeExecutionCall.TotalLines = &copyTotalLines
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.IsFileUpdate != nil {
+				copyIsFileUpdate := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.IsFileUpdate
+				copyCodeExecutionCall.IsFileUpdate = &copyIsFileUpdate
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.OldStart != nil {
+				copyOldStart := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.OldStart
+				copyCodeExecutionCall.OldStart = &copyOldStart
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.OldLines != nil {
+				copyOldLines := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.OldLines
+				copyCodeExecutionCall.OldLines = &copyOldLines
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.NewStart != nil {
+				copyNewStart := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.NewStart
+				copyCodeExecutionCall.NewStart = &copyNewStart
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.NewLines != nil {
+				copyNewLines := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.NewLines
+				copyCodeExecutionCall.NewLines = &copyNewLines
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Lines != nil {
+				copyCodeExecutionCall.Lines = append([]string(nil), original.ResponsesToolMessage.ResponsesCodeExecutionCall.Lines...)
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.ErrorCode != nil {
+				copyErrorCode := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.ErrorCode
+				copyCodeExecutionCall.ErrorCode = &copyErrorCode
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Files != nil {
+				copyCodeExecutionCall.Files = append([]ResponsesCodeExecutionFileOutput(nil), original.ResponsesToolMessage.ResponsesCodeExecutionCall.Files...)
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.ContainerExpiresAt != nil {
+				copyContainerExpiresAt := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.ContainerExpiresAt
+				copyCodeExecutionCall.ContainerExpiresAt = &copyContainerExpiresAt
+			}
+			if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Caller != nil {
+				copyCaller := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.Caller
+				if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Caller.ToolID != nil {
+					copyToolID := *original.ResponsesToolMessage.ResponsesCodeExecutionCall.Caller.ToolID
+					copyCaller.ToolID = &copyToolID
+				}
+				copyCodeExecutionCall.Caller = &copyCaller
+			}
+			copy.ResponsesToolMessage.ResponsesCodeExecutionCall = &copyCodeExecutionCall
+		}
+
 		// Add other embedded tool calls as needed...
 	}
 
@@ -1509,6 +1797,38 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock) ResponsesMessageContentBlock {
 	copy := ResponsesMessageContentBlock{
 		Type: original.Type,
+	}
+
+	// Deep copy CacheControl if present
+	if original.CacheControl != nil {
+		copyCacheControl := &CacheControl{Type: original.CacheControl.Type}
+		if original.CacheControl.TTL != nil {
+			copyTTL := *original.CacheControl.TTL
+			copyCacheControl.TTL = &copyTTL
+		}
+		if original.CacheControl.Scope != nil {
+			copyScope := *original.CacheControl.Scope
+			copyCacheControl.Scope = &copyScope
+		}
+		copy.CacheControl = copyCacheControl
+	}
+	// Deep copy Citations.
+	if original.Citations != nil {
+		copyCitations := &Citations{}
+		if original.Citations.Enabled != nil {
+			copyEnabled := *original.Citations.Enabled
+			copyCitations.Enabled = &copyEnabled
+		}
+		copy.Citations = copyCitations
+	}
+	// Deep copy PromptCacheBreakpoint.
+	if original.PromptCacheBreakpoint != nil {
+		copyPromptCacheBreakpoint := &PromptCacheBreakpoint{}
+		if original.PromptCacheBreakpoint.Mode != nil {
+			copyMode := *original.PromptCacheBreakpoint.Mode
+			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
 
 	// Copy FileID if present
@@ -1531,6 +1851,16 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	if original.EncryptedContent != nil {
 		copy.EncryptedContent = new(string)
 		*copy.EncryptedContent = *original.EncryptedContent
+	}
+
+	// Gemini's per-part media resolution is replayed to the provider verbatim, so it has to
+	// survive the copy -- and must not share the NumTokens pointer with the original.
+	if original.MediaResolution != nil {
+		copyMediaResolution := &MediaResolution{Level: original.MediaResolution.Level}
+		if original.MediaResolution.NumTokens != nil {
+			copyMediaResolution.NumTokens = new(*original.MediaResolution.NumTokens)
+		}
+		copy.MediaResolution = copyMediaResolution
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage
@@ -1561,6 +1891,11 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		if original.ResponsesInputMessageContentBlockFile.Filename != nil {
 			copyFilename := *original.ResponsesInputMessageContentBlockFile.Filename
 			copyFile.Filename = &copyFilename
+		}
+		// Deep copy FileType.
+		if original.ResponsesInputMessageContentBlockFile.FileType != nil {
+			copyFileType := *original.ResponsesInputMessageContentBlockFile.FileType
+			copyFile.FileType = &copyFileType
 		}
 		copy.ResponsesInputMessageContentBlockFile = copyFile
 	}
@@ -1621,6 +1956,39 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 					copyContainerID := *annotation.ContainerID
 					copyAnnotation.ContainerID = &copyContainerID
 				}
+				// Deep copy Anthropic-specific annotation fields.
+				if annotation.StartCharIndex != nil {
+					copyStartCharIndex := *annotation.StartCharIndex
+					copyAnnotation.StartCharIndex = &copyStartCharIndex
+				}
+				if annotation.EndCharIndex != nil {
+					copyEndCharIndex := *annotation.EndCharIndex
+					copyAnnotation.EndCharIndex = &copyEndCharIndex
+				}
+				if annotation.StartPageNumber != nil {
+					copyStartPageNumber := *annotation.StartPageNumber
+					copyAnnotation.StartPageNumber = &copyStartPageNumber
+				}
+				if annotation.EndPageNumber != nil {
+					copyEndPageNumber := *annotation.EndPageNumber
+					copyAnnotation.EndPageNumber = &copyEndPageNumber
+				}
+				if annotation.StartBlockIndex != nil {
+					copyStartBlockIndex := *annotation.StartBlockIndex
+					copyAnnotation.StartBlockIndex = &copyStartBlockIndex
+				}
+				if annotation.EndBlockIndex != nil {
+					copyEndBlockIndex := *annotation.EndBlockIndex
+					copyAnnotation.EndBlockIndex = &copyEndBlockIndex
+				}
+				if annotation.Source != nil {
+					copySource := *annotation.Source
+					copyAnnotation.Source = &copySource
+				}
+				if annotation.EncryptedIndex != nil {
+					copyEncryptedIndex := *annotation.EncryptedIndex
+					copyAnnotation.EncryptedIndex = &copyEncryptedIndex
+				}
 				copyText.Annotations[i] = copyAnnotation
 			}
 		}
@@ -1672,6 +2040,29 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		}
 		copy.ResponsesOutputMessageContentRefusal = copyRefusal
 	}
+	// Deep copy extended output content variants.
+	if original.ResponsesOutputMessageContentRenderedContent != nil {
+		copy.ResponsesOutputMessageContentRenderedContent = &ResponsesOutputMessageContentRenderedContent{
+			RenderedContent: original.ResponsesOutputMessageContentRenderedContent.RenderedContent,
+		}
+	}
+	if original.ResponsesOutputMessageContentCompaction != nil {
+		copy.ResponsesOutputMessageContentCompaction = &ResponsesOutputMessageContentCompaction{
+			Summary: original.ResponsesOutputMessageContentCompaction.Summary,
+		}
+	}
+	if original.ResponsesOutputMessageContentFallback != nil {
+		copyFallback := &ResponsesOutputMessageContentFallback{
+			FromModel:   original.ResponsesOutputMessageContentFallback.FromModel,
+			ToModel:     original.ResponsesOutputMessageContentFallback.ToModel,
+			TriggerType: original.ResponsesOutputMessageContentFallback.TriggerType,
+		}
+		if original.ResponsesOutputMessageContentFallback.TriggerCategory != nil {
+			copyTriggerCategory := *original.ResponsesOutputMessageContentFallback.TriggerCategory
+			copyFallback.TriggerCategory = &copyTriggerCategory
+		}
+		copy.ResponsesOutputMessageContentFallback = copyFallback
+	}
 
 	return copy
 }
@@ -1688,6 +2079,69 @@ func IsNova2Model(model string) bool {
 // IsGLMModel checks if the model is a Z.AI GLM model.
 func IsGLMModel(model string) bool {
 	return strings.Contains(model, "glm")
+}
+
+// IsDeepSeekModel checks if the model is a DeepSeek model. Deployment names are
+// case-sensitive on some providers (Azure ships "DeepSeek-V3.1"), so match case-insensitively.
+func IsDeepSeekModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
+// IsMoonshotModel reports whether the model is a Moonshot (Kimi) model, under
+// any of the ids it is reached by: "moonshotai.kimi-k3" on Bedrock (with or
+// without an inference-profile prefix), "moonshotai/kimi-k2-instruct" on Groq,
+// or a bare "kimi-k3" behind an OpenAI-compatible gateway.
+//
+// Matching is boundary-aware: a "moonshotai" path segment, or a segment that
+// starts with "kimi-", the prefix every model on Moonshot's own list carries.
+// A bare substring match would also claim unrelated ids such as
+// "kimina-prover", and this predicate gates a lossy schema rewrite, so a false
+// positive quietly degrades a model that was fine.
+func IsMoonshotModel(model string) bool {
+	for _, segment := range strings.FieldsFunc(strings.ToLower(model), func(r rune) bool {
+		return r == '/' || r == '.' || r == ':'
+	}) {
+		if segment == "moonshotai" || strings.HasPrefix(segment, "kimi-") {
+			return true
+		}
+	}
+	return false
+}
+
+// IsGPT56Model reports whether the model belongs to the gpt-5.6 family, which is the
+// first OpenAI generation to accept prompt_cache_options / prompt_cache_breakpoint.
+//
+// Substring-matched on the full dot-revision, deliberately. Catalog IDs carry region
+// and vendor namespaces ("azure/eu/gpt-5.6", "openai.gpt-5.6-terra"), so a prefix test
+// would miss them. Including the revision in the needle rules out gpt-5.5 and earlier,
+// but not a longer one: a bare Contains also answers true for gpt-5.60, a different
+// model that never declared support. Hence the trailing boundary - the character after
+// the needle must be absent or non-numeric. This mirrors the gating in
+// core/providers/openai/utils.go, restated here because core/schemas cannot import a
+// provider package.
+func IsGPT56Model(model string) bool {
+	const needle = "gpt-5.6"
+	lower := strings.ToLower(model)
+	for start := 0; start < len(lower); {
+		idx := strings.Index(lower[start:], needle)
+		if idx < 0 {
+			return false
+		}
+		end := start + idx + len(needle)
+		if end == len(lower) || lower[end] < '0' || lower[end] > '9' {
+			return true
+		}
+		// A digit here means a longer dot-revision; keep scanning, since a
+		// namespaced id may carry the real match further along.
+		start = end
+	}
+	return false
+}
+
+// ModelSupportsPromptCacheBreakpoint is the name-based fallback for
+// ModelCaps.SupportsPromptCacheBreakpoint: the gpt-5.6 and gpt-6 families.
+func ModelSupportsPromptCacheBreakpoint(model string) bool {
+	return IsGPT56Model(model) || strings.Contains(strings.ToLower(model), "gpt-6")
 }
 
 // IsAnthropicModel checks if the model is an Anthropic model.
@@ -1727,6 +2181,25 @@ func IsAzureModelRouter(model string) bool {
 	return strings.Contains(model, "model-router")
 }
 
+// ServedModel returns the model the provider named on the response body. It can
+// differ from the model the caller addressed.
+func (r *BifrostResponse) ServedModel() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case r.ChatResponse != nil:
+		return r.ChatResponse.Model
+	case r.ResponsesResponse != nil:
+		return r.ResponsesResponse.Model
+	case r.ResponsesStreamResponse != nil && r.ResponsesStreamResponse.Response != nil:
+		return r.ResponsesStreamResponse.Response.Model
+	case r.TextCompletionResponse != nil:
+		return r.TextCompletionResponse.Model
+	}
+	return ""
+}
+
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
 // effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
 // rather than text-to-speech. These models are not tied to a voice.
@@ -1738,6 +2211,61 @@ func IsElevenlabsSoundModel(model string) bool {
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
+// BedrockModelSupportsToolResultImages reports whether the Bedrock model accepts
+// image blocks inside a Converse toolResult.
+func BedrockModelSupportsToolResultImages(model string) bool {
+	return !IsOpenAIModel(model) && !IsGrokModel(model)
+}
+
+// ResolveBedrockMantleBasePath returns the URL base path Bedrock Mantle serves the
+// model's OpenAI-compatible APIs on, preferring the datasheet and falling back to
+// family detection.
+//
+// Mantle answers a model on exactly one of its two paths and 400s on the other
+// ("model `openai.gpt-6-astra` isn't supported on this route"), so the fallback has
+// to name every closed generation explicitly: one that nothing matches drops to the
+// bare path the open-weight families use and fails outright. That is why the
+// datasheet leads — a new generation becomes a published row rather than a release.
+//
+// Takes the canonical (capability-resolved) model; the request body still carries
+// the wire model.
+func ResolveBedrockMantleBasePath(model string) BedrockMantleBasePath {
+	fallback := BedrockMantleBasePathV1
+	lower := strings.ToLower(model)
+	if strings.Contains(lower, "gpt-5") || strings.Contains(lower, "gpt-6") ||
+		strings.Contains(lower, "gemma-4") || IsGrokModel(model) {
+		fallback = BedrockMantleBasePathOpenAIV1
+	}
+	return ResolveModelCaps(BedrockMantle, model).BedrockMantleBasePath(fallback)
+}
+
+// ModelSupportsPromptCaching is the datasheet-independent fallback for
+// ModelCaps.SupportsPromptCaching. It answers the narrower question the breakpoint
+// injector needs: can a marker placed on a content block actually do anything here?
+//
+// It is deliberately conservative. Providers whose caching is implicit and
+// provider-managed (OpenAI pre-5.6, DeepSeek, xAI, Groq, and the OpenAI-compatible
+// long tail) answer false, so injection is a no-op for them and no marker is ever
+// sent to an endpoint that would reject it. Gemini also answers false: its caching is
+// a server-side cachedContent resource with its own lifecycle, not a per-block
+// marker, so a breakpoint there would be inert.
+func ModelSupportsPromptCaching(provider ModelProvider, model string) bool {
+	switch provider {
+	case Anthropic, OpenRouter:
+		return IsAnthropicModel(model)
+	case Bedrock, BedrockMantle:
+		return BedrockModelSupportsCachePoints(model) || ModelSupportsPromptCacheBreakpoint(model)
+	case Vertex:
+		// Vertex serves Claude (cache_control) and Gemini (cachedContent) side by
+		// side; only the former is markable.
+		return IsAnthropicModel(model)
+	case Azure, OpenAI:
+		return ModelSupportsPromptCacheBreakpoint(model)
+	default:
+		return false
+	}
 }
 
 // BedrockModelSupportsExtendedCacheTTL reports whether the Bedrock model supports
@@ -1778,6 +2306,48 @@ func BedrockModelSupportsS3Location(model string) bool {
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+// IsFable51 checks if the model is Claude Fable 5.1 or Claude Mythos 5.1, which
+// removed forced tool use: tool_choice "any" and "tool" (and their OpenAI
+// spellings) return a 400. Matches the Bedrock/Vertex/date-suffixed forms.
+//
+// Only the versions known to have dropped it are matched here; a later model
+// that also drops it is carried by the datasheet's supports_forced_tool_choice
+// rather than this fallback.
+//
+// Source: https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
+func IsFable51(model string) bool {
+	m := strings.ToLower(model)
+	if !strings.Contains(m, "fable") && !strings.Contains(m, "mythos") {
+		return false
+	}
+	return strings.Contains(m, "5-1") || strings.Contains(m, "5.1")
+}
+
+// IsOpus55Plus checks if the model is Claude Opus 5.5 or later, which dropped
+// forced tool use and made thinking always-on: tool_choice "any"/"tool" and
+// thinking:{"type":"disabled"} each return a 400 at every effort level. Matches
+// the Bedrock/Vertex/date-suffixed forms.
+//
+// Only the versions known to have dropped them are matched here; a later model
+// that also drops them is carried by the datasheet rather than this fallback.
+// The sibling thinking:{"type":"enabled"} rejection is already covered by the
+// adaptive-only gate these models share with Opus 4.7+.
+//
+// Source: https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5
+func IsOpus55Plus(model string) bool {
+	m := strings.ToLower(model)
+	if !strings.Contains(m, "opus") {
+		return false
+	}
+	return strings.Contains(m, "5-5") || strings.Contains(m, "5.5")
+}
+
+// DefaultSupportsForcedToolChoice is the name-based fallback for
+// ModelCaps.SupportsForcedToolChoice, used when the datasheet says nothing.
+func DefaultSupportsForcedToolChoice(model string) bool {
+	return !IsFable51(model) && !IsOpus55Plus(model)
 }
 
 // IsLlamaModel checks if the model is a Meta Llama model.
@@ -1893,6 +2463,7 @@ func SupportsGrokReasoningEffort(model string) bool {
 // while keeping the request honest about what it asked for.
 var grokModelsWithXHighReasoningEffort = map[string]struct{}{
 	"grok-4.6":              {},
+	"grok-4.7":              {},
 	"grok-4.20-multi-agent": {},
 }
 

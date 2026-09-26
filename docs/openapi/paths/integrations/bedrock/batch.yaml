@@ -44,7 +44,6 @@ batch-job-create:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -106,7 +105,6 @@ batch-jobs-list:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -156,7 +154,6 @@ batch-job-by-id:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -205,6 +202,5 @@ batch-job-cancel:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

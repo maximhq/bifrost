@@ -605,6 +605,72 @@ doc_embeddings = embeddings.embed_documents([
 
 ---
 
+## Reranking
+
+| Class | Package | Dialect | Model string |
+| --- | --- | --- | --- |
+| `CohereRerank` | `langchain-cohere` | `/langchain/v2/rerank` | `cohere/rerank-v3.5` |
+| `BedrockRerank` | `langchain-aws` | Bedrock Agent Runtime `Rerank` | `bedrock/cohere.rerank-v3-5:0` |
+
+### CohereRerank
+
+```python
+from langchain_cohere import CohereRerank
+from langchain_core.documents import Document
+
+cohere_compressor = CohereRerank(
+    base_url="http://localhost:8080/langchain",
+    cohere_api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+    model="cohere/rerank-v3.5",
+    top_n=2,
+)
+
+documents = [
+    Document(page_content="Paris is the capital and largest city of France."),
+    Document(page_content="Berlin is the capital of Germany."),
+    Document(page_content="The Eiffel Tower is a landmark in Paris."),
+]
+
+compressed = cohere_compressor.compress_documents(documents, "What is the capital of France?")
+for document in compressed:
+    print(document.metadata["relevance_score"], document.page_content)
+```
+
+### BedrockRerank
+
+Pass a pre-built boto3 client. `BedrockRerank` aliases `endpoint_url` to `base_url` and its own client builder never picks it up, so it would otherwise call AWS directly.
+
+```python
+import boto3
+from langchain_aws import BedrockRerank
+
+client = boto3.client(
+    "bedrock-agent-runtime",
+    region_name="us-west-2",
+    endpoint_url="http://localhost:8080/langchain",
+    aws_access_key_id="dummy-access-key",
+    aws_secret_access_key="dummy-secret-key",
+)
+
+def add_bifrost_headers(request, **kwargs):
+    """boto3 has no API key field, so the virtual key travels as a header"""
+    request.headers.add_header("x-bf-vk", "<YOUR-BIFROST-VIRTUAL-KEY>")  # Replace with your actual Bifrost virtual key.
+
+client.meta.events.register_first("before-sign.bedrock-agent-runtime.*", add_bifrost_headers)
+
+bedrock_compressor = BedrockRerank(
+    client=client,
+    model_arn="bedrock/cohere.rerank-v3-5:0",
+    region_name="us-west-2",
+    top_n=2,
+)
+
+# Reuses the documents list from the CohereRerank example above.
+compressed = bedrock_compressor.compress_documents(documents, "What is the capital of France?")
+```
+
+---
+
 ## Supported Features
 
 The Langchain integration supports all features that are available in both the Langchain SDK and Bifrost core functionality. Your existing Langchain chains and workflows work seamlessly with Bifrost's enterprise features. 😄

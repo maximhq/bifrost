@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -85,5 +87,40 @@ func TestSendJSONWithStatus_MarshalError(t *testing.T) {
 	}
 	if body := string(ctx.Response.Body()); !strings.Contains(body, "Failed to encode response") {
 		t.Errorf("expected SendError body, got %q", body)
+	}
+}
+
+// TestSendBifrostError_BodylessStatusBecomes502 pins that an upstream status that
+// forbids a body (1xx, 204, 304) is never echoed on an error. fasthttp strips the
+// body for those codes, so the JSON error would silently vanish and the client
+// would see an empty 204 with Content-Type: application/json.
+func TestSendBifrostError_BodylessStatusBecomes502(t *testing.T) {
+	for _, code := range []int{fasthttp.StatusContinue, fasthttp.StatusNoContent, fasthttp.StatusResetContent, fasthttp.StatusNotModified} {
+		ctx := &fasthttp.RequestCtx{}
+		SendBifrostError(ctx, &schemas.BifrostError{
+			StatusCode: new(code),
+			Error:      &schemas.ErrorField{Message: "provider API error (status " + strconv.Itoa(code) + ")"},
+		})
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadGateway {
+			t.Errorf("upstream %d: status got %d, want %d", code, got, fasthttp.StatusBadGateway)
+		}
+		if body := string(ctx.Response.Body()); !strings.Contains(body, "provider API error") {
+			t.Errorf("upstream %d: error body missing, got %q", code, body)
+		}
+	}
+}
+
+// TestSendBifrostError_NormalStatusPreserved guards the guard: ordinary upstream
+// codes still pass through untouched.
+func TestSendBifrostError_NormalStatusPreserved(t *testing.T) {
+	for _, code := range []int{fasthttp.StatusBadRequest, fasthttp.StatusTooManyRequests, fasthttp.StatusInternalServerError} {
+		ctx := &fasthttp.RequestCtx{}
+		SendBifrostError(ctx, &schemas.BifrostError{
+			StatusCode: new(code),
+			Error:      &schemas.ErrorField{Message: "boom"},
+		})
+		if got := ctx.Response.StatusCode(); got != code {
+			t.Errorf("status got %d, want %d", got, code)
+		}
 	}
 }

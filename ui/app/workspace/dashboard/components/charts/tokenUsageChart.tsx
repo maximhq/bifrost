@@ -3,6 +3,7 @@ import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -25,14 +26,14 @@ function CustomTooltip({ active, payload }: any) {
 			<div className="space-y-1 text-sm">
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-blue-500" />
+						<span className="bg-chart-token-input h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">Input</span>
 					</span>
 					<span className="font-medium">{data.prompt_tokens.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-emerald-500" />
+						<span className="bg-chart-token-output h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">Output</span>
 					</span>
 					<span className="font-medium">{data.completion_tokens.toLocaleString()}</span>
@@ -104,33 +105,29 @@ function TokenUsageChartImpl({ data, chartType, startTime, endTime }: TokenUsage
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar
-							isAnimationActive={false}
-							dataKey="uncached_prompt_tokens"
-							stackId="tokens"
-							fill={CHART_COLORS.promptTokens}
-							fillOpacity={0.9}
-							radius={[0, 0, 0, 0]}
-							barSize={30}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="completion_tokens"
-							stackId="tokens"
-							fill={CHART_COLORS.completionTokens}
-							fillOpacity={0.9}
-							radius={[0, 0, 0, 0]}
-							barSize={30}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="cached_read_tokens"
-							stackId="tokens"
-							fill={CHART_COLORS.cachedReadTokens}
-							fillOpacity={0.9}
-							radius={[2, 2, 0, 0]}
-							barSize={30}
-						/>
+						<CappedBarStack buckets={chartData.length}>
+							<Bar
+								isAnimationActive={false}
+								dataKey="uncached_prompt_tokens"
+								fill={CHART_COLORS.promptTokens}
+								fillOpacity={0.9}
+								barSize={30}
+							/>
+							<Bar
+								isAnimationActive={false}
+								dataKey="completion_tokens"
+								fill={CHART_COLORS.completionTokens}
+								fillOpacity={0.9}
+								barSize={30}
+							/>
+							<Bar
+								isAnimationActive={false}
+								dataKey="cached_read_tokens"
+								fill={CHART_COLORS.cachedReadTokens}
+								fillOpacity={0.9}
+								barSize={30}
+							/>
+						</CappedBarStack>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

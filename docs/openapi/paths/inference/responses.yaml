@@ -28,7 +28,6 @@ responses:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -75,7 +74,6 @@ responses:
         description: Maximum concurrent WebSocket connections reached
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -139,7 +137,6 @@ responses-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   delete:
@@ -176,7 +173,6 @@ responses-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -216,7 +212,6 @@ responses-cancel:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -279,6 +274,5 @@ responses-input-items:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

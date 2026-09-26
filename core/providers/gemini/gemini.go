@@ -167,8 +167,17 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 
 	// Parse Gemini's response
 	var geminiResponse GenerateContentResponse
-	if err := sonic.Unmarshal(body, &geminiResponse); err != nil {
-		return nil, nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(body, &geminiResponse)
+	if pt != nil {
+		if umErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, umErr)
 	}
 
 	var rawResponse interface{}
@@ -532,6 +541,7 @@ func HandleGeminiChatCompletionStream(
 		streamUsage := &schemas.BifrostLLMUsage{}
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
 
+	readLoop:
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -585,7 +595,7 @@ func HandleGeminiChatCompletionStream(
 
 			// Convert to Bifrost stream response. Per-event mapping -> "convertor" (Convertor) stream phase.
 			convStart := time.Now()
-			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
+			responses, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -593,7 +603,10 @@ func HandleGeminiChatCompletionStream(
 				return
 			}
 
-			if response != nil {
+			// A Gemini chunk that mixes text with inline media converts to several deltas
+			// (see ToBifrostChatCompletionStream); only the final one may close the stream.
+			for i, response := range responses {
+				isLastDelta := isLastChunk && i == len(responses)-1
 				response.ID = responseID
 				if modelName != "" {
 					response.Model = modelName
@@ -615,21 +628,23 @@ func HandleGeminiChatCompletionStream(
 					}
 				}
 
-				if sendBackRawResponse {
+				// A split event yields several deltas; attach the upstream event once,
+				// on the last of them, so a base64 media payload is not copied per delta.
+				if sendBackRawResponse && i == len(responses)-1 {
 					response.ExtraFields.RawResponse = string(eventData)
 				}
 
 				lastChunkTime = time.Now()
 				chunkIndex++
 
-				if isLastChunk {
+				if isLastDelta {
 					if sendBackRawRequest {
 						providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 					}
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					break
+					break readLoop
 				}
 
 				// Process response through post-hooks and send to channel
@@ -812,10 +827,23 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 
 	// Normal parse-and-convert path
 	var geminiResponse GenerateContentResponse
-	if unmarshalErr := sonic.Unmarshal(responseBody, &geminiResponse); unmarshalErr != nil {
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	unmarshalErr := sonic.Unmarshal(responseBody, &geminiResponse)
+	if pt != nil {
+		if unmarshalErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if unmarshalErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, unmarshalErr)
 	}
+	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := geminiResponse.ToResponsesBifrostResponsesResponse()
+	if ct != nil {
+		ct.EndSpan(ch, schemas.SpanStatusOk, "")
+	}
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
@@ -1302,7 +1330,15 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Convert to Bifrost format
+	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := ToBifrostEmbeddingResponse(&geminiResponse, request.Model)
+	if ct != nil {
+		if bifrostResponse == nil {
+			ct.EndSpan(ch, schemas.SpanStatusError, "failed to convert Gemini embedding response to Bifrost format")
+		} else {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
+		}
+	}
 	if bifrostResponse == nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal,
 			fmt.Errorf("failed to convert Gemini embedding response to Bifrost format"))
@@ -1386,6 +1422,11 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 // Rerank is not supported by the Gemini provider.
 func (provider *GeminiProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Gemini provider.
+func (provider *GeminiProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Gemini provider.
@@ -1538,8 +1579,10 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 			jsonData := data
 
-			// Process chunk using shared function
+			// Time the per-event decode as the response-parse stream phase.
+			parseStart := time.Now()
 			geminiResponse, err := processGeminiStreamChunk(jsonData)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
@@ -1826,8 +1869,10 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 			jsonData := data
 
-			// Process chunk using shared function.
+			// Time the per-event decode as the response-parse stream phase.
+			parseStart := time.Now()
 			geminiResponse, err := processGeminiStreamChunk(jsonData)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					bifrostErr := toGeminiStreamBifrostError(err)
@@ -2048,7 +2093,7 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	}
 
 	imagenResponse := GeminiImagenResponse{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &imagenResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &imagenResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2137,7 +2182,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		}
 
 		imagenResponse := GeminiImagenResponse{}
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &imagenResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &imagenResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -2305,6 +2350,32 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	return bifrostResp, nil
 }
 
+func geminiVideoOperationPath(operationID string) (string, *schemas.BifrostError) {
+	parts := strings.Split(operationID, "/")
+	var modelID, operationName string
+	switch {
+	case len(parts) == 2 && parts[0] == "operations":
+		operationName = parts[1]
+	case len(parts) == 4 && parts[0] == "models" && parts[2] == "operations":
+		modelID = parts[1]
+		operationName = parts[3]
+	default:
+		return "", providerUtils.NewBifrostBadRequestError("invalid video_id: expected a Gemini operation resource name")
+	}
+	escapedOperation, bifrostErr := providerUtils.EscapeResourceID(operationName, "video_id")
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	if modelID == "" {
+		return "operations/" + escapedOperation, nil
+	}
+	escapedModel, bifrostErr := providerUtils.EscapeResourceID(modelID, "video_id")
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return "models/" + escapedModel + "/operations/" + escapedOperation, nil
+}
+
 // VideoRetrieve retrieves the status of a video generation operation.
 // Uses the GET /operations/{operationName} endpoint.
 func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
@@ -2315,6 +2386,10 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	operationID := bifrostReq.ID
 
 	operationID = providerUtils.StripVideoIDProviderSuffix(operationID, provider.GetProviderKey())
+	operationPath, idErr := geminiVideoOperationPath(operationID)
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
@@ -2325,7 +2400,7 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/"+operationID))
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/"+operationPath))
 	req.Header.SetMethod(http.MethodGet)
 	if key.Value.GetValue() != "" {
 		req.Header.Set("x-goog-api-key", key.Value.GetValue())
@@ -2748,12 +2823,16 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	// Convert to Bifrost format
 	data := make([]schemas.BifrostBatchRetrieveResponse, 0, len(geminiResp.Operations))
 	for _, batch := range geminiResp.Operations {
+		var state, createTime string
+		if batch.Metadata != nil {
+			state, createTime = batch.Metadata.State, batch.Metadata.CreateTime
+		}
 		data = append(data, schemas.BifrostBatchRetrieveResponse{
 			// Full name (batches/<id>), matching create/retrieve so the id is stable.
 			ID:            batch.Name,
 			Object:        "batch",
-			Status:        ToBifrostBatchStatus(batch.Metadata.State),
-			CreatedAt:     parseGeminiTimestamp(batch.Metadata.CreateTime),
+			Status:        ToBifrostBatchStatus(state),
+			CreatedAt:     parseGeminiTimestamp(createTime),
 			OperationName: &batch.Name,
 			ExtraFields:   schemas.BifrostResponseExtraFields{},
 		})
@@ -2844,6 +2923,16 @@ func (provider *GeminiProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 	return result, nil
 }
 
+// geminiResourcePath accepts a bare ID or its "{collection}/{id}" resource name and returns the escaped path.
+func geminiResourcePath(resourceID, collection, field string) (string, *schemas.BifrostError) {
+	resourceID = strings.TrimPrefix(resourceID, collection+"/")
+	escapedID, bifrostErr := providerUtils.EscapeResourceID(resourceID, field)
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return collection + "/" + escapedID, nil
+}
+
 // batchRetrieveByKey retrieves a specific batch job for Gemini for a single key.
 func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
 	// Create HTTP request
@@ -2852,14 +2941,11 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL - batch ID might be full resource name or just the ID
-	batchID := request.BatchID
-	var requestURL string
-	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchID)
-	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL, batchID)
+	batchPath, bifrostErr := geminiResourcePath(request.BatchID, "batches", "batch_id")
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchPath)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -2892,10 +2978,19 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		return nil, bifrostErr2
 	}
 
+	if geminiResp.Metadata == nil {
+		return nil, providerUtils.NewBifrostOperationError("gemini batch response missing metadata", nil)
+	}
+	// Counts stay zero when the job has no stats yet.
+	batchStats := geminiResp.Metadata.BatchStats
+	if batchStats == nil {
+		batchStats = &GeminiBatchStats{}
+	}
+
 	var completedCount, failedCount int
 
-	completedCount = geminiResp.Metadata.BatchStats.RequestCount - geminiResp.Metadata.BatchStats.PendingRequestCount
-	failedCount = completedCount - geminiResp.Metadata.BatchStats.SuccessfulRequestCount
+	completedCount = batchStats.RequestCount - batchStats.PendingRequestCount
+	failedCount = completedCount - batchStats.SuccessfulRequestCount
 
 	// Determine if job is done
 	isDone := geminiResp.Metadata.State == GeminiBatchStateSucceeded ||
@@ -2912,9 +3007,9 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		Done:          &isDone,
 		RequestCounts: schemas.BatchRequestCounts{
 			Completed: completedCount,
-			Total:     geminiResp.Metadata.BatchStats.RequestCount,
-			Succeeded: geminiResp.Metadata.BatchStats.SuccessfulRequestCount,
-			Pending:   geminiResp.Metadata.BatchStats.PendingRequestCount,
+			Total:     batchStats.RequestCount,
+			Succeeded: batchStats.SuccessfulRequestCount,
+			Pending:   batchStats.PendingRequestCount,
 			Failed:    failedCount,
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
@@ -2969,14 +3064,11 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL for cancel operation
-	batchID := request.BatchID
-	var requestURL string
-	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s:cancel", provider.networkConfig.BaseURL, batchID)
-	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s:cancel", provider.networkConfig.BaseURL, batchID)
+	batchPath, bifrostErr := geminiResourcePath(request.BatchID, "batches", "batch_id")
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
+	requestURL := fmt.Sprintf("%s/%s:cancel", provider.networkConfig.BaseURL, batchPath)
 
 	provider.logger.Debug("gemini batch cancel url: " + requestURL)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -3056,13 +3148,11 @@ func (provider *GeminiProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	batchID := request.BatchID
-	var requestURL string
-	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchID)
-	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL, batchID)
+	batchPath, bifrostErr := geminiResourcePath(request.BatchID, "batches", "batch_id")
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchPath)
 
 	provider.logger.Debug("gemini batch delete url: " + requestURL)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -3263,14 +3353,11 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL
-	batchID := request.BatchID
-	var requestURL string
-	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchID)
-	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL, batchID)
+	batchPath, bifrostErr := geminiResourcePath(request.BatchID, "batches", "batch_id")
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchPath)
 
 	provider.logger.Debug("gemini batch results url: " + requestURL)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -3301,6 +3388,10 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	var geminiResp GeminiBatchJobResponse
 	if err := sonic.Unmarshal(body, &geminiResp); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	}
+
+	if geminiResp.Metadata == nil {
+		return nil, providerUtils.NewBifrostOperationError("gemini batch response missing metadata", nil)
 	}
 
 	// Check if batch is still processing
@@ -3530,6 +3621,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 		Bytes:          sizeBytes,
 		CreatedAt:      createdAt,
 		Filename:       geminiResp.DisplayName,
+		ContentType:    geminiResp.MimeType,
 		Purpose:        request.Purpose,
 		Status:         ToBifrostFileStatus(geminiResp.State),
 		StorageBackend: schemas.FileStorageAPI,
@@ -3628,15 +3720,16 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 		}
 
 		bifrostResp.Data[i] = schemas.FileObject{
-			ID:        file.Name,
-			Object:    "file",
-			Bytes:     sizeBytes,
-			CreatedAt: createdAt,
-			UpdatedAt: updatedAt,
-			Filename:  file.DisplayName,
-			Purpose:   schemas.FilePurposeVision,
-			Status:    ToBifrostFileStatus(file.State),
-			ExpiresAt: expiresAt,
+			ID:          file.Name,
+			Object:      "file",
+			Bytes:       sizeBytes,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+			Filename:    file.DisplayName,
+			ContentType: file.MimeType,
+			Purpose:     schemas.FilePurposeVision,
+			Status:      ToBifrostFileStatus(file.State),
+			ExpiresAt:   expiresAt,
 		}
 	}
 
@@ -3718,12 +3811,11 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL - file ID is the full resource name (e.g., "files/abc123")
-	fileID := request.FileID
-	if !strings.HasPrefix(fileID, "files/") {
-		fileID = "files/" + fileID
+	filePath, bifrostErr := geminiResourcePath(request.FileID, "files", "file_id")
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, fileID)
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, filePath)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -3783,6 +3875,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
 		Filename:       geminiResp.DisplayName,
+		ContentType:    geminiResp.MimeType,
 		Purpose:        schemas.FilePurposeVision,
 		Status:         ToBifrostFileStatus(geminiResp.State),
 		StorageBackend: schemas.FileStorageAPI,
@@ -3831,12 +3924,11 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL
-	fileID := request.FileID
-	if !strings.HasPrefix(fileID, "files/") {
-		fileID = "files/" + fileID
+	filePath, bifrostErr := geminiResourcePath(request.FileID, "files", "file_id")
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, fileID)
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, filePath)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -3907,10 +3999,7 @@ func (provider *GeminiProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 	// Gemini doesn't support direct file content download
 	// Files are referenced by their URI in requests
-	return nil, providerUtils.NewBifrostOperationError(
-		"Gemini Files API doesn't support direct content download. Use the file URI in your requests instead.",
-		nil,
-	)
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }
 
 // CountTokens performs a token counting request to Gemini's countTokens endpoint.

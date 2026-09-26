@@ -58,12 +58,15 @@
 // indistinguishable from the bug this suite hunts. Segments are therefore sized against the
 // WORST floor in the matrix (4096), not the target model's, which is why {{cachePrefix}} (~5.9K
 // tokens) is used whole and never sliced. Four segments puts each cell near 24K tokens.
+// Opus 5 uses a shorter visitor-guide fixture above its 512-token floor; its four
+// distinct sections preserve the conversation and breakpoint coverage.
 //
 // COST/CONCURRENCY: run this folder with PARALLEL=0. The harness forks one newman per provider,
 // and these rows match six of them (openai/anthropic/gemini/vertex/bedrock/azure), so a default
 // parallel run would execute every request up to six times over.
 
 import { createHash } from "node:crypto";
+import { libraryReference } from "./fixtures/library-cache-reference.mjs";
 
 const J = (v) => JSON.stringify(v);
 
@@ -256,11 +259,14 @@ const ARMS = [
 // only family routed here.
 function anthropicBody(cell, arm, cellId) {
   const cc = { type: "ephemeral" };
+  const reference = cell.model === "anthropic/claude-opus-5" ? libraryReference : null;
+  const question = reference ? "Where does the Thursday book group meet?" : QUESTION;
+  const reminder = reference ? "This week, the Thursday book group has moved to the Cedar study room upstairs. The starting time is unchanged." : REMINDER;
   const messages = [
-    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument A. Reply ${ACK}` }] },
-    { role: "assistant", content: [{ type: "text", text: ACK }] },
-    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument B. Reply ${ACK}` }] },
-    { role: "assistant", content: [{ type: "text", text: ACK }] },
+    { role: "user", content: [{ type: "text", text: reference ? `${reference.rooms}\n\nHow long does a study room reservation last?` : `${SEG}\n\nDocument A. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: reference ? "A study room reservation lasts one hour." : ACK }] },
+    { role: "user", content: [{ type: "text", text: reference ? `${reference.events}\n\nWhen are the family story sessions?` : `${SEG}\n\nDocument B. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: reference ? "Family story sessions take place on Saturday mornings." : ACK }] },
   ];
 
   if (arm.midconv) {
@@ -275,12 +281,12 @@ function anthropicBody(cell, arm, cellId) {
     // get hoisted instead and never surface the error, which makes the failure look
     // model-specific when it is really placement-specific. Trailing the user turn satisfies
     // both clauses on every provider in this matrix.
-    messages.push({ role: "user", content: [{ type: "text", text: QUESTION }] });
-    messages.push({ role: "system", content: [{ type: "text", text: REMINDER, cache_control: cc }] });
+    messages.push({ role: "user", content: [{ type: "text", text: question }] });
+    messages.push({ role: "system", content: [{ type: "text", text: reminder, cache_control: cc }] });
   } else {
     messages.push({
       role: "user",
-      content: [{ type: "text", text: REMINDER, cache_control: cc }, { type: "text", text: QUESTION }],
+      content: [{ type: "text", text: reminder, cache_control: cc }, { type: "text", text: question }],
     });
   }
 
@@ -288,8 +294,8 @@ function anthropicBody(cell, arm, cellId) {
     model: cell.model,
     max_tokens: maxTokensFor(cell),
     system: [
-      { type: "text", text: salt(cellId), cache_control: cc },
-      { type: "text", text: SEG, cache_control: cc },
+      { type: "text", text: reference ? `Visitor guide edition {{pcNonce}}-${createHash("sha256").update(cellId).digest("hex").slice(0, 12)}.\n\n${reference.welcome}` : salt(cellId), cache_control: cc },
+      { type: "text", text: reference ? reference.borrowing : SEG, cache_control: cc },
     ],
     messages,
   };
@@ -385,7 +391,12 @@ function round1Script(cell, cellId) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${cellId}] round 1 (write) succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   console.log('[cache-matrix] ' + ${J(cellId)} + ' round1(write) ' + detail);
@@ -399,7 +410,12 @@ function round2Script(cell, arm, cellId) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${label}] round 2 (read) succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   console.log('CACHE_MATRIX_REPORT', JSON.stringify({
@@ -435,7 +451,12 @@ function implicitRoundScript(cell, arm, cellId, round, isLast) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${label}] round ${round} succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   var series = [];

@@ -20,14 +20,14 @@ const floatEpsilon = 1e-4
 
 // logEntry is the minimum slice of a Bifrost log row we need for cross-checking
 // the persisted cache_debug against the in-flight response. The full Log row
-// has dozens of fields — we only care about ID, Timestamp, and CacheDebug.
+// has dozens of fields — we only care about ID, Timestamp, and CacheMetadata.
 type logEntry struct {
-	ID         string      `json:"id"`
-	Timestamp  string      `json:"timestamp"`
-	CacheDebug *cacheDebug `json:"cache_debug,omitempty"`
+	ID            string         `json:"id"`
+	Timestamp     string         `json:"timestamp"`
+	CacheMetadata *cacheMetadata `json:"cache_debug,omitempty"`
 }
 
-// findLogByCacheDebug polls /api/logs descending-by-timestamp looking for an
+// findLogByCacheMetadata polls /api/logs descending-by-timestamp looking for an
 // entry whose cache_debug matches the response stamp's (cache_id, cache_hit)
 // pair. Returns the matching log row or fatal-fails after the timeout.
 //
@@ -38,10 +38,10 @@ type logEntry struct {
 //
 // Polling exists because Bifrost's logging pipeline is asynchronous — the HTTP
 // response returns before the row is persisted.
-func findLogByCacheDebug(t *testing.T, lc logCtx, step int, want *cacheDebug) *logEntry {
+func findLogByCacheMetadata(t *testing.T, lc logCtx, step int, want *cacheMetadata) *logEntry {
 	t.Helper()
 	if want == nil || want.CacheID == nil {
-		t.Fatalf("findLogByCacheDebug: response cache_debug or cache_id is nil")
+		t.Fatalf("findLogByCacheMetadata: response cache_debug or cache_id is nil")
 	}
 	wantID := *want.CacheID
 	deadline := time.Now().Add(5 * time.Second)
@@ -51,30 +51,30 @@ func findLogByCacheDebug(t *testing.T, lc logCtx, step int, want *cacheDebug) *l
 		status, body, _, err := doJSON(t, "GET",
 			"/api/logs?limit=50&sort_by=timestamp&order=desc", nil, nil)
 		if err != nil {
-			t.Fatalf("findLogByCacheDebug GET err: %v", err)
+			t.Fatalf("findLogByCacheMetadata GET err: %v", err)
 		}
 		if status != http.StatusOK {
-			t.Fatalf("findLogByCacheDebug status=%d body=%s", status, truncate(string(body), 300))
+			t.Fatalf("findLogByCacheMetadata status=%d body=%s", status, truncate(string(body), 300))
 		}
 		var resp struct {
 			Logs []logEntry `json:"logs"`
 		}
 		if err := json.Unmarshal(body, &resp); err != nil {
-			t.Fatalf("findLogByCacheDebug decode: %v\nbody=%s", err, truncate(string(body), 300))
+			t.Fatalf("findLogByCacheMetadata decode: %v\nbody=%s", err, truncate(string(body), 300))
 		}
 		for i := range resp.Logs {
 			l := &resp.Logs[i]
-			if l.CacheDebug == nil || l.CacheDebug.CacheID == nil {
+			if l.CacheMetadata == nil || l.CacheMetadata.CacheID == nil {
 				continue
 			}
-			if *l.CacheDebug.CacheID != wantID {
+			if *l.CacheMetadata.CacheID != wantID {
 				continue
 			}
-			if l.CacheDebug.CacheHit != want.CacheHit {
+			if l.CacheMetadata.CacheHit != want.CacheHit {
 				continue
 			}
 			logf(t, lc.at(step), "INFO", "log_found", map[string]any{
-				"cache_id": wantID, "log_id": l.ID, "cache_hit": l.CacheDebug.CacheHit, "attempts": attempts,
+				"cache_id": wantID, "log_id": l.ID, "cache_hit": l.CacheMetadata.CacheHit, "attempts": attempts,
 			})
 			return l
 		}
@@ -84,11 +84,11 @@ func findLogByCacheDebug(t *testing.T, lc logCtx, step int, want *cacheDebug) *l
 	return nil
 }
 
-// assertLogMatchesResponseCacheDebug verifies every field of the persisted
+// assertLogMatchesResponseCacheMetadata verifies every field of the persisted
 // log's cache_debug matches the in-flight response's cache_debug. Catches
 // drift between PostLLMHook stamping and the durable log write — same data
 // path the UI Logs view reads, so this guards a real production contract.
-func assertLogMatchesResponseCacheDebug(t *testing.T, lc logCtx, step int, respCD, logCD *cacheDebug) {
+func assertLogMatchesResponseCacheMetadata(t *testing.T, lc logCtx, step int, respCD, logCD *cacheMetadata) {
 	t.Helper()
 	if respCD == nil {
 		t.Fatalf("response cache_debug is nil; nothing to cross-check")

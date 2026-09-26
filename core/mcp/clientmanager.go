@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -18,8 +19,15 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// mcpDialTimeout bounds each dial attempted by the SSRF-safe HTTP client MCP
+// client connections use, matching the timeout convention used by the other
+// SSRF-guarded outbound clients in this codebase (image/document fetch, skill
+// URL sources).
+const mcpDialTimeout = 10 * time.Second
 
 // AcquireClientConn returns a live upstream MCP client connection for the
 // given client state, along with a release function the caller must invoke
@@ -246,6 +254,11 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 
 	clients := make([]schemas.MCPClientState, 0, len(m.clientMap))
 	for _, client := range m.clientMap {
+		// A struct copy: ToolMap is cloned below because callers may range
+		// over it while a discovery write-back replaces the original.
+		// LastFailure is shared as-is on purpose — the record is only ever
+		// replaced, never mutated (see MCPConnectionFailure), so the copied
+		// pointer keeps describing the failure this snapshot was taken with.
 		snapshot := *client
 		if client.ToolMap != nil {
 			snapshot.ToolMap = make(map[string]schemas.ChatTool, len(client.ToolMap))
@@ -386,6 +399,7 @@ func (m *MCPManager) CloseAndMarkNeedsReauth(id string) (retErr error) {
 		clientState.Conn = nil
 	}
 	clientState.State = schemas.MCPConnectionStateNeedsReauth
+	recordClientFailure(clientState, schemas.MCPConnectionFailureStageCredential, errCredentialRotated)
 	m.logger.Debug("%s MCP client '%s' closed and marked needs_reauth after credential rotation", MCPLogPrefix, clientState.ExecutionConfig.Name)
 	return nil
 }
@@ -442,6 +456,187 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 	}
 
 	return nil
+}
+
+// writeBackDiscoveredTools installs a freshly discovered tool set on clientID
+// and fires the tools-change callback when the set genuinely changed. Every
+// discovery path that is not itself a connect (the periodic checker, and
+// RefreshClientTools) writes through here, so they share one staleness rule:
+// connGeneration is the value captured before discovery started, and a
+// mismatch means a reconnect swapped in a different connection meanwhile —
+// these results describe a connection that is no longer installed, so they are
+// dropped rather than clobbering the fresh one.
+//
+// Deliberately does not touch State: the connection checker is the sole
+// authority over Healthy/Unstable/NeedsReauth (see ClientConnectionChecker's
+// doc comment), and a write-back is not a state transition.
+//
+// Returns whether the write actually landed.
+func (m *MCPManager) writeBackDiscoveredTools(clientID string, connGeneration uint64, newTools map[string]schemas.ChatTool, newMapping map[string]string) bool {
+	// Precompute serialized JSON before the lock (see precomputeToolSerialization),
+	// so per-request logging/marshal reuse the bytes and the manager mutex isn't
+	// held across N marshals.
+	precomputeToolSerialization(newTools)
+
+	m.mu.Lock()
+	clientState, exists := m.clientMap[clientID]
+	if !exists {
+		m.mu.Unlock()
+		return false
+	}
+	if clientState.ConnGeneration != connGeneration {
+		m.mu.Unlock()
+		m.logger.Debug("%s Skipping tool write-back for %s: connection was replaced during discovery", MCPLogPrefix, clientID)
+		return false
+	}
+	clientState.ToolMap = newTools
+	clientState.ToolNameMapping = newMapping
+	fire := m.toolsChangedCallback(clientState, clientID, newTools, newMapping)
+	m.mu.Unlock()
+
+	// Fired outside the lock — see toolsChangeCallback's field doc. This is
+	// what persists the new set to the DB and re-syncs the hosted /mcp
+	// surface. Gated on genuine content change: the periodic checker reaches
+	// here on every tick, and most ticks rediscover identical tools.
+	if fire != nil {
+		fire()
+	}
+	return true
+}
+
+// installedToolCount reports how many tools clientID is currently serving.
+// Used when a discovery is dropped as stale: the caller's own result describes
+// a tool set that was never installed, so the live map is the honest answer.
+func (m *MCPManager) installedToolCount(clientID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if clientState, ok := m.clientMap[clientID]; ok {
+		return len(clientState.ToolMap)
+	}
+	return 0
+}
+
+// RefreshClientTools re-discovers clientID's tools from its upstream server
+// now, instead of waiting for the connection checker's next steady-state tick
+// (ResolveToolSyncInterval — 10 minutes by default). It is the operator's
+// answer to "I just changed this MCP server, pick it up", and the only such
+// mechanism that applies to per-call clients: ReconnectClient rejects those
+// outright, since they hold no persistent connection to re-establish.
+//
+// Three shapes, mirroring the connection checker's own branches:
+//   - Live connection (sticky client): tools/list over it.
+//   - Per-call client: an ephemeral connect-discover-close cycle via
+//     performAdminToolDiscovery.
+//   - Sticky client whose connection is currently down: a reconnect, which
+//     discovers as part of the dial.
+//
+// Returns the number of tools the client is serving after the refresh.
+//
+// Does not change the client's State — that stays the connection checker's
+// sole authority, so a failed refresh reports an error to the caller without
+// marking the client Unstable behind their back. The reconnect branch is the
+// exception, and only because connectToMCPClient owns that transition anyway.
+func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (int, error) {
+	if ctx == nil {
+		ctx = m.ctx
+	}
+
+	m.mu.RLock()
+	clientState, exists := m.clientMap[clientID]
+	var (
+		conn           *client.Client
+		config         *schemas.MCPClientConfig
+		connGeneration uint64
+		state          schemas.MCPConnectionState
+	)
+	if exists && clientState != nil {
+		conn = clientState.Conn
+		config = clientState.ExecutionConfig
+		connGeneration = clientState.ConnGeneration
+		state = clientState.State
+	}
+	m.mu.RUnlock()
+
+	if !exists {
+		return 0, fmt.Errorf("mcp client %s: %w", clientID, schemas.ErrMCPClientNotFound)
+	}
+	if config == nil {
+		return 0, fmt.Errorf("mcp client %s has no execution config to discover with", clientID)
+	}
+	switch state {
+	case schemas.MCPConnectionStateDisabled:
+		// A disabled client has no workers and no connection; discovering for
+		// it would install tools nothing can execute.
+		return 0, fmt.Errorf("cannot refresh tools for a disabled MCP client, enable the client first: %w", schemas.ErrMCPRefreshNotApplicable)
+	case schemas.MCPConnectionStateNeedsReauth:
+		// The credential is confirmed dead, so every discovery shape below
+		// would fail on auth. Say so plainly instead of surfacing a raw 401.
+		return 0, fmt.Errorf("mcp client %s needs reauthorization before its tools can be refreshed: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
+	}
+	// A client still awaiting its one-time admin flow must not be refreshed,
+	// and the reason is stronger than "it would fail": for token_exchange it
+	// would SUCCEED. That auth type resolves its own client-credentials token,
+	// so discovery needs no admin at all — and because awaitsAdminVerification
+	// reads DiscoveredTools == nil as the pending signal for it, a successful
+	// refresh would persist tools through the tools-change callback and quietly
+	// promote the client out of pending_verification for good, taking the
+	// Verify CTA with it. Checked against the config rather than State alone
+	// for the same reason EnableClient does: State is the thing automatic
+	// paths keep losing, the config predicate is the durable truth.
+	if awaitsAdminVerification(config) || state == schemas.MCPConnectionStatePendingVerification {
+		return 0, fmt.Errorf("mcp client %s is awaiting admin verification, complete that instead of refreshing its tools: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
+	}
+
+	switch {
+	case conn != nil:
+		// Marked as a check for the same reason the periodic checker marks its
+		// own list_tools (see ClientConnectionChecker.markAsCheck): this is
+		// Bifrost's own maintenance traffic, not a caller's inference request,
+		// and plugins gate on that distinction.
+		attemptCtx, cancel := context.WithTimeout(ctx, ConnectionCheckTimeout)
+		defer cancel()
+		bfCtx := schemas.NewBifrostContext(attemptCtx, schemas.NoDeadline)
+		bfCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
+
+		tools, mapping, err := m.runListToolsWithHooks(bfCtx, conn, config.Name)
+		if err != nil {
+			return 0, fmt.Errorf("failed to list tools for MCP client %s: %w", config.Name, err)
+		}
+		if !m.writeBackDiscoveredTools(clientID, connGeneration, tools, mapping) {
+			// Dropped as stale: a reconnect swapped the connection while this
+			// list was in flight, so these tools were never installed and the
+			// client is still serving whatever that reconnect discovered.
+			return m.installedToolCount(clientID), nil
+		}
+		return len(tools), nil
+
+	case m.credStore.RequiresPerCallConnection(config):
+		// Same ephemeral cycle the checker's per-call branch runs; it dials,
+		// lists, and closes, so there is no connection to keep or reuse.
+		attemptCtx, cancel := context.WithTimeout(ctx, ConnectionCheckTimeout)
+		defer cancel()
+
+		tools, mapping, err := m.performAdminToolDiscovery(attemptCtx, config)
+		if err != nil {
+			return 0, fmt.Errorf("failed to discover tools for MCP client %s: %w", config.Name, err)
+		}
+		if !m.writeBackDiscoveredTools(clientID, connGeneration, tools, mapping) {
+			// Same staleness guard as the live branch above.
+			return m.installedToolCount(clientID), nil
+		}
+		return len(tools), nil
+
+	default:
+		// Sticky client with no live connection (still Unstable from an
+		// earlier failed connect, say). Discovery is part of the dial, so a
+		// successful reconnect has already installed the fresh tools —
+		// including firing the tools-change callback — by the time this
+		// returns.
+		if err := m.ReconnectClient(clientID); err != nil {
+			return 0, fmt.Errorf("failed to refresh tools for MCP client %s: %w", config.Name, err)
+		}
+		return m.installedToolCount(clientID), nil
+	}
 }
 
 // AddClient adds a new MCP client to the manager.
@@ -596,7 +791,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	// one-time admin verification run yet (which also retains the admin
 	// discovery credential). Park in pending_verification like
 	// per-user-headers; the per-call path takes over once verified.
-	if config.AuthType == schemas.MCPAuthTypeTokenExchange && len(config.DiscoveredTools) == 0 {
+	if config.AuthType == schemas.MCPAuthTypeTokenExchange && config.DiscoveredTools == nil {
 		m.mu.Lock()
 		if client, exists := m.clientMap[config.ID]; exists {
 			if config.ConnectionString != nil {
@@ -630,7 +825,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 					client.ToolMap[toolName] = tool
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
-				client.State = schemas.MCPConnectionStateHealthy
+				markClientHealthy(client)
 				// Seed the change-detection hash from what was just
 				// restored (without firing the callback — restoring
 				// already-known tools is not a change) so a subsequent
@@ -644,7 +839,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 				// ToolMap already says "no tools discovered yet" on its own —
 				// nothing downstream (execution gating, GetToolPerClient)
 				// ever treated the two differently.
-				client.State = schemas.MCPConnectionStateHealthy
+				markClientHealthy(client)
 				m.logger.Debug("%s Per-user (%s) MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.AuthType, config.Name)
 			}
 		}
@@ -740,6 +935,12 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 	verifyCtx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 	defer cancel()
 	gateCtx := schemas.NewBifrostContext(verifyCtx, schemas.NoDeadline)
+	// This probe never carries the caller's identity, whether it is the periodic connection
+	// checker's per-call branch or an admin's interactive test login: gateCtx is always built fresh,
+	// never derived from ctx's own grant. Marking it lets a governance-style hook tell that apart
+	// from a real request that lost its grant, the way markAsCheck does for the live-connection
+	// ping/list-tools path.
+	gateCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
 	var tempClient *client.Client
 	defer func() {
@@ -903,6 +1104,12 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 	verifyCtx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 	defer cancel()
 	gateCtx := schemas.NewBifrostContext(verifyCtx, schemas.NoDeadline)
+	// This probe never carries the caller's identity, whether it is the periodic connection
+	// checker's per-call branch or an admin's interactive test login: gateCtx is always built fresh,
+	// never derived from ctx's own grant. Marking it lets a governance-style hook tell that apart
+	// from a real request that lost its grant, the way markAsCheck does for the live-connection
+	// ping/list-tools path.
+	gateCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
 	var tempClient *client.Client
 	defer func() {
@@ -1071,7 +1278,24 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 	precomputeToolSerialization(tools)
 	client.ToolMap = tools
 	client.ToolNameMapping = toolNameMapping
-	client.State = schemas.MCPConnectionStateHealthy
+	// Record the discovery on the config too. The callback below persists these
+	// same tools to the client's row, and that row is what makes the client
+	// verified after the next restart; until then awaitsAdminVerification reads
+	// THIS config, where DiscoveredTools == nil means "never verified" for
+	// per_user_headers and token_exchange. Left untouched, a server verified a
+	// moment ago went on reading as unverified for the life of the process:
+	// healthy, serving tools, refused by every path that consults the predicate.
+	// Swapped in as a copy rather than written into, for the same reason
+	// UpdateClient does: readers may still hold the old pointer. Cloned so the
+	// config never aliases the live tool map, and tools is non-nil by this point,
+	// so a verification that found nothing records an empty map, not nil.
+	if client.ExecutionConfig != nil {
+		recorded := *client.ExecutionConfig
+		recorded.DiscoveredTools = maps.Clone(tools)
+		recorded.DiscoveredToolNameMapping = maps.Clone(toolNameMapping)
+		client.ExecutionConfig = &recorded
+	}
+	markClientHealthy(client)
 	m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
 	fire := m.toolsChangedCallback(client, clientID, tools, toolNameMapping)
 	m.mu.Unlock()
@@ -1217,6 +1441,34 @@ func isEnableable(clientState *schemas.MCPClientState) bool {
 	return clientState.ExecutionConfig != nil && clientState.ExecutionConfig.Disabled
 }
 
+// awaitsAdminVerification reports whether config still needs the one-time
+// admin flow that AddClient parks clients in pending_verification for: an
+// OAuth client carrying an unauthorized inline oauth_config block, or a
+// per-user-headers / token-exchange client whose admin verification has never
+// populated DiscoveredTools. AddClient owns the canonical branches (each does
+// its own per-type bookkeeping and logging); this is the shared predicate for
+// callers that only need the yes/no.
+func awaitsAdminVerification(config *schemas.MCPClientConfig) bool {
+	if config == nil {
+		return false
+	}
+	switch config.AuthType {
+	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
+		return config.PendingOAuthConfig != nil
+	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		// Nil, not merely empty. The store is what makes nil-ness the
+		// discriminator: BeforeSave marshals DiscoveredTools only when it is
+		// non-nil, so a verified server that legitimately exposes zero tools
+		// persists "{}" and AfterFind loads it back as a non-nil empty map,
+		// while a client that never completed verification round-trips as nil.
+		// A len-check would therefore send a verified zero-tool client back
+		// through admin verification on every reload.
+		return config.DiscoveredTools == nil
+	default:
+		return false
+	}
+}
+
 // EnableClient re-enables a previously disabled MCP client by reconnecting it
 // and restarting its health monitor and tool syncer.
 //
@@ -1287,6 +1539,36 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 
 	m.logger.Debug("%s Enabling MCP client '%s'", MCPLogPrefix, configCopy.Name)
 
+	// A client that was disabled before its one-time admin flow ever ran is
+	// enabled but not yet usable. AddClient's disabled branch runs ahead of
+	// its pending_verification branches, so such a client is registered as
+	// Disabled with its PendingOAuthConfig (or empty DiscoveredTools) intact,
+	// and enabling it took the ordinary route from here: the per-call branch
+	// below marked it Healthy outright, and the sticky one dialled with a
+	// credential that does not exist yet and parked it back at Disabled.
+	// Either way the "an admin must authorize this" state was lost, and with
+	// it the Verify CTA that is the only way to resolve it. Park it where
+	// AddClient would have, and start no checker: there is nothing to check
+	// until the admin flow completes, exactly as on the AddClient path.
+	if awaitsAdminVerification(configCopy) {
+		m.mu.Lock()
+		if cs, exists := m.clientMap[id]; exists {
+			// Nil-checked for the same reason connectToMCPClient nil-checks it:
+			// nothing guarantees an entry reaching here was built by AddClient.
+			if cs.ConnectionInfo == nil {
+				cs.ConnectionInfo = &schemas.MCPClientConnectionInfo{Type: configCopy.ConnectionType}
+			}
+			if configCopy.ConnectionString != nil {
+				url := configCopy.ConnectionString.GetValue()
+				cs.ConnectionInfo.ConnectionURL = &url
+			}
+			cs.State = schemas.MCPConnectionStatePendingVerification
+		}
+		m.mu.Unlock()
+		m.logger.Debug("%s MCP client '%s' enabled into pending_verification (awaiting admin authorization)", MCPLogPrefix, configCopy.Name)
+		return nil
+	}
+
 	// Per-call clients have no persistent connection to dial. Mirror
 	// AddClient's per-call branch: restore the runtime state (tools, if any,
 	// were preserved by DisableClient) and start the periodic checker that
@@ -1297,7 +1579,7 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 		// Healthy either way — an empty ToolMap already says "no tools
 		// discovered yet" on its own, no dedicated state needed.
 		if cs, exists := m.clientMap[id]; exists {
-			cs.State = schemas.MCPConnectionStateHealthy
+			markClientHealthy(cs)
 		}
 		m.mu.Unlock()
 		if id != BifrostMCPClientKey {
@@ -1314,9 +1596,16 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 
 	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
 		// The connection failed, but the enable itself stands:
-		// ExecutionConfig.Disabled stays false and a checker is started below,
-		// so the client keeps trying to come up on its own and the caller
-		// keeps its persisted disabled=false (see ErrMCPEnableConnectFailed).
+		// ExecutionConfig.Disabled stays false, so the caller keeps its
+		// persisted disabled=false (see ErrMCPEnableConnectFailed) and the
+		// admin can retry the enable straight away.
+		//
+		// That retry is the only way back up, and it is deliberate rather than
+		// a gap: performCheck stops a checker whose client is Disabled instead
+		// of dialling it, so the one started below does nothing on this path.
+		// It is started for the NeedsReauth case, where performCheck keeps the
+		// timer alive at the relaxed interval so a stalled reauthorize is
+		// eventually picked up by something.
 		//
 		// State goes back to Disabled rather than Unstable. Unstable would
 		// wedge the client: isEnableable would stop matching, so every retry
@@ -1408,6 +1697,38 @@ var ErrMCPSharedConnectFailedAfterUpdate = errors.New("mcp client fields updated
 // caller-facing message.
 var ErrMCPEnableConnectFailed = errors.New("mcp client enabled, but establishing its connection failed")
 
+// rebindToolsToClientName returns a copy of tools keyed, and named, under
+// clientName: a tool is addressed as "<client>-<tool>" in both its map key and
+// its Function.Name, so a client rename has to rewrite both. Tools are copied,
+// never edited in place, because snapshots of the old map may still be read.
+//
+// Nil in, nil out. For a client's DiscoveredTools nil-ness is data
+// (awaitsAdminVerification reads nil as "verification never ran" and an empty
+// map as "ran and found nothing"), so the two must not be collapsed.
+func rebindToolsToClientName(tools map[string]schemas.ChatTool, clientName string) map[string]schemas.ChatTool {
+	if tools == nil {
+		return nil
+	}
+	newPrefix := clientName + "-"
+	rebound := make(map[string]schemas.ChatTool, len(tools))
+	for oldToolName, tool := range tools {
+		newToolName := oldToolName
+		if _, suffix, ok := strings.Cut(oldToolName, "-"); ok {
+			newToolName = newPrefix + suffix
+		}
+		if tool.Function != nil {
+			fn := *tool.Function
+			fn.Name = newToolName
+			tool.Function = &fn
+			// The copied cache still holds the old-name bytes; drop it so the
+			// next serialization uses newToolName.
+			tool.InvalidateSerialized()
+		}
+		rebound[newToolName] = tool
+	}
+	return rebound
+}
+
 // UpdateClient updates an existing MCP client's configuration and refreshes its tool list.
 // It updates the client's execution config with new settings and retrieves updated tools
 // from the MCP server if the client is connected.
@@ -1486,21 +1807,41 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// regardless of the field, e.g. per-user, never show a transition here).
 		wasPerCall := m.credStore.RequiresPerCallConnection(client.ExecutionConfig)
 
+		// The record of the last admin verification is not an editable field, so an
+		// ordinary edit arrives without it (the update handler only sets it when the
+		// same request re-ran verification) and it has to be carried forward. It is
+		// not bookkeeping: awaitsAdminVerification reads DiscoveredTools == nil as
+		// "never verified" for per_user_headers and token_exchange, so dropping it
+		// here left a verified, healthy client reading as unverified after any edit,
+		// refused by every path that consults the predicate. It is also what a
+		// per-call client's tools are restored from, hence the rebinding: carried
+		// forward under the old name, a rename followed by a restore would reinstall
+		// tools the rebound ToolMap below no longer has. The name mapping is keyed by
+		// the unprefixed tool name and travels with the tools it describes.
+		discoveredTools := updatedConfig.DiscoveredTools
+		discoveredToolNameMapping := updatedConfig.DiscoveredToolNameMapping
+		if discoveredTools == nil {
+			discoveredTools = client.ExecutionConfig.DiscoveredTools
+			discoveredToolNameMapping = client.ExecutionConfig.DiscoveredToolNameMapping
+		}
+
 		// Create a new config struct (immutable pattern) to avoid race conditions
 		// with concurrent reads. Any snapshot holding the old ExecutionConfig pointer
 		// will continue to see consistent data.
 		newConfig = &schemas.MCPClientConfig{
 			// Immutable fields - copy from existing config
-			ID:               client.ExecutionConfig.ID,
-			ConnectionType:   client.ExecutionConfig.ConnectionType,
-			ConnectionString: client.ExecutionConfig.ConnectionString,
-			StdioConfig:      client.ExecutionConfig.StdioConfig,
-			AuthType:         client.ExecutionConfig.AuthType,
-			OauthConfigID:    oauthConfigID,
-			State:            client.ExecutionConfig.State,
-			InProcessServer:  client.ExecutionConfig.InProcessServer,
-			ConfigHash:       client.ExecutionConfig.ConfigHash,
-			ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
+			ID:                        client.ExecutionConfig.ID,
+			ConnectionType:            client.ExecutionConfig.ConnectionType,
+			ConnectionString:          client.ExecutionConfig.ConnectionString,
+			StdioConfig:               client.ExecutionConfig.StdioConfig,
+			AuthType:                  client.ExecutionConfig.AuthType,
+			OauthConfigID:             oauthConfigID,
+			State:                     client.ExecutionConfig.State,
+			InProcessServer:           client.ExecutionConfig.InProcessServer,
+			ConfigHash:                client.ExecutionConfig.ConfigHash,
+			ToolPricing:               maps.Clone(client.ExecutionConfig.ToolPricing),
+			DiscoveredTools:           rebindToolsToClientName(discoveredTools, updatedConfig.Name),
+			DiscoveredToolNameMapping: maps.Clone(discoveredToolNameMapping),
 			// Updatable fields - copy from updated config with proper cloning
 			Name:                   updatedConfig.Name,
 			IsCodeModeClient:       updatedConfig.IsCodeModeClient,
@@ -1512,7 +1853,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			NeedsSessionStickiness: updatedConfig.NeedsSessionStickiness,
 			ToolSyncInterval:       updatedConfig.ToolSyncInterval,
 			ToolExecutionTimeout:   updatedConfig.ToolExecutionTimeout,
-			AllowOnAllVirtualKeys:  updatedConfig.AllowOnAllVirtualKeys,
+			AllowByDefault:         updatedConfig.AllowByDefault,
 			Disabled:               updatedConfig.Disabled,
 			TLSConfig:              updatedConfig.TLSConfig,
 			PerUserHeaderKeys:      slices.Clone(updatedConfig.PerUserHeaderKeys),
@@ -1525,22 +1866,9 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		clientName = updatedConfig.Name
 
 		// Rebind ToolMap keys (and inner Function.Name) to the current client name.
-		newPrefix := updatedConfig.Name + "-"
-		newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
-		for oldToolName, tool := range client.ToolMap {
-			newToolName := oldToolName
-			if _, suffix, ok := strings.Cut(oldToolName, "-"); ok {
-				newToolName = newPrefix + suffix
-			}
-			if tool.Function != nil {
-				fn := *tool.Function
-				fn.Name = newToolName
-				tool.Function = &fn
-				// The copied cache still holds the old-name bytes; drop it so the
-				// precomputeToolSerialization below re-serializes with newToolName.
-				tool.InvalidateSerialized()
-			}
-			newToolMap[newToolName] = tool
+		newToolMap := rebindToolsToClientName(client.ToolMap, updatedConfig.Name)
+		if newToolMap == nil {
+			newToolMap = make(map[string]schemas.ChatTool)
 		}
 
 		// Replace the old ToolMap with the new one
@@ -1585,7 +1913,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			// persistent connection to monitor is simply Healthy, the same
 			// state per-user auth types are given at connect time.
 			if client.State != schemas.MCPConnectionStateDisabled && client.State != schemas.MCPConnectionStateNeedsReauth {
-				client.State = schemas.MCPConnectionStateHealthy
+				markClientHealthy(client)
 			}
 			// A disabled client keeps no checker (DisableClient stopped it,
 			// EnableClient starts a fresh one), so only a live client gets
@@ -1648,6 +1976,11 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 					alreadyTerminal = true
 				default:
 					cs.State = schemas.MCPConnectionStateUnstable
+					// connectToMCPClient's own failure exit already recorded
+					// this against the entry it dialed with; re-recording here
+					// keeps the record right if that entry was swapped out
+					// under the attempt (Since is preserved either way).
+					recordClientFailure(cs, schemas.MCPConnectionFailureStageConnect, connErr)
 				}
 			}
 			m.mu.Unlock()
@@ -1747,7 +2080,7 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 					cs.ToolMap = restored
 					cs.ToolNameMapping = newConfig.DiscoveredToolNameMapping
 				}
-				cs.State = schemas.MCPConnectionStateHealthy
+				markClientHealthy(cs)
 			}
 			m.mu.Unlock()
 			// A client with nothing to restore gets its first discovery pass
@@ -2292,7 +2625,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// authoritative, same invariant the health monitor's updateClientState
 		// guard preserves).
 		needsReauth := gateErr.Error != nil && errors.Is(gateErr.Error.Error, schemas.ErrOAuth2TokenExpired)
-		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, needsReauth)
+		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, needsReauth, errors.New(gateErr.GetErrorString()))
 		return fmt.Errorf("failed to connect MCP client %s: %s", config.Name, gateErr.GetErrorString())
 	}
 
@@ -2318,7 +2651,10 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		t, mapping, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
 		if err != nil {
 			listToolsErr = err
-			m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
+			// Debug, not Warn: every reconnect attempt during an outage lands
+			// here (the checker retries on a 10s cadence while Unstable), and
+			// failConnectAttempt logs the reason once at the state transition.
+			m.logger.Debug("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
 		} else {
 			tools = t
 			toolNameMapping = mapping
@@ -2335,7 +2671,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	// connect+list. A server that legitimately exposes zero tools returns success with
 	// an empty list (listToolsErr == nil) and is still marked Connected.
 	if listToolsErr != nil {
-		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false)
+		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false, listToolsErr)
 		return fmt.Errorf("failed to retrieve tools from MCP client %s: %w", config.Name, listToolsErr)
 	}
 
@@ -2354,7 +2690,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// setup: release both the new handles and any captured old ones to
 		// prevent transport/goroutine leaks, without touching the
 		// replacement entry.
-		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false)
+		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false, nil)
 		return fmt.Errorf("client %s was removed during connection setup", config.Name)
 	}
 
@@ -2363,7 +2699,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	// the Disabled state. This is a rare edge case.
 	if client.State == schemas.MCPConnectionStateDisabled {
 		m.mu.Unlock()
-		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false)
+		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false, nil)
 		m.logger.Debug("%s [%s] Client was disabled during connection setup; rolling back", MCPLogPrefix, config.Name)
 		return fmt.Errorf("client %s was disabled during connection setup", config.Name)
 	}
@@ -2371,7 +2707,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	// Store the external client connection and details
 	client.Conn = externalClient
 	client.ConnectionInfo = connectionInfo
-	client.State = schemas.MCPConnectionStateHealthy
+	markClientHealthy(client)
 
 	// Store cancel function for SSE and STDIO connections to enable proper cleanup
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
@@ -2468,6 +2804,7 @@ func (m *MCPManager) handleSSEConnectionLost(clientID, clientName string, genera
 		return
 	}
 	client.State = schemas.MCPConnectionStateUnstable
+	recordClientFailure(client, schemas.MCPConnectionFailureStageTransportLost, err)
 	m.mu.Unlock()
 	m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, clientName, err)
 }
@@ -2488,37 +2825,80 @@ func (m *MCPManager) closeConnHandles(cancel context.CancelFunc, conn *client.Cl
 
 // failConnectAttempt is the shared teardown for every failure exit of
 // connectToMCPClient after the client entry has been prepared. It first
-// writes the standard post-failure entry state under m.mu: no connection,
-// last-known tool maps left intact, connection info reduced to the bare
-// type, a generation bump, and State Disconnected (or NeedsReauth when the
-// failure was classified as a dead OAuth2 credential). Only then are the
-// half-built new connection handles and the previous connection captured
-// for make-before-break closed, outside the lock.
+// writes the post-failure entry state under m.mu, then closes whichever
+// connection handles this attempt is responsible for, outside the lock.
 //
-// The order is load-bearing: during a make-before-break dial the map entry
-// still references the old connection, and other closers (RemoveClient)
-// close whatever the entry references under m.mu. Detaching under the lock
-// before closing gives any residual double-close a happens-before edge, so
-// the transport's own idempotence check suffices; closing first would race
-// it. The generation bump invalidates late writers that captured the old
-// connection: a tool-sync tick whose list_tools succeeded on the old
-// connection mid-dial must not write its results over this entry (toolsync.go
-// compares the generation it captured before running against the current one
-// and drops the write on mismatch), and a late SSE loss callback from the
-// torn-down connection must not overwrite the failure state.
+// Two shapes, decided by whether this attempt had a live connection to fall
+// back on:
+//
+//   - Make-before-break, survivable failure (oldConn != nil and the failure
+//     was not classified as a dead credential): the replacement never
+//     arrived, so the entry keeps the connection it already had. Conn and
+//     CancelFunc are put back (connectToMCPClient detaches CancelFunc at the
+//     top of every attempt) and ConnGeneration is left alone, since nothing
+//     was swapped: a late writer bound to this connection is still writing
+//     about the connection the entry actually holds, so its generation guard
+//     must keep matching rather than start dropping valid writes. Only the
+//     half-built new handles are closed. State still moves to Unstable with
+//     the failure recorded, because the attempt did fail, but Unstable is
+//     informational (see prepareToolExecution), so tool calls keep flowing
+//     over the surviving connection while the periodic checker re-probes it.
+//     Tearing it down instead would turn every failed re-dial (a manual
+//     reconnect during a blip, a credential update, the checker's own
+//     recovery attempt) into a real outage on a connection that was working.
+//   - Everything else: a close-first path, a first dial with nothing to fall
+//     back on, or a credential the upstream confirmed dead, which makes the
+//     still-open connection worthless. The entry is detached (no connection,
+//     connection info reduced to the bare type, a generation bump) and both
+//     the new and the captured old handles are closed. State becomes
+//     Unstable, or NeedsReauth for the dead-credential classification.
+//
+// On the detaching shape the order is load-bearing: during a
+// make-before-break dial the map entry still references the old connection,
+// and other closers (RemoveClient) close whatever the entry references under
+// m.mu. Detaching under the lock before closing gives any residual
+// double-close a happens-before edge, so the transport's own idempotence
+// check suffices; closing first would race it. The generation bump
+// invalidates late writers that captured the now-detached connection: a
+// checker tick whose list_tools succeeded on it mid-dial must not write its
+// results over this entry (writeBackTools compares the generation it
+// captured before running against the current one and drops the write on
+// mismatch), and a late SSE loss callback from the torn-down connection must
+// not overwrite the failure state.
 //
 // Disabled entries keep the state DisableClient wrote, and an entry removed
 // mid-dial leaves the map untouched. entry is the *MCPClientState this
 // attempt started with; a RemoveClient + AddClient cycle for the same ID
 // during the dial installs a different pointer under the same key, and this
 // attempt must not mutate that replacement.
-func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *schemas.MCPClientConfig, newCancel context.CancelFunc, newConn *client.Client, oldCancel context.CancelFunc, oldConn *client.Client, needsReauth bool) {
+//
+// failure is the error the attempt failed with, recorded on the entry as its
+// MCPConnectionFailure so the resulting state carries its own explanation;
+// nil for the exits that are not failures of the connection itself (the
+// entry was removed or disabled while the dial was in flight), which leave
+// any existing record alone.
+func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *schemas.MCPClientConfig, newCancel context.CancelFunc, newConn *client.Client, oldCancel context.CancelFunc, oldConn *client.Client, needsReauth bool, failure error) {
 	m.mu.Lock()
 	var oldState, newState schemas.MCPConnectionState
+	var recorded *schemas.MCPConnectionFailure
 	stateChanged := false
+	// Decided under the same lock as the state write and consumed by the
+	// teardown below, so the entry can never be left referencing a connection
+	// this function goes on to close.
+	keepOldConn := false
 	if clientState, exists := m.clientMap[config.ID]; exists && clientState == entry && clientState.State != schemas.MCPConnectionStateDisabled {
-		clientState.Conn = nil
-		clientState.CancelFunc = nil
+		keepOldConn = oldConn != nil && !needsReauth
+		if keepOldConn {
+			clientState.Conn = oldConn
+			clientState.CancelFunc = oldCancel
+		} else {
+			clientState.Conn = nil
+			clientState.CancelFunc = nil
+			clientState.ConnectionInfo = &schemas.MCPClientConnectionInfo{
+				Type: config.ConnectionType,
+			}
+			clientState.ConnGeneration++
+		}
 		// ToolMap/ToolNameMapping are deliberately left as last-known-good, not
 		// cleared: GetClientForTool resolves by tool name against this map, and
 		// wiping it here made a dead connection indistinguishable from a tool
@@ -2528,10 +2908,6 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 		// build the advertised tool list (GetToolPerClient) filter on State
 		// directly rather than relying on an empty map, so this doesn't cause
 		// a disconnected client's tools to keep being offered.
-		clientState.ConnectionInfo = &schemas.MCPClientConnectionInfo{
-			Type: config.ConnectionType,
-		}
-		clientState.ConnGeneration++
 		oldState = clientState.State
 		if needsReauth {
 			newState = schemas.MCPConnectionStateNeedsReauth
@@ -2540,12 +2916,33 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 		}
 		stateChanged = oldState != newState
 		clientState.State = newState
+		if failure != nil {
+			stage := schemas.MCPConnectionFailureStageConnect
+			if needsReauth {
+				stage = schemas.MCPConnectionFailureStageCredential
+			}
+			recordClientFailure(clientState, stage, failure)
+			recorded = clientState.LastFailure
+		}
 	}
 	cb := m.stateChangeCallback
 	m.mu.Unlock()
 
+	// One line per transition, carrying the reason — the per-attempt detail
+	// stays at Debug because a reconnect loop during an outage re-runs this
+	// every 10s and would otherwise flood the log at Warn.
+	if stateChanged {
+		if recorded != nil {
+			m.logger.Info("%s Client %s connection state changed to: %s (%s failed: %s)", MCPLogPrefix, config.Name, newState, recorded.Stage, recorded.Message)
+		} else {
+			m.logger.Info("%s Client %s connection state changed to: %s", MCPLogPrefix, config.Name, newState)
+		}
+	}
+
 	m.closeConnHandles(newCancel, newConn, config.Name)
-	m.closeConnHandles(oldCancel, oldConn, config.Name)
+	if !keepOldConn {
+		m.closeConnHandles(oldCancel, oldConn, config.Name)
+	}
 
 	// Fired outside the lock — same rationale as ClientConnectionChecker's
 	// setState: a registered callback is caller-supplied and may do
@@ -2561,37 +2958,104 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 	}
 }
 
-// buildTLSHTTPClient constructs an *http.Client with a custom TLS configuration derived
-// from MCPTLSConfig. Returns nil when tlsCfg is nil so callers can use the library default.
+// buildTLSHTTPClient constructs an *http.Client for MCP server connections. The
+// transport is always routed through network.PrivateNetworkDialContext, which
+// blocks link-local and unspecified destinations (including the
+// 169.254.169.254 cloud metadata endpoint) but - unlike the stricter
+// network.SSRFSafeDialContext used for image/document fetch, webhook
+// delivery, and skill URL sources - permits loopback and private-network
+// targets. Loopback/private MCP servers are the documented primary use case
+// for this feature (docs/mcp/connecting-to-servers.mdx's own HTTP-client
+// example is http://localhost:3001/mcp), so this is dial-time defense in
+// depth against the categorically illegitimate ranges, not a substitute for
+// the caller's own authorization check: an unauthenticated caller is refused
+// outright before reaching this code (rejectPrivateMCPTargetIfAuthBypassed in
+// transports/bifrost-http/handlers/mcp.go).
+//
+// Previously this returned nil when tlsCfg was nil, leaving callers to fall
+// back to the mcp-go library's own default client, which carried no guard at
+// all - not even the link-local/metadata block applied here.
+//
+// The process's HTTP_PROXY / HTTPS_PROXY / NO_PROXY environment is honored
+// through the http.ProxyFromEnvironment selector the cloned DefaultTransport
+// carries, matching every other outbound client in the process and the
+// behavior before core v1.8.5. See mcpProxySelector for how the destination
+// guard stays intact on the proxied path.
+//
+// TLS customization from MCPTLSConfig is layered on top when provided.
 // InsecureSkipVerify takes priority over CACertPEM when both are set.
 func (m *MCPManager) buildTLSHTTPClient(tlsCfg *schemas.MCPTLSConfig) (*http.Client, error) {
-	if tlsCfg == nil {
-		return nil, nil
-	}
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if tlsCfg.InsecureSkipVerify {
-		m.logger.Warn("MCP client: skipping TLS verification — do not use in production")
-		tlsConfig.InsecureSkipVerify = true
-	} else if tlsCfg.CACertPEM != nil {
-		caPEM := tlsCfg.CACertPEM.GetValue()
-		if caPEM != "" {
-			rootCAs, err := x509.SystemCertPool()
-			if err != nil {
-				rootCAs = x509.NewCertPool()
-			}
-			if !rootCAs.AppendCertsFromPEM([]byte(caPEM)) {
-				return nil, fmt.Errorf("failed to parse MCP CA certificate PEM")
-			}
-			tlsConfig.RootCAs = rootCAs
-		}
-	}
-	transport, ok := http.DefaultTransport.(*http.Transport)
+	baseTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
-		transport = &http.Transport{}
+		baseTransport = &http.Transport{}
 	}
-	cloned := transport.Clone()
-	cloned.TLSClientConfig = tlsConfig
+	cloned := baseTransport.Clone()
+	// Clone() preserves DefaultTransport's http.ProxyFromEnvironment, and it
+	// must stay: a deployment with no direct egress (a corporate VPC, or a
+	// pod behind an explicit HTTP_PROXY/HTTPS_PROXY) can only reach a public
+	// MCP server through that proxy. Proxying does change what the dial-time
+	// guard sees, though: http.Transport hands DialContext the proxy's
+	// address, not the MCP destination, so the guard alone would validate the
+	// proxy and the proxy would forward to the blocked target. The selector
+	// wrapper closes that gap for what can be checked without DNS (an
+	// IP-literal destination) whenever a proxy is chosen for a request, and
+	// leaves name resolution to the proxy; on the direct path (no proxy
+	// configured, or a NO_PROXY match) it stays out of the way and the guard
+	// below sees the real target as before.
+	cloned.Proxy = mcpProxySelector(cloned.Proxy)
+	cloned.DialContext = network.PrivateNetworkDialContext(mcpDialTimeout)
+
+	if tlsCfg != nil {
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if tlsCfg.InsecureSkipVerify {
+			m.logger.Warn("MCP client: skipping TLS verification — do not use in production")
+			tlsConfig.InsecureSkipVerify = true
+		} else if tlsCfg.CACertPEM != nil {
+			caPEM := tlsCfg.CACertPEM.GetValue()
+			if caPEM != "" {
+				rootCAs, err := x509.SystemCertPool()
+				if err != nil {
+					rootCAs = x509.NewCertPool()
+				}
+				if !rootCAs.AppendCertsFromPEM([]byte(caPEM)) {
+					return nil, fmt.Errorf("failed to parse MCP CA certificate PEM")
+				}
+				tlsConfig.RootCAs = rootCAs
+			}
+		}
+		cloned.TLSClientConfig = tlsConfig
+	}
 	return &http.Client{Transport: cloned}, nil
+}
+
+// mcpProxySelector wraps an http.Transport Proxy selector so the
+// PrivateNetworkDialContext destination policy still applies to a request that
+// is routed through a proxy. A direct request is validated by the dialer,
+// which sees the real target. A proxied request is validated here on what
+// can be checked without DNS: an IP-literal host is refused if it is
+// unspecified, link-local, or a cloud metadata endpoint, and a hostname is
+// handed to the proxy unresolved. Resolving locally would make proxied
+// connections depend on DNS the host may not have (a proxy-only deployment
+// resolves names at the proxy), and would still not bind what the proxy
+// connects to, since the proxy resolves the name again on its own side. Name
+// resolution on the proxied path is therefore the proxy's policy domain; the
+// proxy is operator configuration (process environment), not request input,
+// and the dialer still refuses a proxy that itself sits on a blocked address.
+// A nil selector is returned as nil so a transport without one is unchanged.
+func mcpProxySelector(next func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	if next == nil {
+		return nil
+	}
+	return func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := next(req)
+		if err != nil || proxyURL == nil {
+			return proxyURL, err
+		}
+		if err := network.CheckPrivateNetworkLiteral(req.URL.Hostname()); err != nil {
+			return nil, err
+		}
+		return proxyURL, nil
+	}
 }
 
 // createHTTPConnection creates an HTTP-based MCP client connection without holding locks.

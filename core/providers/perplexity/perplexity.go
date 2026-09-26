@@ -108,7 +108,16 @@ func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext,
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
+	// Time the body read/decompress as the response-finalize phase.
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
@@ -167,12 +176,16 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	}
 
 	var response PerplexityChatResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostChatResponse(request.Model)
+	if ct != nil {
+		ct.EndSpan(ch, schemas.SpanStatusOk, "")
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -303,6 +316,11 @@ func (provider *PerplexityProvider) Speech(ctx *schemas.BifrostContext, key sche
 // Rerank is not supported by the Perplexity provider.
 func (provider *PerplexityProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Perplexity provider.

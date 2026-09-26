@@ -85,6 +85,134 @@ func TestSSEStreamEndedOnMarker_UnknownReaderDefaultsTrue(t *testing.T) {
 	}
 }
 
+// https://github.com/maximhq/bifrost/issues/6784: an upstream that omits [DONE] and
+// parks the connection can only heartbeat. Once the caller has seen a finish_reason,
+// the next comment is proof nothing further is coming, so it ends the stream.
+func TestSSEDataReader_ArmedReaderEndsOnComment(t *testing.T) {
+	reader := newDefaultSSEDataReader(nil, strings.NewReader("data: {\"a\":1}\n\n: ping\n\n: ping\n\n"))
+	if _, err := reader.ReadDataLine(); err != nil {
+		t.Fatalf("unexpected error on the first data line: %v", err)
+	}
+	reader.EndOnCommentAfterFinish()
+	if _, err := reader.ReadDataLine(); err != io.EOF {
+		t.Fatalf("expected io.EOF on the heartbeat, got %v", err)
+	}
+	if !reader.EndedOnComment() {
+		t.Error("expected EndedOnComment to be true after stopping on a heartbeat")
+	}
+	if reader.SawDoneMarker() {
+		t.Error("expected SawDoneMarker to stay false: the stream never sent [DONE]")
+	}
+}
+
+// The trailing usage chunk is sent back to back with finish_reason, before any
+// heartbeat exists to stop on, so arming must not cost the caller its usage. The
+// blank lines separating SSE frames must not be mistaken for comments either.
+func TestSSEDataReader_ArmedReaderKeepsTrailingUsageChunk(t *testing.T) {
+	stream := "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n" +
+		"\n" +
+		"data: {\"choices\":[],\"usage\":{\"total_tokens\":1100}}\n" +
+		"\n" +
+		": ping\n" +
+		"\n" +
+		": ping\n" +
+		"\n"
+	reader := newDefaultSSEDataReader(nil, strings.NewReader(stream))
+	if _, err := reader.ReadDataLine(); err != nil {
+		t.Fatalf("unexpected error on the finish_reason line: %v", err)
+	}
+	reader.EndOnCommentAfterFinish()
+	usage, err := reader.ReadDataLine()
+	if err != nil {
+		t.Fatalf("expected the trailing usage chunk, got error %v", err)
+	}
+	if !strings.Contains(string(usage), "total_tokens") {
+		t.Errorf("expected the usage chunk to survive arming, got %q", usage)
+	}
+	if _, err := reader.ReadDataLine(); err != io.EOF {
+		t.Fatalf("expected io.EOF on the heartbeat after usage, got %v", err)
+	}
+	if !reader.EndedOnComment() {
+		t.Error("expected EndedOnComment to be true after stopping on a heartbeat")
+	}
+}
+
+// A compliant provider sends [DONE] before any heartbeat, so arming must leave the
+// normal termination path — and its truncation reporting — exactly as it was.
+func TestSSEDataReader_ArmedReaderStillEndsOnDoneMarker(t *testing.T) {
+	reader := newDefaultSSEDataReader(nil, strings.NewReader("data: {\"a\":1}\n\ndata: [DONE]\n\n"))
+	if _, err := reader.ReadDataLine(); err != nil {
+		t.Fatalf("unexpected error on the first data line: %v", err)
+	}
+	reader.EndOnCommentAfterFinish()
+	if _, err := reader.ReadDataLine(); err != io.EOF {
+		t.Fatalf("expected io.EOF on [DONE], got %v", err)
+	}
+	if !reader.SawDoneMarker() {
+		t.Error("expected SawDoneMarker to be true: the stream ended on [DONE]")
+	}
+	if reader.EndedOnComment() {
+		t.Error("expected EndedOnComment to be false: the stream ended on [DONE], not a heartbeat")
+	}
+}
+
+// An unarmed reader must keep skipping comments, so a provider that heartbeats
+// mid-generation is unaffected.
+func TestSSEDataReader_UnarmedReaderSkipsComments(t *testing.T) {
+	reader := newDefaultSSEDataReader(nil, strings.NewReader("data: {\"a\":1}\n\n: ping\n\ndata: {\"b\":2}\n\n"))
+	payloads := drainSSEDataReader(t, reader)
+	if len(payloads) != 2 {
+		t.Fatalf("expected both data lines across the heartbeat, got %v", payloads)
+	}
+	if reader.EndedOnComment() {
+		t.Error("expected EndedOnComment to be false for a reader that was never armed")
+	}
+}
+
+// A proxy injecting keepalives on a timer can land one between finish_reason and
+// the trailing usage chunk. One comment must therefore never end the stream: the
+// usage chunk resets the count, and the provider's [DONE] still terminates.
+func TestSSEDataReader_ArmedReaderIgnoresSingleStraddlingComment(t *testing.T) {
+	stream := "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n" +
+		"\n" +
+		": OPENROUTER PROCESSING\n" +
+		"\n" +
+		"data: {\"choices\":[],\"usage\":{\"total_tokens\":1100}}\n" +
+		"\n" +
+		"data: [DONE]\n" +
+		"\n"
+	reader := newDefaultSSEDataReader(nil, strings.NewReader(stream))
+	if _, err := reader.ReadDataLine(); err != nil {
+		t.Fatalf("unexpected error on the finish_reason line: %v", err)
+	}
+	reader.EndOnCommentAfterFinish()
+	usage, err := reader.ReadDataLine()
+	if err != nil {
+		t.Fatalf("expected the usage chunk to survive a straddling keepalive, got error %v", err)
+	}
+	if !strings.Contains(string(usage), "total_tokens") {
+		t.Errorf("expected the usage chunk after the keepalive, got %q", usage)
+	}
+	if _, err := reader.ReadDataLine(); err != io.EOF {
+		t.Fatalf("expected io.EOF on [DONE], got %v", err)
+	}
+	if !reader.SawDoneMarker() {
+		t.Error("expected SawDoneMarker to be true: the stream ended on [DONE]")
+	}
+	if reader.EndedOnComment() {
+		t.Error("expected EndedOnComment to be false: a single keepalive must not end the stream")
+	}
+}
+
+// Arming a reader that cannot honour it must be a no-op, and such a reader must
+// never be reported as having parked: cleanup would abandon a healthy connection.
+func TestSSEEndedOnComment_UnknownReaderDefaultsFalse(t *testing.T) {
+	SSEEndOnCommentAfterFinish(stubSSEDataReader{})
+	if SSEEndedOnComment(stubSSEDataReader{}) {
+		t.Error("expected SSEEndedOnComment to default to false for readers without SSEPostFinishTerminator")
+	}
+}
+
 func TestSSEDataReader_SingleLineRawJSONFallback(t *testing.T) {
 	stream := `{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}` + "\n"
 	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))

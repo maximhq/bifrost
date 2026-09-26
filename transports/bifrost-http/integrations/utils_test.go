@@ -42,7 +42,7 @@ func strPtr(s string) *string {
 }
 
 func newTestGenericRouter() *GenericRouter {
-	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, &testLogger{})
+	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, &testLogger{})
 }
 
 func newTestBifrostContext() *schemas.BifrostContext {
@@ -75,6 +75,43 @@ func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
 // sets the HTTP status code from the provider's BifrostError.StatusCode field.
 // All three providers (OpenAI, Anthropic, Bedrock) return actual HTTP error codes
 // for pre-stream errors, so Bifrost must propagate them faithfully.
+func TestJSONErrorsPreserveBodyForBodylessStatus(t *testing.T) {
+	router := newTestGenericRouter()
+	converter := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return err
+	}
+	for _, streaming := range []bool{false, true} {
+		for _, code := range []int{
+			fasthttp.StatusContinue,
+			fasthttp.StatusSwitchingProtocols,
+			fasthttp.StatusEarlyHints,
+			fasthttp.StatusNoContent,
+			fasthttp.StatusResetContent,
+			fasthttp.StatusNotModified,
+		} {
+			ctx := &fasthttp.RequestCtx{}
+			bifrostCtx := newTestBifrostContext()
+			bifrostErr := &schemas.BifrostError{
+				StatusCode: ptr(code),
+				Error:      &schemas.ErrorField{Message: "provider API error"},
+			}
+			if streaming {
+				router.sendStreamError(ctx, bifrostCtx, RouteConfig{
+					ErrorConverter: converter,
+				}, bifrostErr)
+			} else {
+				router.sendError(ctx, bifrostCtx, converter, bifrostErr)
+			}
+			assert.Equal(t, fasthttp.StatusBadGateway, ctx.Response.StatusCode(),
+				"streaming=%v upstream=%d", streaming, code)
+			assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+			assert.True(t, sonic.Valid(ctx.Response.Body()))
+			assert.Contains(t, ctx.Response.String(), "provider API error",
+				"serialized error body missing: streaming=%v upstream=%d", streaming, code)
+		}
+	}
+}
+
 func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 	tests := []struct {
 		name               string

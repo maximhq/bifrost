@@ -284,7 +284,7 @@ func testMatViewExists(t *testing.T, db *gorm.DB, view string) bool {
 			SELECT 1
 			FROM pg_class
 			WHERE relkind = 'm'
-			  AND relname = ?
+			  AND oid = to_regclass(?)
 		)
 	`, view).Scan(&exists).Error
 	require.NoError(t, err)

@@ -56,7 +56,7 @@ This split lets membership churn (joins, leaves, failure detection) stay isolate
 
 #### Application messages and entity types
 
-Each replicated message carries an `EntityType` identifying the kind of state being broadcast. Bifrost replicates 30+ entity types across the cluster, including: model catalog, virtual keys, providers, governance counters, routing rules, RBAC, MCP tools and tool groups, pricing and pricing overrides, access profiles, prompt deployments, auth configuration, and cluster diagnostics. See the [Replicated Entity Types](#replicated-entity-types) reference for the complete list.
+Each replicated message carries an `EntityType` identifying the kind of state being broadcast. Bifrost replicates 30+ entity types across the cluster, including: model catalog, virtual keys, providers, governance counters, routing rules, RBAC, MCP tools and Virtual MCPs, pricing and pricing overrides, access profiles, prompt deployments, auth configuration, and cluster diagnostics. See the [Replicated Entity Types](#replicated-entity-types) reference for the complete list.
 
 #### Message dedup and invalidation
 
@@ -1785,7 +1785,7 @@ Every replicated message carries an `EntityType` identifying the kind of state b
 | **Governance** | `governance`, `virtual_key`, `team`, `customer`, `business_unit_governance`, `user_governance`, `access_profile`, `api_key` |
 | **Security & Auth** | `auth_config`, `rbac`, `proxy_config`, `client_config` |
 | **Routing & Load Balancing** | `routing_rule`, `load_balancing`, `load_balancing_log` |
-| **MCP** | `mcp_tool`, `mcp_tool_group` |
+| **MCP** | `mcp_tool`, `virtual_mcp` (legacy: `mcp_tool_group`) |
 | **Guardrails** | `guardrail`, `guardrail_config`, `guardrail_sampling` |
 | **Plugins & Connectors** | `plugin`, `observability_connector` |
 | **Prompts & Storage** | `prompt_deployment`, `kv_store` |

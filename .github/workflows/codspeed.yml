@@ -1,0 +1,133 @@
+name: CodSpeed Benchmarks
+
+# Continuous performance measurement for the request hot path.
+#
+# Bifrost sits inline on every LLM call, so the CPU cost of the translation
+# layers (payload parsing, provider request/response conversion, SSE framing,
+# key selection) is paid once per request - and once per chunk on a stream.
+# `go test -bench` already covers those paths; this workflow runs the same
+# benchmarks under the CodSpeed walltime instrument on every PR so a regression
+# shows up as a diff against the base commit instead of surfacing in a load
+# test later.
+#
+# Walltime is the only instrument the Go integration supports, so the job runs
+# on CodSpeed macro runners (bare metal, pinned CPU) - GitHub-hosted runners are
+# too noisy for wall-clock comparisons.
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+  # `workflow_dispatch` allows CodSpeed to trigger backtest performance
+  # analysis in order to generate initial data.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codspeed-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Benchmarks (${{ matrix.name }})
+    # CodSpeed's managed bare-metal runner for walltime benchmarks.
+    # https://codspeed.io/docs/benchmarks/go
+    # The org's Default runner group must "Allow public repositories", or the
+    # jobs queue without ever starting.
+    runs-on: codspeed-macro
+    timeout-minutes: 45
+
+    env:
+      # The modules declare go 1.27.0; keep the toolchain resolution identical to
+      # the test workflows rather than depending on the runner image default.
+      GOTOOLCHAIN: auto
+
+    permissions:
+      contents: read # required for actions/checkout
+      id-token: write # required for OIDC authentication with CodSpeed
+
+    strategy:
+      # One module's benchmarks failing should not hide the others' results.
+      fail-fast: false
+      matrix:
+        include:
+          # Package lists are explicit rather than ./... : most packages carry no
+          # benchmarks, and the ones excluded here either need live provider
+          # credentials or benchmark a comparison baseline that is not worth
+          # tracking as a trend.
+          - name: core
+            module: core
+            packages: . ./schemas/ ./keyselectors/ ./providers/openai/ ./providers/anthropic/ ./providers/utils/
+          - name: framework
+            module: framework
+            packages: ./modelcatalog/ ./tracing/
+          - name: plugin-governance
+            module: plugins/governance
+            packages: .
+          - name: plugin-mocker
+            module: plugins/mocker
+            packages: .
+
+    steps:
+      # CodSpeed macro runners are self-hosted: their image must have the
+      # StepSecurity agent installed for this policy to be enforced. The action
+      # configures an existing agent; it does not install one on self-hosted VMs.
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          # Infrastructure only: Go toolchain/modules, GitHub release assets,
+          # and CodSpeed installation/results. Benchmarks use local fixtures;
+          # provider APIs and live-test assets are intentionally not allowed.
+          allowed-endpoints: >
+            api.codspeed.io:443
+            api.github.com:443
+            app.codspeed.io:443
+            codspeed.io:443
+            dl.google.com:443
+            github.com:443
+            go.dev:443
+            gql.codspeed.io:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.0"
+          cache-dependency-path: |
+            core/go.sum
+            framework/go.sum
+            plugins/*/go.sum
+
+      # The modules are versioned independently and carry no replace directives,
+      # so without a workspace the framework and plugin benchmarks would measure
+      # the last PUBLISHED core rather than the commit under test. Same script
+      # the test workflows use, so the module list cannot drift.
+      - name: Set up Go workspace
+        run: source ./.github/workflows/scripts/setup-go-workspace.sh
+        shell: bash
+
+      - name: Download module dependencies
+        working-directory: ${{ matrix.module }}
+        run: go mod download
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        with:
+          mode: walltime
+          working-directory: ${{ matrix.module }}
+          # CodSpeed's Go runner discovers benchmarks without running regular tests.
+          # Its Go integration currently supports only the -bench flag.
+          run: go test -bench=. ${{ matrix.packages }}

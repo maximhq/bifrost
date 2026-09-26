@@ -23,6 +23,10 @@ type InitiateMCPClientVerificationResponse = Omit<OAuthFlowResponse, "message"> 
 	status_url?: string;
 	complete_url?: string;
 	next_steps?: string[];
+	// Set only by /reregister, so the caller can report which
+	// client the consent it is about to run belongs to.
+	registered_client_id?: string;
+	previous_client_id?: string;
 };
 
 export const mcpApi = baseApi.injectEndpoints({
@@ -42,7 +46,7 @@ export const mcpApi = baseApi.injectEndpoints({
 					...(params?.virtual_keys && { virtual_keys: params.virtual_keys }),
 					...(params?.code_mode !== undefined && { code_mode: params.code_mode }),
 					...(params?.disabled !== undefined && { disabled: params.disabled }),
-					...(params?.all_virtual_keys !== undefined && { all_virtual_keys: params.all_virtual_keys }),
+					...(params?.allowed_by_default !== undefined && { allowed_by_default: params.allowed_by_default }),
 				},
 			}),
 			providesTags: ["MCPClients"],
@@ -146,7 +150,7 @@ export const mcpApi = baseApi.injectEndpoints({
 						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
 						break;
 					}
-				} catch {}
+				} catch { }
 			},
 		}),
 
@@ -195,7 +199,7 @@ export const mcpApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-				} catch {}
+				} catch { }
 			},
 		}),
 
@@ -223,7 +227,7 @@ export const mcpApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-				} catch {}
+				} catch { }
 			},
 		}),
 
@@ -236,10 +240,30 @@ export const mcpApi = baseApi.injectEndpoints({
 			invalidatesTags: ["MCPClients"],
 		}),
 
-		// Get OAuth config status (for polling)
-		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string>({
-			query: (oauthConfigId) => `/oauth/config/${oauthConfigId}/status`,
-			providesTags: (result, error, id) => [{ type: "OAuth2Config", id }],
+		// Re-discover an MCP client's tools from its upstream server now, rather
+		// than waiting out the tool sync interval (10 minutes by default). Applies
+		// to every client type, including the per-call ones Reconnect cannot act on.
+		refreshMCPClientTools: builder.mutation<{ status: string; message: string; tool_count: number }, string>({
+			query: (id) => ({
+				url: `/mcp/client/${id}/refresh-tools`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
+
+		// Get OAuth config status (for polling). Pass flowId for a reauthorize
+		// flow: the config's own status never leaves "authorized" once a client
+		// has been verified, so only the flow row can say whether this consent
+		// has actually completed.
+		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string | { oauthConfigId: string; flowId?: string }>({
+			query: (arg) => {
+				const { oauthConfigId, flowId } = typeof arg === "string" ? { oauthConfigId: arg, flowId: undefined } : arg;
+				return {
+					url: `/oauth/config/${oauthConfigId}/status`,
+					...(flowId && { params: { flow_id: flowId } }),
+				};
+			},
+			providesTags: (result, error, arg) => [{ type: "OAuth2Config", id: typeof arg === "string" ? arg : arg.oauthConfigId }],
 		}),
 
 		// Complete OAuth flow for MCP client
@@ -270,6 +294,22 @@ export const mcpApi = baseApi.injectEndpoints({
 				url: `/mcp/client/${mcpClientId}/reauthorize`,
 				method: "POST",
 			}),
+		}),
+
+		// reauthorizeMCPClient's counterpart for a provider that no longer
+		// recognises the client_id it issued through dynamic registration:
+		// registers a replacement client, then runs the same consent flow
+		// against it. Separate endpoint rather than a flag, because it
+		// invalidates every token bound to the config — on a per_user_oauth
+		// server, every end user's — and that is not something to hide in a
+		// request body. Same response shape, so the caller drives the same
+		// OAuth2Authorizer dialog.
+		reregisterMCPClient: builder.mutation<InitiateMCPClientVerificationResponse, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/reregister`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
 		}),
 
 		// Verify a pending_verification per_user_headers MCP client by submitting
@@ -312,11 +352,13 @@ export const {
 	useUpdateMCPClientMutation,
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,
+	useRefreshMCPClientToolsMutation,
 	useLazyGetMCPClientsQuery,
 	useLazyGetOAuthConfigStatusQuery,
 	useCompleteOAuthFlowMutation,
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
+	useReregisterMCPClientMutation,
 	useVerifyMCPClientHeadersMutation,
 	useVerifyMCPClientExchangeMutation,
 } = mcpApi;

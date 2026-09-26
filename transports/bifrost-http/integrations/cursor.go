@@ -1041,7 +1041,7 @@ func CreateCursorChatCompletionsRouteConfigs(pathPrefix string, handlerStore lib
 }
 
 // NewCursorRouter creates a new CursorRouter with the given bifrost client.
-func NewCursorRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *CursorRouter {
+func NewCursorRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *CursorRouter {
 	routes := []RouteConfig{}
 
 	// Custom Responses-based chat completions handler for Cursor's hybrid payloads
@@ -1066,6 +1066,6 @@ func NewCursorRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	routes = append(routes, CreateCohereRouteConfigs("/cursor")...)
 
 	return &CursorRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }

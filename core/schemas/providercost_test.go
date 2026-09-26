@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -120,6 +121,119 @@ func TestImageUsage_DeepCopyCostFields(t *testing.T) {
 
 	assert.Equal(t, int64(200000000), *usage.CostInUsdTicks)
 	assert.Equal(t, 0.02, usage.Cost.TotalCost)
+}
+
+// BifrostCost.DeepCopy is what ctx.CalculateCostBreakdown hands to plugins, so a
+// plugin editing any category must never reach the cost shared with the
+// client-facing response.
+func TestBifrostCost_DeepCopy(t *testing.T) {
+	var nilCost *BifrostCost
+	assert.Nil(t, nilCost.DeepCopy())
+
+	src := &BifrostCost{
+		InputCost:             3,
+		InputCostDetails:      &InputCostDetails{TextCost: 1, CachedReadCost: 1, CachedWriteCost: 1},
+		OutputCost:            2,
+		OutputCostDetails:     &OutputCostDetails{TextCost: 2},
+		AdditionalCost:        1,
+		AdditionalCostDetails: &AdditionalCostDetails{GuardrailCost: 1},
+		TotalCost:             6,
+	}
+	copied := src.DeepCopy()
+	require.NotNil(t, copied)
+	assert.NotSame(t, src, copied)
+	assert.NotSame(t, src.InputCostDetails, copied.InputCostDetails)
+	assert.NotSame(t, src.OutputCostDetails, copied.OutputCostDetails)
+	assert.NotSame(t, src.AdditionalCostDetails, copied.AdditionalCostDetails)
+	assert.Equal(t, *src, BifrostCost{
+		InputCost:             copied.InputCost,
+		InputCostDetails:      src.InputCostDetails,
+		OutputCost:            copied.OutputCost,
+		OutputCostDetails:     src.OutputCostDetails,
+		AdditionalCost:        copied.AdditionalCost,
+		AdditionalCostDetails: src.AdditionalCostDetails,
+		TotalCost:             copied.TotalCost,
+	})
+	assert.Equal(t, *src.InputCostDetails, *copied.InputCostDetails)
+	assert.Equal(t, *src.OutputCostDetails, *copied.OutputCostDetails)
+	assert.Equal(t, *src.AdditionalCostDetails, *copied.AdditionalCostDetails)
+
+	copied.TotalCost = 99
+	copied.InputCostDetails.CachedWriteCost = 99
+	copied.OutputCostDetails.TextCost = 99
+	copied.AdditionalCostDetails.GuardrailCost = 99
+	assert.Equal(t, 6.0, src.TotalCost)
+	assert.Equal(t, 1.0, src.InputCostDetails.CachedWriteCost)
+	assert.Equal(t, 2.0, src.OutputCostDetails.TextCost)
+	assert.Equal(t, 1.0, src.AdditionalCostDetails.GuardrailCost)
+
+	// Nil detail pointers stay nil rather than becoming empty structs.
+	bare := (&BifrostCost{TotalCost: 1}).DeepCopy()
+	require.NotNil(t, bare)
+	assert.Nil(t, bare.InputCostDetails)
+	assert.Nil(t, bare.OutputCostDetails)
+	assert.Nil(t, bare.AdditionalCostDetails)
+}
+
+// DeepCopy copies field by field, so a field added to BifrostCost or one of its
+// detail structs without a matching line in DeepCopy would silently come back
+// zero. This fills every field with a distinct non-zero value through reflection
+// and checks each one survived the copy without aliasing, naming the field that
+// did not.
+func TestBifrostCost_DeepCopyCoversEveryField(t *testing.T) {
+	src := &BifrostCost{}
+	next := 1.0
+	fillDistinct(t, reflect.ValueOf(src).Elem(), "BifrostCost", &next)
+
+	copied := src.DeepCopy()
+	require.NotNil(t, copied)
+	assertDeepCopied(t, reflect.ValueOf(src).Elem(), reflect.ValueOf(copied).Elem(), "BifrostCost")
+}
+
+// fillDistinct sets every float64 to a fresh value and allocates every
+// pointer-to-struct, recursing into it. Any other field kind fails the test:
+// DeepCopy and this helper both need teaching about it.
+func fillDistinct(t *testing.T, v reflect.Value, path string, next *float64) {
+	t.Helper()
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		name := path + "." + v.Type().Field(i).Name
+		switch f.Kind() {
+		case reflect.Float64:
+			f.SetFloat(*next)
+			*next++
+		case reflect.Ptr:
+			if f.Type().Elem().Kind() != reflect.Struct {
+				t.Fatalf("%s is a pointer to %s: extend BifrostCost.DeepCopy and this test", name, f.Type().Elem().Kind())
+			}
+			f.Set(reflect.New(f.Type().Elem()))
+			fillDistinct(t, f.Elem(), name, next)
+		default:
+			t.Fatalf("%s is a %s: extend BifrostCost.DeepCopy and this test", name, f.Kind())
+		}
+	}
+}
+
+// assertDeepCopied checks every field of dst equals src, and that every pointer
+// field points at a different allocation, recursing into it.
+func assertDeepCopied(t *testing.T, src, dst reflect.Value, path string) {
+	t.Helper()
+	for i := 0; i < src.NumField(); i++ {
+		sf, df := src.Field(i), dst.Field(i)
+		name := path + "." + src.Type().Field(i).Name
+		switch sf.Kind() {
+		case reflect.Float64:
+			assert.Equal(t, sf.Float(), df.Float(), "%s was not copied by DeepCopy", name)
+		case reflect.Ptr:
+			if !assert.False(t, df.IsNil(), "%s came back nil from DeepCopy", name) {
+				continue
+			}
+			assert.NotEqual(t, sf.Pointer(), df.Pointer(), "%s is shared with the source, not copied", name)
+			assertDeepCopied(t, sf.Elem(), df.Elem(), name)
+		default:
+			t.Fatalf("%s is a %s: extend BifrostCost.DeepCopy and this test", name, sf.Kind())
+		}
+	}
 }
 
 // Both usage shapes must carry the pair across, or a responses-path cost is lost

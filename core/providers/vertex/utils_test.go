@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -956,4 +957,94 @@ func TestVertexServiceTierReadsDatasheet(t *testing.T) {
 			t.Fatalf("service tiers are global-endpoint only, got %q", got)
 		}
 	})
+}
+
+func TestIsAnthropicPassthroughPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict", true},
+		{"/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-5:rawPredict", true},
+		{"/projects/p/locations/global/publishers/ANTHROPIC/models/claude-sonnet-4-5:rawPredict", true},
+		{"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5:streamRawPredict?alt=sse", true},
+		{"/v1beta/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent", false},
+		{"/v1beta/models/gemini-2.5-flash:generateContent", false},
+		{"", false},
+	}
+
+	for _, tc := range cases {
+		if got := isAnthropicPassthroughPath(tc.path); got != tc.want {
+			t.Errorf("isAnthropicPassthroughPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// The Anthropic-on-Vertex stream carries usage in Messages events, which the Gemini parser
+// drops — the empty token/cost half of issue #6073.
+func TestVertexAnthropicPassthroughStreamUsage(t *testing.T) {
+	t.Parallel()
+
+	messageStart := []byte(`{"type":"message_start","message":{"usage":{"input_tokens":522,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}`)
+	messageDelta := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":522,"output_tokens":13,"output_tokens_details":{"thinking_tokens":0}}}`)
+
+	path := "/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict"
+	if u := gemini.ExtractGeminiPassthroughUsage(path, nil, messageDelta); u != nil {
+		t.Fatalf("gemini parser unexpectedly produced usage for an anthropic event: %+v", u)
+	}
+
+	acc := &anthropic.AnthropicPassthroughStreamUsage{}
+	acc.ObserveEvent(messageStart)
+	usage := acc.ObserveEvent(messageDelta)
+	if usage == nil || usage.LLMUsage == nil {
+		t.Fatalf("expected usage from anthropic accumulator, got %+v", usage)
+	}
+	if usage.LLMUsage.PromptTokens != 522 || usage.LLMUsage.CompletionTokens != 13 || usage.LLMUsage.TotalTokens != 535 {
+		t.Fatalf("unexpected usage: %+v", usage.LLMUsage)
+	}
+}
+func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-central1")}}
+	validBatch := map[string]string{
+		"123": "https://us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/batchPredictionJobs/123",
+		// Vertex returns the project number, and the job may live in another region.
+		"projects/987654321/locations/europe-west4/batchPredictionJobs/123": "https://europe-west4-aiplatform.googleapis.com/v1/projects/987654321/locations/europe-west4/batchPredictionJobs/123",
+	}
+	for id, want := range validBatch {
+		got, bifrostErr := vertexBatchJobURL(key, id)
+		if bifrostErr != nil || got != want {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, %v; want %q", id, got, bifrostErr, want)
+		}
+	}
+	for _, id := range []string{
+		"../endpoints",
+		"123?x=1",
+		"projects/p/locations/attacker.example#/batchPredictionJobs/1",
+		"projects/p/locations/us-central1/endpoints/1",
+		"projects/p/locations/us-central1/batchPredictionJobs/../endpoints",
+		"projects/p/locations/us-central1/batchPredictionJobs/1/extra",
+	} {
+		if got, bifrostErr := vertexBatchJobURL(key, id); bifrostErr == nil {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, want error", id, got)
+		}
+	}
+
+	operation := "projects/proj/locations/us-central1/publishers/google/models/veo-3/operations/op-1"
+	if got, bifrostErr := vertexVideoModelPath(operation); bifrostErr != nil || got != "projects/proj/locations/us-central1/publishers/google/models/veo-3" {
+		t.Fatalf("vertexVideoModelPath = %q, %v", got, bifrostErr)
+	}
+	if got, bifrostErr := vertexVideoModelPath("projects/proj/locations/us-central1/../../endpoints/operations/op-1"); bifrostErr == nil {
+		t.Fatalf("vertexVideoModelPath accepted a traversal: %q", got)
+	}
+
+	if got, bifrostErr := expandVertexCachedContentName("cachedContents/abc", "proj", "us-central1"); bifrostErr != nil || got != "projects/proj/locations/us-central1/cachedContents/abc" {
+		t.Fatalf("expandVertexCachedContentName = %q, %v", got, bifrostErr)
+	}
+	if got, bifrostErr := expandVertexCachedContentName("projects/proj/locations/us-central1/cachedContents/../endpoints", "proj", "us-central1"); bifrostErr == nil {
+		t.Fatalf("expandVertexCachedContentName accepted a traversal: %q", got)
+	}
 }

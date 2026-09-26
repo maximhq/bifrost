@@ -3,7 +3,15 @@ package mcp
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -105,6 +113,9 @@ func TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState(t *testing.T)
 	assert.Nil(t, state.CancelFunc)
 	assert.Nil(t, state.Conn)
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state.State)
+	require.NotNil(t, state.LastFailure, "needs_reauth carries its own explanation")
+	assert.Equal(t, schemas.MCPConnectionFailureStageCredential, state.LastFailure.Stage)
+	assert.Equal(t, errCredentialRotated.Error(), state.LastFailure.Message)
 }
 
 // TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback
@@ -135,7 +146,7 @@ func TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback(t *te
 	m.clientMap[config.ID] = entry
 	m.mu.Unlock()
 
-	m.failConnectAttempt(entry, config, nil, nil, nil, nil, true)
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, true, errors.New("oauth2 token expired"))
 
 	require.Len(t, calls, 1, "the callback must fire exactly once for a genuine state transition")
 	assert.Equal(t, config.ID, calls[0].clientID)
@@ -170,7 +181,7 @@ func TestFailConnectAttempt_NoStateChange_DoesNotFireCallback(t *testing.T) {
 	m.clientMap[config.ID] = entry
 	m.mu.Unlock()
 
-	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false)
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false, errors.New("connection refused"))
 
 	assert.False(t, fired, "the callback must not fire when the transition is a no-op")
 }
@@ -599,4 +610,342 @@ func TestCloseAndMarkNeedsReauth_PerCallSharedOAuth_ReturnsReconnectNotApplicabl
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
 	assert.NotContains(t, err.Error(), "per-user", "a genuinely shared client must not be told it's a per-user auth client")
+}
+
+// TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault proves buildTLSHTTPClient
+// always returns a non-nil client (with or without TLS configured) so callers
+// never fall back to the mcp-go library's own default HTTP client, which
+// carries no dial guard at all.
+func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
+	for _, tlsCfg := range []*schemas.MCPTLSConfig{nil, {InsecureSkipVerify: true}} {
+		httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(tlsCfg)
+		require.NoError(t, err)
+		require.NotNil(t, httpClient)
+
+		transport, ok := httpClient.Transport.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, transport.DialContext)
+	}
+}
+
+// TestBuildTLSHTTPClientBlocksLinkLocal proves the dial-time guard refuses
+// link-local destinations (including the 169.254.169.254 cloud metadata
+// endpoint) - the one class of target with no legitimate MCP use case under
+// any deployment topology, authenticated or not.
+func TestBuildTLSHTTPClientBlocksLinkLocal(t *testing.T) {
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+	transport := httpClient.Transport.(*http.Transport)
+
+	_, err = transport.DialContext(context.Background(), "tcp", "169.254.169.254:80")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked connection to link-local address")
+}
+
+// TestBuildTLSHTTPClientAllowsLoopback proves loopback MCP servers keep
+// working: connecting to a local MCP tool server on the same host is the
+// documented primary HTTP-client use case
+// (docs/mcp/connecting-to-servers.mdx), so the dial-time guard here must not
+// reject it. The unauthenticated-caller case is refused earlier, at the HTTP
+// handler layer (rejectPrivateMCPTargetIfAuthBypassed), not here.
+func TestBuildTLSHTTPClientAllowsLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil {
+			t.Errorf("failed to close test listener: %v", err)
+		}
+	})
+	// The accepted server side is handed back to the test body so both ends are closed, and
+	// their Close results checked, on the test goroutine rather than after it may have ended.
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			accepted <- conn
+		}
+	}()
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+	transport := httpClient.Transport.(*http.Transport)
+
+	conn, err := transport.DialContext(context.Background(), "tcp", ln.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	select {
+	case server := <-accepted:
+		require.NoError(t, server.Close())
+	case <-time.After(5 * time.Second):
+		t.Fatal("listener never accepted the dialed connection")
+	}
+}
+
+// TestBuildTLSHTTPClientRoutesThroughConfiguredProxy proves the client honors
+// the transport's proxy selector for a permitted destination, which is what a
+// deployment with no direct egress depends on: the request must reach the
+// proxy, and the destination must never be dialed directly. This is the
+// behavior core v1.8.5 through v1.9.1 broke by nulling the selector.
+//
+// The proxy is injected by swapping DefaultTransport.Proxy rather than via
+// HTTP_PROXY, because ProxyFromEnvironment reads the environment once per
+// process and would not see a t.Setenv made after any earlier test used it.
+// Every test here that touches DefaultTransport.Proxy therefore stays
+// sequential (no t.Parallel) and restores the original selector on cleanup.
+func TestBuildTLSHTTPClientRoutesThroughConfiguredProxy(t *testing.T) {
+	// The destination must never see a connection: with a proxy selected,
+	// only the proxy may be dialed.
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := targetLn.Close(); err != nil {
+			t.Errorf("failed to close destination listener: %v", err)
+		}
+	})
+	var targetHits atomic.Int32
+	go func() {
+		for {
+			conn, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			targetHits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	// A minimal proxy: records what it was asked for, answers a plain-HTTP
+	// absolute-URL request itself, and refuses a CONNECT, since tunnelling
+	// TLS is not what this test is about; seeing the CONNECT is enough.
+	var (
+		proxyHits atomic.Int32
+		mu        sync.Mutex
+		lastReq   string
+	)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		mu.Lock()
+		lastReq = r.Method + " " + r.Host
+		mu.Unlock()
+		if r.Method == http.MethodConnect {
+			http.Error(w, "no tunnel in this test", http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("via-proxy"))
+	}))
+	t.Cleanup(proxy.Close)
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	seen := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return lastReq
+	}
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok)
+	origProxy := base.Proxy
+	base.Proxy = http.ProxyURL(proxyURL)
+	t.Cleanup(func() { base.Proxy = origProxy })
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+	httpClient.Timeout = 5 * time.Second
+	target := targetLn.Addr().String()
+
+	t.Run("http", func(t *testing.T) {
+		resp, err := httpClient.Get("http://" + target + "/mcp")
+		require.NoError(t, err)
+		body, readErr := io.ReadAll(resp.Body)
+		require.NoError(t, resp.Body.Close())
+		require.NoError(t, readErr)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Equal(t, "via-proxy", string(body), "the response must come from the proxy")
+		require.Equal(t, "GET "+target, seen(), "the proxy must be asked for the MCP destination")
+	})
+	t.Run("https", func(t *testing.T) {
+		resp, err := httpClient.Get("https://" + target + "/mcp")
+		if resp != nil {
+			require.NoError(t, resp.Body.Close())
+		}
+		require.Error(t, err, "the test proxy refuses tunnels, so the request must fail at the proxy")
+		require.Equal(t, "CONNECT "+target, seen(), "an https destination must be tunnelled through the proxy")
+	})
+	require.Equal(t, int32(2), proxyHits.Load(), "one proxy request per scheme")
+	require.Zero(t, targetHits.Load(), "with a proxy selected the destination must never be dialed directly")
+}
+
+// TestBuildTLSHTTPClientRefusesProxyingBlockedLiteral proves the dial-time
+// guard cannot be sidestepped by a proxy. When a proxy is selected,
+// http.Transport hands DialContext the proxy's address rather than the MCP
+// destination, so PrivateNetworkDialContext alone would validate the proxy
+// and let the proxy forward to the blocked target. The selector wrapper must
+// refuse a blocked IP-literal destination (link-local, and the cloud metadata
+// endpoints that live outside link-local) before the proxy is ever contacted.
+func TestBuildTLSHTTPClientRefusesProxyingBlockedLiteral(t *testing.T) {
+	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := proxyLn.Close(); err != nil {
+			t.Errorf("failed to close proxy listener: %v", err)
+		}
+	})
+	// Any accepted connection is itself the failure; its Close result is passed back to the
+	// test body rather than reported from the goroutine, which may outlive the subtest.
+	var proxyHits atomic.Int32
+	proxyCloseErrs := make(chan error, 8)
+	go func() {
+		for {
+			conn, err := proxyLn.Accept()
+			if err != nil {
+				return
+			}
+			proxyHits.Add(1)
+			if err := conn.Close(); err != nil {
+				select {
+				case proxyCloseErrs <- err:
+				default:
+				}
+			}
+		}
+	}()
+	proxyURL, err := url.Parse("http://" + proxyLn.Addr().String())
+	require.NoError(t, err)
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok)
+	origProxy := base.Proxy
+	base.Proxy = http.ProxyURL(proxyURL)
+	t.Cleanup(func() { base.Proxy = origProxy })
+
+	targets := []struct {
+		host string
+		want string
+	}{
+		{"169.254.169.254", "blocked connection to link-local address"},
+		{"100.100.100.200", "blocked connection to cloud metadata endpoint"},
+		{"[fd00:ec2::254]", "blocked connection to cloud metadata endpoint"},
+	}
+	for _, scheme := range []string{"http", "https"} {
+		for _, tc := range targets {
+			t.Run(scheme+"/"+tc.host, func(t *testing.T) {
+				httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+				require.NoError(t, err)
+				httpClient.Timeout = 5 * time.Second
+
+				resp, err := httpClient.Get(scheme + "://" + tc.host + "/latest/meta-data/")
+				if resp != nil {
+					require.NoError(t, resp.Body.Close())
+				}
+				require.Error(t, err, "a blocked MCP target must be refused even when a proxy is configured")
+				require.Contains(t, err.Error(), tc.want,
+					"the refusal must come from the destination policy, not from the proxy")
+				require.Zero(t, proxyHits.Load(), "the configured proxy must never be contacted for a guarded MCP request")
+				select {
+				case closeErr := <-proxyCloseErrs:
+					t.Errorf("failed to close a proxy-side connection: %v", closeErr)
+				default:
+				}
+			})
+		}
+	}
+}
+
+// TestBuildTLSHTTPClientProxiedHostnameNeedsNoLocalDNS proves a proxied
+// request is handed to the proxy with its hostname unresolved. A proxy-only
+// deployment resolves public names at the proxy, not on the Bifrost host, so
+// the selector must not resolve locally: the target here is under .invalid
+// (RFC 6761, guaranteed not to resolve) and the request must still reach the
+// proxy and succeed.
+func TestBuildTLSHTTPClientProxiedHostnameNeedsNoLocalDNS(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		lastReq string
+	)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		lastReq = r.Method + " " + r.Host
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("via-proxy"))
+	}))
+	t.Cleanup(proxy.Close)
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok)
+	origProxy := base.Proxy
+	base.Proxy = http.ProxyURL(proxyURL)
+	t.Cleanup(func() { base.Proxy = origProxy })
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+	httpClient.Timeout = 5 * time.Second
+
+	resp, err := httpClient.Get("http://mcp.invalid/mcp")
+	require.NoError(t, err, "a hostname the host cannot resolve must still be sent to the proxy")
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, resp.Body.Close())
+	require.NoError(t, readErr)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "via-proxy", string(body))
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "GET mcp.invalid", lastReq, "the proxy must receive the original hostname")
+}
+
+// TestBuildTLSHTTPClientBypassedProxyDialsDirect covers the NO_PROXY shape: the
+// selector is present but returns no proxy for the request, so the transport
+// dials the destination itself and the dial-time guard is what applies. A
+// loopback destination is reached directly and a link-local one is still
+// blocked, exactly as when no proxy is configured at all.
+func TestBuildTLSHTTPClientBypassedProxyDialsDirect(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("direct"))
+	}))
+	t.Cleanup(target.Close)
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok)
+	origProxy := base.Proxy
+	base.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
+	t.Cleanup(func() { base.Proxy = origProxy })
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+	httpClient.Timeout = 5 * time.Second
+
+	resp, err := httpClient.Get(target.URL + "/mcp")
+	require.NoError(t, err)
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, resp.Body.Close())
+	require.NoError(t, readErr)
+	require.Equal(t, "direct", string(body))
+	require.Equal(t, int32(1), targetHits.Load(), "a bypassed proxy means the destination is dialed directly")
+
+	resp, err = httpClient.Get("http://169.254.169.254/latest/meta-data/")
+	if resp != nil {
+		require.NoError(t, resp.Body.Close())
+	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked connection to link-local address",
+		"on the direct path the dial-time guard still refuses link-local")
+}
+
+// TestMCPProxySelectorPassthrough pins the wrapper's two pass-through
+// behaviors: a nil selector stays nil so a transport without one is unchanged,
+// and an error from the wrapped selector is returned as-is.
+func TestMCPProxySelectorPassthrough(t *testing.T) {
+	require.Nil(t, mcpProxySelector(nil))
+
+	wantErr := errors.New("selector failed")
+	sel := mcpProxySelector(func(*http.Request) (*url.URL, error) { return nil, wantErr })
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1/mcp", nil)
+	require.NoError(t, err)
+	_, err = sel(req)
+	require.ErrorIs(t, err, wantErr)
 }

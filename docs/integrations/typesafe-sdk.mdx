@@ -1,0 +1,95 @@
+---
+title: "TypeSafe SDK"
+description: "Use TypeSafe's official Python and JavaScript SDKs with Bifrost by changing one base URL."
+icon: "scale-balanced"
+---
+
+Bifrost exposes TypeSafe's native API 1:1 under the `/typesafe` prefix, so the official TypeSafe SDKs work by pointing their base URL at Bifrost. You keep the SDK's question builders, retries, and types - and gain Bifrost's key management, governance, logging, and cost tracking.
+
+## Endpoints
+
+| Native TypeSafe | Via Bifrost |
+|-----------------|-------------|
+| `POST https://api.typesafe.ai/v1/systemone` | `POST http://localhost:8080/typesafe/v1/systemone` |
+| Model listing (not offered upstream) | `GET http://localhost:8080/typesafe/v1/models` |
+
+## Python SDK
+
+Both SDKs read `TYPESAFE_BASE_URL` from the environment, so the zero-code-change setup is:
+
+```bash
+export TYPESAFE_BASE_URL="http://localhost:8080/typesafe"
+```
+
+Or pass it explicitly (`typesafe-sdk` package):
+
+```python
+from typesafe_sdk import TypeSafeClient, Noul
+
+with TypeSafeClient(base_url="http://localhost:8080/typesafe") as client:
+    response = client.system_one(
+        state={"document": "I was charged twice. Please fix this ASAP."},
+        questions={"billing": Noul(instructions="Is this ticket about billing?")},
+    )
+    print(response.nouls["billing"].noul)
+```
+
+## JavaScript / TypeScript SDK
+
+`@typesafe-ai/sdk` takes `baseURL` (falls back to `TYPESAFE_BASE_URL`):
+
+```ts
+import { TypeSafeClient, choice } from "@typesafe-ai/sdk";
+
+const client = new TypeSafeClient({ baseURL: "http://localhost:8080/typesafe" });
+
+const response = await client.systemOne({
+  state: { document: "I was charged twice. Please fix this ASAP." },
+  questions: {
+    category: choice("What is this ticket about?", {
+      billing: null,
+      technical: null,
+      other: null,
+    }),
+  },
+});
+```
+
+## Authentication
+
+The SDK's `Authorization: Bearer` header authenticates the request to Bifrost when Bifrost authentication is enabled. Configure the TypeSafe provider with its upstream keys - Bifrost selects and injects the provider key on the upstream call, so clients can use Bifrost virtual keys instead of raw TypeSafe keys.
+
+**Using a virtual key** - pass it as the SDK's API key; governance (budgets, rate limits, model restrictions) applies per key:
+
+```python
+from typesafe_sdk import TypeSafeClient, Noul
+
+with TypeSafeClient(
+    base_url="http://localhost:8080/typesafe",
+    api_key="sk-bf-v1-your-virtual-key",  # Bifrost virtual key, not a TypeSafe key
+) as client:
+    response = client.system_one(
+        state={"document": "I was charged twice."},
+        questions={"billing": Noul(instructions="Is this ticket about billing?")},
+    )
+```
+
+```ts
+import { TypeSafeClient } from "@typesafe-ai/sdk";
+
+const client = new TypeSafeClient({
+  baseURL: "http://localhost:8080/typesafe",
+  apiKey: "sk-bf-v1-your-virtual-key", // Bifrost virtual key
+});
+```
+
+## Behavior Notes
+
+- **Success responses are shape-compatible** with TypeSafe's own API: native `answers` with `noul`/`choice`/`score` value fields and `input_tokens`/`output_tokens` usage. Bytes are identical only on the raw-response passthrough path; otherwise the response is rebuilt and re-encoded, preserving the shape but not exact JSON byte ordering.
+- **Models**: bare IDs (`jev-1.13.0`, `jev-latest`, `jev-preview`) work exactly as upstream; `typesafe/`-prefixed IDs are additionally accepted.
+- **Errors**: returned in TypeSafe's native shape (`{"detail": {"error_type", "message"}}`) with upstream status codes (401, 422, 429, 529) preserved, so SDK exception parsing works unchanged. Requests rejected by Bifrost's local validation return `400` where TypeSafe's own validation would return `422`.
+- **Retries**: Bifrost retries 429 and 529 with backoff per the provider's `network_config` in addition to any SDK-side retry policy.
+
+<Note>
+For provider-routed access with fallbacks and Bifrost's normalized response shape, use [`POST /v1/decisions`](/quickstart/gateway/decisions) instead - same questions, `kind` instead of `type`, and a unified `value` per answer.
+</Note>

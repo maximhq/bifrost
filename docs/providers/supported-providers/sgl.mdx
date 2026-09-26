@@ -6,8 +6,9 @@ icon: "s"
 
 ## Overview
 
-SGL (SGLang) is an **OpenAI-compatible local/remote inference engine** used for serving models with high throughput. Bifrost delegates all operations to the OpenAI provider implementation. Key features:
+SGL (SGLang) is an **OpenAI-compatible local/remote inference engine** used for serving models with high throughput. By default Bifrost delegates operations to the OpenAI provider implementation; Chat Completions and the Responses API can instead be routed through SGLang's Anthropic-compatible Messages endpoint. Key features:
 - **OpenAI API compatibility** - Identical request/response format
+- **Optional Anthropic-compatible mode** - Route chat and responses through `/v1/messages` with `use_anthropic_endpoints`
 - **Full streaming support** - Server-Sent Events with usage tracking
 - **Tool calling** - Complete function definition and execution
 - **Text embeddings** - Support for embedding models
@@ -15,18 +16,19 @@ SGL (SGLang) is an **OpenAI-compatible local/remote inference engine** used for 
 
 ### Supported Operations
 
-| Operation | Non-Streaming | Streaming | Endpoint |
-|-----------|---------------|-----------|----------|
-| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
-| Responses API | ✅ | ✅ | `/v1/chat/completions` |
-| Text Completions | ✅ | ✅ | `/v1/completions` |
-| Embeddings | ✅ | - | `/v1/embeddings` |
-| List Models | ✅ | - | `/v1/models` |
-| Image Generation | ❌ | ❌ | - |
-| Speech (TTS) | ❌ | ❌ | - |
-| Transcriptions (STT) | ❌ | ❌ | - |
-| Files | ❌ | ❌ | - |
-| Batch | ❌ | ❌ | - |
+| Operation | Non-Streaming | Streaming | Endpoint (default) | Endpoint (`use_anthropic_endpoints: true`) |
+|-----------|---------------|-----------|--------------------|--------------------------------------------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` | `/v1/messages` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` | `/v1/messages` |
+| Text Completions | ✅ | ✅ | `/v1/completions` | `/v1/completions` (unaffected) |
+| Embeddings | ✅ | - | `/v1/embeddings` | `/v1/embeddings` (unaffected) |
+| List Models | ✅ | - | `/v1/models` | `/v1/models` (unaffected) |
+| Count Tokens | ✅ | - | `/v1/messages/count_tokens` | `/v1/messages/count_tokens` (always) |
+| Image Generation | ❌ | ❌ | - | - |
+| Speech (TTS) | ❌ | ❌ | - | - |
+| Transcriptions (STT) | ❌ | ❌ | - | - |
+| Files | ❌ | ❌ | - | - |
+| Batch | ❌ | ❌ | - | - |
 
 <Note>
 **Unsupported Operations** (❌): Speech, Transcriptions, Files, and Batch are not supported by the upstream SGL API. These return `UnsupportedOperationError`.
@@ -100,6 +102,80 @@ case schemas.SGL:
 
 ---
 
+## Anthropic-Compatible Endpoints (optional)
+
+SGLang can serve an Anthropic-compatible Messages endpoint (`/v1/messages`) alongside its OpenAI-compatible APIs. Setting `use_anthropic_endpoints` routes Chat Completions and the Responses API through that endpoint instead. Text Completions and Embeddings are unaffected and always use their OpenAI-compatible endpoints.
+
+Two details specific to this mode:
+
+- Authentication does not change. Bifrost sends `Authorization: Bearer <key>` either way, and omits the header when the key value is empty. It additionally sends `anthropic-version: 2023-06-01`.
+- Count Tokens is not governed by this setting. It always uses `/v1/messages/count_tokens`.
+
+The setting can be configured per key, and overridden per model alias:
+
+- **Key-level** - Sets the default endpoint mode for every request made with that key.
+- **Alias-level** - Overrides the key-level default for a single alias, so one key can serve some aliases through the OpenAI-compatible endpoints and others through the Anthropic-compatible endpoint.
+
+If neither is set, requests fall back to SGLang's OpenAI-compatible endpoints.
+
+<Tabs>
+<Tab title="Web UI">
+
+On the key form, toggle **Use Anthropic Endpoints** (off by default). To override this for a specific alias, open that alias's expanded row in the deployments table and toggle **Use Anthropic endpoints** under **SGLang overrides**, which takes priority over the key-level setting for that alias only.
+
+</Tab>
+<Tab title="API">
+The `use_anthropic_endpoints` boolean is part of the same key payload used by [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider), and the alias payload for that key's `models` entries.
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "sgl": {
+      "keys": [
+        {
+          "name": "sgl-local",
+          "value": "",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0,
+          "use_anthropic_endpoints": true,
+          "sgl_key_config": {
+            "url": "http://localhost:8000"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+To override this per-alias (for example, on a virtual key's model config), set `use_anthropic_endpoints` alongside the alias's `model_id`:
+
+```json
+{
+  "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+  "use_anthropic_endpoints": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|--------------|
+| `use_anthropic_endpoints` | boolean | No | Routes chat completions and responses requests through Anthropic-compatible endpoints. Default: `false`. |
+
+</Tab>
+</Tabs>
+
+<Warning>
+Anthropic's server and client tools (`web_search`, `web_fetch`, `code_execution`, `computer`, `bash`, `memory`, `text_editor`, `tool_search`, `mcp_toolset`) run on Anthropic-operated infrastructure, so a self-hosted SGLang server does not implement them. Bifrost drops them from the request rather than forwarding a tool the server will reject. Your own function tools are never affected.
+
+This matters most for clients that enable a built-in web search by default, which would otherwise fail every request.
+</Warning>
+
+---
+
 # 1. Chat Completions
 
 ## Request Parameters
@@ -120,13 +196,15 @@ SGL supports all standard OpenAI message types, tools, responses, and streaming 
 
 # 2. Responses API
 
-Fallback to Chat Completions with format conversion:
+By default, Responses fall back to Chat Completions with format conversion:
 
 ```
 ResponsesRequest → ChatRequest → Response conversion
 ```
 
 Same parameter support as Chat Completions.
+
+With `use_anthropic_endpoints` enabled on the key or alias, Responses skip that fallback and are converted to the Anthropic Messages format, then sent natively to `/v1/messages`. See [Anthropic-Compatible Endpoints](#anthropic-compatible-endpoints-optional).
 
 ---
 

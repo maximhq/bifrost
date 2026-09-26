@@ -56,6 +56,7 @@ type MetricsExporter struct {
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
 	overheadLatencyMicros          *syncFloat64Histogram
+	overheadComponentMicros        *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
@@ -406,6 +407,14 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: overheadLatencyBuckets,
 	}
 
+	m.overheadComponentMicros = &syncFloat64Histogram{
+		name:       "bifrost_overhead_component_microseconds",
+		desc:       "Bifrost overhead latency broken down by internal component (overhead_component attribute), in microseconds. Off by default; enable with overhead_breakdown_enabled. Requires tracing to be active",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
 		name:       "bifrost_stream_first_token_latency_seconds",
 		desc:       "Latency of the first token of a stream response",
@@ -547,6 +556,12 @@ func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadMic
 	m.overheadLatencyMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
 }
 
+// RecordOverheadComponent records one component's share of overhead (µs). Caller passes
+// overhead_component plus the same base attrs as RecordOverheadLatency.
+func (m *MetricsExporter) RecordOverheadComponent(ctx context.Context, overheadMicros float64, attrs ...attribute.KeyValue) {
+	m.overheadComponentMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
+}
+
 // RecordStreamFirstTokenLatency records first token latency metric
 func (m *MetricsExporter) RecordStreamFirstTokenLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.streamFirstTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
@@ -605,8 +620,9 @@ func resolveServiceInstanceID() string {
 }
 
 // team/customer/businessUnit args are canonical comma-joined sets; label names stay
-// singular (team_id, ...) for dashboard compatibility.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames string) []attribute.KeyValue {
+// singular (team_id, ...) for dashboard compatibility. A request is scoped to at most
+// one project, so projectID/projectName are plain scalars.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames, projectID, projectName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -622,6 +638,8 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("customer_name", customerNames),
 		attribute.String("business_unit_id", businessUnitIDs),
 		attribute.String("business_unit_name", businessUnitNames),
+		attribute.String("project_id", projectID),
+		attribute.String("project_name", projectName),
 		attribute.String("service_instance_id", serviceInstanceID),
 	}
 }

@@ -38,13 +38,14 @@ A larger pool reduces latency spikes under burst load at the cost of higher base
 | `allow_per_request_content_storage_override` | boolean | `false` | Allow individual requests to override content storage via the `x-bf-disable-content-logging` header or its context key, and to opt in to raw-byte persistence via `x-bf-store-raw-request-response`. When `false`, the global `disable_content_logging` setting is authoritative and per-request overrides are ignored. See [Request Options](/providers/request-options#disable-content-logging-per-request) |
 | `log_retention_days` | integer | `365` | Days to retain log entries in the store |
 | `logging_headers` | array of strings | `[]` | HTTP request headers to capture in log metadata |
+| `hidden_request_types` | array of strings | `[]` | Request types hidden from Logs and Dashboard reads. Logs are still stored. Also editable in the UI under **Logs Settings**. See [Hiding request types from the dashboard](/architecture/framework/log-store#hiding-request-types-from-the-dashboard) |
 
-Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where message content must not be persisted.
+Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where message content must not be persisted, and keep `retain_content_in_object_storage: false`: with it on, the full payload of every content-disabled request is still persisted in the object storage bucket. A virtual key with its own `disable_content_logging: false` overrides this for its traffic, so audit your keys as well.
 
 <Warning>
 **This setting does not apply to observability connectors.** Each connector (BigQuery, Kafka, Pub/Sub, OpenTelemetry, Datadog) has its **own** `disable_content_logging` flag that defaults to `false` and is read independently of this one. Setting the client flag alone still exports full message content to every configured connector.
 
-For a compliance workload where content must not leave the deployment, set `disable_content_logging: true` **on every configured connector as well**. See [Content Logging](/features/observability/content-logging) for how the layers compose, and for `retain_content_in_object_storage`, which keeps content in your storage bucket while hiding it from the UI and API.
+For a compliance workload where content must not leave the deployment, set `disable_content_logging: true` **on every configured connector as well**. These flags do not cover every exported value: BigQuery writes `params` and `tools` regardless of its flag, and captured request headers are exported regardless of content flags. If those fields or headers can contain sensitive data, do not export them or apply separate controls. Keep `allow_per_request_content_storage_override` off, and make sure no virtual key sets `disable_content_logging: false`. If `retain_content_in_object_storage` is on, its bucket holds the full payload of every content-disabled request: turn it off when content must not be persisted, or keep the bucket inside the approved deployment boundary when retention is allowed but content must not leave the deployment. See [Content Logging](/features/observability/content-logging) for how the layers compose, and for `retain_content_in_object_storage`, which keeps content in your storage bucket while hiding it from the UI and API.
 </Warning>
 
 ```json
@@ -105,7 +106,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allowed_origins` | array | `["*"]` | CORS allowed origins (use URIs or `"*"`) |
-| `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes |
+| `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes. Realtime connections (`/v1/realtime`, `/v1/realtime/calls`) are refused with `401` at connect time unless they present one of those, or an ephemeral client secret from `POST /v1/realtime/client_secrets` |
 | `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB |
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |
@@ -166,6 +167,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 | `compat.convert_chat_to_responses` | boolean | `false` | Translate chat completions to Responses API format |
 | `compat.should_drop_params` | boolean | `false` | Silently drop unsupported parameters instead of erroring |
 | `compat.should_convert_params` | boolean | `false` | Auto-convert parameter values across provider schemas |
+| `compat.azure_deepseek` | boolean | `false` | Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses |
 
 ```json
 {

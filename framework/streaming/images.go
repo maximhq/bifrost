@@ -193,7 +193,7 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 		}
 	}
 
-	// Update semantic cache debug and raw response from final chunk if available
+	// Update semantic cache metadata and raw response from final chunk if available
 	if len(acc.ImageStreamChunks) > 0 {
 		lastChunk := acc.ImageStreamChunks[len(acc.ImageStreamChunks)-1]
 		if lastChunk.SemanticCacheDebug != nil {

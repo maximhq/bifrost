@@ -19,8 +19,7 @@ const mcpLibrarySettingsSchema = z.object({
 		.string()
 		.trim()
 		.refine(
-			(value) =>
-				value === "" || value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://"),
+			(value) => value === "" || value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://"),
 			"URL must start with http://, https://, or file://",
 		),
 	// 0 disables background syncing entirely. Force Sync Now still works.
@@ -111,7 +110,7 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
-				<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-7">
+				<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-6">
 					<SheetTitle>MCP Library Settings</SheetTitle>
 					<SheetDescription>Configure the sync source and interval for the MCP server catalog.</SheetDescription>
 				</SheetHeader>
@@ -122,8 +121,8 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-url">Library Sync URL</Label>
 								<p className="text-muted-foreground text-sm">
-									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Use a{" "}
-									<code>file://</code> URL to load the catalog from local disk in air-gapped deployments.
+									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Use a <code>file://</code> URL to load
+									the catalog from local disk in air-gapped deployments.
 								</p>
 							</div>
 							<Input
@@ -141,8 +140,8 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-sync-interval">Sync Interval (hours)</Label>
 								<p className="text-muted-foreground text-sm">
-									How often to sync the MCP server catalog from the source URL. Set to 0 to disable background syncing;
-									Force Sync Now still works.
+									How often to sync the MCP server catalog from the source URL. Set to 0 to disable background syncing; Force Sync Now still
+									works.
 								</p>
 							</div>
 							<Input

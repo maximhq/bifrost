@@ -14,7 +14,7 @@ import (
 // and returns the reasoning blocks it produced.
 func bedrockReasoningBlocksForChatMessage(t *testing.T, msg schemas.ChatMessage) []BedrockContentBlock {
 	t.Helper()
-	converted, err := convertMessage(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", msg)
+	converted, err := convertMessage(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", msg, newBedrockDocNamer())
 	require.NoError(t, err)
 	var blocks []BedrockContentBlock
 	for _, block := range converted.Content {
@@ -157,4 +157,56 @@ func TestInvokeThinkingAlwaysSerialised(t *testing.T) {
 	// takes the continue and the assertion never runs - so the test would report
 	// success for precisely the regression it exists to catch.
 	require.NotZero(t, inspected, "no thinking block was inspected, so nothing above was actually asserted")
+}
+
+// TestInvokeSummaryFallbackCarriesSignature covers the invoke path's Summary fallback for
+// the shape the streaming path now closes reasoning blocks with (summary text plus the
+// signature in encrypted_content). The fallback dropped the signature -- harmless while
+// Summary was always empty for Bedrock, but an unsigned thinking block once it is not.
+func TestInvokeSummaryFallbackCarriesSignature(t *testing.T) {
+	signature := "EqQBCgIYAhIM...fixture"
+
+	blocks := invokeThinkingBlocksFor(t, &schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary:          []schemas.ResponsesReasoningSummary{{Text: "First I check the docs."}},
+			EncryptedContent: &signature,
+		},
+	})
+
+	inspected := 0
+	for i, block := range blocks {
+		if block.Type != "thinking" {
+			continue
+		}
+		inspected++
+		require.Equal(t, "First I check the docs.", block.Thinking, "block %d", i)
+		require.Equal(t, signature, block.Signature,
+			"block %d reached invoke unsigned, which the upstream rejects", i)
+	}
+	require.Equal(t, 1, inspected, "expected exactly one thinking block from the summary fallback")
+}
+
+// TestInvokeSummaryFallbackSignsOnlyFirstBlock pins that one signature is not repeated
+// across several summary entries: Bedrock verifies it against that block's own text.
+func TestInvokeSummaryFallbackSignsOnlyFirstBlock(t *testing.T) {
+	signature := "EqQBCgIYAhIM...fixture"
+
+	blocks := invokeThinkingBlocksFor(t, &schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary:          []schemas.ResponsesReasoningSummary{{Text: "first"}, {Text: "second"}},
+			EncryptedContent: &signature,
+		},
+	})
+
+	var thinking []BedrockInvokeMessagesContentBlock
+	for _, block := range blocks {
+		if block.Type == "thinking" {
+			thinking = append(thinking, block)
+		}
+	}
+	require.Len(t, thinking, 2)
+	require.Equal(t, signature, thinking[0].Signature)
+	require.Empty(t, thinking[1].Signature, "a signature must not be presented as signing text it never signed")
 }

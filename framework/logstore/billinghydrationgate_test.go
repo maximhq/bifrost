@@ -217,7 +217,7 @@ func TestHydrateBillingChunkFetchesOnlyWhenRequired(t *testing.T) {
 			ID: "resident-1", Timestamp: time.Now().UTC(), Provider: "anthropic",
 			Model: "claude-sonnet-4-20250514", Status: "success", Object: "chat.completion",
 			TokenUsageParsed: billingTestUsage(),
-			CacheDebugParsed: &schemas.BifrostCacheDebug{CacheHit: false},
+			CacheDebugParsed: &schemas.BifrostCacheMetadata{CacheHit: false},
 			InputHistoryParsed: []schemas.ChatMessage{
 				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("a long prompt")}},
 			},

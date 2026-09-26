@@ -1,5 +1,7 @@
 package schemas
 
+import "slices"
+
 // ModelCapabilities is the per-(model, provider) capability record sourced from
 // the bifrost datasheet (https://getbifrost.ai/datasheet). It is the single
 // source of truth for behaviour the runtime previously hard-coded — model limits
@@ -31,8 +33,11 @@ type ModelCapabilities struct {
 	SupportsCodeExecution           *bool `json:"supports_code_execution,omitempty"`
 	SupportsBashTool                *bool `json:"supports_bash_tool,omitempty"`
 	SupportsTextEditorTool          *bool `json:"supports_text_editor_tool,omitempty"`
+	SupportsComputerToolset         *bool `json:"supports_computer_toolset,omitempty"` // accepts the computer_toolset_20260801 client toolset; absent ⇒ name detection
 	SupportsMemoryTool              *bool `json:"supports_memory_tool,omitempty"`
 	SupportsToolSearch              *bool `json:"supports_tool_search,omitempty"`
+	ToolNameMaxLength               *int  `json:"tool_name_max_length,omitempty"`     // longest tool name the wire accepts; absent falls back to the per-provider default in core/providers/utils (64 for OpenAI-compatible wires and Bedrock, 128 for Anthropic and Gemini)
+	SupportsNamespaceTools          *bool `json:"supports_namespace_tools,omitempty"` // accepts the OpenAI Responses `namespace` tool container on the wire; absent falls back to the per-provider default in core/providers/utils
 	SupportsFilesAPI                *bool `json:"supports_files_api,omitempty"`
 	SupportsCompaction              *bool `json:"supports_compaction,omitempty"`
 	SupportsContextEditing          *bool `json:"supports_context_editing,omitempty"`
@@ -49,11 +54,16 @@ type ModelCapabilities struct {
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`
 	SupportsAdvisorTool             *bool `json:"supports_advisor_tool,omitempty"`
 	SupportsInferenceGeo            *bool `json:"supports_inference_geo,omitempty"`
+	SupportsSafeguards              *bool `json:"supports_safeguards,omitempty"` // Claude Code auto-mode classifier (safeguards/safeguard_results), model-gated on Anthropic and cloud surfaces (Sonnet 5, Opus 4.7+, Fable).
 	SupportsPromptCachingScope      *bool `json:"supports_prompt_caching_scope,omitempty"`
 	SupportsExtendedCacheTTL        *bool `json:"supports_extended_cache_ttl,omitempty"`
+	SupportsPromptCacheBreakpoint   *bool `json:"supports_prompt_cache_breakpoint,omitempty"` // accepts OpenAI prompt_cache_breakpoint + prompt_cache_options
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
+	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
+	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
+	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
@@ -158,6 +168,13 @@ type ModelCapabilities struct {
 	// set. Example for Gemini 3 Pro: {"minimal": "low", "medium": "high"}.
 	ReasoningEffortRenames map[string]string `json:"reasoning_effort_renames,omitempty"`
 
+	// reasoning.context values the model accepts on the OpenAI Responses wire
+	// ("auto" | "current_turn" | "all_turns"). A request value outside the list
+	// is dropped before dispatch so the model's own default applies. Absent
+	// means "use the name-based default": every reasoning model takes "auto"
+	// and "current_turn", and gpt-5.4+ also "all_turns".
+	SupportedReasoningContexts []string `json:"supported_reasoning_contexts,omitempty"`
+
 	// Allowed thinking-budget range in tokens.
 	ReasoningBudget *BudgetControl `json:"reasoning_budget,omitempty"`
 
@@ -176,6 +193,13 @@ type ModelCapabilities struct {
 
 	// Default max_tokens when the caller omits it (Anthropic requires a value).
 	DefaultMaxTokens *int `json:"default_max_tokens,omitempty"`
+
+	// Floor the provider enforces on max_output_tokens. A request below it is
+	// rejected outright rather than clamped upstream, so callers raise the value
+	// to this floor. Models served by an OpenAI-compatible backend require 16 —
+	// on Bedrock that covers the OpenAI family and xAI Grok, while Claude and
+	// Nova accept 1. Absent ⇒ the caller's own fallback; zero ⇒ no floor.
+	MinOutputTokens *int `json:"min_output_tokens,omitempty"`
 
 	// Floor for reasoning budget tokens.
 	MinReasoningMaxTokens *int `json:"min_reasoning_max_tokens,omitempty"`
@@ -215,11 +239,23 @@ type ModelCapabilities struct {
 	// Mirrors UnsupportedFields["tool_choice_struct"].
 	ToolChoiceStructSupported *bool `json:"tool_choice_struct_supported,omitempty"`
 
+	// Endpoint accepts the forced tool choice "any" on the wire (Mistral,
+	// Fireworks). False ⇒ it must be spelled "required" instead.
+	ToolChoiceAnySupported *bool `json:"tool_choice_any_supported,omitempty"`
+
 	// Fireworks: keep `prediction` field through the openai-compat filter.
 	PreservesPrediction *bool `json:"preserves_prediction,omitempty"`
 
 	// Perplexity: reasoning_effort is a required field (not optional).
 	ReasoningRequired *bool `json:"reasoning_required,omitempty"`
+
+	// Namespace-tool names the provider keeps for its own server-side tools. A
+	// caller-defined namespace with one of these names is rejected upstream
+	// (Bedrock Mantle: "User-defined namespace 'web' collides with an existing
+	// tool namespace"), so the request builder drops it. A non-empty list replaces
+	// the hardcoded per-provider fallback in core/providers/openai outright; absent
+	// or empty means the fallback applies.
+	ReservedToolNamespaces []string `json:"reserved_tool_namespaces,omitempty"`
 
 	// ---- Aliasing & regional inference profiles ----
 
@@ -232,7 +268,144 @@ type ModelCapabilities struct {
 	// ---- Bedrock model-family flags consumed by the runtime ----
 
 	// Bedrock: Cohere Command R/R+ uses native text-completion shape, not Converse.
+	//
+	// Deprecated: never populated and never read. Subsumed by BedrockAPIs
+	// ["invoke"]; remove once the feed drops the key.
 	IsCohereCommandR *bool `json:"is_cohere_command_r,omitempty"`
+
+	// Wire APIs this model accepts on the AWS endpoint the row is scoped to.
+	// The host is NOT encoded in the value — it comes from the row's provider
+	// ("bedrock" ⇒ bedrock-runtime, "bedrock_mantle" ⇒ bedrock-mantle), so the
+	// same value means different endpoints on different rows and a model gaining
+	// a surface is a new value on the matching row, not a new vocabulary:
+	//
+	//   openai.gpt-5.6-luna        provider bedrock_mantle → ["responses"]
+	//   global.openai.gpt-5.6-luna provider bedrock        → ["converse"]
+	//
+	// Listed in preference order. Unrecognised entries are skipped rather than
+	// rejected, so the datasheet may ship an API ahead of the binary that reads
+	// it. An empty list is treated as absent.
+	//
+	// This is a claim, not a constraint: the configured model identifier wins
+	// when the two disagree, because AWS rejects a mismatched identifier
+	// outright (a bare id 400s on bedrock-runtime, a cross-region or ARN id 404s
+	// on bedrock-mantle). Callers must resolve identifier form first.
+	BedrockAPIs []BedrockAPI `json:"bedrock_apis,omitempty"`
+
+	// Wire shape this model uses for reasoning content on Bedrock Converse.
+	// Scoped to Converse specifically: the same model reasons in a different
+	// shape on the mantle chat-completions surface.
+	//
+	// Absent or unrecognised falls back to the caller's family detection.
+	BedrockReasoningShape BedrockReasoningShape `json:"bedrock_reasoning_shape,omitempty"`
+
+	// Base path Bedrock Mantle serves this model's OpenAI-compatible APIs on.
+	// Mantle answers a model on exactly one of its two paths and 400s on the
+	// other ("isn't supported on this route"), so a new closed generation that
+	// nothing names falls through to the wrong one.
+	//
+	// Absent or unrecognised falls back to the caller's family detection.
+	BedrockMantleBasePath BedrockMantleBasePath `json:"bedrock_mantle_base_path,omitempty"`
+
+	// Whether this model verifies the signature on every reasoningText block it
+	// is handed back on Bedrock Converse. Claude does: a thinking block with no
+	// signature is rejected in every serialisation (field absent gives
+	// "thinking.signature: Field required", present but empty gives "each
+	// thinking block must contain thinking" or "Invalid signature"), so an
+	// unsigned block must be left out of the replay. Nova and MiniMax do not,
+	// and reject a present-but-empty signature instead.
+	//
+	// Absent falls back to the caller's family detection.
+	BedrockRequiresSignedReasoning *bool `json:"bedrock_requires_signed_reasoning,omitempty"`
+
+	// Whether Converse accepts image blocks inside a toolResult. Scoped to Converse:
+	// gpt-5.6 rejects them there but reads them in Responses tool output.
+	//
+	// Absent falls back to the caller's family detection.
+	SupportsConverseToolResultImages *bool `json:"supports_converse_tool_result_images,omitempty"`
+}
+
+// BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it
+// is carried by the datasheet row's provider, not by the value — see
+// ModelCapabilities.BedrockAPIs.
+type BedrockAPI string
+
+const (
+	// Served by bedrock-runtime.
+	BedrockAPIConverse BedrockAPI = "converse"
+	BedrockAPIInvoke   BedrockAPI = "invoke"
+	BedrockAPIMessages BedrockAPI = "messages"
+
+	// Served by bedrock-mantle today, and by bedrock-runtime once that surface
+	// is wired — the row's provider distinguishes them.
+	BedrockAPIChatCompletions BedrockAPI = "chat_completions"
+	BedrockAPIResponses       BedrockAPI = "responses"
+)
+
+// BedrockAPIValues lists every recognised BedrockAPI.
+var BedrockAPIValues = []BedrockAPI{
+	BedrockAPIConverse,
+	BedrockAPIInvoke,
+	BedrockAPIMessages,
+	BedrockAPIChatCompletions,
+	BedrockAPIResponses,
+}
+
+// IsValid reports whether a is an API this binary knows how to reach. Values the
+// datasheet publishes ahead of the runtime are simply not valid yet, and callers
+// skip them.
+func (a BedrockAPI) IsValid() bool {
+	return slices.Contains(BedrockAPIValues, a)
+}
+
+// BedrockReasoningShape names the reasoning content variant a model uses on
+// Bedrock Converse. The two are mutually exclusive and not interchangeable:
+// replaying the wrong one is rejected (400 on Anthropic, an opaque 500 on
+// OpenAI and xAI).
+type BedrockReasoningShape string
+
+const (
+	// reasoningContent.reasoningText{text,signature} — Anthropic, DeepSeek.
+	BedrockReasoningShapeText BedrockReasoningShape = "reasoning_text"
+
+	// reasoningContent.redactedContent, one opaque blob — OpenAI, xAI.
+	BedrockReasoningShapeRedacted BedrockReasoningShape = "redacted_content"
+)
+
+// BedrockReasoningShapeValues lists every recognised BedrockReasoningShape.
+var BedrockReasoningShapeValues = []BedrockReasoningShape{
+	BedrockReasoningShapeText,
+	BedrockReasoningShapeRedacted,
+}
+
+// IsValid reports whether s is a shape this binary knows how to emit.
+func (s BedrockReasoningShape) IsValid() bool {
+	return slices.Contains(BedrockReasoningShapeValues, s)
+}
+
+// BedrockMantleBasePath names the URL base path Bedrock Mantle serves a model's
+// OpenAI-compatible APIs on. The two are mutually exclusive: the open-weight
+// families answer on the bare path and the closed frontier ones on "openai/v1".
+type BedrockMantleBasePath string
+
+const (
+	// https://bedrock-mantle.{region}.api.aws/v1/... — gpt-oss, Gemma 3.
+	BedrockMantleBasePathV1 BedrockMantleBasePath = "v1"
+
+	// https://bedrock-mantle.{region}.api.aws/openai/v1/... — closed gpt-5.x and
+	// gpt-6.x, Gemma 4, Grok.
+	BedrockMantleBasePathOpenAIV1 BedrockMantleBasePath = "openai/v1"
+)
+
+// BedrockMantleBasePathValues lists every recognised BedrockMantleBasePath.
+var BedrockMantleBasePathValues = []BedrockMantleBasePath{
+	BedrockMantleBasePathV1,
+	BedrockMantleBasePathOpenAIV1,
+}
+
+// IsValid reports whether p is a base path this binary knows how to build.
+func (p BedrockMantleBasePath) IsValid() bool {
+	return slices.Contains(BedrockMantleBasePathValues, p)
 }
 
 // ModelParameterDescriptor is one entry of the datasheet's model_parameters

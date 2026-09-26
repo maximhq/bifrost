@@ -17,6 +17,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/overhead"
 	"go.opentelemetry.io/otel/attribute"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
@@ -113,6 +114,10 @@ type Profile struct {
 	MetricsEndpoint     *schemas.SecretVar `json:"metrics_endpoint,omitempty"`
 	MetricsPushInterval int                `json:"metrics_push_interval,omitempty"` // in seconds, default 15
 
+	// Exports bifrost_overhead_component_microseconds (split by overhead_component). Off by
+	// default. Needs MetricsEnabled and tracing on (the breakdown comes from completed spans).
+	OverheadBreakdownEnabled bool `json:"overhead_breakdown_enabled,omitempty"`
+
 	// RequestHeaders lists request-header name patterns (exact or wildcard like "x-custom-*"
 	// or "*") whose captured values are attached to the root span as attributes.
 	RequestHeaders []string `json:"request_headers,omitempty"`
@@ -121,6 +126,10 @@ type Profile struct {
 	// When true, only metadata (model, tokens, latency, etc.) is exported; input/output message
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
+
+	// ExportRawPayloads attaches raw provider bodies to LLM spans. Off by default;
+	// requires store_raw_request_response and is suppressed by disable_content_logging.
+	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
 
 	// GroupTracesBySession, when true, groups all requests sharing the same x-bf-session-id
 	// header into a single OTEL trace: every span adopts a session-derived trace ID and each
@@ -184,6 +193,9 @@ type Config struct {
 	// single-object config it is read from the object; in a profiles wrapper it is read
 	// from the top-level field (or hoisted from the first profile that carries one).
 	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+
+	// ExportOverheadSpans exports internal overhead/latency spans; nil/false drops them.
+	ExportOverheadSpans *bool `json:"export_overhead_spans,omitempty"`
 }
 
 // UnmarshalJSON normalizes both supported config shapes into Profiles. A wrapper object
@@ -198,10 +210,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*c = Config(w)
-		// Allow plugin_span_filter to live on the first profile too; hoist it if the
-		// top-level field was omitted.
+		// Allow plugin_span_filter / export_overhead_spans to live on the first profile
+		// too; hoist them if the top-level field was omitted.
 		if c.PluginSpanFilter == nil {
 			c.PluginSpanFilter = hoistSpanFilter(data)
+		}
+		if c.ExportOverheadSpans == nil {
+			c.ExportOverheadSpans = hoistExportOverhead(data)
 		}
 		return nil
 	}
@@ -212,34 +227,28 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	c.Profiles = []*Profile{&prof}
-	c.PluginSpanFilter = spanFilterFrom(data)
+	carrier := spanFilterFrom(data)
+	c.PluginSpanFilter = carrier.PluginSpanFilter
+	c.ExportOverheadSpans = carrier.ExportOverheadSpans
 	return nil
 }
 
-// spanFilterCarrier captures only the plugin_span_filter field from a config or profile object.
+// spanFilterCarrier captures only the span-filter fields from a config or profile object.
 type spanFilterCarrier struct {
-	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+	PluginSpanFilter    *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+	ExportOverheadSpans *bool             `json:"export_overhead_spans,omitempty"`
 }
 
-// spanFilterFrom extracts a top-level plugin_span_filter from a JSON object, or nil.
-func spanFilterFrom(data []byte) *PluginSpanFilter {
+// spanFilterFrom extracts the top-level span-filter fields from a JSON object.
+func spanFilterFrom(data []byte) spanFilterCarrier {
 	var c spanFilterCarrier
-	if err := sonic.Unmarshal(data, &c); err != nil {
-		return nil
-	}
-	return c.PluginSpanFilter
+	_ = sonic.Unmarshal(data, &c)
+	return c
 }
 
-// hoistSpanFilter returns the first plugin_span_filter found among the profiles of a
-// wrapper-shaped config, used as a fallback when the top-level field is absent.
+// hoistSpanFilter falls back to the first profile's plugin_span_filter.
 func hoistSpanFilter(data []byte) *PluginSpanFilter {
-	var w struct {
-		Profiles []spanFilterCarrier `json:"profiles"`
-	}
-	if err := sonic.Unmarshal(data, &w); err != nil {
-		return nil
-	}
-	for _, p := range w.Profiles {
+	for _, p := range profileCarriers(data) {
 		if p.PluginSpanFilter != nil {
 			return p.PluginSpanFilter
 		}
@@ -247,35 +256,58 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 	return nil
 }
 
+// hoistExportOverhead falls back to the first profile's export_overhead_spans.
+func hoistExportOverhead(data []byte) *bool {
+	for _, p := range profileCarriers(data) {
+		if p.ExportOverheadSpans != nil {
+			return p.ExportOverheadSpans
+		}
+	}
+	return nil
+}
+
+// profileCarriers reads the span-filter fields off each profile of a wrapper-shaped config.
+func profileCarriers(data []byte) []spanFilterCarrier {
+	var w struct {
+		Profiles []spanFilterCarrier `json:"profiles"`
+	}
+	if err := sonic.Unmarshal(data, &w); err != nil {
+		return nil
+	}
+	return w.Profiles
+}
+
 // profileForStorage is the persisted form of a single profile: *SecretVar fields are
 // flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
 // persistence.
 type profileForStorage struct {
-	Enabled                bool              `json:"enabled"`
-	TracesEnabled          bool              `json:"traces_enabled"`
-	ServiceName            string            `json:"service_name"`
-	CollectorURL           string            `json:"collector_url"`
-	Headers                map[string]string `json:"headers,omitempty"`
-	TraceHeaders           map[string]string `json:"trace_headers,omitempty"`
-	MetricsHeaders         map[string]string `json:"metrics_headers,omitempty"`
-	TraceType              TraceType         `json:"trace_type"`
-	Protocol               Protocol          `json:"protocol"`
-	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
-	Insecure               bool              `json:"insecure"`
-	ExportTimeout          int               `json:"export_timeout,omitempty"`
-	MetricsEnabled         bool              `json:"metrics_enabled"`
-	MetricsEndpoint        string            `json:"metrics_endpoint,omitempty"`
-	MetricsPushInterval    int               `json:"metrics_push_interval,omitempty"`
-	RequestHeaders         []string          `json:"request_headers,omitempty"`
-	DisableContentLogging  bool              `json:"disable_content_logging,omitempty"`
-	GroupTracesBySession   bool              `json:"group_traces_by_session,omitempty"`
-	DisableRootSpanContent bool              `json:"disable_root_span_content,omitempty"`
+	Enabled                  bool              `json:"enabled"`
+	TracesEnabled            bool              `json:"traces_enabled"`
+	ServiceName              string            `json:"service_name"`
+	CollectorURL             string            `json:"collector_url"`
+	Headers                  map[string]string `json:"headers,omitempty"`
+	TraceHeaders             map[string]string `json:"trace_headers,omitempty"`
+	MetricsHeaders           map[string]string `json:"metrics_headers,omitempty"`
+	TraceType                TraceType         `json:"trace_type"`
+	Protocol                 Protocol          `json:"protocol"`
+	TLSCACert                string            `json:"tls_ca_cert,omitempty"`
+	Insecure                 bool              `json:"insecure"`
+	ExportTimeout            int               `json:"export_timeout,omitempty"`
+	MetricsEnabled           bool              `json:"metrics_enabled"`
+	MetricsEndpoint          string            `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval      int               `json:"metrics_push_interval,omitempty"`
+	OverheadBreakdownEnabled bool              `json:"overhead_breakdown_enabled,omitempty"`
+	RequestHeaders           []string          `json:"request_headers,omitempty"`
+	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
+	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
+	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
 type configForStorage struct {
-	Profiles         []profileForStorage `json:"profiles"`
-	PluginSpanFilter *PluginSpanFilter   `json:"plugin_span_filter,omitempty"`
+	Profiles            []profileForStorage `json:"profiles"`
+	PluginSpanFilter    *PluginSpanFilter   `json:"plugin_span_filter,omitempty"`
+	ExportOverheadSpans *bool               `json:"export_overhead_spans,omitempty"`
 }
 
 // MarshalForStorage serializes Config to JSON with *SecretVar fields as plain strings
@@ -284,33 +316,35 @@ type configForStorage struct {
 // For HTTP API responses use json.Marshal directly so clients receive full SecretVar objects.
 func (c *Config) MarshalForStorage() ([]byte, error) {
 	out := configForStorage{
-		Profiles:         make([]profileForStorage, 0, len(c.Profiles)),
-		PluginSpanFilter: c.PluginSpanFilter,
+		Profiles:            make([]profileForStorage, 0, len(c.Profiles)),
+		PluginSpanFilter:    c.PluginSpanFilter,
+		ExportOverheadSpans: c.ExportOverheadSpans,
 	}
 	for _, p := range c.Profiles {
 		if p == nil {
 			continue
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
-			Enabled:                p.Enabled,
-			TracesEnabled:          p.TracesEnabled,
-			ServiceName:            p.ServiceName,
-			CollectorURL:           schemas.SecretVarAsString(p.CollectorURL),
-			Headers:                p.Headers,
-			TraceHeaders:           p.TraceHeaders,
-			MetricsHeaders:         p.MetricsHeaders,
-			TraceType:              p.TraceType,
-			Protocol:               p.Protocol,
-			TLSCACert:              p.TLSCACert,
-			Insecure:               p.Insecure,
-			ExportTimeout:          p.ExportTimeout,
-			MetricsEnabled:         p.MetricsEnabled,
-			MetricsEndpoint:        schemas.SecretVarAsString(p.MetricsEndpoint),
-			MetricsPushInterval:    p.MetricsPushInterval,
-			RequestHeaders:         p.RequestHeaders,
-			DisableContentLogging:  p.DisableContentLogging,
-			GroupTracesBySession:   p.GroupTracesBySession,
-			DisableRootSpanContent: p.DisableRootSpanContent,
+			Enabled:                  p.Enabled,
+			TracesEnabled:            p.TracesEnabled,
+			ServiceName:              p.ServiceName,
+			CollectorURL:             schemas.SecretVarAsString(p.CollectorURL),
+			Headers:                  p.Headers,
+			TraceHeaders:             p.TraceHeaders,
+			MetricsHeaders:           p.MetricsHeaders,
+			TraceType:                p.TraceType,
+			Protocol:                 p.Protocol,
+			TLSCACert:                p.TLSCACert,
+			Insecure:                 p.Insecure,
+			ExportTimeout:            p.ExportTimeout,
+			MetricsEnabled:           p.MetricsEnabled,
+			MetricsEndpoint:          schemas.SecretVarAsString(p.MetricsEndpoint),
+			MetricsPushInterval:      p.MetricsPushInterval,
+			OverheadBreakdownEnabled: p.OverheadBreakdownEnabled,
+			RequestHeaders:           p.RequestHeaders,
+			DisableContentLogging:    p.DisableContentLogging,
+			GroupTracesBySession:     p.GroupTracesBySession,
+			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
 	}
 	return sonic.Marshal(out)
@@ -326,7 +360,7 @@ func (c *Config) Redacted() *Config {
 	if c == nil {
 		return nil
 	}
-	redacted := &Config{PluginSpanFilter: c.PluginSpanFilter}
+	redacted := &Config{PluginSpanFilter: c.PluginSpanFilter, ExportOverheadSpans: c.ExportOverheadSpans}
 	if c.Profiles != nil {
 		redacted.Profiles = make([]*Profile, 0, len(c.Profiles))
 		for _, p := range c.Profiles {
@@ -383,15 +417,17 @@ func hideResolvedEnvValue(v *schemas.SecretVar) *schemas.SecretVar {
 // plus an optional metrics exporter, along with the per-profile identity (service name)
 // used when converting traces for this destination.
 type otelTarget struct {
-	serviceName            string
-	url                    string
-	traceType              TraceType
-	client                 OtelClient
-	metricsExporter        *MetricsExporter
-	requestHeaders         []string
-	disableContentLogging  bool
-	groupTracesBySession   bool
-	disableRootSpanContent bool
+	serviceName              string
+	url                      string
+	traceType                TraceType
+	client                   OtelClient
+	metricsExporter          *MetricsExporter
+	requestHeaders           []string
+	disableContentLogging    bool
+	exportRawPayloads        bool
+	groupTracesBySession     bool
+	disableRootSpanContent   bool
+	overheadBreakdownEnabled bool
 
 	// exportTimeout bounds a single Emit. See Profile.ExportTimeout.
 	exportTimeout time.Duration
@@ -460,7 +496,8 @@ type OtelPlugin struct {
 
 	pricingManager *modelcatalog.ModelCatalog
 
-	pluginSpanFilter *PluginSpanFilter
+	pluginSpanFilter    *PluginSpanFilter
+	exportOverheadSpans bool
 }
 
 // Init function for the OTEL plugin
@@ -511,6 +548,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		attributesFromEnvironment: attributesFromEnvironment,
 		instanceAttrs:             instanceAttrs,
 		pluginSpanFilter:          config.PluginSpanFilter,
+		exportOverheadSpans:       config.ExportOverheadSpans != nil && *config.ExportOverheadSpans,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 
@@ -578,14 +616,21 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		return nil, fmt.Errorf("profile %d: %w", index, err)
 	}
 
+	// The breakdown needs the metrics exporter, built only when metrics_enabled; warn but keep the profile.
+	if profile.OverheadBreakdownEnabled && !profile.MetricsEnabled {
+		logger.Warn("otel profile %d: overhead_breakdown_enabled needs metrics_enabled; no overhead component metrics will be exported", index)
+	}
+
 	target := &otelTarget{
-		serviceName:            serviceName,
-		traceType:              profile.TraceType,
-		requestHeaders:         slices.Clone(profile.RequestHeaders),
-		disableContentLogging:  profile.DisableContentLogging,
-		groupTracesBySession:   profile.GroupTracesBySession,
-		disableRootSpanContent: profile.DisableRootSpanContent,
-		exportTimeout:          exportTimeout,
+		serviceName:              serviceName,
+		traceType:                profile.TraceType,
+		requestHeaders:           slices.Clone(profile.RequestHeaders),
+		disableContentLogging:    profile.DisableContentLogging,
+		exportRawPayloads:        profile.ExportRawPayloads,
+		groupTracesBySession:     profile.GroupTracesBySession,
+		disableRootSpanContent:   profile.DisableRootSpanContent,
+		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
+		exportTimeout:            exportTimeout,
 	}
 
 	// Build the trace client only when traces are enabled; Inject skips a nil client.
@@ -754,7 +799,7 @@ func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostR
 // PostLLMHook records the cache-hit metric. Every other metric is derived from the
 // completed trace in recordMetricsFromTrace, but semantic-cache hits short-circuit the
 // request in a PreHook before any llm.call span exists, so the cache signal never reaches
-// a span. We therefore read CacheDebug straight off the response here, mirroring how the
+// a span. We therefore read cache metadata through the compatibility response field here, mirroring how the
 // Prometheus telemetry plugin and the Datadog plugin emit this metric.
 //
 // This is the ONLY place RecordCacheHit is called — do not also emit it from
@@ -825,6 +870,30 @@ func (p *OtelPlugin) RecordHTTPMetrics(ctx context.Context, path, method, status
 // Implements schemas.ObservabilityPlugin interface.
 // This method is called asynchronously by TracingMiddleware after the response
 // has been written to the client.
+// ConsumesOverheadSpans opts into the internal breakdown spans (schemas.OverheadSpanConsumer)
+// when any profile enables the histogram, so recordMetricsFromTrace can decompose overhead.
+// Independent of trace export, which still drops those spans per export_overhead_spans.
+func (p *OtelPlugin) ConsumesOverheadSpans() bool {
+	for _, t := range p.targets {
+		if t.overheadBreakdownEnabled {
+			return true
+		}
+	}
+	return false
+}
+
+// ConsumesRawPayloads opts in when any profile exports raw bodies.
+func (p *OtelPlugin) ConsumesRawPayloads() bool {
+	for _, t := range p.targets {
+		// Raw bodies ride spans: a nil client means metrics-only, and
+		// disable_content_logging drops them at conversion.
+		if t.client != nil && t.exportRawPayloads && !t.disableContentLogging {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil
@@ -840,13 +909,13 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			// Metrics first: they are SDK-buffered and never touch the network here, so
 			// they still get recorded even when the trace endpoint is broken.
 			if t.metricsExporter != nil {
-				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace)
+				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace, t.overheadBreakdownEnabled)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
@@ -902,15 +971,6 @@ func (p *OtelPlugin) RequestHeaderPatterns() []string {
 }
 
 // Helper functions for type-safe attribute extraction from trace spans
-func getStringAttr(attrs map[string]any, key string) string {
-	if attrs == nil {
-		return ""
-	}
-	if v, ok := attrs[key].(string); ok {
-		return v
-	}
-	return ""
-}
 
 // getStringSliceAttr reads an array-valued span attribute ([]string or []any).
 func getStringSliceAttr(attrs map[string]any, key string) []string {
@@ -937,9 +997,9 @@ func entitySetFromAttrs(attrs map[string]any, idsKey, namesKey, scalarIDKey, sca
 	ids := getStringSliceAttr(attrs, idsKey)
 	names := getStringSliceAttr(attrs, namesKey)
 	if len(ids) == 0 {
-		if id := getStringAttr(attrs, scalarIDKey); id != "" {
+		if id := schemas.GetStringAttr(attrs, scalarIDKey); id != "" {
 			ids = []string{id}
-			names = []string{getStringAttr(attrs, scalarNameKey)}
+			names = []string{schemas.GetStringAttr(attrs, scalarNameKey)}
 		}
 	}
 	return schemas.CanonicalEntitySet(ids, names)
@@ -958,54 +1018,10 @@ func entitySetFromContext(ctx context.Context, idsKey, namesKey, scalarIDKey, sc
 	return schemas.CanonicalEntitySet(ids, names)
 }
 
-func getIntAttr(attrs map[string]any, key string) int {
-	if attrs == nil {
-		return 0
-	}
-	switch v := attrs[key].(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
-	}
-	return 0
-}
-
-func getFloat64Attr(attrs map[string]any, key string) float64 {
-	if attrs == nil {
-		return 0
-	}
-	switch v := attrs[key].(type) {
-	case float64:
-		return v
-	case int:
-		return float64(v)
-	case int64:
-		return float64(v)
-	}
-	return 0
-}
-
 // getFloat64AttrOK is getFloat64Attr with presence reporting. Needed where zero
 // is a meaningful value distinct from "absent": an upstream total of 0 (a cache
 // hit, or a request rejected before any provider call) means all of the elapsed
 // time was Bifrost's, whereas a missing attribute means it was never measured.
-func getFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
-	if attrs == nil {
-		return 0, false
-	}
-	switch v := attrs[key].(type) {
-	case float64:
-		return v, true
-	case int:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	}
-	return 0, false
-}
 
 // overheadMicrosFromTrace reads Bifrost's own cost (in microseconds) off the root
 // span, where the tracer stamps it as AttrBifrostOverheadDurationMs (root duration
@@ -1016,7 +1032,7 @@ func overheadMicrosFromTrace(trace *schemas.Trace) (float64, bool) {
 	if trace == nil || trace.RootSpan == nil {
 		return 0, false
 	}
-	overheadMs, ok := getFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	overheadMs, ok := schemas.GetFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	if !ok {
 		return 0, false
 	}
@@ -1024,31 +1040,116 @@ func overheadMicrosFromTrace(trace *schemas.Trace) (float64, bool) {
 }
 
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
+//
+// Reads the typed span payload where the span carries it, falling back to the
+// attribute map for spans built by paths that do not populate it. Typed reads
+// cannot silently return a zero value for a mistyped or misspelled key, which is
+// how gen_ai.response.service_tier went missing here for as long as it did.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
-	method := getStringAttr(attrs, "request.type")
+
+	provider := schemas.GetStringAttr(attrs, schemas.AttrProviderName)
+	model := schemas.GetStringAttr(attrs, schemas.AttrRequestModel)
+	method := schemas.GetStringAttr(attrs, schemas.AttrLegacyRequestType)
+	if llm := span.LLM; llm != nil {
+		if llm.Provider != "" {
+			provider = schemas.OTelProviderName(llm.Provider)
+		}
+		if llm.RequestModel != "" {
+			model = llm.RequestModel
+		}
+		if llm.RequestType != "" {
+			method = string(llm.RequestType)
+		}
+	}
 	if method == "" {
 		method = span.Name
 	}
-	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName)
-	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName)
-	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
+
+	e := span.Enrichment
+	teamIDs, teamNames := entitySet(e, attrs, entityTeam)
+	customerIDs, customerNames := entitySet(e, attrs, entityCustomer)
+	buIDs, buNames := entitySet(e, attrs, entityBusinessUnit)
+
 	return BuildBifrostAttributes(
-		getStringAttr(attrs, schemas.AttrProviderName),
-		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
+		provider,
+		schemas.NormalizeModelName(model),
 		method,
-		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyID),
-		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyName),
-		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyID),
-		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyName),
-		getIntAttr(attrs, schemas.AttrBifrostFallbackIndex),
+		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyID, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyName, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyName }),
+		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyID, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyName, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyName }),
+		fallbackIndex(e, attrs),
 		teamIDs,
 		teamNames,
 		customerIDs,
 		customerNames,
 		buIDs,
 		buNames,
+		enrichedStr(e, attrs, schemas.AttrBifrostProjectID, func(e *schemas.SpanEnrichment) string { return e.ProjectID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostProjectName, func(e *schemas.SpanEnrichment) string { return e.ProjectName }),
 	)
+}
+
+// enrichedStr prefers the typed dimension, falling back to the attribute key.
+func enrichedStr(e *schemas.SpanEnrichment, attrs map[string]any, key string, pick func(*schemas.SpanEnrichment) string) string {
+	if e != nil {
+		if v := pick(e); v != "" {
+			return v
+		}
+	}
+	return schemas.GetStringAttr(attrs, key)
+}
+
+func fallbackIndex(e *schemas.SpanEnrichment, attrs map[string]any) int {
+	if e != nil && e.FallbackIndex != nil {
+		return *e.FallbackIndex
+	}
+	return schemas.GetIntAttr(attrs, schemas.AttrBifrostFallbackIndex)
+}
+
+// entityKind names one of the three multi-valued governance entity sets.
+type entityKind int
+
+const (
+	entityTeam entityKind = iota
+	entityCustomer
+	entityBusinessUnit
+)
+
+// entitySet resolves a multi-valued entity set, preferring the typed dimensions.
+// A set collapses to its scalar form when only the singular dimension is present.
+func entitySet(e *schemas.SpanEnrichment, attrs map[string]any, kind entityKind) (idsCSV, namesCSV string) {
+	var idsKey, namesKey, scalarIDKey, scalarNameKey string
+	var ids, names []string
+	var scalarID, scalarName string
+	switch kind {
+	case entityTeam:
+		idsKey, namesKey = schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.TeamIDs, e.TeamNames, e.TeamID, e.TeamName
+		}
+	case entityCustomer:
+		idsKey, namesKey = schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.CustomerIDs, e.CustomerNames, e.CustomerID, e.CustomerName
+		}
+	case entityBusinessUnit:
+		idsKey, namesKey = schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.BusinessUnitIDs, e.BusinessUnitNames, e.BusinessUnitID, e.BusinessUnitName
+		}
+	}
+	if e == nil {
+		return entitySetFromAttrs(attrs, idsKey, namesKey, scalarIDKey, scalarNameKey)
+	}
+	if len(ids) == 0 && scalarID != "" {
+		ids, names = []string{scalarID}, []string{scalarName}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
 }
 
 // buildContextAttrs builds the same metric dimension attrs as buildSpanAttrs, but sourced
@@ -1078,6 +1179,8 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 		customerNames,
 		buIDs,
 		buNames,
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
 	)
 }
 
@@ -1086,17 +1189,17 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 func buildMCPSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
 	out := []attribute.KeyValue{
-		attribute.String(schemas.AttrMCPMethodName, getStringAttr(attrs, schemas.AttrMCPMethodName)),
+		attribute.String(schemas.AttrMCPMethodName, schemas.GetStringAttr(attrs, schemas.AttrMCPMethodName)),
 	}
-	if tool := getStringAttr(attrs, schemas.AttrToolName); tool != "" {
+	if tool := schemas.GetStringAttr(attrs, schemas.AttrToolName); tool != "" {
 		out = append(out, attribute.String(schemas.AttrToolName, tool))
 	}
-	if transport := getStringAttr(attrs, schemas.AttrNetworkTransport); transport != "" {
+	if transport := schemas.GetStringAttr(attrs, schemas.AttrNetworkTransport); transport != "" {
 		out = append(out, attribute.String(schemas.AttrNetworkTransport, transport))
 	}
 	// Governance identity: bifrost.* span attrs → flat metric label names.
 	for spanKey, labelKey := range mcpGovernanceLabelMap {
-		if v := getStringAttr(attrs, spanKey); v != "" {
+		if v := schemas.GetStringAttr(attrs, spanKey); v != "" {
 			out = append(out, attribute.String(labelKey, v))
 		}
 	}
@@ -1113,6 +1216,8 @@ var mcpGovernanceLabelMap = map[string]string{
 	schemas.AttrBifrostCustomerName:     "customer_name",
 	schemas.AttrBifrostBusinessUnitID:   "business_unit_id",
 	schemas.AttrBifrostBusinessUnitName: "business_unit_name",
+	schemas.AttrBifrostProjectID:        "project_id",
+	schemas.AttrBifrostProjectName:      "project_name",
 }
 
 // recordMCPMetricsFromTrace records the duration metric once per MCP client span. Called
@@ -1128,12 +1233,12 @@ func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *Me
 			continue
 		}
 		// Skip un-enriched spans so we never emit an empty mcp.method.name dimension.
-		if getStringAttr(span.Attributes, schemas.AttrMCPMethodName) == "" {
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrMCPMethodName) == "" {
 			continue
 		}
 		mcpAttrs := buildMCPSpanAttrs(span)
 		if span.Status == schemas.SpanStatusError {
-			errorType := getStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
 			if errorType == "" {
 				errorType = "_OTHER"
 			}
@@ -1142,7 +1247,7 @@ func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *Me
 		// Prefer tool-execution (CallTool) latency over span wall-time (which covers PostHooks).
 		// Fall back to wall-time when it's absent (e.g. the op failed before returning one).
 		var durationSeconds float64
-		if toolMs := getIntAttr(span.Attributes, schemas.AttrBifrostMCPToolDurationMs); toolMs > 0 {
+		if toolMs := schemas.GetIntAttr(span.Attributes, schemas.AttrBifrostMCPToolDurationMs); toolMs > 0 {
 			durationSeconds = float64(toolMs) / 1000.0
 		} else if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
 			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
@@ -1158,7 +1263,7 @@ func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *Me
 // per llm.call/retry span so fallback attempts and failed retries are counted with
 // their own provider/model/fallback_index labels. Per-trace metrics (tokens, cost,
 // TTFT) are recorded once, keyed off the final (latest) attempt span.
-func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace, recordOverheadBreakdown bool) {
 	if trace == nil || exporter == nil {
 		return
 	}
@@ -1170,8 +1275,8 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		}
 		// Skip spans with no provider and no model (avoid empty-label series); also
 		// excludes them from final-span selection below.
-		if getStringAttr(span.Attributes, schemas.AttrProviderName) == "" &&
-			strings.TrimSpace(getStringAttr(span.Attributes, schemas.AttrRequestModel)) == "" {
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrProviderName) == "" &&
+			strings.TrimSpace(schemas.GetStringAttr(span.Attributes, schemas.AttrRequestModel)) == "" {
 			continue
 		}
 
@@ -1186,7 +1291,7 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 
 		if span.Status == schemas.SpanStatusError {
 			statusCode := "unknown"
-			if code := getIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
+			if code := schemas.GetIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
 				statusCode = strconv.Itoa(code)
 			}
 			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)], attribute.String("status_code", statusCode))
@@ -1211,6 +1316,15 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 			labelSpan = trace.RootSpan
 		}
 		exporter.RecordOverheadLatency(ctx, overheadMicros, buildSpanAttrs(labelSpan)...)
+
+		// Same overhead, split by overhead_component. Same base attrs as the scalar above,
+		// so the components sum to it per label set.
+		if recordOverheadBreakdown {
+			for component, micros := range overhead.ComputeForMetrics(trace) {
+				attrs := append(buildSpanAttrs(labelSpan), attribute.String("overhead_component", component))
+				exporter.RecordOverheadComponent(ctx, micros, attrs...)
+			}
+		}
 	}
 
 	if finalSpan == nil {
@@ -1223,8 +1337,8 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	attrs := finalSpan.Attributes
 
 	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label series.
-	if getStringAttr(attrs, schemas.AttrProviderName) == "" &&
-		strings.TrimSpace(getStringAttr(attrs, schemas.AttrRequestModel)) == "" {
+	if schemas.GetStringAttr(attrs, schemas.AttrProviderName) == "" &&
+		strings.TrimSpace(schemas.GetStringAttr(attrs, schemas.AttrRequestModel)) == "" {
 		return
 	}
 
@@ -1232,28 +1346,28 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 
 	// Record retries used for this request. Read off the final span (the last attempt's
 	// attempt index) so the value is "total retries used", matching the Prometheus side.
-	retries := getIntAttr(attrs, schemas.AttrBifrostRetries)
+	retries := schemas.GetIntAttr(attrs, schemas.AttrBifrostRetries)
 	exporter.RecordRequestRetries(ctx, float64(retries), otelAttrs...)
 
 	// Record token usage
-	inputTokens := getIntAttr(attrs, schemas.AttrInputTokens)
+	inputTokens := schemas.GetIntAttr(attrs, schemas.AttrInputTokens)
 	if inputTokens > 0 {
 		exporter.RecordInputTokens(ctx, int64(inputTokens), otelAttrs...)
 	}
 
-	outputTokens := getIntAttr(attrs, schemas.AttrOutputTokens)
+	outputTokens := schemas.GetIntAttr(attrs, schemas.AttrOutputTokens)
 	if outputTokens > 0 {
 		exporter.RecordOutputTokens(ctx, int64(outputTokens), otelAttrs...)
 	}
 
 	// Record cost if available
-	cost := getFloat64Attr(attrs, schemas.AttrUsageCost)
+	cost := schemas.GetFloat64Attr(attrs, schemas.AttrUsageCost)
 	if cost > 0 {
 		exporter.RecordCost(ctx, cost, otelAttrs...)
 	}
 
 	// Record streaming latency metrics if available
-	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstChunk)
+	ttft := schemas.GetFloat64Attr(attrs, schemas.AttrTimeToFirstChunk)
 	if ttft > 0 {
 		exporter.RecordStreamFirstTokenLatency(ctx, ttft, otelAttrs...)
 	}
@@ -1264,22 +1378,22 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	// span-attr keys across the chat and responses APIs; the 5m/1h breakdown uses
 	// API-family-specific keys that are mutually exclusive per request, so a fallback read
 	// covers both.
-	if n := getIntAttr(attrs, schemas.AttrUsageCacheReadInputTokens); n > 0 {
+	if n := schemas.GetIntAttr(attrs, schemas.AttrUsageCacheReadInputTokens); n > 0 {
 		exporter.RecordCacheReadInputTokens(ctx, int64(n), otelAttrs...)
 	}
-	if n := getIntAttr(attrs, schemas.AttrUsageCacheCreationInputTokens); n > 0 {
+	if n := schemas.GetIntAttr(attrs, schemas.AttrUsageCacheCreationInputTokens); n > 0 {
 		exporter.RecordCacheWriteInputTokens(ctx, int64(n), otelAttrs...)
 	}
-	cacheWrite5m := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite5m)
+	cacheWrite5m := schemas.GetIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite5m)
 	if cacheWrite5m == 0 {
-		cacheWrite5m = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite5m)
+		cacheWrite5m = schemas.GetIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite5m)
 	}
 	if cacheWrite5m > 0 {
 		exporter.RecordCacheWriteInputTokens5m(ctx, int64(cacheWrite5m), otelAttrs...)
 	}
-	cacheWrite1h := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite1h)
+	cacheWrite1h := schemas.GetIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite1h)
 	if cacheWrite1h == 0 {
-		cacheWrite1h = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite1h)
+		cacheWrite1h = schemas.GetIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite1h)
 	}
 	if cacheWrite1h > 0 {
 		exporter.RecordCacheWriteInputTokens1h(ctx, int64(cacheWrite1h), otelAttrs...)

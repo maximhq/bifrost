@@ -15,10 +15,17 @@ var (
 	ClaudeChatWeb = UserAgentIdentifiers{"claude-chat-web", "claude-web"}
 	// ClaudeDesktop identifies requests from the Claude Desktop app.
 	ClaudeDesktop = UserAgentIdentifiers{"claude-desktop", "claude/"}
+	// ClaudeCowork identifies Edge-routed Cowork sessions independently of Claude Code.
+	ClaudeCowork = UserAgentIdentifiers{"claude-cowork"}
 	// ClaudeCLI identifies requests from Claude Code / Claude CLI clients.
 	ClaudeCLI = UserAgentIdentifiers{"claude-cli", "claude-code", "claude-vscode"}
 	// APIClient identifies generic programmatic API clients.
 	APIClient = UserAgentIdentifiers{"fasthttp"}
+	// Warp identifies the dashboard's own data agent talking to this gateway.
+	// Deliberately prefixed rather than a bare "warp": the identifiers are matched
+	// as substrings, and a four-letter word appears inside plenty of unrelated
+	// User-Agent strings.
+	Warp = UserAgentIdentifiers{"bifrost-warp"}
 	// CodexCLI identifies requests from Codex CLI clients.
 	CodexCLI = UserAgentIdentifiers{"codex-cli", "codex-tui"}
 	// CodexDesktop identifies requests from the Codex desktop app.
@@ -119,7 +126,11 @@ const (
 var UserAgentAppMatchers = []UserAgentAppMatcher{
 	{App: "Claude Chat Web", Identifiers: ClaudeChatWeb},
 	{App: "Claude Desktop", Identifiers: ClaudeDesktop},
+	{App: "Claude Cowork", Identifiers: ClaudeCowork},
 	{App: "Claude Code", Identifiers: ClaudeCLI},
+	// Ahead of API: Warp reaches the gateway over fasthttp, so the generic
+	// matcher would otherwise claim it first and label it a plain API client.
+	{App: "Warp", Identifiers: Warp},
 	{App: "API", Identifiers: APIClient},
 	{App: "Codex CLI", Identifiers: CodexCLI},
 	{App: "Codex Desktop", Identifiers: CodexDesktop},

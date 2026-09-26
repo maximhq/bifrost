@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -77,18 +78,70 @@ func runWithPTY(ctx context.Context, stdout io.Writer, cmd *exec.Cmd) error {
 		_, _ = io.Copy(stdout, ptmx)
 	}()
 
-	// Relay stdin: outer terminal → PTY master
-	// This goroutine will block on os.Stdin.Read after the child exits;
-	// that's expected and harmless — it unblocks on the next keystroke.
-	go func() {
-		_, _ = io.Copy(ptmx, os.Stdin)
-	}()
+	// Relay stdin: outer terminal → PTY master. Use an independently opened
+	// controlling-terminal descriptor when possible so it can be closed after
+	// the child exits. This matters to the launcher, which returns to its chooser
+	// and must not leave an old reader behind to steal the next keystroke.
+	input := io.Reader(os.Stdin)
+	var terminalInput *os.File
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		if tty, openErr := os.OpenFile("/dev/tty", os.O_RDONLY|syscall.O_NONBLOCK, 0); openErr == nil {
+			terminalInput = tty
+			input = tty
+		}
+	}
+	inputDone := make(chan struct{})
+	stopInput := make(chan struct{})
+	if terminalInput != nil {
+		go relayTerminalInput(ptmx, terminalInput, stopInput, inputDone)
+	} else {
+		go func() {
+			defer close(inputDone)
+			_, _ = io.Copy(ptmx, input)
+		}()
+	}
 
 	// Wait for the command to finish
 	err = cmd.Wait()
+	if terminalInput != nil {
+		close(stopInput)
+		_ = terminalInput.SetReadDeadline(time.Now())
+		<-inputDone
+		_ = terminalInput.Close()
+	}
 
 	// Drain any remaining PTY output
 	<-outDone
 
 	return err
+}
+
+// relayTerminalInput copies keyboard input into a child PTY while remaining
+// cancellable when the child exits. A short read deadline avoids leaving a
+// goroutine blocked on /dev/tty when the launcher needs stdin back.
+func relayTerminalInput(destination io.Writer, source *os.File, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	buffer := make([]byte, 4096)
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		_ = source.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, err := source.Read(buffer)
+		if n > 0 {
+			if _, writeErr := destination.Write(buffer[:n]); writeErr != nil {
+				return
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if os.IsTimeout(err) {
+			continue
+		}
+		return
+	}
 }

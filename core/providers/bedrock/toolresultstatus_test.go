@@ -51,3 +51,38 @@ func TestToolResultStatusFromIsError(t *testing.T) {
 		t.Fatalf("non-error tool call must keep status \"success\", got %v", results[1].Status)
 	}
 }
+
+// TestToolResultEmptyKeyChatSurface verifies that a string tool result whose
+// JSON carries an empty-string object key converts to a text block on the
+// chat-completions surface. Converse rejects such a document in the json
+// field ("The format of the value at ...toolResult.content.0.json is
+// invalid"), and convertToolMessages now shares tryParseJSONIntoContentBlock
+// with the Responses path, so both surfaces get the same fallback.
+func TestToolResultEmptyKeyChatSurface(t *testing.T) {
+	payload := `{"success":{"fullSubtreeExtensionCounts":{"":2,".md":1}}}`
+	msgs := []schemas.ChatMessage{
+		{
+			Role:            schemas.ChatMessageRoleTool,
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_emptykey")},
+			Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(payload)},
+		},
+	}
+
+	converted, err := convertToolMessages(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", msgs)
+	if err != nil {
+		t.Fatalf("convert tool messages: %v", err)
+	}
+	if len(converted.Content) != 1 || converted.Content[0].ToolResult == nil {
+		t.Fatalf("expected a single toolResult block, got %#v", converted.Content)
+	}
+	content := converted.Content[0].ToolResult.Content
+	if len(content) != 1 {
+		t.Fatalf("expected 1 tool result content block, got %d", len(content))
+	}
+	if content[0].JSON != nil {
+		t.Fatalf("empty-key payload must not be sent as a json block, got %s", string(content[0].JSON))
+	}
+	if content[0].Text == nil || *content[0].Text != payload {
+		t.Fatalf("expected text fallback carrying the original payload, got %v", content[0].Text)
+	}
+}

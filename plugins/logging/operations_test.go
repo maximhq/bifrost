@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/streaming"
+	"github.com/maximhq/bifrost/framework/tracing"
 )
 
 type testLogger struct{}
@@ -31,24 +32,24 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 	return schemas.NoopLogEvent
 }
 
-// fakeBatchStore is an in-memory batchaccounting.SweepStore for logging tests.
+// fakeBatchStore is an in-memory jobaccounting.SweepStore for logging tests.
 type fakeBatchStore struct {
-	jobs map[string]*cstables.TableBatchJob
+	jobs map[string]*cstables.TableProviderJob
 }
 
 func newFakeBatchStore() *fakeBatchStore {
-	return &fakeBatchStore{jobs: make(map[string]*cstables.TableBatchJob)}
+	return &fakeBatchStore{jobs: make(map[string]*cstables.TableProviderJob)}
 }
 
-func (s *fakeBatchStore) UpsertBatchJob(ctx context.Context, job *cstables.TableBatchJob) error {
+func (s *fakeBatchStore) UpsertProviderJob(ctx context.Context, job *cstables.TableProviderJob) error {
 	if job.ID == "" {
-		job.ID = cstables.BatchJobID(job.Provider, job.BatchID)
+		job.ID = cstables.ProviderJobID(cstables.ProviderJobKindBatch, job.Provider, job.JobID)
 	}
 	existing, ok := s.jobs[job.ID]
 	if !ok {
 		copied := *job
 		if copied.AccountingStatus == "" {
-			copied.AccountingStatus = cstables.BatchJobAccountingStatusPending
+			copied.AccountingStatus = cstables.ProviderJobAccountingStatusPending
 		}
 		s.jobs[job.ID] = &copied
 		return nil
@@ -76,7 +77,7 @@ func (s *fakeBatchStore) UpsertBatchJob(ctx context.Context, job *cstables.Table
 	return nil
 }
 
-func (s *fakeBatchStore) GetBatchJob(ctx context.Context, jobID string) (*cstables.TableBatchJob, error) {
+func (s *fakeBatchStore) GetProviderJob(ctx context.Context, jobID string) (*cstables.TableProviderJob, error) {
 	job, ok := s.jobs[jobID]
 	if !ok {
 		return nil, errors.New("missing batch job")
@@ -85,16 +86,27 @@ func (s *fakeBatchStore) GetBatchJob(ctx context.Context, jobID string) (*cstabl
 	return &copied, nil
 }
 
-func (s *fakeBatchStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*cstables.TableBatchJob, error) {
-	var jobs []*cstables.TableBatchJob
+func (s *fakeBatchStore) ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*cstables.TableProviderJob, error) {
+	var jobs []*cstables.TableProviderJob
+	if kind == "" {
+		kind = cstables.ProviderJobKindBatch
+	}
 	for _, job := range s.jobs {
+		// Mirror the real store: a sweeper only ever sees its own kind's rows.
+		jobKind := job.Kind
+		if jobKind == "" {
+			jobKind = cstables.ProviderJobKindBatch
+		}
+		if jobKind != kind {
+			continue
+		}
 		if provider != "" && job.Provider != provider {
 			continue
 		}
 		if job.NextCheckAt == nil || job.NextCheckAt.After(now) {
 			continue
 		}
-		if job.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || job.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+		if job.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted || job.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable {
 			continue
 		}
 		jobs = append(jobs, job)
@@ -102,23 +114,30 @@ func (s *fakeBatchStore) ListDueBatchJobs(ctx context.Context, provider string, 
 	return jobs, nil
 }
 
-func (s *fakeBatchStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+func (s *fakeBatchStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
 	entry, ok := s.jobs[jobID]
 	if !ok {
 		return false, errors.New("missing batch job")
 	}
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || entry.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted {
+		return false, nil
+	}
+	// "unpriceable" is a stop-polling marker, not a refusal of money: a caller
+	// holding real results may re-drive it. Mirrors the real store's allowUnpriceable,
+	// which this fake previously ignored — hiding the result-driven re-accounting path
+	// from every test using it.
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable && !allowUnpriceable {
 		return false, nil
 	}
 	// Claim staleness reads claimed_at, not updated_at — updated_at is refreshed by
-	// the unfenced UpsertBatchJob, so it cannot represent claim age.
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusProcessing &&
+	// the unfenced UpsertProviderJob, so it cannot represent claim age.
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusProcessing &&
 		entry.ClaimedAt != nil && entry.ClaimedAt.After(staleBefore) {
 		return false, nil
 	}
 	now := time.Now().UTC()
 	rid := runnerID
-	entry.AccountingStatus = cstables.BatchJobAccountingStatusProcessing
+	entry.AccountingStatus = cstables.ProviderJobAccountingStatusProcessing
 	entry.RunnerID = &rid
 	entry.ClaimedAt = &now
 	entry.UpdatedAt = now
@@ -139,7 +158,7 @@ func (s *fakeBatchStore) markTerminal(id, status, reason string) error {
 	return nil
 }
 
-func (s *fakeBatchStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
+func (s *fakeBatchStore) MarkProviderJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
 	entry, ok := s.jobs[id]
 	if !ok {
 		return errors.New("missing batch job")
@@ -149,7 +168,7 @@ func (s *fakeBatchStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id
 	return nil
 }
 
-func (s *fakeBatchStore) MarkBatchJobGovernanceReported(ctx context.Context, id, runnerID string) error {
+func (s *fakeBatchStore) MarkProviderJobGovernanceReported(ctx context.Context, id, runnerID string) error {
 	entry, ok := s.jobs[id]
 	if !ok {
 		return errors.New("missing batch job")
@@ -159,16 +178,16 @@ func (s *fakeBatchStore) MarkBatchJobGovernanceReported(ctx context.Context, id,
 	return nil
 }
 
-func (s *fakeBatchStore) CompleteBatchJob(ctx context.Context, id, runnerID string) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusAccounted, "")
+func (s *fakeBatchStore) CompleteProviderJob(ctx context.Context, id, runnerID string) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusAccounted, "")
 }
 
-func (s *fakeBatchStore) MarkBatchJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusUnpriceable, reason)
+func (s *fakeBatchStore) MarkProviderJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusUnpriceable, reason)
 }
 
-func (s *fakeBatchStore) FailBatchJob(ctx context.Context, id, runnerID string, err error) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusError, "")
+func (s *fakeBatchStore) FailProviderJob(ctx context.Context, id, runnerID string, err error) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusError, "")
 }
 
 func newTestStore(t *testing.T) logstore.LogStore {
@@ -412,6 +431,9 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 		"region": "us-east",
 	})
 	ctx.SetValue(schemas.BifrostIsAsyncRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectID, "proj-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectName, "Project One")
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-no-pending-error")
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -456,9 +478,18 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	if got := logEntry.MetadataParsed["isAsyncRequest"]; got != true {
 		t.Fatalf("expected async metadata true, got %#v", got)
 	}
+	if logEntry.ProjectID == nil || *logEntry.ProjectID != "proj-1" {
+		t.Fatalf("expected project ID proj-1 on the minimal-error entry, got %v", logEntry.ProjectID)
+	}
+	if logEntry.ProjectName == nil || *logEntry.ProjectName != "Project One" {
+		t.Fatalf("expected project name %q on the minimal-error entry, got %v", "Project One", logEntry.ProjectName)
+	}
+	if logEntry.SessionID == nil || *logEntry.SessionID != "session-no-pending-error" {
+		t.Fatalf("expected session ID on the minimal-error entry, got %v", logEntry.SessionID)
+	}
 }
 
-func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
+func TestEmitAggregateLogRunsCallback(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
 		ctx:   context.Background(),
@@ -477,9 +508,161 @@ func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
 		Model:     "gpt-4o-mini",
 		Status:    "success",
 	}
-	plugin.EmitBatchAggregateLog(context.Background(), entry)
+	plugin.EmitAggregateLog(context.Background(), entry)
 	if callbacks != 1 {
 		t.Fatalf("callback count after emit = %d, want 1", callbacks)
+	}
+}
+
+// captureObsPlugin is a minimal ObservabilityPlugin that extracts the attributes of
+// the first cost-bearing span in each injected trace. It copies the values out
+// synchronously (the tracer recycles the trace after Inject returns) and hands them
+// to the test over a channel.
+type captureObsPlugin struct {
+	spans chan map[string]any
+}
+
+func (c *captureObsPlugin) GetName() string { return "capture-obs" }
+func (c *captureObsPlugin) Cleanup() error  { return nil }
+func (c *captureObsPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if trace == nil {
+		return nil
+	}
+	spans := trace.Spans
+	if trace.RootSpan != nil {
+		spans = append(spans, trace.RootSpan)
+	}
+	for _, span := range spans {
+		if span == nil {
+			continue
+		}
+		if _, ok := span.Attributes[schemas.AttrUsageCost]; !ok {
+			continue
+		}
+		attrs := make(map[string]any, len(span.Attributes))
+		for k, v := range span.Attributes {
+			attrs[k] = v
+		}
+		select {
+		case c.spans <- attrs:
+		default:
+		}
+		return nil
+	}
+	return nil
+}
+
+// TestEmitAggregateLogEmitsSettlementSpan verifies the settlement→observability
+// bridge: a settled aggregate cost row is mirrored onto a span carrying the cost,
+// tokens, request type, and enrichment dimensions, so the trace-fed connectors
+// (Datadog/BigQuery/Splunk/OTEL/Kafka/Pub-Sub) can record batch/video cost that the
+// async settlement path would otherwise keep out of the tracing pipeline entirely.
+func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	capture := &captureObsPlugin{spans: make(chan map[string]any, 1)}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{capture}, nil)
+
+	plugin := &LoggerPlugin{ctx: context.Background()}
+	plugin.SetSettlementTracer(tracer)
+
+	cost := 0.0123
+	teamID := "team-42"
+	vkID := "vk-7"
+	entry := &logstore.Log{
+		ID:               "batch-cost:openai:settlement-span",
+		Timestamp:        time.Now().UTC(),
+		Object:           string(schemas.BatchResultsRequest),
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o-mini",
+		Status:           "success",
+		Cost:             &cost,
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+		TeamID:           &teamID,
+		VirtualKeyID:     &vkID,
+	}
+	plugin.EmitAggregateLog(context.Background(), entry)
+
+	select {
+	case attrs := <-capture.spans:
+		if got, _ := attrs[schemas.AttrUsageCost].(float64); got != cost {
+			t.Fatalf("span cost = %v, want %v", attrs[schemas.AttrUsageCost], cost)
+		}
+		if got, _ := attrs[schemas.AttrLegacyRequestType].(string); got != string(schemas.BatchResultsRequest) {
+			t.Fatalf("span request.type = %q, want %q", got, schemas.BatchResultsRequest)
+		}
+		if got, _ := attrs[schemas.AttrProviderName].(string); got != string(schemas.OpenAI) {
+			t.Fatalf("span provider = %q, want %q", got, schemas.OpenAI)
+		}
+		if got, _ := attrs[schemas.AttrRequestModel].(string); got != "gpt-4o-mini" {
+			t.Fatalf("span model = %q, want gpt-4o-mini", got)
+		}
+		if got, _ := attrs[schemas.AttrTotalTokens].(int); got != 150 {
+			t.Fatalf("span total tokens = %v, want 150", attrs[schemas.AttrTotalTokens])
+		}
+		if got, _ := attrs[schemas.AttrBifrostTeamID].(string); got != teamID {
+			t.Fatalf("span team_id = %q, want %q", got, teamID)
+		}
+		if got, _ := attrs[schemas.AttrBifrostVirtualKeyID].(string); got != vkID {
+			t.Fatalf("span virtual_key_id = %q, want %q", got, vkID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no settlement span injected to the observability connector")
+	}
+}
+
+// TestEmitAggregateLogSkipsSettlementSpanWithoutCost verifies an unpriced aggregate
+// row emits no span (nothing for a connector to record), and that a nil tracer is a
+// safe no-op rather than a panic.
+func TestEmitAggregateLogSkipsSettlementSpanWithoutCost(t *testing.T) {
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	capture := &captureObsPlugin{spans: make(chan map[string]any, 1)}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{capture}, nil)
+
+	plugin := &LoggerPlugin{ctx: context.Background()}
+	plugin.SetSettlementTracer(tracer)
+
+	entry := &logstore.Log{
+		ID:        "batch-cost:openai:no-cost",
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o-mini",
+		Status:    "success",
+		// Cost intentionally nil.
+	}
+	plugin.EmitAggregateLog(context.Background(), entry)
+
+	select {
+	case <-capture.spans:
+		t.Fatal("unpriced aggregate row must not emit a settlement span")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Nil tracer must not panic.
+	plugin.SetSettlementTracer(nil)
+	cost := 1.0
+	entry.Cost = &cost
+	plugin.EmitAggregateLog(context.Background(), entry)
+}
+
+func TestLogSubscribersComposeAndUnsubscribe(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), logger: testLogger{}}
+	primary, first, second := 0, 0, 0
+	plugin.SetLogCallback(func(context.Context, *logstore.Log) { primary++ })
+	unsubscribeFirst := plugin.SubscribeLogCallback(func(context.Context, *logstore.Log) { first++ })
+	plugin.SubscribeLogCallback(func(context.Context, *logstore.Log) { second++ })
+
+	plugin.notifyLogCallbacks(context.Background(), &logstore.Log{ID: "one"})
+	unsubscribeFirst()
+	unsubscribeFirst()
+	plugin.notifyLogCallbacks(context.Background(), &logstore.Log{ID: "two"})
+
+	if primary != 2 || first != 1 || second != 2 {
+		t.Fatalf("callback counts = primary:%d first:%d second:%d", primary, first, second)
 	}
 }
 
@@ -603,12 +786,21 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	embeddingProvider := "openai"
 	embeddingModel := "text-embedding-3-small"
 	embeddingTokens := 12
-	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+	if !schemas.SetCacheMetadataOnContext(ctx, &schemas.BifrostCacheMetadata{
 		ProviderUsed: &embeddingProvider,
 		ModelUsed:    &embeddingModel,
 		InputTokens:  &embeddingTokens,
 	}) {
-		t.Fatal("expected semantic cache debug to be stored on context")
+		t.Fatal("expected semantic cache metadata to be stored on context")
+	}
+	routingEmbeddingTokens := 13
+	if !schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+		ProviderUsed:       &embeddingProvider,
+		ModelUsed:          &embeddingModel,
+		InputTokens:        &routingEmbeddingTokens,
+		CountTowardBudgets: true,
+	}) {
+		t.Fatal("expected routing metadata to be stored on context")
 	}
 	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
 		JudgeProvider:    schemas.OpenAI,
@@ -674,12 +866,23 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		t.Fatalf("expected a cost to be logged for a cancelled request that consumed tokens (#3357)")
 	}
 	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
-	// text-embedding-3-small is 2e-8/token. The cache lookup and the judge call
-	// must both be added even though the stream ended with an error chunk.
+	// text-embedding-3-small is 2e-8/token. The cache lookup, routing
+	// classification, and judge call must all be added even though the stream
+	// ended with an error chunk.
 	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5 +
-		float64(embeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
+		float64(embeddingTokens+routingEmbeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
 	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
+	}
+	// The routing classification call must survive the full write/read round
+	// trip through the DB — this is what makes it visible in the log detail
+	// view, not just correctly billed.
+	if entry.RoutingMetadataParsed == nil || len(entry.RoutingMetadataParsed.Calls) != 1 {
+		t.Fatalf("expected one routing call to round-trip through the DB, got %+v", entry.RoutingMetadataParsed)
+	}
+	if call := entry.RoutingMetadataParsed.Calls[0]; call.ProviderUsed == nil || *call.ProviderUsed != embeddingProvider ||
+		call.InputTokens == nil || *call.InputTokens != routingEmbeddingTokens {
+		t.Fatalf("routing call round-tripped incorrectly: %+v", call)
 	}
 }
 
@@ -789,6 +992,71 @@ func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
 	}
 }
 
+func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-complexity-capture")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	// Set by the governance plugin when a routing rule references complexity_tier.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, "COMPLEX")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "semantic")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.42)
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-log-123")
+
+	statusCode := 500
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-complexity-capture")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.ComplexityTier == nil || *entry.ComplexityTier != "COMPLEX" {
+		t.Fatalf("expected complexity_tier COMPLEX, got %v", entry.ComplexityTier)
+	}
+	if entry.ComplexityMechanism == nil || *entry.ComplexityMechanism != "semantic" {
+		t.Fatalf("expected complexity_mechanism semantic, got %v", entry.ComplexityMechanism)
+	}
+	if entry.ComplexityScore == nil || *entry.ComplexityScore != 0.42 {
+		t.Fatalf("expected complexity_score 0.42, got %v", entry.ComplexityScore)
+	}
+	if entry.SessionID == nil || *entry.SessionID != "session-log-123" {
+		t.Fatalf("expected session_id session-log-123, got %v", entry.SessionID)
+	}
+}
+
 func TestLogStatusForErrorDoesNotTreatGenericDeadlineMessageAsCancelled(t *testing.T) {
 	statusCode := 504
 	bifrostErr := &schemas.BifrostError{
@@ -880,6 +1148,55 @@ func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
 }
 
+func TestApplyInternalCallCostsRoutingOwnershipAndBudgetFlag(t *testing.T) {
+	plugin := &LoggerPlugin{pricingManager: newTestPricingManager(t)}
+	provider, model, inputTokens := "openai", "text-embedding-3-small", 13
+
+	for _, test := range []struct {
+		name               string
+		countTowardBudgets bool
+		retryNumber        int
+		fallbackIndex      int
+		wantCost           bool
+	}{
+		{name: "initial attempt billed", countTowardBudgets: true, wantCost: true},
+		{name: "budget attribution disabled", countTowardBudgets: false},
+		{name: "retry does not rebill", countTowardBudgets: true, retryNumber: 1},
+		{name: "fallback does not rebill", countTowardBudgets: true, fallbackIndex: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, test.retryNumber)
+			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, test.fallbackIndex)
+			if !schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+				ProviderUsed:       &provider,
+				ModelUsed:          &model,
+				InputTokens:        &inputTokens,
+				CountTowardBudgets: test.countTowardBudgets,
+			}) {
+				t.Fatal("AppendRoutingCallOnContext() = false")
+			}
+			entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+
+			plugin.applyInternalCallCosts(ctx, entry, nil)
+
+			if !test.wantCost {
+				if entry.Cost != nil {
+					t.Fatalf("cost = %v, want nil", *entry.Cost)
+				}
+				return
+			}
+			if entry.Cost == nil {
+				t.Fatal("cost = nil")
+			}
+			want := float64(inputTokens) * 2e-8
+			if diff := *entry.Cost - want; diff < -1e-12 || diff > 1e-12 {
+				t.Fatalf("cost = %v, want %v", *entry.Cost, want)
+			}
+		})
+	}
+}
+
 // TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed guards
 // the case where stream accumulation already captured token usage on a failed
 // request but no cost was computed: cost must still be backfilled, and the
@@ -950,7 +1267,7 @@ func TestApplyInternalCallCosts_DenormalizesGuardrailToAdditional(t *testing.T) 
 	}
 
 	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
-	guardrail := &schemas.BifrostGuardrailDebug{
+	guardrail := &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.OpenAI,
 			JudgeModel:       "gpt-4o",
@@ -1397,6 +1714,502 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 		t.Fatalf("expected guardrails plugin log to be persisted, got %#v", pluginLogs)
 	}
 	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
+}
+
+// TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate pins the MCP hook ordering hole: logging's
+// PreMCPHook runs before governance's, so a virtual key that turns content off is not yet on the
+// context when the tool arguments are captured. PostMCPHook re-resolves the policy and must drop
+// the arguments it captured too early, not only the result.
+func TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-late-off")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-late-off")
+
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &toolName,
+				Arguments: `{"query":"find this"}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+	pendingValue, ok := plugin.pendingMCPLogsToInject.Load("mcp-late-off")
+	if !ok {
+		t.Fatal("expected pending MCP log entry")
+	}
+	if pendingValue.(*logstore.MCPToolLog).ArgumentsParsed == nil {
+		t.Fatal("arguments are captured in PreMCPHook while nothing has turned content off yet")
+	}
+
+	// Governance's PreMCPHook runs after ours and stamps the key's decision.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+
+	result := `{"answer":"done"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: &result},
+		},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "docs",
+			ToolName:       "search",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-late-off")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if logEntry.Status != "success" {
+		t.Fatalf("expected status success, got %q", logEntry.Status)
+	}
+	if logEntry.ResultParsed != nil {
+		t.Fatalf("expected the result to be dropped, got %#v", logEntry.ResultParsed)
+	}
+	if logEntry.ArgumentsParsed != nil {
+		t.Fatalf("expected the arguments captured before the key was stamped to be dropped, got %#v", logEntry.ArgumentsParsed)
+	}
+}
+
+// TestPostLLMHookDropsCapturedInputWhenContentIsDisabledLate pins the passthrough ordering hole:
+// governance skips PreRequestHook for passthrough and stamps the key's decision in its own
+// PreLLMHook, which runs after ours, so the passthrough body is captured while nothing has turned
+// content off yet. PostLLMHook must resolve the final policy and drop every captured input, not
+// only mark the row content_hidden.
+func TestPostLLMHookDropsCapturedInputWhenContentIsDisabledLate(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-passthrough-late-off")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI,
+			Method:   "POST",
+			Path:     "/v1/fine-tuning/jobs",
+			Body:     []byte(`{"training_file":"file-secret"}`),
+			// The body is captured only for JSON requests.
+			SafeHeaders: map[string]string{"content-type": "application/json"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	pendingValue, ok := plugin.pendingLogsEntries.Load("req-passthrough-late-off")
+	if !ok {
+		t.Fatal("expected pending log entry")
+	}
+	if pendingValue.(*PendingLogData).InitialData.PassthroughRequestBody == "" {
+		t.Fatal("the body is captured in PreLLMHook while nothing has turned content off yet")
+	}
+
+	// Governance's PreLLMHook runs after ours and stamps the key's decision.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			Body:       []byte(`{"id":"ftjob-1"}`),
+			Path:       "/v1/fine-tuning/jobs",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.PassthroughRequest,
+				Provider:    schemas.OpenAI,
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-passthrough-late-off")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if !logEntry.ContentHidden {
+		t.Fatal("expected the row to be content_hidden")
+	}
+	if logEntry.PassthroughRequestBody != "" {
+		t.Fatalf("expected the passthrough body captured before the key was stamped to be dropped, got %q", logEntry.PassthroughRequestBody)
+	}
+	if logEntry.PassthroughResponseBody != "" {
+		t.Fatalf("expected no passthrough response body, got %q", logEntry.PassthroughResponseBody)
+	}
+}
+
+// TestPostMCPHookSkipsRedactionMappingsWhenContentIsHidden pins that reveal mappings are attached
+// only when the MCP log's content is visible. With object-storage retention on, a key that turned
+// content off yields storeContent=true but visible=false: the arguments and result are removed, so
+// the mappings that would reveal redactions in them must not be kept either.
+func TestPostMCPHookSkipsRedactionMappingsWhenContentIsHidden(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{RetainContentInObjectStorage: new(true), ObjectStorageEnabled: true}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-hidden-redaction")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-hidden-redaction")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		ReversibleMappings: schemas.RedactionMapsByPhase{
+			Input: map[string]string{"EMAIL-1": "private@example.com"},
+		},
+	})
+
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+	pendingValue, ok := plugin.pendingMCPLogsToInject.Load("mcp-hidden-redaction")
+	if !ok {
+		t.Fatal("expected pending MCP log entry")
+	}
+	pendingEntry := pendingValue.(*logstore.MCPToolLog)
+
+	result := `{"answer":"done"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+	if pendingEntry.ResultParsed != nil || pendingEntry.ArgumentsParsed != nil {
+		t.Fatalf("hidden content must be removed, got args=%#v result=%#v", pendingEntry.ArgumentsParsed, pendingEntry.ResultParsed)
+	}
+	if pendingEntry.RedactionData != nil {
+		t.Fatalf("expected no redaction mappings on an entry whose content is hidden, got %#v", pendingEntry.RedactionData)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+}
+
+// TestPreMCPHookHoldsArgumentsUntilGovernanceStampsTheKey pins the MCP hook ordering hole on the
+// path PostMCPHook cannot cover: a request that presents a virtual key governance has not stamped
+// yet is captured while its content decision is still unknown. The arguments must not sit on the
+// pending entry, where the pre-hook callback and the stale-entry cleanup would expose them; they
+// are held aside and attached in PostMCPHook only once the final policy says content is visible.
+func TestPreMCPHookHoldsArgumentsUntilGovernanceStampsTheKey(t *testing.T) {
+	newCtx := func(requestID, mcpLogID string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, mcpLogID)
+		// The transport settled a presented key; governance has not resolved it yet.
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+		return ctx
+	}
+	toolName := "docs-search"
+	preHook := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext) *logstore.MCPToolLog {
+		t.Helper()
+		_, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+			RequestType: schemas.MCPRequestTypeChatToolCall,
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreMCPHook() error = %v", err)
+		}
+		pendingValue, ok := plugin.pendingMCPLogsToInject.Load(ctx.Value(schemas.BifrostContextKeyMCPLogID).(string))
+		if !ok {
+			t.Fatal("expected pending MCP log entry")
+		}
+		return pendingValue.(*logstore.MCPToolLog)
+	}
+	postHook := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext) {
+		t.Helper()
+		result := `{"answer":"done"}`
+		_, _, err := plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostMCPHook() error = %v", err)
+		}
+	}
+
+	t.Run("stale cleanup persists no arguments for an unresolved key", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-mcp-provisional-stale", "mcp-provisional-stale")
+		pending := preHook(t, plugin, ctx)
+		if pending.ArgumentsParsed != nil {
+			t.Fatalf("arguments must be held aside while the key's decision is unknown, got %#v", pending.ArgumentsParsed)
+		}
+
+		// PostMCPHook never fires; the reaper persists what the pending entry holds.
+		pending.CreatedAt = time.Now().Add(-pendingLogTTL - time.Minute)
+		plugin.cleanupStalePendingLogs()
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-provisional-stale")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.Status != "error" {
+			t.Fatalf("expected the stale status, got %q", logEntry.Status)
+		}
+		if logEntry.ArgumentsParsed != nil {
+			t.Fatalf("a stale entry captured before the key was stamped must not persist arguments, got %#v", logEntry.ArgumentsParsed)
+		}
+	})
+
+	t.Run("arguments are attached once the resolved key keeps content on", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-mcp-provisional-on", "mcp-provisional-on")
+		preHook(t, plugin, ctx)
+		// Governance resolved the key and it inherits: content stays on.
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		postHook(t, plugin, ctx)
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-provisional-on")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.ArgumentsParsed == nil {
+			t.Fatal("arguments held aside must be attached once the final policy keeps content on")
+		}
+	})
+
+	t.Run("arguments are dropped once the resolved key turns content off", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-mcp-provisional-off", "mcp-provisional-off")
+		preHook(t, plugin, ctx)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		postHook(t, plugin, ctx)
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-provisional-off")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.ArgumentsParsed != nil || logEntry.ResultParsed != nil {
+			t.Fatalf("content-off key must persist no arguments or result, got args=%#v result=%#v", logEntry.ArgumentsParsed, logEntry.ResultParsed)
+		}
+	})
+}
+
+// TestPreLLMHookNotificationCarriesNoInputWhileKeyIsUnresolved pins that the live "processing"
+// notification PreLLMHook sends to log subscribers never carries captured input for a request
+// whose virtual key governance has not stamped yet: the key may turn content off once it does.
+func TestPreLLMHookNotificationCarriesNoInputWhileKeyIsUnresolved(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	var notified []*logstore.Log
+	plugin.SetLogCallback(func(_ context.Context, logEntry *logstore.Log) { notified = append(notified, logEntry) })
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-notify-unresolved")
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider:    schemas.OpenAI,
+			Method:      "POST",
+			Path:        "/v1/fine-tuning/jobs",
+			Body:        []byte(`{"training_file":"file-secret"}`),
+			SafeHeaders: map[string]string{"content-type": "application/json"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if len(notified) == 0 {
+		t.Fatal("expected the processing notification")
+	}
+	if body := notified[0].PassthroughRequestBody; body != "" {
+		t.Fatalf("the notification went out before the key was stamped and must carry no input, got %q", body)
+	}
+}
+
+// TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent pins the other direction of the
+// hook ordering hole: with the client flag off, a key that turns content on is still unstamped when
+// PreLLMHook and PreMCPHook capture, so they must capture provisionally and let the final policy in
+// the post-hooks decide, instead of dropping content the key is entitled to keep.
+func TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent(t *testing.T) {
+	newCtx := func(requestID string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+		return ctx
+	}
+	stampKeyOn := func(ctx *schemas.BifrostContext) {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
+	}
+
+	t.Run("passthrough body", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-key-on-passthrough")
+		_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider:    schemas.OpenAI,
+				Method:      "POST",
+				Path:        "/v1/fine-tuning/jobs",
+				Body:        []byte(`{"training_file":"file-kept"}`),
+				SafeHeaders: map[string]string{"content-type": "application/json"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreLLMHook() error = %v", err)
+		}
+		stampKeyOn(ctx)
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode:  200,
+				Body:        []byte(`{"id":"ftjob-1"}`),
+				Path:        "/v1/fine-tuning/jobs",
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostLLMHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindByID(context.Background(), "req-key-on-passthrough")
+		if err != nil {
+			t.Fatalf("FindByID() error = %v", err)
+		}
+		if logEntry.ContentHidden {
+			t.Fatal("a key that turns content on must leave the row visible")
+		}
+		if logEntry.PassthroughRequestBody != `{"training_file":"file-kept"}` {
+			t.Fatalf("expected the passthrough body kept for a content-on key, got %q", logEntry.PassthroughRequestBody)
+		}
+	})
+
+	t.Run("mcp arguments", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := newCtx("req-key-on-mcp")
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-key-on")
+		toolName := "docs-search"
+		_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+			RequestType: schemas.MCPRequestTypeChatToolCall,
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreMCPHook() error = %v", err)
+		}
+		stampKeyOn(ctx)
+		result := `{"answer":"done"}`
+		_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostMCPHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-key-on")
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		if logEntry.ResultParsed == nil {
+			t.Fatal("precondition: a content-on key stores the result")
+		}
+		if logEntry.ArgumentsParsed == nil {
+			t.Fatal("expected the arguments kept for a content-on key, alongside its result")
+		}
+	})
+}
+
+// TestClaimStaleMCPEntryLeavesHeldArgumentsWhenPostHookWon pins the TTL-boundary race: when
+// PostMCPHook claims the pending entry first, the reaper's claim fails and must leave the held
+// arguments for PostMCPHook to attach, not delete them out from under it.
+func TestClaimStaleMCPEntryLeavesHeldArgumentsWhenPostHookWon(t *testing.T) {
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	// PostMCPHook already took the pending entry; its held arguments are still waiting.
+	plugin.provisionalMCPArguments.Store("mcp-race", `{"query":"find this"}`)
+
+	if _, ok := plugin.claimStaleMCPEntry("mcp-race"); ok {
+		t.Fatal("the reaper must not claim an entry PostMCPHook already took")
+	}
+	if _, ok := plugin.provisionalMCPArguments.Load("mcp-race"); !ok {
+		t.Fatal("a failed claim must leave the held arguments for PostMCPHook")
+	}
+
+	// And a claim that wins takes the held arguments with the entry.
+	plugin.pendingMCPLogsToInject.Store("mcp-won", &logstore.MCPToolLog{ID: "mcp-won"})
+	plugin.provisionalMCPArguments.Store("mcp-won", `{"query":"find this"}`)
+	if _, ok := plugin.claimStaleMCPEntry("mcp-won"); !ok {
+		t.Fatal("the reaper must claim a pending entry nobody else took")
+	}
+	if _, ok := plugin.provisionalMCPArguments.Load("mcp-won"); ok {
+		t.Fatal("a winning claim must drop the held arguments; a stale entry never gets them")
+	}
 }
 
 // TestPostMCPHookFallbackStampsGovernanceFields verifies fallback MCP logs
@@ -2631,8 +3444,8 @@ func TestApplyNonStreamingOutputToEntryVideoOutputs(t *testing.T) {
 	})
 }
 
-// TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
-func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
+// TestGuardrailMetadataForLogReadsContextWithoutResponse verifies input blocks remain observable.
+func TestGuardrailMetadataForLogReadsContextWithoutResponse(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	requireCall := schemas.BifrostGuardrailJudgeCall{
 		JudgeProvider: schemas.OpenAI,
@@ -2643,12 +3456,12 @@ func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
 		t.Fatal("failed to append guardrail judge call")
 	}
 
-	debug := guardrailDebugForLog(ctx, nil)
-	if debug == nil || len(debug.JudgeCalls) != 1 {
-		t.Fatalf("guardrail debug = %#v; want one context judge call", debug)
+	metadata := guardrailMetadataForLog(ctx, nil)
+	if metadata == nil || len(metadata.JudgeCalls) != 1 {
+		t.Fatalf("guardrail metadata = %#v; want one context judge call", metadata)
 	}
-	if debug.JudgeCalls[0] != requireCall {
-		t.Fatalf("guardrail call = %#v; want %#v", debug.JudgeCalls[0], requireCall)
+	if metadata.JudgeCalls[0] != requireCall {
+		t.Fatalf("guardrail call = %#v; want %#v", metadata.JudgeCalls[0], requireCall)
 	}
 }
 
@@ -2726,12 +3539,12 @@ func TestRecordBatchJobLifecycle_CompletedSetsNextCheckAt(t *testing.T) {
 			}
 			plugin.recordBatchJobLifecycle(entry, result)
 
-			job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", batchID))
+			job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", batchID))
 			if err != nil {
-				t.Fatalf("GetBatchJob() error = %v", err)
+				t.Fatalf("GetProviderJob() error = %v", err)
 			}
-			if job.BatchID != batchID {
-				t.Fatalf("expected batch_id %s, got %s", batchID, job.BatchID)
+			if job.JobID != batchID {
+				t.Fatalf("expected batch_id %s, got %s", batchID, job.JobID)
 			}
 			if job.ProviderStatus != tt.status {
 				t.Fatalf("expected status %s, got %s", tt.status, job.ProviderStatus)
@@ -2787,9 +3600,9 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	}
 	plugin.recordBatchJobLifecycle(entry, result)
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-create-123"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-create-123"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
 	if job.Model != "gpt-4o" {
 		t.Fatalf("expected model %s, got %s", "gpt-4o", job.Model)
@@ -2797,8 +3610,8 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	if job.InputFileID != "file-abc" {
 		t.Fatalf("expected input_file_id %s, got %s", "file-abc", job.InputFileID)
 	}
-	if job.AccountingStatus != cstables.BatchJobAccountingStatusPending {
-		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusPending, job.AccountingStatus)
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusPending {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.ProviderJobAccountingStatusPending, job.AccountingStatus)
 	}
 }
 
@@ -2827,9 +3640,9 @@ func TestAccountBatchResults_NonResultsResponseIsNoop(t *testing.T) {
 	plugin.accountBatchResults(entry, nonResultsResult, nil)
 
 	// Verify no batch_jobs rows were created
-	jobs, err := bs.ListDueBatchJobs(context.Background(), "openai", time.Now().UTC().Add(time.Hour), 100)
+	jobs, err := bs.ListDueProviderJobs(context.Background(), cstables.ProviderJobKindBatch, "openai", time.Now().UTC().Add(time.Hour), 100)
 	if err != nil {
-		t.Fatalf("ListDueBatchJobs() error = %v", err)
+		t.Fatalf("ListDueProviderJobs() error = %v", err)
 	}
 	if len(jobs) > 0 {
 		t.Fatalf("expected no batch jobs from non-batch-response, got %d", len(jobs))
@@ -2861,15 +3674,15 @@ func TestAccountBatchResults_EmptyResultsMarksUnpriceable(t *testing.T) {
 
 	plugin.accountBatchResults(entry, result, nil)
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-empty-results"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-empty-results"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
-	if job.AccountingStatus != cstables.BatchJobAccountingStatusUnpriceable {
-		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusUnpriceable {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	}
-	if job.UnpriceableReason == nil || *job.UnpriceableReason != batchaccounting.UnpriceableReasonNoResults {
-		t.Fatalf("expected unpriceable_reason %s, got %#v", batchaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
+	if job.UnpriceableReason == nil || *job.UnpriceableReason != jobaccounting.UnpriceableReasonNoResults {
+		t.Fatalf("expected unpriceable_reason %s, got %#v", jobaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
 	}
 }
 
@@ -2945,7 +3758,7 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 	aggregateRows := 0
 	for _, l := range logs.Logs {
-		if l.ID == batchaccounting.AccountingLogID(schemas.OpenAI, "batch-repeat-fetch") {
+		if l.ID == jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch-repeat-fetch") {
 			aggregateRows++
 		}
 	}
@@ -2954,15 +3767,15 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 }
 
-// noopBatchFetcher satisfies batchaccounting.BatchResultFetcher without touching a
+// noopBatchFetcher satisfies jobaccounting.BatchResultFetcher without touching a
 // provider: the point of the test below is that it is never reached.
 type noopBatchFetcher struct{}
 
-func (noopBatchFetcher) RetrieveBatch(context.Context, *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
+func (noopBatchFetcher) RetrieveBatch(context.Context, *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	return nil, nil
 }
 
-func (noopBatchFetcher) FetchBatchResults(context.Context, *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (noopBatchFetcher) FetchBatchResults(context.Context, *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
 	return nil, nil
 }
 
@@ -3031,9 +3844,9 @@ func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
 		},
 	})
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-identity-123"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-identity-123"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
 	if job.UserID == nil || *job.UserID != userID {
 		t.Fatalf("expected user_id %s, got %v", userID, job.UserID)
@@ -3046,5 +3859,388 @@ func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
 	}
 	if job.SourceLogID == nil || *job.SourceLogID != entry.ID {
 		t.Fatalf("expected source_log_id %s, got %v", entry.ID, job.SourceLogID)
+	}
+}
+
+// newVideoLifecyclePlugin is the minimal plugin a video lifecycle record needs.
+func newVideoLifecyclePlugin(t *testing.T) (*LoggerPlugin, *fakeBatchStore) {
+	t.Helper()
+	bs := newFakeBatchStore()
+	return &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      newTestStore(t),
+		batchStore: bs,
+		logger:     testLogger{},
+	}, bs
+}
+
+// The request is the only witness to duration and resolution for most providers,
+// and it is in hand exactly once — here. If it is not written down now, settlement
+// minutes later has nothing to price from.
+func TestRecordVideoJobLifecycle_CapturesRequestPricingDimensions(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	audio := true
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:            "req-video-1",
+		Provider:      string(schemas.OpenAI),
+		Model:         "sora-2-pro",
+		SelectedKeyID: "key-abc",
+		ParamsParsed: &schemas.VideoGenerationParameters{
+			Seconds: &eightSeconds,
+			Size:    "1920x1080",
+			Audio:   &audio,
+		},
+	}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_abc",
+			Status: schemas.VideoStatusQueued,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_abc"))
+	if err != nil {
+		t.Fatalf("expected a video job row: %v", err)
+	}
+	if job.Kind != cstables.ProviderJobKindVideo {
+		t.Fatalf("kind = %q, want %q", job.Kind, cstables.ProviderJobKindVideo)
+	}
+	if job.Model != "sora-2-pro" {
+		t.Fatalf("model = %q, want sora-2-pro", job.Model)
+	}
+	if job.NextCheckAt == nil {
+		t.Fatal("a queued video must be scheduled for a poll")
+	}
+	// The sweeper pins its poll to this key. An OpenAI video id is visible only to
+	// the key that created it, so a row without one can only be polled by whatever
+	// key core happens to pick — which will be told the video does not exist.
+	if job.SelectedKeyID != "key-abc" {
+		t.Fatalf("selected key id = %q, want key-abc", job.SelectedKeyID)
+	}
+
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	if dims.Seconds == nil || *dims.Seconds != 8 {
+		t.Fatalf("seconds = %v, want 8", dims.Seconds)
+	}
+	if dims.Size != "1920x1080" {
+		t.Fatalf("size = %q, want 1920x1080", dims.Size)
+	}
+	if dims.Audio == nil || !*dims.Audio {
+		t.Fatalf("audio = %v, want true", dims.Audio)
+	}
+	if dims.RequestType != schemas.VideoGenerationRequest {
+		t.Fatalf("request type = %q, want %q", dims.RequestType, schemas.VideoGenerationRequest)
+	}
+}
+
+// A video submitted before this build was already charged at submission. Creating
+// its row on a later retrieve would hand it to the sweeper and charge it twice.
+func TestRecordVideoJobLifecycle_RetrieveDoesNotCreateRowForPreUpgradeJob(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	entry := &logstore.Log{ID: "req-video-retrieve", Provider: string(schemas.OpenAI), Model: "sora-2-pro"}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_pre_upgrade",
+			Status: schemas.VideoStatusCompleted,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoRetrieveRequest)
+
+	if _, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_pre_upgrade")); err == nil {
+		t.Fatal("a retrieve must never create a job row we did not see submitted")
+	}
+}
+
+// A retrieve on a job we did submit must still advance it, without losing the
+// dimensions the submission captured.
+func TestRecordVideoJobLifecycle_RetrieveAdvancesKnownJob(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-2",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	submitted := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusQueued},
+	}
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+
+	retrieved := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusCompleted},
+	}
+	plugin.recordVideoJobLifecycle(entry, retrieved, schemas.VideoRetrieveRequest)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_known"))
+	if err != nil {
+		t.Fatalf("expected the submitted job row: %v", err)
+	}
+	if job.ProviderStatus != string(schemas.VideoStatusCompleted) {
+		t.Fatalf("provider status = %q, want completed", job.ProviderStatus)
+	}
+
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	if dims.Seconds == nil || *dims.Seconds != 8 {
+		t.Fatalf("the submission's dimensions must survive a retrieve that reports none: %v", dims.Seconds)
+	}
+	if dims.Size != "1280x720" {
+		t.Fatalf("size = %q, want 1280x720", dims.Size)
+	}
+}
+
+// The retrieve path settles inline off the response the caller already fetched,
+// instead of leaving the sweeper to fetch it a second time up to a sweep interval
+// later. The submission is recorded first, then the terminal poll settles it.
+func TestAccountVideoResults_SettlesTheJobTheSubmissionRecorded(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		batchStore:     bs,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-inline",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	submitted := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_inline_wired", Status: schemas.VideoStatusQueued},
+	}
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+
+	terminal := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_inline_wired",
+			Status: schemas.VideoStatusCompleted,
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+			Usage:  &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.75}},
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, terminal, schemas.VideoRetrieveRequest)
+	plugin.accountVideoResults(entry, terminal, nil)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_inline_wired"))
+	if err != nil {
+		t.Fatalf("GetProviderJob() error = %v", err)
+	}
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusAccounted {
+		t.Fatalf("accounting_status = %s, want %s", job.AccountingStatus, cstables.ProviderJobAccountingStatusAccounted)
+	}
+}
+
+// A video submitted before this build was charged at submission; settling it now
+// would bill it twice. With no coordination row, the inline path must do nothing.
+func TestAccountVideoResults_SkipsAJobWithNoCoordinationRow(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		batchStore:     bs,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	entry := &logstore.Log{ID: "req-video-orphan", Provider: string(schemas.OpenAI), Model: "sora-2-pro"}
+	terminal := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_orphan",
+			Status: schemas.VideoStatusCompleted,
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+			Usage:  &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.75}},
+		},
+	}
+	plugin.accountVideoResults(entry, terminal, nil)
+
+	if _, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_orphan")); err == nil {
+		t.Fatal("inline settlement must not create a job row for a video we never saw submitted")
+	}
+}
+
+// The submission row must name the video it started, so the settlement that lands
+// minutes later is traceable back to it. No accounting block here — that is what
+// distinguishes the settlement's own cost row from this one.
+func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
+	plugin, _ := newVideoLifecyclePlugin(t)
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-debug",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_marked",
+			Status: schemas.VideoStatusQueued,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+
+	if entry.VideoDebugParsed == nil {
+		t.Fatal("the submission row must name the video it started")
+	}
+	if entry.VideoDebugParsed.VideoID != "vid_marked" {
+		t.Fatalf("video id = %q, want vid_marked", entry.VideoDebugParsed.VideoID)
+	}
+	if entry.VideoDebugParsed.Status != schemas.VideoStatusQueued {
+		t.Fatalf("status = %q, want queued", entry.VideoDebugParsed.Status)
+	}
+	if entry.VideoDebugParsed.Accounting != nil {
+		t.Fatal("only the settlement's aggregate cost row carries an accounting block")
+	}
+}
+
+// newEndedTraceContext builds a context whose tracer already completed the trace,
+// the state a late terminal hook observes after the transport flushed the request.
+// The root span is started first because a live trace gets its root span from the
+// transport before dispatch; ending the trace removes it from the tracer's store.
+func newTracedContext(t *testing.T) (*schemas.BifrostContext, *tracing.Tracer, string) {
+	t.Helper()
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, root := tracer.StartSpan(ctx, "http.request", schemas.SpanKindInternal)
+	if root == nil {
+		t.Fatal("root span was not started")
+	}
+	tracer.EndSpan(root, schemas.SpanStatusOk, "")
+	return ctx, tracer, traceID
+}
+
+// TestStoreOrEnqueueAfterInjectStillWrites pins the second drop behind maximhq/bifrost#6972.
+// When a client disconnects on a non-streaming request, the transport completes and
+// flushes the trace (EndTrace, then Inject) as soon as it has written the 499, while
+// the worker is still tearing down the upstream call. The worker's abandoned-billing
+// terminal hook then reaches storeOrEnqueueEntry AFTER the trace ended. Parking the
+// entry under the trace id would leave it for nothing but the TTL sweeper, so the
+// request is billed by governance but never gets a log row. The check is against the
+// tracer, not a timer, so it holds however late the hook lands.
+func TestStoreOrEnqueueAfterInjectStillWrites(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	ctx, tracer, traceID := newTracedContext(t)
+
+	// The transport flushed the trace with nothing parked yet.
+	completed := tracer.EndTrace(traceID)
+	if completed == nil {
+		t.Fatal("EndTrace returned nil")
+	}
+	if err := plugin.Inject(context.Background(), completed); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	// The worker's late terminal hook lands afterwards.
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-abandoned", Model: "gpt-4o-mini"}, nil)
+
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("expected the late entry to be enqueued for writing, writeQueue has %d entries", got)
+	}
+	if _, parked := plugin.pendingLogsToInject.Load(traceID); parked {
+		t.Fatal("late entry was parked under an already-ended trace; nothing will ever drain it")
+	}
+}
+
+// TestStoreOrEnqueueBeforeInjectStillParks guards the fix above against over-correcting:
+// an entry stored while the trace is live must still be parked so Inject can attach
+// plugin logs and the trace's authoritative latency before it is written.
+func TestStoreOrEnqueueBeforeInjectStillParks(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	ctx, tracer, traceID := newTracedContext(t)
+
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-normal", Model: "gpt-4o-mini"}, nil)
+	if got := len(plugin.writeQueue); got != 0 {
+		t.Fatalf("entry stored while the trace is live must be parked, but writeQueue has %d entries", got)
+	}
+	completed := tracer.EndTrace(traceID)
+	if completed == nil {
+		t.Fatal("EndTrace returned nil")
+	}
+	if err := plugin.Inject(context.Background(), completed); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("Inject must drain the parked entry, writeQueue has %d entries", got)
+	}
+}
+
+// The settlement span carries the parsed breakdown when the row has one, not just
+// the flat total. Only the entry.Cost fallback was covered, so this branch could
+// lose the per-category split while the shared CostAttributes tests stayed green.
+func TestEmitAggregateLogEmitsSettlementCostBreakdown(t *testing.T) {
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	capture := &captureObsPlugin{spans: make(chan map[string]any, 1)}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{capture}, nil)
+
+	plugin := &LoggerPlugin{ctx: context.Background()}
+	plugin.SetSettlementTracer(tracer)
+
+	// Deliberately different from TotalCost so a fallback to entry.Cost is visible.
+	flat := 9.99
+	entry := &logstore.Log{
+		ID:        "batch-cost:openai:settlement-breakdown",
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o-mini",
+		Status:    "success",
+		Cost:      &flat,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150,
+			Cost: &schemas.BifrostCost{
+				InputCost: 0.30, OutputCost: 0.50, AdditionalCost: 0.20, TotalCost: 1.00,
+			},
+		},
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	}
+	plugin.EmitAggregateLog(context.Background(), entry)
+
+	select {
+	case attrs := <-capture.spans:
+		for key, want := range map[string]float64{
+			schemas.AttrUsageCost:             1.00,
+			schemas.AttrBifrostCostInput:      0.30,
+			schemas.AttrBifrostCostOutput:     0.50,
+			schemas.AttrBifrostCostAdditional: 0.20,
+		} {
+			got, ok := attrs[key].(float64)
+			if !ok {
+				t.Errorf("%s missing from the settlement span", key)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %v, want %v", key, got, want)
+			}
+		}
+		// The breakdown must win; falling back to entry.Cost would show 9.99.
+		if got, _ := attrs[schemas.AttrUsageCost].(float64); got == flat {
+			t.Errorf("%s = %v: fell back to entry.Cost instead of the parsed breakdown", schemas.AttrUsageCost, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no settlement span injected to the observability connector")
 	}
 }

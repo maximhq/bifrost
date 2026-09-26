@@ -1,0 +1,124 @@
+---
+title: "Deploy Edge with MDM"
+description: "Deploy the Edge package, managed configuration, and certificate trust settings to a fleet."
+icon: "cloud-arrow-up"
+---
+
+Use this path to deploy Edge through Jamf, Kandji, Microsoft Intune, or another device-management or fleet-management platform. A complete deployment delivers the package and the Bifrost URL to every device. macOS deployments also deliver the active Edge CA as a device-scoped trusted root.
+
+## Deployment payloads
+
+Prepare these items before assigning the deployment:
+
+1. The Edge package for each target operating system and architecture.
+2. A managed `config.json` containing the Bifrost deployment URL.
+3. For macOS, the active Edge CA certificate as a device-scoped trusted-root profile.
+
+```json
+{
+  "base_url": "https://<your-bifrost-host>"
+}
+```
+
+| Operating system | Managed `config.json` path |
+| --- | --- |
+| macOS | `/Library/Application Support/Bifrost Edge/config.json` |
+| Windows | `%ProgramData%\BifrostEdge\config.json` |
+| Linux | `/etc/bifrost-edge/config.json` |
+
+The managed file takes precedence over a URL entered locally from the tray. The agent watches it for changes, so correcting the URL does not require reinstalling the package.
+
+## macOS
+
+The macOS package supports Apple Silicon devices. For a managed rollout, apply the policy and certificate profile before or with the package.
+
+<Steps>
+  <Step title="Disable the supported local uninstall command when required">
+    Before installing the package, set the Boolean managed preference `DisableLocalUninstall` to `true` in the `ai.getbifrost.edge` preference domain.
+
+    This preference is optional. Use it when local users should not receive the package's supported `bifrost-edge-uninstall` command. The preference must exist before installation or upgrade for the package to omit that command link.
+  </Step>
+  <Step title="Push the managed configuration">
+    Write `config.json` to `/Library/Application Support/Bifrost Edge/config.json` as root and make it readable by the service.
+
+    ```bash
+    #!/bin/bash
+    set -eu
+
+    install_dir="/Library/Application Support/Bifrost Edge"
+    mkdir -p "${install_dir}"
+    cat > "${install_dir}/config.json" <<'EOF'
+    {
+      "base_url": "https://<your-bifrost-host>"
+    }
+    EOF
+    chown root:wheel "${install_dir}/config.json"
+    chmod 0644 "${install_dir}/config.json"
+    ```
+  </Step>
+  <Step title="Push the CA as a trusted root">
+    Download the active `.crt` from **Edge Control → Edge Settings** and deploy it in a device-scoped certificate payload with payload type `com.apple.security.root`.
+
+    Do not use a user-scoped profile or a generic `com.apple.security.pkcs1` / `com.apple.security.pem` payload. Those forms do not establish the machine-wide root trust the agent checks. Confirm that the deployed certificate's SHA-256 fingerprint matches Edge Settings.
+  </Step>
+  <Step title="Install the package">
+    Push `macos-arm64.pkg` to the target devices. The package installs the system daemon and the per-user menu-bar agent.
+  </Step>
+</Steps>
+
+<Warning>
+  Push a new trusted-root profile whenever the Edge CA is replaced. Trust applies to the individual certificate; the previous profile does not trust its replacement.
+</Warning>
+
+## Windows with Intune or another MDM
+
+Use `windows-amd64.intunewin` for x64 Intune deployments. For another MDM, or for Windows ARM64, use the matching MSI package.
+
+<Steps>
+  <Step title="Install the package in the system context">
+    Use the matching architecture and run the MSI silently:
+
+    ```powershell
+    msiexec /i "windows-amd64.msi" /qn
+    ```
+  </Step>
+  <Step title="Push config.json">
+    Use a device script or remediation to write `%ProgramData%\BifrostEdge\config.json`:
+
+    ```powershell
+    $dir = Join-Path $env:ProgramData "BifrostEdge"
+    $path = Join-Path $dir "config.json"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $config = @'
+    {
+      "base_url": "https://<your-bifrost-host>"
+    }
+    '@
+    [System.IO.File]::WriteAllText(
+      $path,
+      $config,
+      (New-Object System.Text.UTF8Encoding($false))
+    )
+    ```
+  </Step>
+</Steps>
+
+No separate CA profile is required on Windows. The elevated agent installs the active CA into the Windows Root certificate store.
+
+## Linux with fleet-management tooling
+
+Deploy the `.deb` package to Debian/Ubuntu devices or the `.rpm` package to RHEL/Fedora devices, using the package that matches the device architecture. In the same policy or play, write `config.json` to `/etc/bifrost-edge/config.json` with mode `0644`.
+
+No separate CA profile is required on Linux. The agent installs the CA into the system trust store. For browser interception, ensure `certutil` is available through `libnss3-tools` on Debian/Ubuntu or `nss-tools` on RHEL/Fedora.
+
+## Restart computers after CA trust
+
+After the active CA is delivered and trusted, restart each computer before testing Edge traffic. A full computer restart is required for the CA certificate change to take effect. Repeat the restart whenever the active CA is replaced.
+
+On macOS, restart after the trusted-root profile and Edge package are installed. On Windows and Linux, restart after the agent has received and installed the active CA.
+
+## Rollout order
+
+The package and managed `config.json` can arrive in either order; the agent watches for the file. On macOS, deploy the trusted-root profile before testing interception so users are not left with an authorization request they cannot approve.
+
+Start with a small pilot group. Continue to [Sign in and verify](/edge/sign-in-and-verify) before expanding the assignment.

@@ -6,6 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +202,156 @@ func TestPostLLMHookRequiresStartTime(t *testing.T) {
 
 // TestMetricsEnabledGating covers the pull-gateway (/metrics scrape) on/off switch: default-on
 // when the config omits the field (back-compat), and honoring an explicit value.
+// TestRoutingEmbeddingCounters: a response stamped with routing metadata increments
+// bifrost_routing_embedding_requests_total regardless of the count_toward_budgets
+// flag — the flag only controls budget folding (CalculateCost), never telemetry.
+// Cost stays unrecorded here because the test plugin has no pricing manager;
+// the routing embedding cost math is covered in modelcatalog's datasheet tests.
+func TestRoutingEmbeddingCounters(t *testing.T) {
+	for _, countTowardBudgets := range []bool{false, true} {
+		p := newTestPlugin(t)
+
+		provider := "openai"
+		model := "text-embedding-3-small"
+		inputTokens := 42
+		resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingMetadata: &schemas.BifrostRoutingMetadata{
+					Calls: []schemas.BifrostRoutingCall{{
+						ProviderUsed:       &provider,
+						ModelUsed:          &model,
+						InputTokens:        &inputTokens,
+						CountTowardBudgets: countTowardBudgets,
+					}},
+				},
+			},
+		}}
+		resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.ModelProvider(provider), model, model)
+
+		ctx := newHookContext(schemas.ChatCompletionRequest)
+		if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+			t.Fatalf("PostLLMHook (flag=%v): %v", countTowardBudgets, err)
+		}
+
+		waitForCounter(t, p.registry, "bifrost_routing_embedding_requests_total", 1)
+		if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "request"); got != 1 {
+			t.Fatalf("request-phase requests counter = %v, want 1", got)
+		}
+		if got := counterTotal(t, p.registry, "bifrost_routing_embedding_cost_total"); got != 0 {
+			t.Fatalf("cost counter without pricing manager = %v, want 0", got)
+		}
+	}
+}
+
+// TestRoutingCountersRecordBothSemanticAndLLMCalls pins the fix for the bug
+// where a request that classified via semantic and then fell back to the llm
+// classifier lost the embedding's telemetry: both calls in one routing metadata record
+// stamp must each increment their own counter family, not just the last one
+// written.
+func TestRoutingCountersRecordBothSemanticAndLLMCalls(t *testing.T) {
+	p := newTestPlugin(t)
+
+	embedProvider, embedModel, embedTokens := "openai", "text-embedding-3-small", 42
+	llmProvider, llmModel, llmInput, llmOutput := "anthropic", "claude-haiku-4-5", 30, 5
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			RoutingMetadata: &schemas.BifrostRoutingMetadata{
+				Calls: []schemas.BifrostRoutingCall{
+					{ProviderUsed: &embedProvider, ModelUsed: &embedModel, InputTokens: &embedTokens},
+					{ProviderUsed: &llmProvider, ModelUsed: &llmModel, InputTokens: &llmInput, OutputTokens: &llmOutput},
+				},
+			},
+		},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.ModelProvider(embedProvider), embedModel, embedModel)
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "bifrost_routing_llm_requests_total", 1)
+	if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "request"); got != 1 {
+		t.Fatalf("embedding requests counter = %v, want 1", got)
+	}
+	if got := counterTotal(t, p.registry, "bifrost_routing_llm_requests_total"); got != 1 {
+		t.Fatalf("llm requests counter = %v, want 1 (must not be shadowed by the embed call)", got)
+	}
+}
+
+// TestObserveWarmupRoutingEmbedding: warmup embeds report through the direct
+// observer method (no request/response exists for them) and land under
+// phase="warmup", separate from the request-phase series. Cost stays
+// unrecorded without a pricing manager, same as the request phase.
+func TestObserveWarmupRoutingEmbedding(t *testing.T) {
+	p := newTestPlugin(t)
+
+	p.ObserveWarmupRoutingEmbedding("openai", "text-embedding-3-small", 7)
+	p.ObserveWarmupRoutingEmbedding("openai", "text-embedding-3-small", 9)
+
+	if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "warmup"); got != 2 {
+		t.Fatalf("warmup-phase requests counter = %v, want 2", got)
+	}
+	if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "request"); got != 0 {
+		t.Fatalf("request-phase requests counter = %v, want 0 (warmup must not leak into it)", got)
+	}
+	if got := counterTotal(t, p.registry, "bifrost_routing_embedding_cost_total"); got != 0 {
+		t.Fatalf("cost counter without pricing manager = %v, want 0", got)
+	}
+}
+
+// counterTotalWithLabel sums every series of the named counter family whose
+// labels include name=value.
+func counterTotalWithLabel(t *testing.T, reg *prometheus.Registry, name, labelName, labelValue string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var sum float64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == labelName && lp.GetValue() == labelValue {
+					sum += m.GetCounter().GetValue()
+					break
+				}
+			}
+		}
+	}
+	return sum
+}
+
+// TestRoutingEmbeddingCountersAbsentWithoutStamp: responses without routing metadata
+// (no routing embed ran) must not touch the routing counters.
+func TestRoutingEmbeddingCountersAbsentWithoutStamp(t *testing.T) {
+	p := newTestPlugin(t)
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "openai", "test-model", "test-model")
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	// Token counters record after the routing check in the same goroutine, so
+	// once they land we know the routing check already ran without recording.
+	waitForCounter(t, p.registry, "bifrost_input_tokens_total", 11)
+	if got := counterTotal(t, p.registry, "bifrost_routing_embedding_requests_total"); got != 0 {
+		t.Fatalf("routing requests counter = %v, want 0", got)
+	}
+}
+
 func TestMetricsEnabledGating(t *testing.T) {
 	cases := []struct {
 		name string
@@ -219,6 +372,61 @@ func TestMetricsEnabledGating(t *testing.T) {
 				t.Errorf("IsMetricsEnabled() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestMarshalConfigForStorageKeepsToggles guards the hand-maintained storage whitelist
+// (Config.MarshalForStorage's configStorage struct): a toggle added to Config must be
+// added there too, or it is silently dropped on save and the UI reverts it. Every *bool
+// field on Config is enumerated by reflection so a new toggle cannot escape this test,
+// which is how overhead_breakdown_enabled and later user_labels_enabled both regressed.
+func TestMarshalConfigForStorageKeepsToggles(t *testing.T) {
+	p := newTestPlugin(t)
+	ct := reflect.TypeOf(Config{})
+	for i := 0; i < ct.NumField(); i++ {
+		f := ct.Field(i)
+		if f.Type.Kind() != reflect.Ptr || f.Type.Elem().Kind() != reflect.Bool {
+			continue
+		}
+		key := strings.Split(f.Tag.Get("json"), ",")[0]
+		if key == "" || key == "-" {
+			t.Fatalf("Config.%s is a toggle with no json tag", f.Name)
+		}
+		// Both values: omitempty would hide a dropped field if only false were sent.
+		for _, want := range []bool{true, false} {
+			out, err := p.MarshalConfigForStorage(map[string]any{key: want})
+			if err != nil {
+				t.Fatalf("MarshalConfigForStorage(%s=%v): %v", key, want, err)
+			}
+			got, ok := out[key].(bool)
+			if !ok {
+				t.Errorf("%s dropped by storage whitelist (Config.%s): got %v (%T), want %v", key, f.Name, out[key], out[key], want)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %v after storage round-trip, want %v", key, got, want)
+			}
+		}
+	}
+}
+
+// TestCleanupIdempotent guards the shutdown crash: the plugin is registered under several
+// types, so Cleanup runs more than once. With the overhead sweeper enabled, a second call
+// must not double-close its stop channel. Also covers the disabled path (no sweeper).
+func TestCleanupIdempotent(t *testing.T) {
+	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	for _, enabled := range []bool{true, false} {
+		p, err := Init(&Config{OverheadBreakdownEnabled: boolPtr(enabled)}, nil, log)
+		if err != nil {
+			t.Fatalf("Init(enabled=%v): %v", enabled, err)
+		}
+		if err := p.Cleanup(); err != nil {
+			t.Fatalf("Cleanup 1 (enabled=%v): %v", enabled, err)
+		}
+		// Second call must not panic on a closed channel.
+		if err := p.Cleanup(); err != nil {
+			t.Fatalf("Cleanup 2 (enabled=%v): %v", enabled, err)
+		}
 	}
 }
 
@@ -409,6 +617,152 @@ func TestApplyCustomLabels(t *testing.T) {
 				if got[k] != v {
 					t.Errorf("label %q = %q, want %q", k, got[k], v)
 				}
+			}
+		})
+	}
+}
+
+// TestSpliceLabelValues pins the final label-value ordering produced for the latency,
+// error, and cache-hit metrics: default labels first, then the metric's extra values
+// (is_success / status_code+error_type / cache_type), then the custom labels. Metric
+// vectors match values to label names purely by position, so any reordering here
+// silently attributes values to the wrong labels.
+func TestSpliceLabelValues(t *testing.T) {
+	defaults := []string{"openai", "gpt-4o", "chat"} // provider, model, method
+	custom := []string{"team-a", "env-prod"}         // custom dimension labels
+	base := append(append([]string{}, defaults...), custom...)
+
+	tests := []struct {
+		name   string
+		in     []string
+		extras []string
+		want   []string
+	}{
+		{
+			name:   "latency is_success between defaults and custom labels",
+			in:     base,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true", "team-a", "env-prod"},
+		},
+		{
+			name:   "error status_code and error_type keep their order",
+			in:     base,
+			extras: []string{"429", "rate_limit"},
+			want:   []string{"openai", "gpt-4o", "chat", "429", "rate_limit", "team-a", "env-prod"},
+		},
+		{
+			name:   "cache_type between defaults and custom labels",
+			in:     base,
+			extras: []string{"semantic"},
+			want:   []string{"openai", "gpt-4o", "chat", "semantic", "team-a", "env-prod"},
+		},
+		{
+			name:   "no custom labels appends extras at the end",
+			in:     defaults,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true"},
+		},
+		{
+			name:   "no extras returns the input unchanged",
+			in:     base,
+			extras: nil,
+			want:   []string{"openai", "gpt-4o", "chat", "team-a", "env-prod"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := slices.Clone(tt.in)
+			got := spliceLabelValues(tt.in, len(defaults), tt.extras...)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("spliceLabelValues() = %v, want %v", got, tt.want)
+			}
+			if !slices.Equal(tt.in, before) {
+				t.Errorf("input mutated: %v, was %v", tt.in, before)
+			}
+		})
+	}
+}
+
+// gaugeValue gathers the named gauge family and returns the value of the single series whose
+// labels all match, and whether such a series exists at all (a key the plugin never touched
+// has no series, which is the "unchanged" the docs promise for model failures).
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) (float64, bool) {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			matched := 0
+			for _, lp := range m.GetLabel() {
+				if want, ok := labels[lp.GetName()]; ok && lp.GetValue() == want {
+					matched++
+				}
+			}
+			if matched == len(labels) {
+				return m.GetGauge().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// TestProviderKeyUpSkipsModelAndRegionFailures pins the bifrost_provider_key_up contract the
+// docs describe: a failed attempt marks its key 0, except when the failure says nothing about
+// the key's health: a model this key cannot reach or that was retired (model_access,
+// model_gone), or a region block that may be the gateway's location (region_blocked). Those
+// leave the key's gauge untouched. The key that finally served is marked 1 either way.
+func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
+	cases := []struct {
+		name       string
+		class      schemas.FailureClass
+		failReason string
+		status     int
+		wantSeries bool
+	}{
+		{"credential failure marks the key down", schemas.FailureClassCredential, "authentication_error", 401, true},
+		{"rate limit marks the key down", schemas.FailureClassRateLimit, "rate_limit_error", 429, true},
+		{"model_access leaves the key untouched", schemas.FailureClassModelAccess, "model_access_error", 404, false},
+		{"model_gone leaves the key untouched", schemas.FailureClassModelGone, "model_retired_error", 404, false},
+		{"region_blocked leaves the key untouched", schemas.FailureClassRegionBlocked, "region_blocked_error", 400, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(t)
+			resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}}
+			resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+
+			status := tc.status
+			failReason := tc.failReason
+			ctx := newHookContext(schemas.ChatCompletionRequest)
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-b")
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "Key B")
+			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 1)
+			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+				{Attempt: 0, KeyID: "key-a", KeyName: "Key A", FailReason: &failReason, FailureClass: tc.class, StatusCode: &status, TriggeredRotation: true},
+				{Attempt: 1, KeyID: "key-b", KeyName: "Key B"},
+			})
+			if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+			// The key-health writes precede this counter in the same goroutine.
+			waitForCounter(t, p.registry, "bifrost_upstream_requests_total", 1)
+
+			got, ok := gaugeValue(t, p.registry, "bifrost_provider_key_up", map[string]string{"provider": "openai", "key_id": "key-a", "key_name": "Key A"})
+			if tc.wantSeries && (!ok || got != 0) {
+				t.Errorf("key-a gauge present=%v value=%v after %s failure, want 0", ok, got, tc.class)
+			}
+			if !tc.wantSeries && ok {
+				t.Errorf("key-a gauge set to %v after %s failure, want untouched (no series): that failure says nothing about the key's health", got, tc.class)
+			}
+			if got, ok := gaugeValue(t, p.registry, "bifrost_provider_key_up", map[string]string{"provider": "openai", "key_id": "key-b", "key_name": "Key B"}); !ok || got != 1 {
+				t.Errorf("key-b gauge present=%v value=%v, want 1 for the key that served", ok, got)
 			}
 		})
 	}

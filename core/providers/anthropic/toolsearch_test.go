@@ -2,10 +2,14 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // These tests cover the Anthropic server-side tool_search streaming path
@@ -333,4 +337,380 @@ func TestToolSearch_ReverseSkipsWhenNoToolUseID(t *testing.T) {
 	if blocks := convertBifrostToolSearchCallToAnthropicBlocks(&msg); blocks != nil {
 		t.Fatalf("expected nil (no tool-use id), got %+v", blocks)
 	}
+}
+
+// toolSearchWireResultBlock is the tool_search_tool_result block exactly as
+// Anthropic documents it on the wire — tool_references nested inside a
+// tool_search_tool_search_result "content" object, NOT flat on the block:
+//
+//	{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_01ABC123",
+//	 "content":{"type":"tool_search_tool_search_result",
+//	            "tool_references":[{"type":"tool_reference","tool_name":"get_weather"}]}}
+//
+// https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+const toolSearchWireResultBlock = `{
+	"type": "tool_search_tool_result",
+	"tool_use_id": "` + tsServerToolUseID + `",
+	"content": {
+		"type": "tool_search_tool_search_result",
+		"tool_references": [{"type": "tool_reference", "tool_name": "` + tsDiscoveredTool + `"}]
+	}
+}`
+
+// TestToolSearch_WireShapeCarriesToolReferences decodes the documented wire shape
+// and asserts the discovered tool names are recoverable from the decoded block.
+// AnthropicContentBlock.ToolReferences is declared flat (`json:"tool_references"`),
+// so real traffic leaves it nil and the references land one level down in Content —
+// DiscoveredToolReferences is the reader that spans both shapes.
+func TestToolSearch_WireShapeCarriesToolReferences(t *testing.T) {
+	t.Parallel()
+
+	var block AnthropicContentBlock
+	if err := sonic.Unmarshal([]byte(toolSearchWireResultBlock), &block); err != nil {
+		t.Fatalf("documented wire block must decode: %v", err)
+	}
+	if block.Type != AnthropicContentBlockTypeToolSearchToolResult {
+		t.Fatalf("block type = %q, want tool_search_tool_result", block.Type)
+	}
+	if len(block.ToolReferences) != 0 {
+		t.Errorf("the flat field is not the wire shape; expected it to stay empty, got %d refs", len(block.ToolReferences))
+	}
+
+	names := make([]string, 0, 1)
+	for _, ref := range block.DiscoveredToolReferences() {
+		if ref.ToolName != nil {
+			names = append(names, *ref.ToolName)
+		}
+	}
+	if len(names) != 1 || names[0] != tsDiscoveredTool {
+		t.Fatalf("DiscoveredToolReferences() = %v, want [%q] — nested tool_references were not reachable",
+			names, tsDiscoveredTool)
+	}
+}
+
+// TestToolSearch_FlatToolReferencesStillRead pins the other half of the accessor's
+// contract: Bifrost's own rebuild (convertBifrostToolSearchCallToAnthropicBlocks)
+// sets the flat field, so a block in that shape must keep working.
+func TestToolSearch_FlatToolReferencesStillRead(t *testing.T) {
+	t.Parallel()
+
+	block := AnthropicContentBlock{
+		Type:      AnthropicContentBlockTypeToolSearchToolResult,
+		ToolUseID: schemas.Ptr(tsServerToolUseID),
+		ToolReferences: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeToolReference, ToolName: schemas.Ptr(tsDiscoveredTool)},
+		},
+	}
+
+	refs := block.DiscoveredToolReferences()
+	if len(refs) != 1 || refs[0].ToolName == nil || *refs[0].ToolName != tsDiscoveredTool {
+		t.Fatalf("DiscoveredToolReferences() = %+v, want one ref to %q", refs, tsDiscoveredTool)
+	}
+}
+
+// TestToolSearch_NonStreamingForwardsToolReferences is the non-streaming twin of
+// TestToolSearch_ForwardsToolReferences. The streaming state machine emits a
+// tool_search_call item; the non-streaming converter's server_tool_use dispatch
+// handles web_search / web_fetch / advisor / code_execution only, so a
+// tool_search server_tool_use and its tool_search_tool_result are both dropped
+// and the caller sees no tool_search_call at all.
+func TestToolSearch_NonStreamingForwardsToolReferences(t *testing.T) {
+	t.Parallel()
+
+	var resultBlock AnthropicContentBlock
+	if err := sonic.Unmarshal([]byte(toolSearchWireResultBlock), &resultBlock); err != nil {
+		t.Fatalf("documented wire block must decode: %v", err)
+	}
+
+	resp := &AnthropicMessageResponse{
+		ID:         "msg_ts_nonstream",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "claude-sonnet-4-6",
+		StopReason: AnthropicStopReasonToolUse,
+		Content: []AnthropicContentBlock{
+			{
+				Type: AnthropicContentBlockTypeServerToolUse,
+				ID:   schemas.Ptr(tsServerToolUseID),
+				Name: schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+			},
+			resultBlock,
+			{
+				Type: AnthropicContentBlockTypeToolUse,
+				ID:   schemas.Ptr(tsDiscoveredCallID),
+				Name: schemas.Ptr(tsDiscoveredTool),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostResp := resp.ToBifrostResponsesResponse(ctx)
+	if bifrostResp == nil {
+		t.Fatal("converter returned nil")
+	}
+
+	var search *schemas.ResponsesMessage
+	var sawDiscoveredCall bool
+	for i := range bifrostResp.Output {
+		item := &bifrostResp.Output[i]
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			search = item
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.Name != nil &&
+				*item.ResponsesToolMessage.Name == tsDiscoveredTool {
+				sawDiscoveredCall = true
+			}
+		}
+	}
+
+	if search == nil {
+		t.Fatal("no tool_search_call item in non-streaming output — the server_tool_use and tool_search_tool_result blocks were dropped")
+	}
+	if search.ResponsesToolMessage == nil || search.ResponsesToolMessage.ResponsesToolSearchCall == nil {
+		t.Fatal("tool_search_call item carries no ResponsesToolSearchCall payload")
+	}
+	refs := search.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
+	if len(refs) != 1 || refs[0] != tsDiscoveredTool {
+		t.Fatalf("non-streaming tool_references = %v, want [%q]", refs, tsDiscoveredTool)
+	}
+	if !sawDiscoveredCall {
+		t.Errorf("the follow-up tool_use calling the discovered tool must still be forwarded as a function_call")
+	}
+}
+
+// TestToolSearch_GroupedReplayKeepsToolSearchCall covers the replay direction used
+// for Bedrock (ConvertAnthropicMessagesToBifrostMessages is called with
+// keepToolsGrouped = provider == schemas.Bedrock). A client echoing the assistant
+// turn back — which Anthropic requires, unchanged — must not have the tool-search
+// server_tool_use downgraded into a function_call: that would make the caller
+// return a tool_result for a srvtoolu_ id, which the API rejects.
+func TestToolSearch_GroupedReplayKeepsToolSearchCall(t *testing.T) {
+	t.Parallel()
+
+	var resultBlock AnthropicContentBlock
+	if err := sonic.Unmarshal([]byte(toolSearchWireResultBlock), &resultBlock); err != nil {
+		t.Fatalf("documented wire block must decode: %v", err)
+	}
+
+	assistant := AnthropicMessage{
+		Role: AnthropicMessageRoleAssistant,
+		Content: AnthropicContent{
+			ContentBlocks: []AnthropicContentBlock{
+				{
+					Type: AnthropicContentBlockTypeServerToolUse,
+					ID:   schemas.Ptr(tsServerToolUseID),
+					Name: schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+				},
+				resultBlock,
+				{
+					Type: AnthropicContentBlockTypeToolUse,
+					ID:   schemas.Ptr(tsDiscoveredCallID),
+					Name: schemas.Ptr(tsDiscoveredTool),
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	msgs := ConvertAnthropicMessagesToBifrostMessages(ctx, []AnthropicMessage{assistant}, nil, false, true)
+
+	var search *schemas.ResponsesMessage
+	var sawDiscoveredCall bool
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Type == nil {
+			continue
+		}
+		switch *m.Type {
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			search = m
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Name != nil {
+				switch *m.ResponsesToolMessage.Name {
+				case tsDiscoveredTool:
+					sawDiscoveredCall = true
+				case string(AnthropicToolNameToolSearchRegex), string(AnthropicToolNameToolSearchBM25):
+					t.Errorf("tool-search server_tool_use was replayed as a client function_call")
+				}
+			}
+		}
+	}
+
+	if search == nil {
+		t.Fatal("no tool_search_call survived the grouped replay conversion")
+	}
+	if search.ResponsesToolMessage == nil || search.ResponsesToolMessage.ResponsesToolSearchCall == nil {
+		t.Fatal("replayed tool_search_call carries no ResponsesToolSearchCall payload")
+	}
+	refs := search.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
+	if len(refs) != 1 || refs[0] != tsDiscoveredTool {
+		t.Fatalf("replayed tool_references = %v, want [%q]", refs, tsDiscoveredTool)
+	}
+	if !sawDiscoveredCall {
+		t.Errorf("the tool_use calling the discovered tool must still replay as a function_call")
+	}
+}
+
+// tsSearchQuery is the server_tool_use.input payload Anthropic sends for a regex
+// tool search — the pattern the model actually searched with.
+const tsSearchQuery = `{"query":"weather"}`
+
+// TestToolSearch_PreservesSearchQuery pins the search query across all four hops it
+// has to survive. Anthropic requires the client to echo the assistant's
+// server_tool_use back unchanged on the next turn, and a block whose input has been
+// replaced with {} is not unchanged - the query the model searched with is gone.
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+func TestToolSearch_PreservesSearchQuery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("streaming buffers the query onto Arguments", func(t *testing.T) {
+		t.Parallel()
+		all := driveToolSearch(t, toolSearchStreamChunks(string(AnthropicToolNameToolSearchRegex), false))
+
+		var done *schemas.ResponsesMessage
+		for _, r := range all {
+			if r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone &&
+				r.Item != nil && r.Item.Type != nil &&
+				*r.Item.Type == schemas.ResponsesMessageTypeToolSearchCall {
+				done = r.Item
+			}
+		}
+		require.NotNil(t, done, "no tool_search_call done emitted")
+		require.NotNil(t, done.ResponsesToolMessage)
+		require.NotNil(t, done.ResponsesToolMessage.Arguments,
+			"the buffered input_json deltas were discarded, so the search query is lost")
+		assert.JSONEq(t, tsSearchQuery, *done.ResponsesToolMessage.Arguments)
+	})
+
+	t.Run("non-streaming carries block.Input onto Arguments", func(t *testing.T) {
+		t.Parallel()
+		var resultBlock AnthropicContentBlock
+		require.NoError(t, sonic.Unmarshal([]byte(toolSearchWireResultBlock), &resultBlock))
+
+		resp := &AnthropicMessageResponse{
+			ID: "msg_q", Type: "message", Role: "assistant", Model: "claude-sonnet-4-6",
+			StopReason: AnthropicStopReasonToolUse,
+			Content: []AnthropicContentBlock{
+				{
+					Type:  AnthropicContentBlockTypeServerToolUse,
+					ID:    schemas.Ptr(tsServerToolUseID),
+					Name:  schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+					Input: json.RawMessage(tsSearchQuery),
+				},
+				resultBlock,
+			},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		out := resp.ToBifrostResponsesResponse(ctx)
+		require.NotNil(t, out)
+
+		var search *schemas.ResponsesMessage
+		for i := range out.Output {
+			if out.Output[i].Type != nil && *out.Output[i].Type == schemas.ResponsesMessageTypeToolSearchCall {
+				search = &out.Output[i]
+			}
+		}
+		require.NotNil(t, search, "no tool_search_call in non-streaming output")
+		require.NotNil(t, search.ResponsesToolMessage.Arguments,
+			"server_tool_use.input was dropped at the non-streaming creation site")
+		assert.JSONEq(t, tsSearchQuery, *search.ResponsesToolMessage.Arguments)
+	})
+
+	t.Run("grouped replay carries block.Input onto Arguments", func(t *testing.T) {
+		t.Parallel()
+		var resultBlock AnthropicContentBlock
+		require.NoError(t, sonic.Unmarshal([]byte(toolSearchWireResultBlock), &resultBlock))
+
+		assistant := AnthropicMessage{
+			Role: AnthropicMessageRoleAssistant,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{
+					Type:  AnthropicContentBlockTypeServerToolUse,
+					ID:    schemas.Ptr(tsServerToolUseID),
+					Name:  schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+					Input: json.RawMessage(tsSearchQuery),
+				},
+				resultBlock,
+			}},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		msgs := ConvertAnthropicMessagesToBifrostMessages(ctx, []AnthropicMessage{assistant}, nil, false, true)
+
+		var search *schemas.ResponsesMessage
+		for i := range msgs {
+			if msgs[i].Type != nil && *msgs[i].Type == schemas.ResponsesMessageTypeToolSearchCall {
+				search = &msgs[i]
+			}
+		}
+		require.NotNil(t, search, "no tool_search_call survived grouped replay")
+		require.NotNil(t, search.ResponsesToolMessage.Arguments,
+			"server_tool_use.input was dropped at the grouped creation site")
+		assert.JSONEq(t, tsSearchQuery, *search.ResponsesToolMessage.Arguments)
+	})
+
+	t.Run("reverse rebuild emits the query, not an empty object", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		history := []schemas.ResponsesMessage{{
+			ID:   schemas.Ptr(tsServerToolUseID),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  schemas.Ptr(tsServerToolUseID),
+				Name:                    schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+				Arguments:               schemas.Ptr(tsSearchQuery),
+				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
+			},
+		}}
+
+		msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true,
+			schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"))
+
+		var serverToolUse *AnthropicContentBlock
+		for mi := range msgs {
+			for bi := range msgs[mi].Content.ContentBlocks {
+				if b := &msgs[mi].Content.ContentBlocks[bi]; b.Type == AnthropicContentBlockTypeServerToolUse {
+					serverToolUse = b
+				}
+			}
+		}
+		require.NotNil(t, serverToolUse, "no server_tool_use rebuilt")
+		assert.JSONEq(t, tsSearchQuery, string(serverToolUse.Input),
+			"the rebuilt block must carry the original query, not {}")
+	})
+
+	t.Run("absent Arguments still rebuilds an empty object", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		history := []schemas.ResponsesMessage{{
+			ID:   schemas.Ptr(tsServerToolUseID),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  schemas.Ptr(tsServerToolUseID),
+				Name:                    schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
+			},
+		}}
+
+		msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true,
+			schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"))
+
+		var serverToolUse *AnthropicContentBlock
+		for mi := range msgs {
+			for bi := range msgs[mi].Content.ContentBlocks {
+				if b := &msgs[mi].Content.ContentBlocks[bi]; b.Type == AnthropicContentBlockTypeServerToolUse {
+					serverToolUse = b
+				}
+			}
+		}
+		require.NotNil(t, serverToolUse)
+		assert.JSONEq(t, `{}`, string(serverToolUse.Input))
+	})
 }
