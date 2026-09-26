@@ -3,6 +3,7 @@ package complexity
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -244,11 +245,19 @@ func TestClipJevState(t *testing.T) {
 	assert.LessOrEqual(t, len(clipped), configstore.MaxComplexityJevStateCharacters)
 
 	// Multi-byte text is never split mid-rune: a clip budget landing inside a
-	// 3-byte rune must round down to the rune boundary.
+	// 3-byte rune must round to the rune boundary.
 	multi := "é" + makeRuneString('日', configstore.MaxComplexityJevStateCharacters/3) // 2-byte + 3-byte runes
 	clippedMulti := clipJevState(multi)
 	assert.LessOrEqual(t, len(clippedMulti), configstore.MaxComplexityJevStateCharacters)
 	assert.True(t, utf8.ValidString(clippedMulti))
+
+	// SemanticInputText appends the latest user turn last, so the clip must
+	// keep the trailing suffix: the current request survives even when early
+	// turns alone overflow the budget.
+	latest := "LATEST_TURN: redesign the billing system"
+	clippedWithTurn := clipJevState(string(long) + latest)
+	assert.LessOrEqual(t, len(clippedWithTurn), configstore.MaxComplexityJevStateCharacters)
+	assert.True(t, strings.HasSuffix(clippedWithTurn, latest), "clipped state must retain the latest user turn")
 }
 
 func makeRuneString(r rune, n int) string {

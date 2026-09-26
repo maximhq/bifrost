@@ -160,22 +160,20 @@ func jevDecisionQuestions() map[string]SystemOneQuestion {
 }
 
 // clipJevState bounds the state to the decision API's input budget, keeping
-// the leading prefix and cutting on a rune boundary so multi-byte text is
-// never split mid-character.
+// the trailing suffix and cutting on a rune boundary so multi-byte text is
+// never split mid-character. SemanticInputText appends the latest user turn
+// last, so keeping the tail is what preserves the current request when
+// earlier turns alone overflow the budget.
 func clipJevState(text string) string {
 	limit := configstore.MaxComplexityJevStateCharacters
 	if len(text) <= limit {
 		return text
 	}
-	end := 0
-	for pos, r := range text {
-		next := pos + utf8.RuneLen(r)
-		if next > limit {
-			break
-		}
-		end = next
+	start := len(text) - limit
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
 	}
-	return text[:end]
+	return text[start:]
 }
 
 // JevClassifier classifies a request by asking the System One decision API to
