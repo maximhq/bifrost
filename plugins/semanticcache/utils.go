@@ -200,6 +200,10 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		metadata["attachments"] = attachments
 	}
 
+	// request_family separates endpoints whose input and params hash the same,
+	// such as chat and responses (issue #7560). It is set after the params so
+	// extra params cannot override it. Stream variants share a family because
+	// "stream" is already in the hash.
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest == nil {
@@ -208,6 +212,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
 			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TextCompletionRequest
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if req.ChatRequest == nil {
 			return nil, fmt.Errorf("chat payload is nil")
@@ -215,6 +220,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ChatCompletionRequest
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		if req.ResponsesRequest == nil {
 			return nil, fmt.Errorf("responses payload is nil")
@@ -222,6 +228,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ResponsesRequest
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if req.SpeechRequest == nil {
 			return nil, fmt.Errorf("speech payload is nil")
@@ -229,6 +236,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
 			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.SpeechRequest
 	case schemas.EmbeddingRequest:
 		if req.EmbeddingRequest == nil {
 			return nil, fmt.Errorf("embedding payload is nil")
@@ -236,6 +244,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
 			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.EmbeddingRequest
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if req.TranscriptionRequest == nil {
 			return nil, fmt.Errorf("transcription payload is nil")
@@ -243,6 +252,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
 			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TranscriptionRequest
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		if req.ImageGenerationRequest == nil {
 			return nil, fmt.Errorf("image generation payload is nil")
@@ -250,6 +260,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
 			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ImageGenerationRequest
 	default:
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
