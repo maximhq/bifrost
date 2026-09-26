@@ -6,6 +6,7 @@
 // gateway the runner starts itself; this covers a gateway that was already running.
 
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
+import { withSetupToken } from "./lib/setup-token.mjs";
 const mode = process.argv[2];
 const authHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
 
@@ -21,7 +22,7 @@ async function request(method, path, body) {
   }
   const res = await fetch(`${baseURL}${path}`, {
     method,
-    headers,
+    headers: withSetupToken(headers, path),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();

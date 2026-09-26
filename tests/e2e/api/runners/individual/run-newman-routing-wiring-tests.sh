@@ -88,6 +88,7 @@ fi
 mkdir -p "$REPORT_DIR"
 
 cmd=(newman run "$COLLECTION" "${ENV_FLAG[@]}" -r cli,htmlextra)
+cmd+=(--env-var "setup_token=${BIFROST_SETUP_TOKEN:-}")
 
 # Forward a seed-env value if present, falling back to the process environment
 # so local runs work with credentials exported in the shell.

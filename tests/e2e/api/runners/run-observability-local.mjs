@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import http from "node:http";
+import { withSetupToken } from "./lib/setup-token.mjs";
 
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
 const adminAuthHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
@@ -185,7 +186,7 @@ function createOpenAIMock() {
 }
 
 async function request(method, path, body, headers = {}) {
-	const requestHeaders = adminAuthHeader ? { Authorization: adminAuthHeader, ...headers } : { ...headers };
+	const requestHeaders = withSetupToken(adminAuthHeader ? { Authorization: adminAuthHeader, ...headers } : { ...headers }, path);
 	if (body !== undefined && requestHeaders["content-type"] === undefined && requestHeaders["Content-Type"] === undefined) {
 		requestHeaders["content-type"] = "application/json";
 	}

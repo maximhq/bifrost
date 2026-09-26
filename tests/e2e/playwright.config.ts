@@ -81,6 +81,13 @@ export default defineConfig({
     // Base URL for the application
     baseURL: process.env.BASE_URL || 'http://localhost:3000',
 
+    // Until the first admin account exists, Bifrost's management API requires the
+    // setup token the gateway was started with. Sent on every request (the dashboard's
+    // own /api calls and the request fixture); the gateway ignores it once an admin exists.
+    extraHTTPHeaders: process.env.BIFROST_SETUP_TOKEN
+      ? { 'X-Bifrost-Setup-Token': process.env.BIFROST_SETUP_TOKEN }
+      : undefined,
+
     // Collect trace when retrying the failed test
     trace: 'on-first-retry',
 

@@ -192,6 +192,7 @@ done
 # When given, uses only that env file; otherwise uses default env and BIFROST_* overrides.
 run_newman() {
     local -a cmd=(newman run "$COLLECTION" -g "$GLOBALS_TMP")
+    cmd+=(--env-var "setup_token=${BIFROST_SETUP_TOKEN:-}")
     if [ -n "${2:-}" ] && [ -f "${2}" ]; then
         cmd+=(-e "${2}")
         # Align with core Bedrock tests: pass AWS_S3_BUCKET / AWS_BEDROCK_ROLE_ARN when running with Bedrock env

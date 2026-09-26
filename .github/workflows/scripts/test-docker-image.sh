@@ -235,6 +235,7 @@ docker run -d \
   -p ${TEST_PORT}:8080 \
   -e APP_PORT=8080 \
   -e APP_HOST=0.0.0.0 \
+  -e BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-}" \
   -e OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
   -e ELEVENLABS_API_KEY="${ELEVENLABS_API_KEY:-}" \
   -e XAI_API_KEY="${XAI_API_KEY:-}" \

@@ -56,6 +56,28 @@
       "type": "string"
     }
   ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Before the first admin account exists, the management API requires the operator's",
+          "// setup token (config.json setup_token or BIFROST_SETUP_TOKEN) in X-Bifrost-Setup-Token.",
+          "// Runners pass it as the setup_token variable; once an admin exists the header is ignored.",
+          "// A request that sets the header itself (or removes it in its own pre-request) wins.",
+          "(function () {",
+          "  var token = pm.environment.get('setup_token') || pm.globals.get('setup_token') || pm.collectionVariables.get('setup_token');",
+          "  if (!token) { return; }",
+          "  var path = pm.request.url.getPath() || '';",
+          "  if (path.indexOf('/api/') === 0 && !pm.request.headers.has('X-Bifrost-Setup-Token')) {",
+          "    pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: token });",
+          "  }",
+          "})();"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "Setup",

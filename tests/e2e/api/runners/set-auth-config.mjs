@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
+import { withSetupToken } from "./lib/setup-token.mjs";
 const mode = process.argv[2];
 const username = process.env.BIFROST_E2E_ADMIN_USERNAME || "admin";
 const password = process.env.BIFROST_E2E_ADMIN_PASSWORD || "Bifrost-E2E-Admin-Pass1!";
@@ -27,7 +28,7 @@ async function request(method, path, body) {
   }
   const res = await fetch(`${baseURL}${path}`, {
     method,
-    headers,
+    headers: withSetupToken(headers, path),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
