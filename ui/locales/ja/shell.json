@@ -3,6 +3,7 @@
 	"languageEnglish": "English",
 	"languageChinese": "简体中文",
 	"nav": {
+		"home": "ホーム",
 		"observability": "オブザーバビリティ",
 		"dashboard": "ダッシュボード",
 		"llmLogs": "LLM ログ",
@@ -70,6 +71,7 @@
 		"licenseInfo": "ライセンス情報"
 	},
 	"navDesc": {
+		"home": "自分の利用量、キー、予算、アクセス",
 		"observability": "リクエストログと監視",
 		"dashboard": "ダッシュボード",
 		"llmLogs": "LLM リクエストログと監視",
@@ -135,6 +137,10 @@
 		"featureFlags": "フィーチャーフラグの切り替え",
 		"branding": "カスタムロゴとアイコン",
 		"licenseInfo": "エンタープライズライセンス情報"
+	},
+	"home": {
+		"unlockTitle": "個人用ホームを解除",
+		"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。ホームでは、各ユーザー自身の利用量、キー、予算、アクセスが表示されます。"
 	},
 	"search": {
 		"placeholder": "検索…",

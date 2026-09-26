@@ -615,10 +615,10 @@ export default function AppSidebar() {
 			...(IS_ENTERPRISE
 				? [
 						{
-							title: "Home",
+							title: t("nav.home"),
 							url: "/workspace/home",
 							icon: House,
-							description: "Your usage, keys, budgets and access",
+							description: t("navDesc.home"),
 							hasAccess: true,
 						},
 					]
