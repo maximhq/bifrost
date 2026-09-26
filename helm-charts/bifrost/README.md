@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.43
+**Latest Version:** 2.1.44
 
 ## Changelog
+
+### 2.1.44
+
+- Added `business_unit_id` to `bifrost.governance.virtualKeys[]`, rendered as the key's `business_unit_id` in config.json. It names the business unit that owns the key, mutually exclusive with `team_id` and `customer_id`, and is enterprise only.
 
 ### 2.1.43
 - Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.
