@@ -40,3 +40,11 @@ func isConvertedToChatCompletions(ctx *schemas.BifrostContext) bool {
 	changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
 	return ok && changeType == schemas.ChatCompletionRequest
 }
+
+// isConvertedToResponses reports whether the request has been marked for
+// conversion to the Responses API, where reasoning and function tools are
+// accepted together.
+func isConvertedToResponses(ctx *schemas.BifrostContext) bool {
+	changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+	return ok && changeType == schemas.ResponsesRequest
+}

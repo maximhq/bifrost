@@ -2,6 +2,8 @@ package compat
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -171,5 +173,211 @@ func TestPluginDroppedParamsClearedBetweenAttempts(t *testing.T) {
 
 	if got := resp.ChatResponse.ExtraFields.DroppedCompatPluginParams; len(got) != 0 {
 		t.Errorf("dropped_compat_plugin_params = %v, want empty - the fallback attempt dropped nothing", got)
+	}
+}
+
+// newDatasheetPlugin seeds the catalog from a model-parameters feed so the
+// endpoint index and the parameter allowlist come from the same row, as they
+// do in production: markForConversion asks the first whether chat completions
+// is supported, and dropUnsupportedParams filters by the second.
+func newDatasheetPlugin(t *testing.T, cfg Config, paramsJSON string) *CompatPlugin {
+	t.Helper()
+	paramsPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(paramsPath, []byte(paramsJSON), 0o600); err != nil {
+		t.Fatalf("write model-parameters testdata: %v", err)
+	}
+	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{
+		ModelParametersURL: "file://" + paramsPath,
+	})
+	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load model-parameters testdata: %v", err)
+	}
+	p, err := Init(cfg, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	return p
+}
+
+// responsesFirstParams holds three rows. "responses-first" is a model whose
+// datasheet row lists only the Responses API even though the provider also
+// exposes chat completions, because chat completions cannot carry reasoning
+// together with function tools for it (gpt-6-astra, gpt-5.6-*; #7275). Every
+// chat completion to it is served through /responses. "chat-native" supports
+// the combination on chat and is left alone; "chat-only" cannot reach
+// /responses and keeps the chat-completions fallback.
+const responsesFirstParams = `{
+	"responses-first": {
+		"mode": "responses",
+		"supported_endpoints": ["/v1/responses", "/v1/batch"],
+		"supports_reasoning": true,
+		"supports_function_calling": true,
+		"supports_reasoning_with_tool_calls": false,
+		"supports_none_reasoning_effort": true
+	},
+	"chat-native": {
+		"mode": "chat",
+		"supported_endpoints": ["/v1/chat/completions", "/v1/responses"],
+		"supports_reasoning": true,
+		"supports_function_calling": true,
+		"supports_reasoning_with_tool_calls": true
+	},
+	"chat-only": {
+		"mode": "chat",
+		"supported_endpoints": ["/v1/chat/completions"],
+		"supports_reasoning": true,
+		"supports_function_calling": true,
+		"supports_reasoning_with_tool_calls": false,
+		"supports_none_reasoning_effort": true
+	}
+}`
+
+func newResponsesFirstChatRequest(model string, requestType schemas.RequestType, withTools bool, effort string) *schemas.BifrostRequest {
+	params := &schemas.ChatParameters{}
+	if effort != "" {
+		params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}
+	}
+	if withTools {
+		params.Tools = []schemas.ChatTool{{
+			Type: schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{
+				Name:        "get_weather",
+				Description: schemas.Ptr("Returns weather"),
+			},
+		}}
+	}
+	return &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    model,
+			Params:   params,
+		},
+	}
+}
+
+func changeRequestType(ctx *schemas.BifrostContext) (schemas.RequestType, bool) {
+	changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+	return changeType, ok
+}
+
+// A model published as Responses-only is served through /responses for every
+// chat completion, with or without tools, streaming or not, and the request
+// reaches the conversion with its reasoning effort and tools as the caller
+// sent them. The chat-completions-only "reasoning with tools" fallback must
+// not run on a request that is leaving chat completions.
+func TestPluginResponsesFirstModelChatServedThroughResponses(t *testing.T) {
+	cases := []struct {
+		name        string
+		requestType schemas.RequestType
+		withTools   bool
+		effort      string
+	}{
+		{name: "plain chat", requestType: schemas.ChatCompletionRequest, withTools: false, effort: ""},
+		{name: "chat with tools", requestType: schemas.ChatCompletionRequest, withTools: true, effort: ""},
+		{name: "chat with tools and reasoning", requestType: schemas.ChatCompletionRequest, withTools: true, effort: "medium"},
+		{name: "stream with tools and reasoning", requestType: schemas.ChatCompletionStreamRequest, withTools: true, effort: "medium"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newDatasheetPlugin(t, Config{ConvertChatToResponses: true, ShouldDropParams: true}, responsesFirstParams)
+			ctx := newTestContext()
+
+			got, _, err := p.PreLLMHook(ctx, newResponsesFirstChatRequest("responses-first", tc.requestType, tc.withTools, tc.effort))
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+
+			if changeType, ok := changeRequestType(ctx); !ok || changeType != schemas.ResponsesRequest {
+				t.Fatalf("change request type = %v (%v), want %v", changeType, ok, schemas.ResponsesRequest)
+			}
+			params := got.ChatRequest.Params
+			if tc.effort == "" {
+				if params.Reasoning != nil {
+					t.Fatalf("reasoning = %+v, want left unset so the model's default effort applies on /responses", params.Reasoning)
+				}
+			} else if params.Reasoning == nil || params.Reasoning.Effort == nil || *params.Reasoning.Effort != tc.effort {
+				t.Fatalf("reasoning = %+v, want effort %q preserved for the /responses wire", params.Reasoning, tc.effort)
+			}
+			if tc.withTools && len(params.Tools) != 1 {
+				t.Fatalf("tools = %v, want preserved", params.Tools)
+			}
+			if dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string); slices.Contains(dropped, "reasoning") {
+				t.Errorf("dropped params %v contain reasoning, want untouched", dropped)
+			}
+		})
+	}
+}
+
+// convert_chat_to_responses is the only switch that keeps a Responses-first
+// model on native chat completions, and it is gateway-wide: the x-bf-compat
+// header can turn the conversion on for one request but cannot turn it off.
+// With it off, the request stays on chat completions and the pre-existing
+// "reasoning with tools" fallback applies as before.
+func TestPluginResponsesFirstModelConversionDisabled(t *testing.T) {
+	p := newDatasheetPlugin(t, Config{ConvertChatToResponses: false, ShouldDropParams: true}, responsesFirstParams)
+	ctx := newTestContext()
+
+	got, _, err := p.PreLLMHook(ctx, newResponsesFirstChatRequest("responses-first", schemas.ChatCompletionRequest, true, "medium"))
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+
+	if changeType, converted := changeRequestType(ctx); converted {
+		t.Fatalf("request was converted to %v with convert_chat_to_responses off", changeType)
+	}
+	if effort := got.ChatRequest.Params.Reasoning.Effort; effort == nil || *effort != "none" {
+		t.Fatalf("reasoning.effort = %v, want the existing \"none\" fallback on native chat completions", effort)
+	}
+}
+
+// The x-bf-compat header sets BifrostContextKeyCompatConvertChatToResponses,
+// which turns the conversion on for a single request with the config off.
+func TestPluginResponsesFirstModelHeaderOverride(t *testing.T) {
+	p := newDatasheetPlugin(t, Config{ConvertChatToResponses: false, ShouldDropParams: true}, responsesFirstParams)
+	ctx := newTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+
+	got, _, err := p.PreLLMHook(ctx, newResponsesFirstChatRequest("responses-first", schemas.ChatCompletionRequest, true, "medium"))
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+
+	if changeType, ok := changeRequestType(ctx); !ok || changeType != schemas.ResponsesRequest {
+		t.Fatalf("change request type = %v (%v), want %v via header override", changeType, ok, schemas.ResponsesRequest)
+	}
+	if effort := got.ChatRequest.Params.Reasoning.Effort; effort == nil || *effort != "medium" {
+		t.Fatalf("reasoning.effort = %v, want \"medium\" preserved", effort)
+	}
+}
+
+// Models outside the Responses-first family are unchanged: one that supports
+// reasoning with tools on chat keeps its effort on chat completions, and one
+// that cannot reach /responses stays on chat with the existing fallback.
+func TestPluginModelsOutsideResponsesFirstFamilyUnchanged(t *testing.T) {
+	cases := []struct {
+		name       string
+		model      string
+		wantEffort string
+	}{
+		{name: "reasoning with tools supported on chat", model: "chat-native", wantEffort: "medium"},
+		{name: "responses unavailable", model: "chat-only", wantEffort: "none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newDatasheetPlugin(t, Config{ConvertChatToResponses: true, ShouldDropParams: true}, responsesFirstParams)
+			ctx := newTestContext()
+
+			got, _, err := p.PreLLMHook(ctx, newResponsesFirstChatRequest(tc.model, schemas.ChatCompletionRequest, true, "medium"))
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			if changeType, converted := changeRequestType(ctx); converted {
+				t.Fatalf("request was converted to %v, want left on chat completions", changeType)
+			}
+			if effort := got.ChatRequest.Params.Reasoning.Effort; effort == nil || *effort != tc.wantEffort {
+				t.Fatalf("reasoning.effort = %v, want %q", effort, tc.wantEffort)
+			}
+		})
 	}
 }

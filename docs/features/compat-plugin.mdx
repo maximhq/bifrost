@@ -69,6 +69,8 @@ Some AI models (like OpenAI o1-pro) only support the responses API and don't sup
 
 <Note>
 **Smart Conversion**: The conversion only happens when the model doesn't support chat completions natively. If a model has native chat completion support (like OpenAI's gpt-4 models), Bifrost uses the chat completion endpoint directly without any conversion.
+
+**Responses-first models**: some newer reasoning models expose a chat completions endpoint that cannot carry everything the Responses API can — for example Azure Foundry's `gpt-6-astra` and `gpt-5.6-*` deployments reject function tools together with `reasoning_effort` on `/v1/chat/completions`, and `gpt-6-astra` also rejects `reasoning_effort: "none"`, so the chat-completions fallback of forcing `none` either fails outright (Astra) or silently discards the caller's reasoning effort (`gpt-5.6-*`). When the model catalog publishes such a model as Responses-only (its datasheet row lists only `/v1/responses`), then with `convert_chat_to_responses` on (the default) every chat completion to it — with or without tools, streaming or not — is served through the Responses API with the caller's reasoning effort and tools intact and the result mapped back to a chat completion. The upstream endpoint is therefore the same on every turn, which keeps prompt caching stable. Native chat completions for those models are reachable only by turning `convert_chat_to_responses` off gateway-wide; the `x-bf-compat` header can enable the conversion per request but cannot disable it.
 </Note>
 
 This allows you to use a unified chat completion interface across all providers, even those that only support responses API.
