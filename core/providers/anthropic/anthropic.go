@@ -947,6 +947,7 @@ func HandleAnthropicChatCompletionStreaming(
 		var messageID string
 		var modelName string
 		var finishReason *string
+		guardrailIntervened := false
 
 		usage := &schemas.BifrostLLMUsage{}
 		// Served billing modifiers (top-level response fields, not usage) captured
@@ -1132,8 +1133,18 @@ func HandleAnthropicChatCompletionStreaming(
 				modelName = event.Message.Model
 			}
 
-			// Extract finish reason from event delta
-			if event.Delta != nil && event.Delta.StopReason != nil {
+			// A later message_delta may carry a normal stop reason after Bedrock has
+			// already reported an intervention. Keep the intervention latched for the
+			// remainder of the stream so it cannot be overwritten.
+			if event.bedrockGuardrailIntervened() {
+				guardrailIntervened = true
+				mappedReason := anthropicBedrockGuardrailIntervenedStopReason
+				finishReason = &mappedReason
+			}
+
+			// Extract finish reason from event delta unless an earlier intervention
+			// already established the terminal reason.
+			if !guardrailIntervened && event.Delta != nil && event.Delta.StopReason != nil {
 				mappedReason := ConvertAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 				finishReason = &mappedReason
 
@@ -1146,7 +1157,6 @@ func HandleAnthropicChatCompletionStreaming(
 					finishReason = &stopReason
 				}
 			}
-
 			// Handle structured output: intercept tool calls for the structured output tool
 			// and convert them to content instead of forwarding as tool calls
 			if structuredOutputToolName != "" {

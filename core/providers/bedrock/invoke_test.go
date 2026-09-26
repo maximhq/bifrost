@@ -42,6 +42,132 @@ func anthropicToolMap(name string, cacheControl map[string]interface{}) map[stri
 	return m
 }
 
+func TestInvokeAnthropicGuardrailConfigIsHeaderOnly(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	extraParams := map[string]interface{}{
+		"guardrailConfig": map[string]interface{}{
+			"guardrailIdentifier": "gr-test",
+			"guardrailVersion":    "DRAFT",
+			"trace":               "ENABLED",
+		},
+	}
+
+	provider := &BedrockProvider{}
+	responsesRequest := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-6",
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(128),
+			ExtraParams:     extraParams,
+		},
+	}
+	responsesBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(
+		ctx,
+		responsesRequest,
+		provider.invokeBuildConfig(responsesRequest.Model, false, true),
+	)
+	if bifrostErr != nil {
+		t.Fatalf("build responses body: %s", bifrostErr.Error.Message)
+	}
+	if gjson.GetBytes(responsesBody, "guardrailConfig").Exists() {
+		t.Fatalf("InvokeModel responses body must not contain guardrailConfig: %s", responsesBody)
+	}
+
+	chatRequest := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(128),
+			ExtraParams:         extraParams,
+		},
+	}
+	chatBody, bifrostErr := anthropic.BuildAnthropicChatRequestBody(
+		ctx,
+		chatRequest,
+		provider.invokeBuildConfig(chatRequest.Model, false, false),
+	)
+	if bifrostErr != nil {
+		t.Fatalf("build chat body: %s", bifrostErr.Error.Message)
+	}
+	if gjson.GetBytes(chatBody, "guardrailConfig").Exists() {
+		t.Fatalf("InvokeModel chat body must not contain guardrailConfig: %s", chatBody)
+	}
+
+	headers := withGuardrailHeaders(nil, extraParams)
+	assert.Equal(t, "gr-test", headers[guardrailIdentifierHeader])
+	assert.Equal(t, "DRAFT", headers[guardrailVersionHeader])
+	assert.Equal(t, "ENABLED", headers[guardrailTraceHeader])
+}
+
+func TestInvokeAnthropicGuardrailInterventionMapsToBifrost(t *testing.T) {
+	var response anthropic.AnthropicMessageResponse
+	require.NoError(t, sonic.Unmarshal([]byte(`{
+		"id":"msg_test",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-sonnet-4-6",
+		"content":[],
+		"stop_reason":"end_turn",
+		"amazon-bedrock-guardrailAction":"INTERVENED",
+		"usage":{"input_tokens":1,"output_tokens":0}
+	}`), &response))
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	chatResponse := response.ToBifrostChatResponse(ctx)
+	require.NotNil(t, chatResponse)
+	require.Len(t, chatResponse.Choices, 1)
+	require.NotNil(t, chatResponse.Choices[0].FinishReason)
+	assert.Equal(t, "guardrail_intervened", *chatResponse.Choices[0].FinishReason)
+
+	responsesResponse := response.ToBifrostResponsesResponse(ctx)
+	require.NotNil(t, responsesResponse)
+	require.NotNil(t, responsesResponse.StopReason)
+	assert.Equal(t, "guardrail_intervened", *responsesResponse.StopReason)
+	require.NotNil(t, responsesResponse.Status)
+	assert.Equal(t, "incomplete", *responsesResponse.Status)
+	require.NotNil(t, responsesResponse.IncompleteDetails)
+	assert.Equal(t, "content_filter", responsesResponse.IncompleteDetails.Reason)
+}
+
+func TestInvokeAnthropicGuardrailInterventionMapsStreamingResponses(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	state := anthropic.AcquireAnthropicResponsesStreamState()
+	defer anthropic.ReleaseAnthropicResponsesStreamState(state)
+
+	stopReason := anthropic.AnthropicStopReasonEndTurn
+	events := []*anthropic.AnthropicStreamEvent{
+		{
+			Type:                         anthropic.AnthropicStreamEventTypeMessageDelta,
+			AmazonBedrockGuardrailAction: "INTERVENED",
+			Delta:                        &anthropic.AnthropicStreamDelta{StopReason: &stopReason},
+		},
+		{Type: anthropic.AnthropicStreamEventTypeMessageStop},
+	}
+
+	var completed *schemas.BifrostResponsesStreamResponse
+	for sequenceNumber, event := range events {
+		responses, bifrostErr, _ := event.ToBifrostResponsesStream(ctx, sequenceNumber, state)
+		require.Nil(t, bifrostErr)
+		for _, response := range responses {
+			if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+				completed = response
+			}
+		}
+	}
+
+	require.NotNil(t, completed)
+	require.NotNil(t, completed.Response)
+	require.NotNil(t, completed.Response.StopReason)
+	assert.Equal(t, "guardrail_intervened", *completed.Response.StopReason)
+}
+
 // TestConvertAnthropicTools_NoCacheControl_Unaffected locks in the pre-existing behavior
 // when no tool carries cache_control: one BedrockTool per input tool, no CachePoint entries.
 func TestConvertAnthropicTools_NoCacheControl_Unaffected(t *testing.T) {

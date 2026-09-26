@@ -78,6 +78,7 @@ type AnthropicResponsesStreamState struct {
 	MessageID                 *string                           // Message ID from message_start
 	Model                     *string                           // Model name from message_start
 	StopReason                *string                           // Stop reason for the message
+	GuardrailIntervened       bool                              // Bedrock InvokeModel guardrail action
 	StopDetails               *schemas.ResponsesStopDetails     // Refusal stop_details (server-side fallback), carried to the final message_delta
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
@@ -752,6 +753,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.GuardrailIntervened = false
 	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
@@ -816,6 +818,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.GuardrailIntervened = false
 	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
@@ -870,6 +873,11 @@ func (state *AnthropicResponsesStreamState) getOrCreateOutputIndex(contentIndex 
 // It maintains state via the state for handling multi-chunk conversions like computer tools
 // Returns a slice of responses to support cases where a single event produces multiple responses
 func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context, sequenceNumber int, state *AnthropicResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+	if chunk.bedrockGuardrailIntervened() {
+		state.GuardrailIntervened = true
+		state.StopReason = schemas.Ptr(anthropicBedrockGuardrailIntervenedStopReason)
+	}
+
 	switch chunk.Type {
 	case AnthropicStreamEventTypeSafeguardsUpdate:
 		return []*schemas.BifrostResponsesStreamResponse{{
@@ -2732,7 +2740,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		if chunk.Delta.Container != nil {
 			state.Container = chunk.Delta.Container
 		}
-		if chunk.Delta.StopReason != nil {
+		if chunk.Delta.StopReason != nil && !state.GuardrailIntervened {
 			mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
 			if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
 				mapped == string(schemas.BifrostFinishReasonToolCalls) {
@@ -2767,6 +2775,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			if stopReason != nil {
 				response.StopReason = stopReason
 			}
+			if state.GuardrailIntervened {
+				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+				response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+					Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+				}
+			}
 			response.StopDetails = state.StopDetails
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
@@ -2798,7 +2812,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageStop:
-		// Message stop - emit response.completed (OpenAI-style)
+		// Message stop - emit the terminal Responses event (OpenAI-style).
 		response := &schemas.BifrostResponsesResponse{
 			CreatedAt: state.CreatedAt,
 		}
@@ -2810,6 +2824,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		if state.StopReason != nil {
 			response.StopReason = state.StopReason
+		}
+		if state.GuardrailIntervened {
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+			}
 		}
 		response.StopDetails = state.StopDetails
 
@@ -2854,8 +2874,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 		}
 
+		terminalType := schemas.ResponsesStreamResponseTypeCompleted
+		if state.GuardrailIntervened {
+			terminalType = schemas.ResponsesStreamResponseTypeIncomplete
+		}
+
 		return []*schemas.BifrostResponsesStreamResponse{{
-			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			Type:           terminalType,
 			SequenceNumber: sequenceNumber,
 			Response:       response,
 		}}, nil, true // Indicate stream is complete
@@ -4973,8 +4998,12 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	bifrostResp.Model = response.Model
 
-	if response.StopReason != "" {
-		mapped := ConvertAnthropicFinishReasonToBifrost(response.StopReason)
+	stopReason := response.StopReason
+	if response.bedrockGuardrailIntervened() {
+		stopReason = AnthropicStopReason(anthropicBedrockGuardrailIntervenedStopReason)
+	}
+	if stopReason != "" {
+		mapped := ConvertAnthropicFinishReasonToBifrost(stopReason)
 		if mapped == string(schemas.BifrostFinishReasonToolCalls) {
 			if soToolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok && soToolName != "" {
 				hasRealToolUse := false
@@ -4992,6 +5021,12 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 			}
 		}
 		bifrostResp.StopReason = &mapped
+		if mapped == anthropicBedrockGuardrailIntervenedStopReason {
+			bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+			}
+		}
 	}
 	bifrostResp.StopDetails = stopDetailsToBifrost(response.StopDetails)
 
