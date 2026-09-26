@@ -614,20 +614,37 @@ type ComplexityJevConfig struct {
 	Model   string        `json:"model,omitempty"`
 	Timeout time.Duration `json:"timeout,omitempty"`
 	// MinConfidenceToDegrade is the confidence the tier choice must carry
-	// before its tier is published. Zero means the default.
-	MinConfidenceToDegrade float64 `json:"min_confidence_to_degrade,omitempty"`
+	// before its tier is published. Absent means the default; an explicit 0
+	// publishes the tier regardless of choice confidence.
+	MinConfidenceToDegrade float64 `json:"min_confidence_to_degrade"`
 	// MaxComplexityForDegrade is the normalized (0..1) complexity score at or
 	// below which the tier verdict may be published. Decision scores arrive as
-	// raw weighted level indices (0..n-1) and are normalized first. Zero means
-	// the default.
-	MaxComplexityForDegrade float64 `json:"max_complexity_for_degrade,omitempty"`
+	// raw weighted level indices (0..n-1) and are normalized first. Absent
+	// means the default; an explicit 0 publishes only zero-complexity
+	// requests.
+	MaxComplexityForDegrade float64 `json:"max_complexity_for_degrade"`
 	// MinComplexityConfidence is the confidence required on the complexity
-	// score before it may allow publishing a tier. Zero means the default.
-	MinComplexityConfidence float64 `json:"min_complexity_confidence,omitempty"`
+	// score before it may allow publishing a tier. Absent means the default;
+	// an explicit 0 disables the complexity-confidence requirement.
+	MinComplexityConfidence float64 `json:"min_complexity_confidence"`
 	// MessageHistoryCount is how many of the most recent user messages are
 	// combined into the state sent to the decision API, oldest first,
 	// mirroring the semantic field of the same name.
 	MessageHistoryCount int `json:"message_history_count,omitempty"`
+
+	// gatesExplicitInJSON records which gate fields the source JSON supplied,
+	// so normalization can honor an explicitly configured 0 (e.g. "degrade
+	// regardless of confidence") instead of substituting the default. Set
+	// only by UnmarshalJSON; unexported fields never marshal.
+	gatesExplicitInJSON jevGatesExplicit
+}
+
+// jevGatesExplicit marks the three Jev gate fields whose JSON presence must
+// be distinguished from a zero value during normalization.
+type jevGatesExplicit struct {
+	minConfidenceToDegrade  bool
+	maxComplexityForDegrade bool
+	minComplexityConfidence bool
 }
 
 // UnmarshalJSON accepts Timeout as a duration string ("1500ms") or a JSON
@@ -653,6 +670,13 @@ func (c *ComplexityJevConfig) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("unknown jev complexity field %q", field)
 		}
 	}
+
+	// Reset and then record gate presence: a reused decoder target must not
+	// inherit flags from a previous decode.
+	c.gatesExplicitInJSON = jevGatesExplicit{}
+	_, c.gatesExplicitInJSON.minConfidenceToDegrade = fields["min_confidence_to_degrade"]
+	_, c.gatesExplicitInJSON.maxComplexityForDegrade = fields["max_complexity_for_degrade"]
+	_, c.gatesExplicitInJSON.minComplexityConfidence = fields["min_complexity_confidence"]
 
 	// alias suppresses ComplexityJevConfig's UnmarshalJSON to avoid infinite
 	// recursion. The outer Timeout (json.RawMessage) shadows alias.Timeout
@@ -752,6 +776,7 @@ func (c *ComplexityJevConfig) normalized() *ComplexityJevConfig {
 		MaxComplexityForDegrade: c.MaxComplexityForDegrade,
 		MinComplexityConfidence: c.MinComplexityConfidence,
 		MessageHistoryCount:     c.MessageHistoryCount,
+		gatesExplicitInJSON:     c.gatesExplicitInJSON,
 	}
 	if out.BaseURL == "" {
 		out.BaseURL = DefaultComplexityJevBaseURL
@@ -762,13 +787,15 @@ func (c *ComplexityJevConfig) normalized() *ComplexityJevConfig {
 	if out.Timeout == 0 {
 		out.Timeout = DefaultComplexityJevTimeout
 	}
-	if out.MinConfidenceToDegrade == 0 {
+	// A zero gate is honored when the source JSON supplied it explicitly and
+	// replaced with the default when the field was absent.
+	if out.MinConfidenceToDegrade == 0 && !c.gatesExplicitInJSON.minConfidenceToDegrade {
 		out.MinConfidenceToDegrade = DefaultJevMinConfidenceToDegrade
 	}
-	if out.MaxComplexityForDegrade == 0 {
+	if out.MaxComplexityForDegrade == 0 && !c.gatesExplicitInJSON.maxComplexityForDegrade {
 		out.MaxComplexityForDegrade = DefaultJevMaxComplexityForDegrade
 	}
-	if out.MinComplexityConfidence == 0 {
+	if out.MinComplexityConfidence == 0 && !c.gatesExplicitInJSON.minComplexityConfidence {
 		out.MinComplexityConfidence = DefaultJevMinComplexityConfidence
 	}
 	if out.MessageHistoryCount == 0 {
@@ -800,7 +827,8 @@ func (c *ComplexityJevConfig) Validate() error {
 		"max_complexity_for_degrade": c.MaxComplexityForDegrade,
 		"min_complexity_confidence":  c.MinComplexityConfidence,
 	} {
-		// Zero is the "use the default" encoding, not a configured zero.
+		// Absent gates resolve to their defaults during normalization, so a
+		// zero seen here is an explicit operator choice and is in range.
 		if value < 0 || value > 1 {
 			return fmt.Errorf("jev %s must be between 0 and 1, got %v", name, value)
 		}
@@ -1218,6 +1246,7 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 		},
 		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
 		LLM:                  mergeComplexityLLMConfig(normalizedBase.LLM, normalizedFile.LLM),
+		Jev:                  mergeComplexityJevConfig(normalizedBase.Jev, normalizedFile.Jev),
 		Session:              mergeComplexitySessionConfig(normalizedBase.Session, normalizedFile.Session),
 		ConfigHashes:         normalizedFile.ConfigHashes,
 		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
@@ -1241,6 +1270,16 @@ func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *Comple
 // mergeComplexityLLMConfig overlays the file llm settings. A nil file section
 // keeps the base untouched.
 func mergeComplexityLLMConfig(base, file *ComplexityLLMConfig) *ComplexityLLMConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
+}
+
+// mergeComplexityJevConfig overlays the file jev settings. A nil file section
+// keeps the base untouched, so a dormant or fallback-selected Jev block
+// survives every non-hash merge instead of being silently discarded.
+func mergeComplexityJevConfig(base, file *ComplexityJevConfig) *ComplexityJevConfig {
 	if file == nil {
 		return base.normalized()
 	}

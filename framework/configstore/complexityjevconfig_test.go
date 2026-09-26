@@ -72,6 +72,11 @@ func TestComplexityJevConfigMarshalRoundTrip(t *testing.T) {
 
 	var decoded ComplexityJevConfig
 	require.NoError(t, json.Unmarshal(data, &decoded))
+	// Gate fields always marshal (no omitempty) so an explicitly configured
+	// zero survives persistence. Decoding those emitted zeros marks the gates
+	// explicitly present, which is presence metadata, not a value change, so
+	// align the flags before comparing values.
+	decoded.gatesExplicitInJSON = cfg.gatesExplicitInJSON
 	assert.Equal(t, cfg, decoded)
 }
 
@@ -175,4 +180,80 @@ func TestComplexityJevBlockRidesSemanticRow(t *testing.T) {
 	combined := applyComplexitySemanticConfigRow(&ComplexityAnalyzerConfig{TierBoundaries: DefaultComplexityTierBoundaries()}, decoded)
 	require.NotNil(t, combined.Jev)
 	assert.Equal(t, "jevhash", combined.ConfigHashes.JevSettings)
+}
+
+func TestMergeComplexityAnalyzerConfigPreservesJevBlock(t *testing.T) {
+	// Regression: the non-hash merge path builds its result as a struct
+	// literal and used to omit Jev, so any file-level complexity update
+	// silently dropped the base's Jev block — failing validation when
+	// semantic.fallback was "jev" and discarding a dormant block otherwise.
+	base := testJevAnalyzerConfig().Normalized()
+
+	// A file that never mentions the semantic or jev sections must not undo
+	// the fallback wiring: the merge still validates and keeps Jev.
+	file := testComplexityAnalyzerConfig()
+	merged, err := MergeComplexityAnalyzerConfig(&base, file)
+	require.NoError(t, err)
+	require.NotNil(t, merged.Jev)
+	assert.Equal(t, ComplexitySemanticFallbackJev, merged.Semantic.Fallback)
+	assert.True(t, merged.JevFallbackEnabled())
+	assert.Equal(t, DefaultComplexityJevBaseURL, merged.Jev.BaseURL)
+
+	// A dormant Jev block (fallback "none") is also preserved, not discarded.
+	dormant := testJevAnalyzerConfig()
+	dormant.Semantic.Fallback = ComplexitySemanticFallbackNone
+	dormant.Jev = &ComplexityJevConfig{Model: "jev-rc"}
+	dormantMerged, err := MergeComplexityAnalyzerConfig(dormant, file)
+	require.NoError(t, err)
+	require.NotNil(t, dormantMerged.Jev)
+	assert.Equal(t, "jev-rc", dormantMerged.Jev.Model)
+	assert.False(t, dormantMerged.JevFallbackEnabled())
+
+	// A file that states the jev section replaces the base's.
+	fileWithJev := testComplexityAnalyzerConfig()
+	fileWithJev.Jev = &ComplexityJevConfig{Timeout: 3 * time.Second}
+	merged, err = MergeComplexityAnalyzerConfig(&base, fileWithJev)
+	require.NoError(t, err)
+	require.NotNil(t, merged.Jev)
+	assert.Equal(t, 3*time.Second, merged.Jev.Timeout)
+	assert.True(t, merged.JevFallbackEnabled())
+}
+
+func TestComplexityJevConfigExplicitZeroGatesPreserved(t *testing.T) {
+	// The config schema admits 0 for all three gates, and 0 is a real
+	// setting (e.g. publish the tier regardless of choice confidence):
+	// normalization must preserve an explicit 0 instead of swapping in the
+	// defaults.
+	var cfg ComplexityJevConfig
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"min_confidence_to_degrade": 0,
+		"max_complexity_for_degrade": 0,
+		"min_complexity_confidence": 0
+	}`), &cfg))
+	normalized := cfg.normalized()
+	require.NotNil(t, normalized)
+	assert.InDelta(t, 0, normalized.MinConfidenceToDegrade, 1e-9)
+	assert.InDelta(t, 0, normalized.MaxComplexityForDegrade, 1e-9)
+	assert.InDelta(t, 0, normalized.MinComplexityConfidence, 1e-9)
+	require.NoError(t, normalized.Validate())
+
+	// Absent fields still resolve to the defaults.
+	var absent ComplexityJevConfig
+	require.NoError(t, json.Unmarshal([]byte(`{}`), &absent))
+	absentNormalized := absent.normalized()
+	assert.InDelta(t, DefaultJevMinConfidenceToDegrade, absentNormalized.MinConfidenceToDegrade, 1e-9)
+	assert.InDelta(t, DefaultJevMaxComplexityForDegrade, absentNormalized.MaxComplexityForDegrade, 1e-9)
+	assert.InDelta(t, DefaultJevMinComplexityConfidence, absentNormalized.MinComplexityConfidence, 1e-9)
+
+	// An explicit zero survives persistence: the gates marshal without
+	// omitempty, so a reload restores the same gates instead of defaults.
+	data, err := json.Marshal(normalized)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"min_confidence_to_degrade":0`)
+	var reloaded ComplexityJevConfig
+	require.NoError(t, json.Unmarshal(data, &reloaded))
+	reloadedNormalized := reloaded.normalized()
+	assert.InDelta(t, 0, reloadedNormalized.MinConfidenceToDegrade, 1e-9)
+	assert.InDelta(t, 0, reloadedNormalized.MaxComplexityForDegrade, 1e-9)
+	assert.InDelta(t, 0, reloadedNormalized.MinComplexityConfidence, 1e-9)
 }
