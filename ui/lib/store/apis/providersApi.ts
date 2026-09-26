@@ -6,6 +6,7 @@ import {
 	ModelProvider,
 	ModelProviderKey,
 	ModelProviderName,
+	RequestType,
 	UpdateProviderRequest,
 	UpdateProviderKeyRequest,
 } from "@/lib/types/config";
@@ -47,6 +48,7 @@ export interface ModelDetails {
 	cache_creation_input_token_cost?: number;
 	cache_read_input_token_cost?: number;
 	architecture?: unknown;
+	supported_request_types?: RequestType[];
 	additional_attributes?: Record<string, string>;
 	accessible_by_keys?: string[];
 	// Post-override value of each displayed cost, present only for the fields
