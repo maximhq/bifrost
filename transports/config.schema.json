@@ -5460,6 +5460,9 @@
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
         },
+        "jev": {
+          "$ref": "#/$defs/complexity_jev_config"
+        },
         "session": {
           "$ref": "#/$defs/complexity_session_config"
         }
@@ -5515,6 +5518,25 @@
             "required": [
               "llm"
             ]
+          }
+        },
+        {
+          "description": "Selecting the jev fallback without configuring the System One classifier it names loads a semantic classifier whose non-answers have nothing to fall back to; the loader rejects it for the same reason.",
+          "if": {
+            "required": ["semantic"],
+            "properties": {
+              "semantic": {
+                "required": ["fallback"],
+                "properties": {
+                  "fallback": {
+                    "const": "jev"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": ["jev"]
           }
         }
       ],
@@ -5590,9 +5612,10 @@
           "type": "string",
           "enum": [
             "none",
-            "llm"
+            "llm",
+            "jev"
           ],
-          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block, which is required when this is set."
+          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block; 'jev' asks the System One decision API configured in the analyzer's jev block. The selected classifier is required when this is set."
         }
       },
       "required": [
@@ -5649,6 +5672,63 @@
         "provider",
         "model"
       ],
+      "additionalProperties": false
+    },
+    "complexity_jev_config": {
+      "type": "object",
+      "description": "System One (Jev) fallback classifier settings: a decision-model API that answers a tier choice and a complexity score in one call. The block is inert unless complexity_semantic_config.fallback selects 'jev'; the classifier runs only after semantic classification produces no tier. Routing rules can also reference the jev_tier, jev_complexity, and jev_confidence CEL variables directly, which engages this block independently of the fallback selector. Failures are non-blocking: an unreachable or slow System One endpoint publishes no tier and the request proceeds unrouted. The API key is read from the TYPESAFE_API_KEY environment variable when api_key is not set.",
+      "properties": {
+        "api_key": {
+          "type": "string",
+          "description": "Bearer key for the System One API. Prefer leaving this unset and providing TYPESAFE_API_KEY through the environment so the key never lands in config.json."
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Root URL of the System One API (default: https://api.typesafe.ai). Override only for self-hosted or proxied deployments."
+        },
+        "model": {
+          "type": "string",
+          "description": "Decision model name sent with each request (default: jev-latest)."
+        },
+        "timeout": {
+          "description": "Per-request decision timeout (duration string like '2s' or milliseconds as a number; default: 1500ms). Routing decisions wait at most this long; on timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "1500ms"
+        },
+        "min_confidence_to_degrade": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence the decision model must report on the tier choice before its tier is published (default: 0.85). Below it the verdict is treated as unsure and no tier is published, which keeps routing on the rule's own fallbacks."
+        },
+        "max_complexity_for_degrade": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Complexity score at or below which the tier verdict may be published (default: 0.5). Above it the request is treated as too demanding for a cheaper tier and no tier is published. An answer without a complexity score counts as maximum complexity."
+        },
+        "min_complexity_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence required on the complexity score before it may allow publishing a tier (default: 0.5)."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are combined (oldest first) into the state sent to the decision API (default: 1, the latest message only). Higher values let a short follow-up inherit the intent of earlier turns, at the cost of diluting the latest message and more input tokens per decision call. Only user turns count; system prompts and assistant replies are never included."
+        }
+      },
       "additionalProperties": false
     },
     "auth_config": {

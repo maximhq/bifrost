@@ -65,6 +65,7 @@ type EvaluationContext struct {
 	QueryParams              map[string]string                    // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *governance.BudgetAndRateLimitStatus // Budget and rate limit status by provider/model
 	ComputeComplexity        func() *complexity.ComplexityResult  // Lazy complexity computation; called at most once when a rule references "complexity_tier"
+	ComputeJev               func() *complexity.JevResult         // Lazy System One decision; called at most once when a rule references a "jev_*" variable
 }
 
 // GovernanceStore is the slice of governance state routing rules read: the virtual key
@@ -163,6 +164,8 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 	var finalDecision *Decision
 	var complexityResult *complexity.ComplexityResult
 	ComputeComplexity := routingCtx.ComputeComplexity
+	var jevResult *complexity.JevResult
+	computeJev := routingCtx.ComputeJev
 
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
@@ -193,6 +196,9 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 		}
 		if complexityResult != nil {
 			variables["complexity_tier"] = complexityResult.Tier
+		}
+		if jevResult != nil {
+			applyJevVariables(variables, jevResult)
 		}
 
 		re.logger.Debug("[Engine] Chain Step: %d", chainStep)
@@ -235,6 +241,21 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 					}
 				}
 
+				referencesJev := referencesJevVariables(rule.CelExpression)
+
+				// Lazy Jev: same pattern as complexity above — one decision call
+				// at most, and only when a rule actually references a jev_*
+				// variable. A nil result (unconfigured, transport error, no
+				// key) leaves the variables as CEL unknowns so jev-dependent
+				// predicates do not match and the request proceeds unrouted.
+				if jevResult == nil && computeJev != nil && referencesJev {
+					jevResult = computeJev()
+					computeJev = nil // compute at most once
+					if jevResult != nil {
+						applyJevVariables(variables, jevResult)
+					}
+				}
+
 				program, err := re.rules.GetProgram(ctx, rule)
 				if err != nil {
 					re.logger.Warn("[Engine] Failed to compile rule %s: %v", rule.Name, err)
@@ -245,6 +266,14 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				var unknowns []*cel.AttributePatternType
 				if referencesComplexity && complexityResult == nil {
 					unknowns = append(unknowns, cel.AttributePattern("complexity_tier"))
+				}
+				if referencesJev && jevResult == nil {
+					// No Jev verdict at all (unconfigured, unreachable, no
+					// key): every jev_* variable becomes a CEL unknown so
+					// neither positive nor negative jev predicates match.
+					for _, name := range rangeJevVariables() {
+						unknowns = append(unknowns, cel.AttributePattern(name))
+					}
 				}
 
 				matched, err := evaluateCELExpression(program, variables, unknowns...)
@@ -510,7 +539,59 @@ func extractRoutingVariables(ctx *EvaluationContext) (map[string]interface{}, er
 	// evaluated as a CEL unknown so negative predicates do not accidentally match.
 	variables["complexity_tier"] = ""
 
+	// Same placeholder pattern for the Jev decision variables, with
+	// fail-expensive placeholders: an unknown complexity reads as hard and an
+	// unknown confidence as zero. A rule that references them triggers the
+	// lazy compute; one that does not never sees these values.
+	variables["jev_tier"] = ""
+	variables["jev_complexity"] = 1.0
+	variables["jev_confidence"] = 0.0
+
 	return variables, nil
+}
+
+// jevVariableNames lists the CEL variables backed by the lazy Jev decision.
+var jevVariableNames = []string{"jev_tier", "jev_complexity", "jev_confidence"}
+
+// rangeJevVariables returns the declared jev_* CEL variable names.
+func rangeJevVariables() []string {
+	return jevVariableNames
+}
+
+// astReferencesJevVariables reports whether a compiled CEL AST reads any of
+// the jev_* decision variables. Store.GetProgram uses this to enable partial
+// evaluation for jev rules, exactly as it does for complexity_tier rules.
+func astReferencesJevVariables(ast *cel.Ast) bool {
+	for _, name := range jevVariableNames {
+		if celASTReferencesIdentifier(ast, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// referencesJevVariables reports whether a CEL expression reads any of the
+// jev_* decision variables. It walks the parsed AST via the shared identifier
+// check so string literals and shadowed locals do not trigger a decision call.
+func referencesJevVariables(expr string) bool {
+	for _, name := range jevVariableNames {
+		if celExpressionReferencesIdentifier(expr, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyJevVariables publishes a Jev decision into the CEL variable map. The
+// tier is empty when the gates withheld the verdict; the raw score and
+// confidence are published either way so rules can apply their own thresholds.
+func applyJevVariables(variables map[string]any, result *complexity.JevResult) {
+	if result == nil {
+		return
+	}
+	variables["jev_tier"] = result.Tier
+	variables["jev_complexity"] = result.Complexity
+	variables["jev_confidence"] = result.Confidence
 }
 
 // scopeChainToStrings converts a scope chain to a string representation for logging
@@ -654,5 +735,13 @@ func createCELEnvironment() (*cel.Env, error) {
 		// Complexity tier. When analysis is unavailable, evaluation marks this
 		// variable as CEL unknown so complexity-dependent predicates do not match.
 		cel.Variable("complexity_tier", cel.StringType),
+
+		// System One (Jev) decision variables, filled lazily the same way as
+		// complexity_tier. jev_tier is empty when the decision gates withheld
+		// the tier verdict; jev_complexity and jev_confidence carry the raw
+		// scores for rules that want their own thresholds.
+		cel.Variable("jev_tier", cel.StringType),
+		cel.Variable("jev_complexity", cel.DoubleType),
+		cel.Variable("jev_confidence", cel.DoubleType),
 	)
 }

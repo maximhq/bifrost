@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/netip"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -366,10 +368,10 @@ func (c *ComplexitySemanticConfig) Validate() error {
 			ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured, c.VectorStore)
 	}
 	switch c.Fallback {
-	case ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM:
+	case ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackJev:
 	default:
-		return fmt.Errorf("semantic fallback must be %q or %q, got %q",
-			ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, c.Fallback)
+		return fmt.Errorf("semantic fallback must be %q, %q or %q, got %q",
+			ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackJev, c.Fallback)
 	}
 	return nil
 }
@@ -378,11 +380,13 @@ func (c *ComplexitySemanticConfig) Validate() error {
 // classification produces no tier — a rejection below min_similarity, a
 // timeout, an unready warmup, or an unwired executor. "none" (also the
 // meaning of an absent field) keeps today's behaviour: the request is
-// recorded as "skipped". "llm" asks the configured chat model instead. The
-// LLM classifier only ever runs on this path; it is never the primary.
+// recorded as "skipped". "llm" asks the configured chat model instead. "jev"
+// asks the System One decision API configured in the jev block. The selected
+// classifier only ever runs on this path; it is never the primary.
 const (
 	ComplexitySemanticFallbackNone = "none"
 	ComplexitySemanticFallbackLLM  = "llm"
+	ComplexitySemanticFallbackJev  = "jev"
 )
 
 // DefaultComplexityLLMTimeout bounds one LLM classification call. It is
@@ -554,6 +558,291 @@ func (c *ComplexityLLMConfig) Validate() error {
 	return nil
 }
 
+// DefaultComplexityJevTimeout bounds one System One decision call. The
+// decision API answers two questions in one request; the reference budget for
+// that call is 1500ms, and a budget the endpoint can never meet turns every
+// fallback into a skip.
+const DefaultComplexityJevTimeout = 1500 * time.Millisecond
+
+// DefaultComplexityJevModel is the decision model name sent with each request.
+const DefaultComplexityJevModel = "jev-latest"
+
+// DefaultComplexityJevBaseURL is the root URL of the System One API.
+const DefaultComplexityJevBaseURL = "https://api.typesafe.ai"
+
+// Jev message-history bounds, mirroring the semantic classifier's window over
+// recent user turns.
+const (
+	DefaultComplexityJevMessageHistoryCount = 1
+	MaxComplexityJevMessageHistoryCount     = 10
+)
+
+// Decision gates. A tier verdict is published only when all three hold; any
+// failure means no tier is published, which is the conservative outcome: the
+// request keeps whatever the routing rules decide without a complexity tier.
+// An absent complexity score counts as maximum complexity (fail expensive —
+// unsure must never read as easy), and absent confidence counts as zero.
+const (
+	// DefaultJevMinConfidenceToDegrade matches the mixed-capability-pool
+	// default: routing to a cheaper tier on a wrong verdict is a quality
+	// regression, so the bar stays at TypeSafe's high-stakes threshold.
+	DefaultJevMinConfidenceToDegrade  = 0.85
+	DefaultJevMaxComplexityForDegrade = 0.5
+	DefaultJevMinComplexityConfidence = 0.5
+)
+
+// MaxComplexityJevStateCharacters bounds how much request text is sent to the
+// decision API as the state input. The model sees the state and nothing else,
+// so a bounded state is a token cost bound.
+const MaxComplexityJevStateCharacters = 24000
+
+// ComplexityJevConfig configures the System One decision-API classifier. It is
+// inert unless the semantic block's fallback field selects "jev", but routing
+// rules that reference the jev_* CEL variables engage it independently of the
+// fallback selector. There is no editable prompt: the tier question's criteria
+// are the shipped tier definitions and the question wording is part of the
+// decision contract, mirroring how the llm classifier pins its response
+// format in a non-editable reinforcement.
+type ComplexityJevConfig struct {
+	// APIKey is the Bearer key for the decision API. Empty means the
+	// TYPESAFE_API_KEY environment variable is consulted at call time; when
+	// neither is set the classifier reports itself unavailable.
+	APIKey string `json:"api_key,omitempty"`
+	// BaseURL is the decision API root. Empty means the shipped default.
+	BaseURL string `json:"base_url,omitempty"`
+	// Model is the decision model name. Empty means the shipped default.
+	Model   string        `json:"model,omitempty"`
+	Timeout time.Duration `json:"timeout,omitempty"`
+	// MinConfidenceToDegrade is the confidence the tier choice must carry
+	// before its tier is published. Absent means the default; an explicit 0
+	// publishes the tier regardless of choice confidence.
+	MinConfidenceToDegrade float64 `json:"min_confidence_to_degrade"`
+	// MaxComplexityForDegrade is the normalized (0..1) complexity score at or
+	// below which the tier verdict may be published. Decision scores arrive as
+	// raw weighted level indices (0..n-1) and are normalized first. Absent
+	// means the default; an explicit 0 publishes only zero-complexity
+	// requests.
+	MaxComplexityForDegrade float64 `json:"max_complexity_for_degrade"`
+	// MinComplexityConfidence is the confidence required on the complexity
+	// score before it may allow publishing a tier. Absent means the default;
+	// an explicit 0 disables the complexity-confidence requirement.
+	MinComplexityConfidence float64 `json:"min_complexity_confidence"`
+	// MessageHistoryCount is how many of the most recent user messages are
+	// combined into the state sent to the decision API, oldest first,
+	// mirroring the semantic field of the same name.
+	MessageHistoryCount int `json:"message_history_count,omitempty"`
+
+	// gatesExplicitInJSON records which gate fields the source JSON supplied,
+	// so normalization can honor an explicitly configured 0 (e.g. "degrade
+	// regardless of confidence") instead of substituting the default. Set
+	// only by UnmarshalJSON; unexported fields never marshal.
+	gatesExplicitInJSON jevGatesExplicit
+}
+
+// jevGatesExplicit marks the three Jev gate fields whose JSON presence must
+// be distinguished from a zero value during normalization.
+type jevGatesExplicit struct {
+	minConfidenceToDegrade  bool
+	maxComplexityForDegrade bool
+	minComplexityConfidence bool
+}
+
+// UnmarshalJSON accepts Timeout as a duration string ("1500ms") or a JSON
+// number (milliseconds), and rejects unknown fields, both mirroring
+// ComplexityLLMConfig.
+func (c *ComplexityJevConfig) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	allowed := map[string]struct{}{
+		"api_key":                    {},
+		"base_url":                   {},
+		"model":                      {},
+		"timeout":                    {},
+		"min_confidence_to_degrade":  {},
+		"max_complexity_for_degrade": {},
+		"min_complexity_confidence":  {},
+		"message_history_count":      {},
+	}
+	for field := range fields {
+		if _, ok := allowed[field]; !ok {
+			return fmt.Errorf("unknown jev complexity field %q", field)
+		}
+	}
+
+	// Reset and then record gate presence: a reused decoder target must not
+	// inherit flags from a previous decode.
+	c.gatesExplicitInJSON = jevGatesExplicit{}
+	_, c.gatesExplicitInJSON.minConfidenceToDegrade = fields["min_confidence_to_degrade"]
+	_, c.gatesExplicitInJSON.maxComplexityForDegrade = fields["max_complexity_for_degrade"]
+	_, c.gatesExplicitInJSON.minComplexityConfidence = fields["min_complexity_confidence"]
+
+	// alias suppresses ComplexityJevConfig's UnmarshalJSON to avoid infinite
+	// recursion. The outer Timeout (json.RawMessage) shadows alias.Timeout
+	// because the json package picks the shallower field.
+	type alias ComplexityJevConfig
+	aux := &struct {
+		Timeout json.RawMessage `json:"timeout,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.Timeout) == 0 || string(aux.Timeout) == "null" {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(aux.Timeout, &s); err == nil {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("failed to parse jev timeout duration string %q: %w", s, err)
+		}
+		c.Timeout = d
+	} else {
+		var ms float64
+		if err := json.Unmarshal(aux.Timeout, &ms); err != nil {
+			return fmt.Errorf("unsupported jev timeout value: %s", string(aux.Timeout))
+		}
+		c.Timeout = time.Duration(ms * float64(time.Millisecond))
+	}
+	if c.Timeout < 0 {
+		return fmt.Errorf("jev timeout must be non-negative, got %v", c.Timeout)
+	}
+	return nil
+}
+
+// MarshalJSON writes Timeout as milliseconds, the canonical JSON duration
+// form for configstore contracts. The decoder still accepts duration strings,
+// so previously persisted configs keep loading.
+func (c ComplexityJevConfig) MarshalJSON() ([]byte, error) {
+	type alias ComplexityJevConfig
+	var timeout float64
+	if c.Timeout != 0 {
+		timeout = float64(c.Timeout) / float64(time.Millisecond)
+	}
+	return json.Marshal(struct {
+		Timeout float64 `json:"timeout,omitempty"`
+		alias
+	}{
+		Timeout: timeout,
+		alias:   alias(c),
+	})
+}
+
+
+// validateJevBaseURL requires HTTPS for Jev endpoints so the Bearer API key is
+// never sent in cleartext. Plain HTTP is accepted only for loopback or
+// RFC-1918/private addresses (local proxies, self-hosted deployments).
+func validateJevBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("jev base_url is not a valid URL: %q", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if strings.EqualFold(host, "localhost") {
+			return nil
+		}
+		if addr, err := netip.ParseAddr(host); err == nil &&
+			(addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()) {
+			return nil
+		}
+		return fmt.Errorf(
+			"jev base_url %q uses plaintext http for a non-private endpoint; the API key would be sent in cleartext — use https or a loopback/private address",
+			raw,
+		)
+	default:
+		return fmt.Errorf("jev base_url %q must use http or https, got scheme %q", raw, u.Scheme)
+	}
+}
+
+// normalized returns a canonical deep copy with defaults applied.
+func (c *ComplexityJevConfig) normalized() *ComplexityJevConfig {
+	if c == nil {
+		return nil
+	}
+	out := &ComplexityJevConfig{
+		APIKey:                  strings.TrimSpace(c.APIKey),
+		BaseURL:                 strings.TrimSpace(c.BaseURL),
+		Model:                   strings.TrimSpace(c.Model),
+		Timeout:                 c.Timeout,
+		MinConfidenceToDegrade:  c.MinConfidenceToDegrade,
+		MaxComplexityForDegrade: c.MaxComplexityForDegrade,
+		MinComplexityConfidence: c.MinComplexityConfidence,
+		MessageHistoryCount:     c.MessageHistoryCount,
+		gatesExplicitInJSON:     c.gatesExplicitInJSON,
+	}
+	if out.BaseURL == "" {
+		out.BaseURL = DefaultComplexityJevBaseURL
+	}
+	if out.Model == "" {
+		out.Model = DefaultComplexityJevModel
+	}
+	if out.Timeout == 0 {
+		out.Timeout = DefaultComplexityJevTimeout
+	}
+	// A zero gate is honored when the source JSON supplied it explicitly and
+	// replaced with the default when the field was absent.
+	if out.MinConfidenceToDegrade == 0 && !c.gatesExplicitInJSON.minConfidenceToDegrade {
+		out.MinConfidenceToDegrade = DefaultJevMinConfidenceToDegrade
+	}
+	if out.MaxComplexityForDegrade == 0 && !c.gatesExplicitInJSON.maxComplexityForDegrade {
+		out.MaxComplexityForDegrade = DefaultJevMaxComplexityForDegrade
+	}
+	if out.MinComplexityConfidence == 0 && !c.gatesExplicitInJSON.minComplexityConfidence {
+		out.MinComplexityConfidence = DefaultJevMinComplexityConfidence
+	}
+	if out.MessageHistoryCount == 0 {
+		out.MessageHistoryCount = DefaultComplexityJevMessageHistoryCount
+	}
+	return out
+}
+
+// Validate checks a normalized jev config.
+func (c *ComplexityJevConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("jev timeout must be positive, got %v", c.Timeout)
+	}
+	baseURL := strings.TrimSpace(c.BaseURL)
+	if baseURL == "" {
+		return fmt.Errorf("jev config requires a base_url")
+	}
+	if err := validateJevBaseURL(baseURL); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("jev config requires a model")
+	}
+	for name, value := range map[string]float64{
+		"min_confidence_to_degrade":  c.MinConfidenceToDegrade,
+		"max_complexity_for_degrade": c.MaxComplexityForDegrade,
+		"min_complexity_confidence":  c.MinComplexityConfidence,
+	} {
+		// Absent gates resolve to their defaults during normalization, so a
+		// zero seen here is an explicit operator choice and is in range.
+		if value < 0 || value > 1 {
+			return fmt.Errorf("jev %s must be between 0 and 1, got %v", name, value)
+		}
+	}
+	if c.MessageHistoryCount < 1 || c.MessageHistoryCount > MaxComplexityJevMessageHistoryCount {
+		return fmt.Errorf(
+			"jev message_history_count must be between 1 and %d, got %d",
+			MaxComplexityJevMessageHistoryCount,
+			c.MessageHistoryCount,
+		)
+	}
+	return nil
+}
+
 // ComplexitySessionConfig controls monotonic complexity-tier retention across
 // requests belonging to the same session.
 //
@@ -614,7 +903,11 @@ type ComplexityAnalyzerConfigHashes struct {
 	// LLMSettings covers the llm block (provider, model, timeout, prompt,
 	// history window, budgets flag). The fallback selector rides the
 	// SemanticSettings hash: it is a field of the semantic block.
-	LLMSettings     string `json:"llm_settings,omitempty"`
+	LLMSettings string `json:"llm_settings,omitempty"`
+	// JevSettings covers the jev block (api key, base url, model, timeout,
+	// decision gates, history window). Like the llm block, the fallback
+	// selector rides the SemanticSettings hash.
+	JevSettings     string `json:"jev_settings,omitempty"`
 	SessionSettings string `json:"session_settings,omitempty"`
 }
 
@@ -686,6 +979,12 @@ type ComplexityAnalyzerConfig struct {
 	// fallback says "none": the block is retained so toggling the fallback
 	// never loses settings.
 	LLM *ComplexityLLMConfig `json:"llm,omitempty"`
+	// Jev configures the System One decision-API classifier, engaged only
+	// when Semantic.Fallback selects "jev" — except that routing rules
+	// referencing the jev_* CEL variables consult it regardless of the
+	// selector. Like the llm block it is retained when the fallback says
+	// "none" so toggling never loses settings.
+	Jev *ComplexityJevConfig `json:"jev,omitempty"`
 	// Session enables the built-in monotonic session tier. It is separate from
 	// semantic message_history_count: no message or turn history is persisted.
 	Session      *ComplexitySessionConfig       `json:"session,omitempty"`
@@ -743,6 +1042,7 @@ type complexitySemanticConfigRecord struct {
 	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
 	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
 	LLM                  *ComplexityLLMConfig            `json:"llm,omitempty"`
+	Jev                  *ComplexityJevConfig            `json:"jev,omitempty"`
 	Session              *ComplexitySessionConfig        `json:"session,omitempty"`
 	ConfigHashes         complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
 	EmbeddingFingerprint string                          `json:"_embedding_fingerprint,omitempty"`
@@ -756,6 +1056,7 @@ type complexitySemanticRowHashes struct {
 	ComplexKeywords  string `json:"complex_keywords,omitempty"`
 	SemanticSettings string `json:"semantic_settings,omitempty"`
 	LLMSettings      string `json:"llm_settings,omitempty"`
+	JevSettings      string `json:"jev_settings,omitempty"`
 	SessionSettings  string `json:"session_settings,omitempty"`
 }
 
@@ -767,6 +1068,16 @@ func (c *ComplexityAnalyzerConfig) LLMFallbackEnabled() bool {
 	return c != nil && c.Semantic != nil &&
 		c.Semantic.Fallback == ComplexitySemanticFallbackLLM &&
 		c.LLM != nil
+}
+
+// JevFallbackEnabled reports whether a semantic non-answer should be retried
+// through the jev block. Both halves are required: a fallback selector with
+// no jev block is rejected by Validate, and a dormant jev block with the
+// fallback on "none" never runs.
+func (c *ComplexityAnalyzerConfig) JevFallbackEnabled() bool {
+	return c != nil && c.Semantic != nil &&
+		c.Semantic.Fallback == ComplexitySemanticFallbackJev &&
+		c.Jev != nil
 }
 
 // SessionRoutingEnabled reports whether monotonic session-tier retention is enabled.
@@ -810,6 +1121,12 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackLLM && c.LLM == nil {
 		return fmt.Errorf("semantic fallback %q requires an llm config block", ComplexitySemanticFallbackLLM)
 	}
+	if err := c.Jev.Validate(); err != nil {
+		return err
+	}
+	if c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackJev && c.Jev == nil {
+		return fmt.Errorf("semantic fallback %q requires a jev config block", ComplexitySemanticFallbackJev)
+	}
 	if c.SessionRoutingEnabled() && c.Semantic == nil {
 		return fmt.Errorf("complexity session routing requires a semantic config block")
 	}
@@ -834,6 +1151,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 		},
 		Semantic:             c.Semantic.normalized(),
 		LLM:                  c.LLM.normalized(),
+		Jev:                  c.Jev.normalized(),
 		Session:              c.Session.normalized(),
 		ConfigHashes:         c.ConfigHashes,
 		EmbeddingFingerprint: c.EmbeddingFingerprint,
@@ -928,6 +1246,7 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 		},
 		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
 		LLM:                  mergeComplexityLLMConfig(normalizedBase.LLM, normalizedFile.LLM),
+		Jev:                  mergeComplexityJevConfig(normalizedBase.Jev, normalizedFile.Jev),
 		Session:              mergeComplexitySessionConfig(normalizedBase.Session, normalizedFile.Session),
 		ConfigHashes:         normalizedFile.ConfigHashes,
 		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
@@ -951,6 +1270,16 @@ func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *Comple
 // mergeComplexityLLMConfig overlays the file llm settings. A nil file section
 // keeps the base untouched.
 func mergeComplexityLLMConfig(base, file *ComplexityLLMConfig) *ComplexityLLMConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
+}
+
+// mergeComplexityJevConfig overlays the file jev settings. A nil file section
+// keeps the base untouched, so a dormant or fallback-selected Jev block
+// survives every non-hash merge instead of being silently discarded.
+func mergeComplexityJevConfig(base, file *ComplexityJevConfig) *ComplexityJevConfig {
 	if file == nil {
 		return base.normalized()
 	}
@@ -1018,6 +1347,15 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 		if merged.LLM == nil || merged.ConfigHashes.LLMSettings != normalizedFile.ConfigHashes.LLMSettings {
 			merged.LLM = normalizedFile.LLM.normalized()
 			merged.ConfigHashes.LLMSettings = normalizedFile.ConfigHashes.LLMSettings
+		}
+	}
+	// The jev block follows the same "absence means no opinion" rule as the
+	// llm block above: only a file that states it may change it, and only
+	// when its hash moved.
+	if normalizedFile.Jev != nil {
+		if merged.Jev == nil || merged.ConfigHashes.JevSettings != normalizedFile.ConfigHashes.JevSettings {
+			merged.Jev = normalizedFile.Jev.normalized()
+			merged.ConfigHashes.JevSettings = normalizedFile.ConfigHashes.JevSettings
 		}
 	}
 	// Session follows the same optional-section rule: omission means no file
@@ -1111,6 +1449,7 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 		Keywords: config.Keywords,
 		Semantic: config.Semantic,
 		LLM:      config.LLM,
+		Jev:      config.Jev,
 		Session:  config.Session,
 		ConfigHashes: complexitySemanticRowHashes{
 			SimpleKeywords:   config.ConfigHashes.SimpleKeywords,
@@ -1118,6 +1457,7 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 			ComplexKeywords:  config.ConfigHashes.ComplexKeywords,
 			SemanticSettings: config.ConfigHashes.SemanticSettings,
 			LLMSettings:      config.ConfigHashes.LLMSettings,
+			JevSettings:      config.ConfigHashes.JevSettings,
 			SessionSettings:  config.ConfigHashes.SessionSettings,
 		},
 		EmbeddingFingerprint: config.EmbeddingFingerprint,
@@ -1139,12 +1479,14 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	combined.Keywords = row.Keywords
 	combined.Semantic = row.Semantic
 	combined.LLM = row.LLM
+	combined.Jev = row.Jev
 	combined.Session = row.Session
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords
 	combined.ConfigHashes.MediumKeywords = row.ConfigHashes.MediumKeywords
 	combined.ConfigHashes.ComplexKeywords = row.ConfigHashes.ComplexKeywords
 	combined.ConfigHashes.SemanticSettings = row.ConfigHashes.SemanticSettings
 	combined.ConfigHashes.LLMSettings = row.ConfigHashes.LLMSettings
+	combined.ConfigHashes.JevSettings = row.ConfigHashes.JevSettings
 	combined.ConfigHashes.SessionSettings = row.ConfigHashes.SessionSettings
 	combined.EmbeddingFingerprint = row.EmbeddingFingerprint
 	return &combined
