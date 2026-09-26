@@ -86,3 +86,49 @@ func TestAddColumnIfNotExistsUnknownFieldReturnsError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "failed to look up field")
 }
+
+// addColTestIndexed declares a single-column index on the column the tests add
+// and a composite index whose second column the table never gains.
+type addColTestIndexed struct {
+	ID      uint    `gorm:"primaryKey"`
+	Indexed *string `gorm:"column:indexed;index;index:idx_addcol_test_pair,priority:1"`
+	Absent  *string `gorm:"column:absent;index:idx_addcol_test_pair,priority:2"`
+}
+
+func (addColTestIndexed) TableName() string { return "addcol_test" }
+
+// TestAddColumnIfNotExistsCreatesTagDeclaredIndex covers issue #7457: GORM
+// raises a tag-declared index when it creates the table, never when a column is
+// added later, and only Postgres has a builder that raises them afterwards.
+func TestAddColumnIfNotExistsCreatesTagDeclaredIndex(t *testing.T) {
+	db := openAddColumnTestDB(t)
+	require.False(t, db.Migrator().HasIndex(&addColTestIndexed{}, "idx_addcol_test_indexed"))
+
+	require.NoError(t, AddColumnIfNotExists(db, nil, &addColTestIndexed{}, "Indexed"))
+
+	require.True(t, db.Migrator().HasColumn(&addColTestIndexed{}, "indexed"))
+	require.True(t, db.Migrator().HasIndex(&addColTestIndexed{}, "idx_addcol_test_indexed"))
+}
+
+// TestAddColumnIfNotExistsSkipsIndexWithAbsentColumn pins the composite guard:
+// creating an index over a column the table does not have yet would abort the
+// migration that added the first one.
+func TestAddColumnIfNotExistsSkipsIndexWithAbsentColumn(t *testing.T) {
+	db := openAddColumnTestDB(t)
+
+	require.NoError(t, AddColumnIfNotExists(db, nil, &addColTestIndexed{}, "Indexed"))
+
+	require.False(t, db.Migrator().HasColumn(&addColTestIndexed{}, "absent"))
+	require.False(t, db.Migrator().HasIndex(&addColTestIndexed{}, "idx_addcol_test_pair"))
+}
+
+// TestAddColumnIfNotExistsCompletesCompositeIndexWithLastColumn verifies the
+// composite index lands once the migration adding its final column runs.
+func TestAddColumnIfNotExistsCompletesCompositeIndexWithLastColumn(t *testing.T) {
+	db := openAddColumnTestDB(t)
+	require.NoError(t, AddColumnIfNotExists(db, nil, &addColTestIndexed{}, "Indexed"))
+
+	require.NoError(t, AddColumnIfNotExists(db, nil, &addColTestIndexed{}, "Absent"))
+
+	require.True(t, db.Migrator().HasIndex(&addColTestIndexed{}, "idx_addcol_test_pair"))
+}

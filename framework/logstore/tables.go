@@ -216,7 +216,7 @@ type OverheadBucket struct {
 type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	IncNumber               *int64    `gorm:"column:inc_number" json:"inc_number,omitempty"`
-	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
+	ParentRequestID         *string   `gorm:"type:varchar(255);index:idx_logs_parent_request_id,where:parent_request_id IS NOT NULL" json:"parent_request_id"` // Partial index, matching its performanceIndexes entry
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;not null" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`

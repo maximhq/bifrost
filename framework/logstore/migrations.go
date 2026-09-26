@@ -326,6 +326,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"logs_add_warp_conversations_updated_at_index"}, run: migrationAddWarpConversationsUpdatedAtIndex},
 	{IDs: []string{"logs_add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+	{IDs: []string{"logs_ensure_declared_indexes"}, run: migrationEnsureDeclaredIndexes},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -517,6 +518,57 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB, logger 
 		return fmt.Errorf("error while running object column migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationEnsureDeclaredIndexes backfills the struct-tag indexes that earlier
+// column migrations added their column without. Those migrations are recorded
+// and never run again, so an installation that already has the column keeps
+// scanning the table until something creates the index once.
+//
+// Postgres is skipped: ensurePerformanceIndexes raises the same set
+// CONCURRENTLY after startup, and a blocking CREATE INDEX here is what that
+// builder exists to avoid.
+func migrationEnsureDeclaredIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_ensure_declared_indexes"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	// Each CreateIndex stands on its own: an index built on a large table can take
+	// a while, and wrapping the set in one transaction holds a write lock across
+	// all of them. Leaving them unwrapped also means a failure part way through
+	// keeps the indexes already built, and the next start resumes from there.
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				return nil
+			}
+			for _, model := range []interface{}{&Log{}, &MCPToolLog{}} {
+				if err := migrator.CreateDeclaredIndexes(tx, logger, model); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: ensureDeclaredIndexesRollback,
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while ensuring declared indexes: %w", err)
+	}
+	return nil
+}
+
+// ensureDeclaredIndexesRollback refuses to undo the backfill on the dialects it
+// acts on. Returning nil would have the migrator delete the record while the
+// indexes remained, and dropping them would strip the ones CreateTable raises
+// on a fresh database, which are indistinguishable from the backfilled ones.
+func ensureDeclaredIndexesRollback(tx *gorm.DB) error {
+	if tx.Dialector.Name() == "postgres" {
+		return nil
+	}
+	return fmt.Errorf("logs_ensure_declared_indexes is non-rollbackable: a fresh database gets these same indexes from CreateTable, and nothing distinguishes those from the ones backfilled here, so dropping them would strip indexes the installation never lacked; they are additive and older binaries ignore them")
 }
 
 // migrationAddParentRequestIDColumn adds the parent_request_id column to the logs table.

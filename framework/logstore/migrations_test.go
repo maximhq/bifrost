@@ -68,6 +68,70 @@ func TestMigrationAddSessionIDColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddParentRequestIDColumn covers issue #7457: the trace lookup
+// column must arrive with its index on SQLite, where nothing else builds one.
+func TestMigrationAddParentRequestIDColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "existing-log").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddParentRequestIDColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "ParentRequestID"))
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_parent_request_id"))
+	require.NoError(t, migrationAddParentRequestIDColumn(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "existing-log").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+// TestMigrationEnsureDeclaredIndexesBackfillsExistingDatabase covers the half of
+// issue #7457 that the column adder cannot reach: an installation that already
+// has parent_request_id has also recorded the migration that added it, so that
+// migration never runs again and the index would stay missing forever.
+func TestMigrationEnsureDeclaredIndexesBackfillsExistingDatabase(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	// A database in the reported state: the column is present, its migration is
+	// recorded, and no index was ever built.
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "existing-log").Error)
+	require.NoError(t, migrationAddParentRequestIDColumn(ctx, db, testLogger{}))
+	require.NoError(t, db.Migrator().DropIndex(&Log{}, "idx_logs_parent_request_id"))
+	require.False(t, db.Migrator().HasIndex(&Log{}, "idx_logs_parent_request_id"))
+
+	// Re-running the column migration cannot help: its id is already recorded.
+	require.NoError(t, migrationAddParentRequestIDColumn(ctx, db, testLogger{}))
+	require.False(t, db.Migrator().HasIndex(&Log{}, "idx_logs_parent_request_id"))
+
+	require.NoError(t, migrationEnsureDeclaredIndexes(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_parent_request_id"))
+	require.NoError(t, migrationEnsureDeclaredIndexes(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "existing-log").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+// TestMigrationEnsureDeclaredIndexes_NonRollbackable pins that the backfill
+// refuses to roll back on the dialects it acts on. A fresh database gets the
+// same indexes from CreateTable, so a rollback that dropped them would strip
+// indexes the installation never lacked, and a nil rollback would let the
+// migrator delete the record while the indexes stayed.
+func TestMigrationEnsureDeclaredIndexes_NonRollbackable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+
+	err = ensureDeclaredIndexesRollback(db)
+	require.Error(t, err, "rollback must refuse on a dialect the backfill acts on")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+}
+
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same
 // database, so each one works in its own schema to avoid clobbering the
