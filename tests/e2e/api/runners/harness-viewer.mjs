@@ -13,6 +13,7 @@ import { readReport } from "./lib/read-report.mjs";
 import { redactItemsForPublic } from "./lib/redact-report.mjs";
 import { createServer } from "node:http";
 import { URL } from "node:url";
+import { withSetupToken } from "./lib/setup-token.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -524,7 +525,8 @@ const server = createServer(async (req, res) => {
       try {
         const r = await fetch(url, {
           method: normalizedMethod,
-          headers: headerObj,
+          // A replayed row skips the collection pre-request that adds the setup token.
+          headers: withSetupToken(headerObj, new URL(url).pathname),
           body: ["GET", "HEAD"].includes(normalizedMethod) ? undefined : body,
           signal: controller.signal,
         });

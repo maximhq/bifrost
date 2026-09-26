@@ -101,6 +101,34 @@
       "type": "string"
     }
   ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Before the first admin account exists, Bifrost requires the operator's setup token",
+          "// (config.json setup_token or BIFROST_SETUP_TOKEN) in X-Bifrost-Setup-Token on management",
+          "// calls and on inference without a virtual key. Runners pass it as the setup_token",
+          "// variable; once an admin exists the header is ignored. It goes only to the instance under",
+          "// test (the baseUrl / base_url host), never to a provider called directly. A request that",
+          "// sets the header itself (or removes it in its own pre-request) wins.",
+          "(function () {",
+          "  var token = pm.environment.get('setup_token') || pm.globals.get('setup_token') || pm.collectionVariables.get('setup_token');",
+          "  if (!token) { return; }",
+          "  var base = String(pm.variables.get('baseUrl') || pm.variables.get('base_url') || '');",
+          "  var baseHost = (/^[a-z][a-z0-9+.-]*:\\/\\/([^\\/?#]+)/i.exec(base) || [])[1];",
+          "  // pm.request.url is still templated here ({{baseUrl}}/...), so resolve it before comparing hosts.",
+          "  var target = (/^[a-z][a-z0-9+.-]*:\\/\\/([^\\/?#]+)/i.exec(pm.variables.replaceIn(pm.request.url.toString())) || [])[1];",
+          "  if (!baseHost || !target || target.toLowerCase() !== baseHost.toLowerCase()) { return; }",
+          "  if (!pm.request.headers.has('X-Bifrost-Setup-Token')) {",
+          "    pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: token });",
+          "  }",
+          "})();"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "Setup - Create VK with rate limit",

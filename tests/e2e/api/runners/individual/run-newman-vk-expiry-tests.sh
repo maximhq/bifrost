@@ -148,6 +148,7 @@ fi
 
 # Build Newman command
 cmd=(newman run "$COLLECTION")
+cmd+=(--env-var "setup_token=${BIFROST_SETUP_TOKEN:-}")
 [ -n "$GLOBALS_TMP" ] && [ -f "$GLOBALS_TMP" ] && cmd+=(-g "$GLOBALS_TMP")
 [ -n "$SINGLE_JSON_ENV" ] && [ -f "$SINGLE_JSON_ENV" ] && cmd+=(-e "$SINGLE_JSON_ENV")
 

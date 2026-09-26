@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
 import { evaluateCase, mergePricingOverridesByModel, isTerminal, costsMatch } from "./lib/video-costing.mjs";
+import { withSetupToken } from "./lib/setup-token.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -102,7 +103,7 @@ async function httpJson(url, init = {}, timeoutMs = 60000) {
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   const started = Date.now();
   try {
-    const res = await fetch(url, { ...init, signal: ac.signal });
+    const res = await fetch(url, { ...init, headers: withSetupToken(init.headers || {}, new URL(url).pathname), signal: ac.signal });
     const text = await res.text();
     let body = null;
     try {

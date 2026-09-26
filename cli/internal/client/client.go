@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -478,12 +479,23 @@ func BuildEndpoint(baseURL, path string, query url.Values) (string, error) {
 	return base.String(), nil
 }
 
+// setupTokenHeader carries BIFROST_SETUP_TOKEN on management calls to a gateway that has
+// no admin account yet.
+const setupTokenHeader = "X-Bifrost-Setup-Token"
+
 // authorize applies the selected credentials unless the caller supplied an override.
 func (c *Client) authorize(req *http.Request, mode AuthMode) {
 	if mode == AuthNone {
 		return
 	}
 	credentials := c.CredentialsSnapshot()
+	// Until a gateway's first admin account exists its management API requires the
+	// operator's setup token; the gateway ignores it once an admin exists.
+	if mode == AuthManagement && req.Header.Get(setupTokenHeader) == "" {
+		if token := strings.TrimSpace(os.Getenv("BIFROST_SETUP_TOKEN")); token != "" {
+			req.Header.Set(setupTokenHeader, token)
+		}
+	}
 	if mode == AuthManagement && req.Header.Get("Authorization") == "" {
 		token := strings.TrimSpace(credentials.ManagementKey)
 		if token == "" {
