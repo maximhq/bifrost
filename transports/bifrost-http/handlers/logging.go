@@ -580,9 +580,20 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 		return out
 	}
 
-	redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
-	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
-	redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	// The GetAllRedacted* lookups read every row for an empty id list, so a page
+	// that names no key of a kind skips that lookup: it has no name to resolve.
+	var redactedKeys []schemas.Key
+	if len(selectedKeyIDs) > 0 {
+		redactedKeys = h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
+	}
+	var redactedVirtualKeys []tables.TableVirtualKey
+	if len(virtualKeyIDs) > 0 {
+		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	}
+	var redactedRoutingRules []tables.TableRoutingRule
+	if len(routingRuleIDs) > 0 {
+		redactedRoutingRules = h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	}
 
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
@@ -830,9 +841,20 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		return out
 	}
 
-	redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
-	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
-	redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	// The GetAllRedacted* lookups read every row for an empty id list, so a page
+	// that names no key of a kind skips that lookup: it has no name to resolve.
+	var redactedKeys []schemas.Key
+	if len(selectedKeyIDs) > 0 {
+		redactedKeys = h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
+	}
+	var redactedVirtualKeys []tables.TableVirtualKey
+	if len(virtualKeyIDs) > 0 {
+		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	}
+	var redactedRoutingRules []tables.TableRoutingRule
+	if len(routingRuleIDs) > 0 {
+		redactedRoutingRules = h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	}
 
 	// Add selected key, virtual key, and routing rule to the result
 	for i, log := range result.Logs {
@@ -3016,7 +3038,12 @@ func (h *LoggingHandler) getMCPLogs(ctx *fasthttp.RequestCtx) {
 		return out
 	}
 
-	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	// GetAllRedactedVirtualKeys reads every virtual key for an empty id list, so a
+	// page whose logs name no virtual key skips the lookup.
+	var redactedVirtualKeys []tables.TableVirtualKey
+	if len(virtualKeyIDs) > 0 {
+		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	}
 
 	// Add virtual key to the result
 	for i, log := range result.Logs {
@@ -3168,9 +3195,13 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 			virtualKeyIDs[i] = key.ID
 		}
 
+		// Skipped for an empty list: GetAllRedactedVirtualKeys would read every
+		// virtual key, and with no MCP virtual keys there is nothing to resolve.
 		redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
-		for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
-			redactedVirtualKeys[virtualKey.ID] = virtualKey
+		if len(virtualKeyIDs) > 0 {
+			for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
+				redactedVirtualKeys[virtualKey.ID] = virtualKey
+			}
 		}
 
 		for _, virtualKey := range virtualKeys {

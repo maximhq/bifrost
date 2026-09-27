@@ -1488,34 +1488,35 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 	}
 
 	// filters.MissingCostOnly controls the scope:
-	//   true  -> only rows without a cost are visited (the result set shrinks as we
-	//            update, so we only advance the offset past rows that stay missing)
-	//   false -> every row matching the filters is visited (the result set is stable,
-	//            so we advance the offset by the full batch size)
+	//   true  -> only rows without a cost are visited
+	//   false -> every row matching the filters is visited
+	// Either way the walk pages by a (timestamp, id) keyset: rows at or before the
+	// cursor are never revisited, whether or not an update dropped them out of the
+	// scope, so each in-scope row is visited exactly once, the same rows the old
+	// offset walk visited, without an OFFSET scan or a COUNT per page.
+	total, err := p.CountRecalcTargets(ctx, filters, filters.MissingCostOnly)
+	if err != nil {
+		return nil, err
+	}
+	result := &RecalculateCostResult{TotalMatched: total}
+
 	pagination := logstore.PaginationOptions{
 		Limit: limit,
 		// Always look at the oldest requests first
 		SortBy: "timestamp",
 		Order:  "asc",
+		// The total was counted once above; the page reads never need it.
+		SkipCount: true,
 	}
-
-	result := &RecalculateCostResult{}
-	seenInitialTotal := false
-	remainingOffset := 0
 	processed := 0
 
 	for {
-		pagination.Offset = remainingOffset
 		// Billing projection, not the list projection: see SearchLogsForBilling. The
 		// list rows omit the modality output payloads and, where payloads are
 		// offloaded, carry a usage stub that prices cached tokens at full rate.
 		searchResult, err := p.store.SearchLogsForBilling(ctx, filters, pagination)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search logs for cost recalculation: %w", err)
-		}
-		if !seenInitialTotal {
-			result.TotalMatched = searchResult.Stats.TotalRequests
-			seenInitialTotal = true
 		}
 		if len(searchResult.Logs) == 0 {
 			break
@@ -1535,21 +1536,12 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 		result.Skipped += tally.skipped
 		result.Unpriceable += tally.unpriceable
 
-		stillMissingInBatch := 0
-		for _, priced := range tally.priced {
-			if !priced {
-				stillMissingInBatch++
-			}
-		}
+		// Advance the keyset cursor past the last row of the page.
+		last := searchResult.Logs[len(searchResult.Logs)-1]
+		cursor := last.Timestamp
+		pagination.AfterTimestamp = &cursor
+		pagination.AfterID = last.ID
 
-		if filters.MissingCostOnly {
-			// Updated rows drop out of the result set, so only advance past rows
-			// that remain missing (skipped / zero-cost) to avoid skipping fresh work.
-			remainingOffset += stillMissingInBatch
-		} else {
-			// Result set is stable across updates, so advance by the full batch.
-			remainingOffset += len(searchResult.Logs)
-		}
 		if progress != nil {
 			progress(RecalculateCostProgress{
 				TotalMatched: result.TotalMatched,
