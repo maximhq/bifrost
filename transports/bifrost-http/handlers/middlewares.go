@@ -1074,9 +1074,11 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 }
 
-// InferenceMiddleware is for inference requests (including MCP routes). It always
-// passes the request through — inference authentication is owned entirely by the
-// governance plugin, not by this dashboard-auth middleware.
+// InferenceMiddleware is for inference requests (including MCP routes). Once an admin
+// account exists it passes every request through: inference authentication is owned by
+// the governance plugin, not by this dashboard-auth middleware. Before the first admin
+// exists it demands a virtual key or the setup token (allowPreAdminInferenceRequest), so
+// a freshly exposed instance cannot be used to spend its provider keys.
 //
 // Governance runs downstream on every inference request type (via RunLLMPreHooks) and
 // is the authoritative virtual-key validator: it rejects missing/unknown/revoked keys

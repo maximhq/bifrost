@@ -57,10 +57,14 @@ if [ -n "${1:-}" ]; then
   trap cleanup EXIT
 
   echo "📝 Merged config (providers + Postgres)..."
+  # The shared config carries an admin with auth disabled so every other suite runs in
+  # the open state. This suite deliberately starts with NO admin: its first pass runs the
+  # pre-admin flow (management and inference need the setup token or a virtual key), and
+  # set-auth-config then creates the admin for the authenticated pass.
   if command -v jq >/dev/null 2>&1; then
     jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES_USER" \
        --arg pass "$POSTGRES_PASSWORD" --arg db "$POSTGRES_DB" --arg ssl "$POSTGRES_SSLMODE" \
-       '. + {
+       'del(.auth_config) + {
          "config_store": {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}},
          "logs_store": {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
        }' "$E2E_API_CONFIG" > "$MERGED_CONFIG"
@@ -68,6 +72,7 @@ if [ -n "${1:-}" ]; then
     python3 - "$E2E_API_CONFIG" "$MERGED_CONFIG" << 'PYEOF'
 import sys, json, os
 with open(sys.argv[1]) as f: c = json.load(f)
+c.pop("auth_config", None)
 pg = {"host": os.environ.get("POSTGRES_HOST", "localhost"), "port": os.environ.get("POSTGRES_PORT", "5432"), "user": os.environ.get("POSTGRES_USER", "bifrost"), "password": os.environ.get("POSTGRES_PASSWORD", "bifrost_password"), "db_name": os.environ.get("POSTGRES_DB", "bifrost"), "ssl_mode": os.environ.get("POSTGRES_SSLMODE", "disable")}
 c["config_store"] = {"enabled": True, "type": "postgres", "config": pg}
 c["logs_store"] = {"enabled": True, "type": "postgres", "config": dict(pg)}

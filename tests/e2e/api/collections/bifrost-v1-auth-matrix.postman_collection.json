@@ -93,9 +93,17 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "var admin = String(pm.variables.get('admin_auth') || '') === '1';",
+                  "// No admin account and no setup token configured: every request without a VK is refused.",
+                  "var preAdminNoToken = !admin && String(pm.variables.get('setup_token') || '') === '';",
                   "var enforce = String(pm.variables.get('enforce_auth') || '') === '1';",
                   "var code = pm.response.code;",
-                  "if (enforce) {",
+                  "if (preAdminNoToken) {",
+                  "  pm.test('No admin, no setup token configured: no-VK inference is refused (403)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    pm.expect(pm.response.text()).to.include('X-Bifrost-Setup-Token');",
+                  "  });",
+                  "} else if (enforce) {",
                   "  pm.test('No-VK inference is rejected by governance (401)', function () {",
                   "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
                   "  });",
@@ -148,9 +156,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "var admin = String(pm.variables.get('admin_auth') || '') === '1';",
+                  "// No admin account and no setup token configured: every request without a VK is refused.",
+                  "var preAdminNoToken = !admin && String(pm.variables.get('setup_token') || '') === '';",
                   "var enforce = String(pm.variables.get('enforce_auth') || '') === '1';",
                   "var code = pm.response.code;",
-                  "if (enforce) {",
+                  "if (preAdminNoToken) {",
+                  "  pm.test('No admin, no setup token configured: inference without a VK is refused (403)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "  });",
+                  "} else if (enforce) {",
                   "  pm.test('Admin Basic is not a VK substitute on inference (401)', function () {",
                   "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
                   "  });",
@@ -181,6 +196,128 @@
               "path": ["v1", "chat", "completions"]
             }
           }
+        },
+        {
+          "name": "Inference without a VK or the setup token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Undo the collection-level pre-request: this row pins what a caller without the setup token gets.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var admin = String(pm.variables.get('admin_auth') || '') === '1';",
+                  "// No admin account and no setup token configured: every request without a VK is refused.",
+                  "var preAdminNoToken = !admin && String(pm.variables.get('setup_token') || '') === '';",
+                  "var enforce = String(pm.variables.get('enforce_auth') || '') === '1';",
+                  "var code = pm.response.code;",
+                  "if (!admin) {",
+                  "  pm.test('Before an admin exists, inference without a VK or the setup token is refused', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(preAdminNoToken ? 403 : 401);",
+                  "    pm.expect(pm.response.text()).to.include('X-Bifrost-Setup-Token');",
+                  "  });",
+                  "} else if (enforce) {",
+                  "  pm.test('No-VK inference is rejected by governance (401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
+                  "    pm.expect(pm.response.text()).to.include('virtual_key');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('With an admin, no-VK inference passes the auth layer when enforce is off (code != 401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"ping\"}], \"max_tokens\": 5}"
+            }
+          }
+        },
+        {
+          "name": "Inference with a VK and no setup token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Undo the collection-level pre-request: this row pins what a caller without the setup token gets.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');",
+                  "pm.request.headers.upsert({ key: 'x-bf-vk', value: pm.variables.get('vk_value') });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A virtual key is enough in every combination, before an admin exists included:",
+                  "// governance validates it; the dummy provider then fails upstream, never with 401/403.",
+                  "var code = pm.response.code;",
+                  "pm.test('A virtual key passes the auth layer without the setup token', function () {",
+                  "  pm.expect(code, 'body: ' + pm.response.text()).to.not.be.oneOf([401, 403]);",
+                  "  pm.expect(pm.response.text()).to.not.include('X-Bifrost-Setup-Token');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"ping\"}], \"max_tokens\": 5}"
+            }
+          }
         }
       ]
     },
@@ -196,8 +333,14 @@
                 "type": "text/javascript",
                 "exec": [
                   "var admin = String(pm.variables.get('admin_auth') || '') === '1';",
+                  "// No admin account and no setup token configured: every request without a VK is refused.",
+                  "var preAdminNoToken = !admin && String(pm.variables.get('setup_token') || '') === '';",
                   "var code = pm.response.code;",
-                  "if (admin) {",
+                  "if (preAdminNoToken) {",
+                  "  pm.test('No admin, no setup token configured: the management API fails closed (403)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "  });",
+                  "} else if (admin) {",
                   "  pm.test('Admin route requires admin auth (401)', function () {",
                   "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
                   "  });",
@@ -241,10 +384,13 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Admin creds (when set) open the route; when admin auth is off the route is",
-                  "// open anyway. Either way: 200.",
-                  "pm.test('Admin route is accessible with admin creds (200)', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "var admin = String(pm.variables.get('admin_auth') || '') === '1';",
+                  "// No admin account and no setup token configured: every request without a VK is refused.",
+                  "var preAdminNoToken = !admin && String(pm.variables.get('setup_token') || '') === '';",
+                  "// Admin creds (when set) open the route; with no admin the collection's setup token",
+                  "// does. Either way: 200, unless no setup token is configured at all (403).",
+                  "pm.test(preAdminNoToken ? 'No admin, no setup token configured: refused (403)' : 'Admin route is accessible with admin creds (200)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(preAdminNoToken ? 403 : 200);",
                   "});"
                 ]
               }
@@ -257,6 +403,57 @@
               "raw": "{{base_url}}/api/config",
               "host": ["{{base_url}}"],
               "path": ["api", "config"]
+            }
+          }
+        },
+        {
+          "name": "GET /api/config without admin creds or setup token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Undo the collection-level pre-request: this row pins what a caller without the setup token gets.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var admin = String(pm.variables.get('admin_auth') || '') === '1';",
+                  "// No admin account and no setup token configured: every request without a VK is refused.",
+                  "var preAdminNoToken = !admin && String(pm.variables.get('setup_token') || '') === '';",
+                  "var code = pm.response.code;",
+                  "if (admin) {",
+                  "  pm.test('Admin route requires admin auth (401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Before an admin exists, the management API requires the setup token', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(preAdminNoToken ? 403 : 401);",
+                  "    pm.expect(pm.response.text()).to.include('X-Bifrost-Setup-Token');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
             }
           }
         }

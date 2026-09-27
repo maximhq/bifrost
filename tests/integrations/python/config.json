@@ -1,5 +1,10 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "auth_config": {
+    "is_enabled": false,
+    "admin_username": "bifrost-test-admin",
+    "admin_password": "Bifrost-Test-Admin-Pass1!"
+  },
   "mcp": {
     "client_configs": [
       {
