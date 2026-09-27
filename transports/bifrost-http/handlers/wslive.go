@@ -12,7 +12,6 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -52,7 +51,7 @@ func (h *WSLiveHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	}
 	attach := lib.ChainMiddlewares(h.handleAttach, middlewares...)
 	r.GET("/v1/live/sessions/{session_id}/attach", attach)
-	for _, path := range integrations.OpenAILiveAttachPaths("/openai") {
+	for _, path := range integrations.OpenAILiveSessionPaths("/openai", "attach") {
 		r.GET(path, attach)
 	}
 }
@@ -64,39 +63,9 @@ func (h *WSLiveHandler) Close() {
 	h.sessions.CloseAll()
 }
 
-// liveUpgrade is what a live WebSocket route needs from its HTTP request once the connection is
-// upgraded: the request context, the credentials, and the middleware values, which outlive the
-// recycled fasthttp ctx.
-type liveUpgrade struct {
-	path             string
-	auth             *authHeaders
-	preReqCtx        *schemas.BifrostContext
-	cancel           context.CancelFunc
-	middlewareValues map[any]any
-}
-
-// prepareUpgrade builds the request context and refuses an anonymous caller with a plain 401
-// before the upgrade: accepting it would open an upstream connection on the operator's key.
-func (h *WSLiveHandler) prepareUpgrade(ctx *fasthttp.RequestCtx) (*liveUpgrade, bool) {
-	path := string(ctx.Path())
-	auth := captureAuthHeaders(ctx)
-	preReqCtx, cancel := createBifrostContextFromAuth(h.gateway.handlerStore, auth)
-	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
-	if strings.HasPrefix(path, "/openai") {
-		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
-	}
-	if authErr := h.gateway.refuseAnonymous(preReqCtx); authErr != nil {
-		cancel()
-		SendBifrostError(ctx, authErr)
-		return nil, false
-	}
-	populateRealtimeRequestContext(ctx, preReqCtx)
-	return &liveUpgrade{path: path, auth: auth, preReqCtx: preReqCtx, cancel: cancel, middlewareValues: snapshotRealtimeMiddlewareValues(ctx)}, true
-}
-
 // upgrade completes the WebSocket upgrade and reports whether it succeeded; serve then runs on
 // the connection once this handler returns.
-func (h *WSLiveHandler) upgrade(ctx *fasthttp.RequestCtx, up *liveUpgrade, serve func(clientConn *realtimeClientConn)) bool {
+func (h *WSLiveHandler) upgrade(ctx *fasthttp.RequestCtx, up *liveRequest, serve func(clientConn *realtimeClientConn)) bool {
 	upgrader := ws.FastHTTPUpgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
@@ -119,7 +88,7 @@ func (h *WSLiveHandler) upgrade(ctx *fasthttp.RequestCtx, up *liveUpgrade, serve
 }
 
 func (h *WSLiveHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
-	up, ok := h.prepareUpgrade(ctx)
+	up, ok := h.gateway.prepareRequest(ctx)
 	if !ok {
 		return
 	}
@@ -130,36 +99,13 @@ func (h *WSLiveHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 
 // handleAttach joins a sideband to a running session. The sideband bills nothing, the primary does.
 func (h *WSLiveHandler) handleAttach(ctx *fasthttp.RequestCtx) {
-	up, ok := h.prepareUpgrade(ctx)
-	if !ok {
-		return
-	}
-	id, _ := ctx.UserValue("session_id").(string)
-	sessionID := strings.TrimSpace(id)
-	if sessionID == "" {
-		up.cancel()
-		SendBifrostError(ctx, newRealtimeWireBifrostError(400, "invalid_request_error", "a session id is required"))
-		return
-	}
-	provider, providerKey, bifrostErr := h.gateway.controlProvider(up.path)
-	if bifrostErr != nil {
-		up.cancel()
-		SendBifrostError(ctx, bifrostErr)
-		return
-	}
-	// The credential must resolve before the upgrade, as for a new session.
-	h.gateway.client.RunPreRequestHooks(up.preReqCtx, &schemas.BifrostRequest{
-		RequestType:      schemas.LiveRequest,
-		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: providerKey},
-	})
-	if h.config.ClientConfig.EnforceAuthOnInference && !governance.PresentedCredentialResolved(up.preReqCtx) {
-		up.cancel()
-		SendBifrostError(ctx, newRealtimeWireBifrostError(401, "invalid_request_error", realtimeUnresolvedCredentialMessage))
+	up, ok := h.gateway.prepareRequest(ctx)
+	if !ok || !h.gateway.resolveSession(ctx, up) {
 		return
 	}
 	// Unlike a new session, a sideband needs nothing from the client after the upgrade, so its
 	// key and upstream are settled first and a refusal is a plain HTTP status.
-	relay, bifrostErr := h.openSideband(up, provider, providerKey, sessionID)
+	relay, bifrostErr := h.openSideband(up)
 	if bifrostErr != nil {
 		up.cancel()
 		SendBifrostError(ctx, bifrostErr)
@@ -172,20 +118,20 @@ func (h *WSLiveHandler) handleAttach(ctx *fasthttp.RequestCtx) {
 }
 
 // openSideband selects a key and dials the provider's attach endpoint on it.
-func (h *WSLiveHandler) openSideband(up *liveUpgrade, provider schemas.LiveProvider, providerKey schemas.ModelProvider, sessionID string) (*liveSidebandRelay, *schemas.BifrostError) {
+func (h *WSLiveHandler) openSideband(up *liveRequest) (*liveSidebandRelay, *schemas.BifrostError) {
 	ctx, cancel := h.gateway.sessionContext(up.auth, up.preReqCtx, up.middlewareValues, up.path)
-	key, bifrostErr := h.gateway.controlKey(ctx, providerKey)
+	key, bifrostErr := h.gateway.controlKey(ctx, up.providerKey)
 	if bifrostErr != nil {
 		cancel()
 		return nil, bifrostErr
 	}
-	upstream, bifrostErr := h.dial(ctx, provider, providerKey, key, schemas.LiveConnectionSideband, sessionID)
+	upstream, bifrostErr := h.dial(ctx, up.provider, up.providerKey, key, schemas.LiveConnectionSideband, up.sessionID)
 	if bifrostErr != nil {
 		cancel()
 		return nil, bifrostErr
 	}
 	return &liveSidebandRelay{
-		liveUpdatePolicy: liveUpdatePolicy{models: h.gateway.client, provider: providerKey, key: key, checkKeyModels: true},
+		liveUpdatePolicy: liveUpdatePolicy{models: h.gateway.client, provider: up.providerKey, key: key, checkKeyModels: true},
 		upstream:         upstream,
 		cancel:           cancel,
 	}, nil

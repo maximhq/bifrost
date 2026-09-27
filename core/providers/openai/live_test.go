@@ -139,3 +139,51 @@ func TestCreateLiveWebRTCSession(t *testing.T) {
 		t.Fatal("allowed_requests without live must block session create")
 	}
 }
+
+func TestLiveSessionContent(t *testing.T) {
+	t.Parallel()
+
+	wav := []byte("RIFF....WAVEfmt ")
+	var status int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/live/sessions/live_123/content" || r.Header.Get("Authorization") != "Bearer sk-test" {
+			t.Errorf("unexpected request %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		if status == http.StatusOK {
+			w.Header().Set("Content-Type", "audio/wav")
+			w.WriteHeader(status)
+			_, _ = w.Write(wav)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"Session not found."}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	status = http.StatusOK
+	content, bifrostErr := provider.LiveSessionContent(newCtx(), key, "live_123")
+	if bifrostErr != nil {
+		t.Fatalf("LiveSessionContent() error = %v", bifrostErr.Error)
+	}
+	if content.ContentType != "audio/wav" || string(content.Content) != string(wav) {
+		t.Fatalf("LiveSessionContent() = %q %q", content.ContentType, content.Content)
+	}
+
+	status = http.StatusNotFound
+	_, bifrostErr = provider.LiveSessionContent(newCtx(), key, "live_123")
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusNotFound ||
+		bifrostErr.ExtraFields.RequestType != schemas.LiveRequest || bifrostErr.Error.Message != "Session not found." {
+		t.Fatalf("upstream error = %+v", bifrostErr)
+	}
+
+	if _, bifrostErr = provider.LiveSessionContent(newCtx(), key, "../files"); bifrostErr == nil {
+		t.Fatal("an unsafe session id must be refused before any request is made")
+	}
+}
