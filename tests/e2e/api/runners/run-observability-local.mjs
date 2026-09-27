@@ -11,6 +11,8 @@ const requestID = `otel-e2e-request-${process.pid}-${Date.now()}`;
 const errorRequestID = `otel-e2e-error-${process.pid}-${Date.now()}`;
 const streamErrorRequestID = `otel-e2e-stream-error-${process.pid}-${Date.now()}`;
 const responsesRefusalRequestID = `otel-e2e-responses-refusal-${process.pid}-${Date.now()}`;
+const unparseableRequestID = `otel-e2e-unparseable-${process.pid}-${Date.now()}`;
+const sseErrorRequestID = `otel-e2e-sse-error-${process.pid}-${Date.now()}`;
 
 // Responses API stop_reason returned by the mock. Refusals are the case the
 // OTEL check pins: before the fix the Responses path never copied stop_reason
@@ -20,6 +22,16 @@ const RESPONSES_STOP_REASON = "refusal";
 
 // Message marker that makes the mock provider return a 404 error body.
 const ERROR_TRIGGER = "trigger-error";
+
+// Marker that makes the mock answer 200 with a body that is not JSON at all. Bifrost
+// raises that failure itself, so the error carries no upstream status: it used to be
+// counted as status_code="unknown" while the caller received a 500.
+const UNPARSEABLE_TRIGGER = "trigger-unparseable";
+
+// Marker that makes the mock open a stream, send a startup chunk, and only then fail.
+// The transport status is already 200 and committed, so the error can only ride an SSE
+// event — the shape that carried no status at all and so was never retried.
+const SSE_ERROR_TRIGGER = "trigger-sse-error";
 
 const state = {
 	otelTraceRequests: [],
@@ -90,6 +102,42 @@ function createOpenAIMock() {
 				headers: req.headers,
 				body: body.toString("utf8"),
 			});
+			// A 200 whose body is not JSON: Bifrost raises the parse failure itself, so
+			// the error has no upstream status to carry.
+			if (body.toString("utf8").includes(UNPARSEABLE_TRIGGER)) {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end("this is not json");
+				return;
+			}
+			// A committed 200 stream that sends a startup chunk and only then fails. The
+			// error must ride an SSE event, so it arrives with no status of its own.
+			if (body.toString("utf8").includes(SSE_ERROR_TRIGGER)) {
+				res.writeHead(200, {
+					"content-type": "text/event-stream",
+					"cache-control": "no-cache",
+					connection: "keep-alive",
+				});
+				const now = Math.floor(Date.now() / 1000);
+				res.write(
+					`data: ${JSON.stringify({
+						id: `chatcmpl-${now}`,
+						object: "chat.completion.chunk",
+						created: now,
+						model: modelName,
+						choices: [{ index: 0, delta: { role: "assistant", content: "Hel" }, finish_reason: null }],
+					})}\n\n`,
+				);
+				res.write(
+					`data: ${JSON.stringify({
+						error: {
+							message: "Our servers are currently overloaded. Please try again later.",
+							type: "server_error",
+						},
+					})}\n\n`,
+				);
+				res.end();
+				return;
+			}
 			// Error scenarios: the trigger marker gets a provider-style 404, streaming
 			// or not — this is the pre-first-chunk failure path.
 			if (body.toString("utf8").includes(ERROR_TRIGGER)) {
@@ -341,6 +389,42 @@ async function chatError(id, stream) {
 	}
 }
 
+// chatUnparseable drives the failure Bifrost raises itself. The caller gets a 500, so
+// the error metric must say 500 — it used to say "unknown", which is what hid these
+// failures from every 5xx dashboard.
+async function chatUnparseable(id) {
+	const res = await request(
+		"POST",
+		"/v1/chat/completions",
+		{ model: requestedModel, messages: [{ role: "user", content: UNPARSEABLE_TRIGGER }] },
+		{ "x-request-id": id },
+	);
+	if (res.ok) {
+		throw new Error(`unparseable-body request unexpectedly succeeded: ${res.text}`);
+	}
+	if (res.status !== 500) {
+		throw new Error(`unparseable-body request status=${res.status}, want 500: ${res.text}`);
+	}
+}
+
+// chatSSEError drives a stream that fails after its first chunk. The HTTP status is
+// already 200 and committed, so the failure is only visible in the SSE body and in
+// telemetry.
+async function chatSSEError(id) {
+	const res = await request(
+		"POST",
+		"/v1/chat/completions",
+		{ model: requestedModel, messages: [{ role: "user", content: SSE_ERROR_TRIGGER }], stream: true },
+		{ "x-request-id": id },
+	);
+	if (res.status !== 200) {
+		throw new Error(`sse-error request status=${res.status}, want 200 (stream was committed): ${res.text}`);
+	}
+	if (!res.text.includes("overloaded")) {
+		throw new Error(`sse-error request did not surface the provider error: ${res.text}`);
+	}
+}
+
 async function poll(name, timeoutMs, fn) {
 	const started = Date.now();
 	let lastError;
@@ -460,6 +544,30 @@ async function assertPrometheusErrorScrape() {
 		}
 		if (failures.length > 0) {
 			throw new Error(`bifrost_error_requests_total{status_code="404"} missing for: ${failures.join(", ")}`);
+		}
+		return true;
+	});
+}
+
+// assertPrometheusStatusLabel checks a single error counter series exists with the
+// status and fault attribution the failure actually had. Both of these used to be
+// reported as status_code="unknown", so a 5xx alert never fired for them.
+async function assertPrometheusStatusLabel(label, method, statusCode, errorType) {
+	await poll(`Prometheus ${label} scrape`, 20000, async () => {
+		const res = await request("GET", "/metrics");
+		if (!res.ok) {
+			throw new Error(`GET /metrics failed with ${res.status}: ${res.text}`);
+		}
+		const line = findPrometheusSample(res.text, "bifrost_error_requests_total", {
+			provider: providerName,
+			method,
+			status_code: statusCode,
+			error_type: errorType,
+		});
+		if (!line || parsePrometheusValue(line) < 1) {
+			throw new Error(
+				`bifrost_error_requests_total{method="${method}",status_code="${statusCode}",error_type="${errorType}"} missing`,
+			);
 		}
 		return true;
 	});
@@ -718,11 +826,18 @@ async function main() {
 		await assertOtelErrorTrace(streamErrorRequestID, "stream-error");
 		await assertPrometheusErrorScrape();
 
+		// Failures that carry no upstream status. Both used to be labelled
+		// status_code="unknown" while the caller saw a 500, hiding them from 5xx alerts.
+		await chatUnparseable(unparseableRequestID);
+		await assertPrometheusStatusLabel("unparseable-body", "chat_completion", "500", "bifrost_internal");
+		await chatSSEError(sseErrorRequestID);
+		await assertPrometheusStatusLabel("sse-error", "chat_completion_stream", "502", "provider_server_error");
+
 		// Responses API refusal: the span must carry finish_reason(s) just like a
 		// chat completion does.
 		await responsesRefusal();
 		await assertOtelResponsesFinishReason();
-		assertMockProviderRequest(4);
+		assertMockProviderRequest(6);
 
 		console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
 		console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
@@ -730,6 +845,7 @@ async function main() {
 		console.log(`  Metrics/logs token usage reconciled (scrape == logs)`);
 		console.log(`  Logging trace API returned id="${requestID}"`);
 		console.log(`  Error spans carry gen_ai.error.* and error counter has status_code (non-stream and stream).`);
+		console.log(`  Status-less failures are labelled: internal=500/bifrost_internal, SSE=502/provider_server_error.`);
 		console.log(`  Responses API span carries gen_ai.response.finish_reason="${RESPONSES_STOP_REASON}".`);
 		console.log("Local observability API check passed.");
 	} finally {
