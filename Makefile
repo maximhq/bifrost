@@ -9,6 +9,12 @@ LOG_STYLE ?= json
 LOG_LEVEL ?= info
 TEST_REPORTS_DIR ?= test-reports
 GOTESTSUM_FORMAT ?= standard-verbose
+# Setup token for instances with no admin account yet: the gateway reads it
+# (BIFROST_SETUP_TOKEN) and every test client sends it in X-Bifrost-Setup-Token,
+# which the management API requires until the first admin exists. A fixed value
+# for local runs; CI and real deployments set their own.
+BIFROST_SETUP_TOKEN ?= bifrost-local-setup-token
+export BIFROST_SETUP_TOKEN
 FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
@@ -2701,6 +2707,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			NS_SHARD="$$1"; NS_COLLECTION="$$2"; NS_REPORT="$$3"; NS_PROV="$$4"; \
 			newman run "$$NS_COLLECTION" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				--env-var "setup_token=$${BIFROST_SETUP_TOKEN:-}" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
@@ -2929,6 +2936,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		add_pass "$$(printf '{"t":"pass","id":"main","mode":"sequential","log":"tmp/newman-cli.log","collection":"%s"}' "$$COLLECTION_FILE")"; \
 		newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				--env-var "setup_token=$${BIFROST_SETUP_TOKEN:-}" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
@@ -2984,6 +2992,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			add_pass '{"t":"pass","id":"cache-parity","mode":"sequential","log":"tmp/newman-cli-cache-parity.log","collection":"tmp/harness-cache-filtered.json"}'; \
 			newman run tmp/harness-cache-filtered.json \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
+				--env-var "setup_token=$${BIFROST_SETUP_TOKEN:-}" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \

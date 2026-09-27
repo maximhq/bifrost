@@ -90,6 +90,11 @@ function httpRequest(
   const body = options.body ?? ''
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    // Until the first admin account exists the management API requires the setup
+    // token the gateway was started with (see playwright.config.ts).
+    ...(process.env.BIFROST_SETUP_TOKEN && path.startsWith('/api/')
+      ? { 'X-Bifrost-Setup-Token': process.env.BIFROST_SETUP_TOKEN }
+      : {}),
     ...options.headers,
   }
   if (body && !headers['Content-Length']) {

@@ -482,6 +482,7 @@ build_newman_cmd() {
     local collection_path="$1"
     local report_suffix="$2"
     cmd=(newman run "$collection_path" "${newman_args[@]}")
+    cmd+=(--env-var "setup_token=${BIFROST_SETUP_TOKEN:-}")
 
     if [[ "$REPORTERS" == *"htmlextra"* ]]; then
         cmd+=(--reporter-htmlextra-export "$REPORT_DIR/report${report_suffix}.html")

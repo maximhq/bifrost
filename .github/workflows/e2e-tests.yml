@@ -11,6 +11,13 @@ concurrency:
 permissions:
   contents: read
 
+# Instances started without an admin account (every test config) gate their
+# management API on this setup token; the gateway reads it and every test client
+# sends it in X-Bifrost-Setup-Token. A per-run value: it only protects the run's own
+# throwaway instances.
+env:
+  BIFROST_SETUP_TOKEN: ci-setup-token-${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   test-e2e-ui:
     name: E2E UI (Playwright)

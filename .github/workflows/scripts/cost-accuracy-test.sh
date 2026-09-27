@@ -261,6 +261,7 @@ create_virtual_key() {
   log "creating virtual key with attached budget"
   curl -fsS -X POST "http://127.0.0.1:${BIFROST_PORT}/api/governance/virtual-keys" \
     -H "Content-Type: application/json" \
+    -H "X-Bifrost-Setup-Token: ${BIFROST_SETUP_TOKEN:-}" \
     -d "{
       \"name\": \"cost-accuracy-vk\",
       \"description\": \"Cost accuracy CI virtual key\",
@@ -301,6 +302,7 @@ create_pricing_override() {
   log "creating virtual-key scoped pricing override"
   curl -fsS -X POST "http://127.0.0.1:${BIFROST_PORT}/api/governance/pricing-overrides" \
     -H "Content-Type: application/json" \
+    -H "X-Bifrost-Setup-Token: ${BIFROST_SETUP_TOKEN:-}" \
     -d "{
       \"name\": \"cost accuracy gpt-4o-mini vk\",
       \"scope_kind\": \"virtual_key\",

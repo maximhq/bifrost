@@ -243,6 +243,7 @@ cmd=(newman run "$COLLECTION"
     --env-var "llm_fixture_url=http://127.0.0.1:$LLM_FIXTURE_PORT"
     --timeout-script 60000 --timeout 120000
     -r "$REPORTERS")
+cmd+=(--env-var "setup_token=${BIFROST_SETUP_TOKEN:-}")
 [[ "$REPORTERS" == *"html"* ]] && cmd+=(--reporter-html-export "${REPORT_DIR}/report.html")
 [[ "$REPORTERS" == *"json"* ]] && cmd+=(--reporter-json-export "${REPORT_DIR}/report.json")
 [ -n "$VERBOSE" ] && cmd+=("$VERBOSE")
