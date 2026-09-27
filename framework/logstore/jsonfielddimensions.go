@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/queryscope"
 )
 
 // JSON-extracted ranking dimensions: labels that live inside a JSON blob
@@ -399,7 +401,9 @@ func (s *RDBLogStore) GetJSONFieldDimensionRankings(ctx context.Context, filters
 		for i, r := range currentResults {
 			ids[i] = r.ID
 		}
-		prevQuery = prevQuery.Where(fmt.Sprintf("%s IN ?", groupExpr), ids)
+		// Export mode can list every value seen in the current period, so the set
+		// binds as one argument instead of one parameter per value.
+		prevQuery = prevQuery.Where(queryscope.InStrings(prevQuery, groupExpr, ids))
 
 		var prevResults []struct {
 			ID            string          `gorm:"column:id"`

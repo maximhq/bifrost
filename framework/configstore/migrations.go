@@ -514,6 +514,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_web_search_cost_per_request_column"}, run: migrationAddWebSearchCostPerRequestColumn},
 	{IDs: []string{"move_pricing_override_search_context_to_web_search"}, run: migrationMovePricingOverrideSearchContextToWebSearch},
 	{IDs: []string{"add_warp_additional_models_column"}, run: migrationAddWarpAdditionalModelsColumn},
+	{IDs: []string{"add_vk_provider_config_virtual_key_id_index"}, run: migrationAddVKProviderConfigVirtualKeyIDIndex},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -13682,6 +13683,8 @@ func rollbackProviderJobKindColumns(ctx context.Context, db *gorm.DB) error {
 // A missing index and an INVALID one both report false: the caller wants to know
 // "can I rely on this", and an INVALID index — the residue of an interrupted
 // CREATE INDEX CONCURRENTLY — answers no while still occupying the name.
+// Only the table visible on the current search_path counts: a same-named table
+// in another schema of the same database must not make a missing index look present.
 func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
 	var valid bool
 	err := tx.Raw(`
@@ -13689,7 +13692,7 @@ func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
-		WHERE pc.relname = ? AND ic.relname = ?
+		WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
 	`, table, index).Scan(&valid).Error
 	return valid, err
 }
@@ -14373,4 +14376,110 @@ func migrationAddMCPClientMaxInstructionsLengthColumn(ctx context.Context, db *g
 		return fmt.Errorf("error while running mcp client max instructions length migration: %s", err.Error())
 	}
 	return nil
+}
+
+// postgresIndexOnTable looks up index name among the indexes of table (the
+// table visible on the current search_path). It returns the index's
+// schema-qualified name and whether it is valid, or found=false when table has
+// no index of that name. Index names are unique per schema, not per database, so
+// a bare name can also resolve to another table's index or another schema's;
+// callers drop by the qualified name returned here, never by the bare name.
+func postgresIndexOnTable(tx *gorm.DB, table, name string) (qualified string, valid, found bool, err error) {
+	var rows []struct {
+		Qualified string
+		Valid     bool
+	}
+	err = tx.Raw(`
+		SELECT quote_ident(n.nspname) || '.' || quote_ident(ic.relname) AS qualified, pi.indisvalid AS valid
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		JOIN pg_namespace n ON n.oid = ic.relnamespace
+		WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
+	`, table, name).Scan(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return "", false, false, err
+	}
+	return rows[0].Qualified, rows[0].Valid, true, nil
+}
+
+// ensureIndexConcurrently creates index name on table with the given column
+// definition without blocking writes. On postgres it runs CREATE [UNIQUE] INDEX
+// CONCURRENTLY, which cannot run inside a transaction, so callers must use a
+// migration with UseTransaction=false. An INVALID index left by an interrupted
+// concurrent build still occupies the name and would make IF NOT EXISTS a silent
+// no-op, so it is dropped and rebuilt; only an index on table itself is ever
+// dropped, by its schema-qualified name. SQLite has no concurrent build and uses
+// the plain form. Identifier arguments are migration-controlled constants, never input.
+func ensureIndexConcurrently(tx *gorm.DB, table, name, definition string, unique bool) error {
+	kind := "INDEX"
+	if unique {
+		kind = "UNIQUE INDEX"
+	}
+	if tx.Dialector.Name() != "postgres" {
+		return tx.Exec(fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)", kind, name, table, definition)).Error
+	}
+	qualified, valid, found, err := postgresIndexOnTable(tx, table, name)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if found && valid {
+		return nil
+	}
+	if found {
+		if err := tx.Exec(fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s", qualified)).Error; err != nil {
+			return fmt.Errorf("drop invalid index %s: %w", qualified, err)
+		}
+	}
+	return tx.Exec(fmt.Sprintf("CREATE %s CONCURRENTLY IF NOT EXISTS %s ON %s (%s)", kind, name, table, definition)).Error
+}
+
+// dropIndexConcurrently is the rollback counterpart of ensureIndexConcurrently: it
+// drops index name on table without blocking writes on postgres, by its
+// schema-qualified name and only when table has it, and with the plain form on SQLite.
+func dropIndexConcurrently(tx *gorm.DB, table, name string) error {
+	if tx.Dialector.Name() != "postgres" {
+		return tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", name)).Error
+	}
+	qualified, _, found, err := postgresIndexOnTable(tx, table, name)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if !found {
+		return nil
+	}
+	return tx.Exec(fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s", qualified)).Error
+}
+
+// migrationAddVKProviderConfigVirtualKeyIDIndex indexes
+// governance_virtual_key_provider_configs.virtual_key_id. Every provider-config
+// preload, per-VK lookup, and the ON DELETE CASCADE check of every virtual key
+// delete filters on this column; without an index each one scans the whole table
+// (100k-500k rows at 100k keys). Built concurrently so the upgrade never blocks writes.
+func migrationAddVKProviderConfigVirtualKeyIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_provider_config_virtual_key_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, vkProviderConfigVirtualKeyIDIndexMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// vkProviderConfigVirtualKeyIDIndexMigration builds the migration applied by
+// migrationAddVKProviderConfigVirtualKeyIDIndex, so tests exercise the same
+// Migrate and Rollback callbacks the upgrade runs.
+func vkProviderConfigVirtualKeyIDIndexMigration(ctx context.Context, id string) *migrator.Migration {
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "governance_virtual_key_provider_configs",
+				"idx_vk_provider_configs_virtual_key_id", "virtual_key_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "governance_virtual_key_provider_configs", "idx_vk_provider_configs_virtual_key_id")
+		},
+	}
 }

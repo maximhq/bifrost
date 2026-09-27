@@ -26,7 +26,7 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
 	ID                uint              `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID      string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	VirtualKeyID      string            `gorm:"type:varchar(255);not null;index:idx_vk_provider_configs_virtual_key_id" json:"virtual_key_id"`
 	Provider          string            `gorm:"type:varchar(50);not null" json:"provider"`
 	Weight            *float64          `json:"weight"`
 	AllowedModels     schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"`     // ["*"] allows all models; empty denies all (deny-by-default)
