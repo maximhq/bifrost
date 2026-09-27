@@ -91,3 +91,57 @@ func (provider *OpenAIProvider) CreateLiveWebRTCSession(ctx *schemas.BifrostCont
 	}
 	return &created, nil
 }
+
+// LiveSessionContent downloads a stored session's recording from
+// /v1/live/sessions/{id}/content. Recordings can run to hundreds of megabytes, so the streaming
+// client, which has no whole-response deadline, fetches them.
+func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, key schemas.Key, sessionID string) (*schemas.LiveContentResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.LiveRequest); err != nil {
+		return nil, err
+	}
+	escapedID, bifrostErr := providerUtils.EscapeResourceID(sessionID, "session_id")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	headers, bifrostErr := provider.LiveHeaders(ctx, key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/live/sessions/"+escapedID+"/content", schemas.LiveRequest))
+	req.Header.SetMethod(http.MethodGet)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.streamingClient, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		upstreamErr := ParseOpenAIError(resp)
+		upstreamErr.ExtraFields.RequestType = schemas.LiveRequest
+		upstreamErr.ExtraFields.RoutingInfo.Provider = provider.GetProviderKey()
+		upstreamErr.ExtraFields.Provider = provider.GetProviderKey()
+		if !providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			upstreamErr.ExtraFields.RawResponse = nil
+		}
+		return nil, providerUtils.SetErrorLatency(upstreamErr, latency)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	contentType := string(resp.Header.ContentType())
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return &schemas.LiveContentResponse{Content: append([]byte(nil), body...), ContentType: contentType}, nil
+}

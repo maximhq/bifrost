@@ -287,6 +287,14 @@ type LiveProvider interface {
 	// CreateLiveWebRTCSession starts a WebRTC session. body is the create request,
 	// {session, transport: {type: "webrtc", sdp}}; the response carries the SDP answer.
 	CreateLiveWebRTCSession(ctx *BifrostContext, key Key, body []byte) (*LiveCreateResponse, *BifrostError)
+	// LiveSessionContent downloads a stored session's recording.
+	LiveSessionContent(ctx *BifrostContext, key Key, sessionID string) (*LiveContentResponse, *BifrostError)
+}
+
+// LiveContentResponse is a session recording: stereo WAV, caller left and assistant right.
+type LiveContentResponse struct {
+	Content     []byte `json:"-"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // LiveCreateResponse is the answer to POST /v1/live/sessions.

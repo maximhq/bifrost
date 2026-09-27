@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -57,6 +58,68 @@ func (g *liveGateway) refuseAnonymous(preReqCtx *schemas.BifrostContext) *schema
 		return newRealtimeWireBifrostError(401, "invalid_request_error", liveAuthRefusalMessage)
 	}
 	return nil
+}
+
+// liveRequest is what a live route knows before it acts: the request context, credentials and
+// middleware values, which outlive the recycled fasthttp ctx, and, for a route on an existing
+// session, that session and its provider.
+type liveRequest struct {
+	path             string
+	auth             *authHeaders
+	preReqCtx        *schemas.BifrostContext
+	cancel           context.CancelFunc
+	middlewareValues map[any]any
+
+	sessionID   string
+	provider    schemas.LiveProvider
+	providerKey schemas.ModelProvider
+}
+
+// prepareRequest builds the request context and refuses an anonymous caller with a plain 401
+// before anything is opened on the operator's key. A refusal has been written to ctx.
+func (g *liveGateway) prepareRequest(ctx *fasthttp.RequestCtx) (*liveRequest, bool) {
+	path := string(ctx.Path())
+	auth := captureAuthHeaders(ctx)
+	preReqCtx, cancel := createBifrostContextFromAuth(g.handlerStore, auth)
+	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
+	if strings.HasPrefix(path, "/openai") {
+		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+	if authErr := g.refuseAnonymous(preReqCtx); authErr != nil {
+		cancel()
+		SendBifrostError(ctx, authErr)
+		return nil, false
+	}
+	populateRealtimeRequestContext(ctx, preReqCtx)
+	return &liveRequest{path: path, auth: auth, preReqCtx: preReqCtx, cancel: cancel, middlewareValues: snapshotRealtimeMiddlewareValues(ctx)}, true
+}
+
+// resolveSession settles a route on an existing session: the session id from the path, its
+// provider, and a credential that resolves. A refusal has been written to ctx and req released.
+func (g *liveGateway) resolveSession(ctx *fasthttp.RequestCtx, req *liveRequest) bool {
+	refuse := func(bifrostErr *schemas.BifrostError) bool {
+		req.cancel()
+		SendBifrostError(ctx, bifrostErr)
+		return false
+	}
+	id, _ := ctx.UserValue("session_id").(string)
+	req.sessionID = strings.TrimSpace(id)
+	if req.sessionID == "" {
+		return refuse(newRealtimeWireBifrostError(400, "invalid_request_error", "a session id is required"))
+	}
+	provider, providerKey, bifrostErr := g.controlProvider(req.path)
+	if bifrostErr != nil {
+		return refuse(bifrostErr)
+	}
+	req.provider, req.providerKey = provider, providerKey
+	g.client.RunPreRequestHooks(req.preReqCtx, &schemas.BifrostRequest{
+		RequestType:      schemas.LiveRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: providerKey},
+	})
+	if g.config.ClientConfig.EnforceAuthOnInference && !governance.PresentedCredentialResolved(req.preReqCtx) {
+		return refuse(newRealtimeWireBifrostError(401, "invalid_request_error", realtimeUnresolvedCredentialMessage))
+	}
+	return true
 }
 
 // resolveTarget runs the pre-request pipeline (credential resolution, routing) and resolves the
