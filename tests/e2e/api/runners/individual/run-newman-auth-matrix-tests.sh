@@ -12,6 +12,11 @@
 # admin password guards only /api/* — a VK-authenticated inference request must
 # never be rejected by the admin middleware, in any combination.
 #
+# Admin-off combinations boot with no admin account, so the gateway requires
+# BIFROST_SETUP_TOKEN on /api/* and on inference without a virtual key. The
+# extra "no-setup-token" combination boots without the token and pins the
+# fail-closed 403.
+#
 # Requires a built bifrost-http binary; this runner boots its own servers (it does
 # not reuse the shared e2e server, since each combination needs a different boot
 # config).
@@ -27,6 +32,7 @@ REPORT_DIR="newman-reports/auth-matrix"
 ADMIN_USER="admin"
 ADMIN_PASS="Matrix-Admin-Pass1!"
 VK_VALUE="sk-bf-matrix-test-key"
+export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-auth-matrix-setup-token}"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -147,9 +153,17 @@ write_config() {
 EOF
 }
 
-# run_combo <label> <enforce true|false> <admin 1|"">
+# run_combo <label> <enforce true|false> <admin 1|""> [notoken]
+# "notoken" boots the gateway without BIFROST_SETUP_TOKEN and runs the
+# collection with an empty setup_token.
 run_combo() {
-    local label="$1" enforce="$2" admin="$3"
+    local label="$1" enforce="$2" admin="$3" token_mode="${4:-}"
+    local setup_token="$BIFROST_SETUP_TOKEN"
+    local server_env=(env)
+    if [ "$token_mode" = "notoken" ]; then
+        setup_token=""
+        server_env=(env -u BIFROST_SETUP_TOKEN)
+    fi
     local enforce_flag="" admin_flag="" admin_header=""
     [ "$enforce" = "true" ] && enforce_flag="1"
     [ "$admin" = "1" ] && { admin_flag="1"; admin_header="$ADMIN_HEADER"; }
@@ -157,13 +171,14 @@ run_combo() {
     echo -e "${GREEN}----------------------------------------------${NC}"
     echo -e "${GREEN}Combination: ${label}${NC}"
     echo -e "  enforce_auth_on_inference: ${YELLOW}${enforce}${NC}   admin password: ${YELLOW}$([ "$admin" = "1" ] && echo on || echo off)${NC}"
+    echo -e "  setup token configured: ${YELLOW}$([ -n "$setup_token" ] && echo yes || echo no)${NC}"
     echo -e "${GREEN}----------------------------------------------${NC}"
 
     CURRENT_DIR="$(mktemp -d)"
     write_config "$CURRENT_DIR" "$enforce" "$admin"
     local server_log="$CURRENT_DIR/server.log"
 
-    "$BIFROST_BINARY" --app-dir "$CURRENT_DIR" --port "$PORT" --log-level info > "$server_log" 2>&1 &
+    "${server_env[@]}" "$BIFROST_BINARY" --app-dir "$CURRENT_DIR" --port "$PORT" --log-level info > "$server_log" 2>&1 &
     CURRENT_PID=$!
 
     local elapsed=0
@@ -223,6 +238,7 @@ run_combo "enforce-off_admin-off" false ""
 run_combo "enforce-on_admin-off"  true  ""
 run_combo "enforce-off_admin-on"  false 1
 run_combo "enforce-on_admin-on"   true  1
+run_combo "enforce-off_admin-off_no-setup-token" false "" notoken
 
 echo ""
 if [ $OVERALL_EXIT -eq 0 ]; then
