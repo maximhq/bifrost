@@ -1923,6 +1923,31 @@ func TestSchemaLogsStoreWriterConfig(t *testing.T) {
 	}
 }
 
+// TestSchemaPostgresSessionTimeouts pins that both Postgres stores accept the
+// runtime-pool session timeouts postgresconn.Config reads (statement_timeout,
+// idle_in_transaction_session_timeout) with every value time.ParseDuration takes
+// there, including the documented "0" and negative values that keep the server
+// default, and still reject values it would refuse at startup.
+func TestSchemaPostgresSessionTimeouts(t *testing.T) {
+	compiled := compileSchema(t)
+	for _, store := range []string{"config_store", "logs_store"} {
+		for _, field := range []string{"statement_timeout", "idle_in_transaction_session_timeout"} {
+			for _, value := range []string{"30s", "60s", "1m30s", "1.5s", "0", "-1s", "+1s"} {
+				config := postgresStoreConfig(store, fmt.Sprintf(`"password": "secret", %q: %q`, field, value))
+				if err := validateConfig(t, compiled, config); err != nil {
+					t.Errorf("%s.config.%s = %q should be valid, got: %v", store, field, value, err)
+				}
+			}
+			for _, value := range []string{"30", "abc", "", "5 s"} {
+				config := postgresStoreConfig(store, fmt.Sprintf(`"password": "secret", %q: %q`, field, value))
+				if err := validateConfig(t, compiled, config); err == nil {
+					t.Errorf("%s.config.%s = %q should be rejected", store, field, value)
+				}
+			}
+		}
+	}
+}
+
 func postgresStoreConfig(storeName string, passwordFields string) string {
 	return fmt.Sprintf(`{
 		"%s": {

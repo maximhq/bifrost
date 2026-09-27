@@ -2822,7 +2822,12 @@ func (gs *LocalGovernanceStore) dumpRateLimitBatch(ctx context.Context, tx *gorm
 		sb.WriteString("(?::varchar,?::bigint,?::timestamptz,?::bigint,?::timestamptz)")
 		args = append(args, row.ID, row.TokenCurrentUsage, row.TokenLastReset, row.RequestCurrentUsage, row.RequestLastReset)
 	}
-	sb.WriteString(") AS v(id, tcu, tlr, rcu, rlr) WHERE t.id = v.id")
+	// IS DISTINCT FROM skips rows already holding these values: an UPDATE that
+	// matches writes a new row version even when nothing changes, and every dump
+	// sends every row.
+	sb.WriteString(") AS v(id, tcu, tlr, rcu, rlr) WHERE t.id = v.id" +
+		" AND (t.token_current_usage, t.token_last_reset, t.request_current_usage, t.request_last_reset)" +
+		" IS DISTINCT FROM (v.tcu, v.tlr, v.rcu, v.rlr)")
 	if err := tx.WithContext(ctx).Exec(sb.String(), args...).Error; err != nil {
 		return fmt.Errorf("failed to dump %d rate limits: %w", len(batch), err)
 	}
@@ -2888,7 +2893,10 @@ func (gs *LocalGovernanceStore) writeBudgetBatch(ctx context.Context, tx *gorm.D
 		overrideArgs = append(overrideArgs, row.ID, row.OverrideAmount, string(row.OverrideMode),
 			row.OverrideCyclesRemaining, row.OverrideCyclesTotal, row.OverrideAnchorReset, row.LastReset)
 	}
-	overrideSQL.WriteString(") AS v(id, oa, om, ocr, oct, oar, lr) WHERE t.id = v.id AND t.last_reset < v.lr")
+	// IS DISTINCT FROM keeps an unchanged row from getting a new row version.
+	overrideSQL.WriteString(") AS v(id, oa, om, ocr, oct, oar, lr) WHERE t.id = v.id AND t.last_reset < v.lr" +
+		" AND (t.override_amount, t.override_mode, t.override_cycles_remaining, t.override_cycles_total, t.override_anchor_reset)" +
+		" IS DISTINCT FROM (v.oa, v.om, v.ocr, v.oct, v.oar)")
 	if err := tx.WithContext(ctx).Exec(overrideSQL.String(), overrideArgs...).Error; err != nil {
 		return fmt.Errorf("failed to update budget override lifecycle for %d budgets: %w", len(batch), err)
 	}
@@ -2903,7 +2911,8 @@ func (gs *LocalGovernanceStore) writeBudgetBatch(ctx context.Context, tx *gorm.D
 		usageSQL.WriteString("(?::varchar,?::double precision,?::timestamptz)")
 		usageArgs = append(usageArgs, row.ID, row.CurrentUsage, row.LastReset)
 	}
-	usageSQL.WriteString(") AS v(id, cu, lr) WHERE t.id = v.id AND t.last_reset " + usageGuard + " v.lr")
+	usageSQL.WriteString(") AS v(id, cu, lr) WHERE t.id = v.id AND t.last_reset " + usageGuard + " v.lr" +
+		" AND (t.current_usage, t.last_reset) IS DISTINCT FROM (v.cu, v.lr)")
 	if err := tx.WithContext(ctx).Exec(usageSQL.String(), usageArgs...).Error; err != nil {
 		return fmt.Errorf("failed to update %d budgets: %w", len(batch), err)
 	}

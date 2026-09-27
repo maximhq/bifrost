@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -313,6 +314,50 @@ func TestInListLimitGetVirtualKeysPaginatedExportSnapshot(t *testing.T) {
 			require.False(t, seen["vk-0000000"], "export mixed in a key created after it started")
 			require.Len(t, vks, vkCount)
 			require.Equal(t, int64(len(vks)), total)
+		})
+	}
+}
+
+// TestGetVirtualKeysByIDsMatchesGetVirtualKey pins that the batched load used to
+// reload many keys at once returns, for every id, exactly what GetVirtualKey
+// returns (same relations), across a chunk boundary; that a missing id is
+// absent; and that an empty id list returns nothing.
+func TestGetVirtualKeysByIDsMatchesGetVirtualKey(t *testing.T) {
+	const vkCount = virtualKeyInternalPageSize + 5
+	for _, ns := range inListLimitStores(t) {
+		t.Run(ns.name, func(t *testing.T) {
+			ctx := context.Background()
+			inListSeedVirtualKeys(t, ns.db, vkCount)
+			inListSeedSeries(t, ns.db, 2, `INSERT INTO governance_virtual_key_provider_configs
+				(virtual_key_id, provider, allow_all_keys)
+				SELECT vk.id, 'provider-' || n.i, false FROM governance_virtual_keys vk CROSS JOIN n`)
+			ids := make([]string, 0, vkCount+1)
+			for i := 1; i <= vkCount; i++ {
+				ids = append(ids, fmt.Sprintf("vk-%d", 1000000+i))
+			}
+			ids = append(ids, "vk-missing")
+
+			got, err := ns.store.GetVirtualKeysByIDs(ctx, ids)
+			require.NoError(t, err)
+			require.Len(t, got, vkCount)
+			byID := make(map[string]tables.TableVirtualKey, len(got))
+			for _, vk := range got {
+				byID[vk.ID] = vk
+			}
+			for _, id := range []string{"vk-1000001", "vk-1000500", fmt.Sprintf("vk-%d", 1000000+vkCount)} {
+				want, err := ns.store.GetVirtualKey(ctx, id)
+				require.NoError(t, err)
+				wantJSON, err := json.Marshal(want)
+				require.NoError(t, err)
+				have := byID[id]
+				gotJSON, err := json.Marshal(&have)
+				require.NoError(t, err)
+				require.JSONEq(t, string(wantJSON), string(gotJSON), "batched load of %s must match GetVirtualKey", id)
+			}
+
+			none, err := ns.store.GetVirtualKeysByIDs(ctx, nil)
+			require.NoError(t, err)
+			require.Empty(t, none)
 		})
 	}
 }

@@ -69,6 +69,11 @@ type GovernanceManager interface {
 	RemoveVirtualMCP(ctx context.Context, id uint) error
 	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
 	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	// ReloadVirtualKeys reloads many virtual keys exactly as ReloadVirtualKey
+	// reloads one, from batched reads. Enterprise also propagates the reload to
+	// cluster peers. An error means nothing was reloaded, and the caller falls
+	// back to ReloadVirtualKey per key.
+	ReloadVirtualKeys(ctx context.Context, ids []string) error
 }
 
 // BudgetUsageResetOwner identifies the entity whose budgets had their usage reset.
@@ -114,19 +119,57 @@ var (
 // (e.g. an enterprise build registering a "user" resolver). Overwrites any
 // previously registered resolver for the same scope. Safe to call
 // concurrently.
+//
+// A per-id registration also drops any batch resolver registered for the same
+// scope: the batch resolver is consulted first, so leaving it in place would
+// silently shadow the resolver the caller just installed.
 func RegisterScopeNameResolver(scope string, fn ScopeNameResolver) {
 	if scope == "" || fn == nil {
 		return
 	}
 	scopeNameResolversMu.Lock()
 	scopeNameResolvers[scope] = fn
+	delete(scopeNameBatchResolvers, scope)
 	scopeNameResolversMu.Unlock()
 }
 
+// lookupScopeNameResolver returns the per-id resolver registered for scope.
 func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 	scopeNameResolversMu.RLock()
 	defer scopeNameResolversMu.RUnlock()
 	fn, ok := scopeNameResolvers[scope]
+	return fn, ok
+}
+
+// ScopeNameBatchResolver resolves the names of many scope targets of one scope
+// in a single lookup. The map holds only the ids that resolved; an id missing
+// from it has no name. The bool is false when the lookup itself failed, in
+// which case callers fall back to the per-id ScopeNameResolver.
+type ScopeNameBatchResolver func(ctx context.Context, scopeIDs []string) (map[string]string, bool)
+
+// scopeNameBatchResolvers holds the optional batch form of a scope's resolver.
+// The model-config list is polled by the UI, so resolving a page of names one
+// fully preloaded entity read at a time is a real load; a batch resolver turns
+// that into one query per scope per page. Guarded by scopeNameResolversMu.
+var scopeNameBatchResolvers = map[string]ScopeNameBatchResolver{}
+
+// RegisterScopeNameBatchResolver wires a batch resolver for a scope. Register
+// it after the scope's per-id resolver, because RegisterScopeNameResolver
+// clears the batch form for its scope.
+func RegisterScopeNameBatchResolver(scope string, fn ScopeNameBatchResolver) {
+	if scope == "" || fn == nil {
+		return
+	}
+	scopeNameResolversMu.Lock()
+	scopeNameBatchResolvers[scope] = fn
+	scopeNameResolversMu.Unlock()
+}
+
+// lookupScopeNameBatchResolver returns the batch resolver registered for scope.
+func lookupScopeNameBatchResolver(scope string) (ScopeNameBatchResolver, bool) {
+	scopeNameResolversMu.RLock()
+	defer scopeNameResolversMu.RUnlock()
+	fn, ok := scopeNameBatchResolvers[scope]
 	return fn, ok
 }
 
@@ -293,6 +336,22 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 			return "", false
 		}
 		return vk.Name, true
+	})
+	// Batch form: one id+name read for every VK on a page. GetRedactedVirtualKeys
+	// returns ALL keys for an empty id list, so the empty case never reaches it.
+	RegisterScopeNameBatchResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeIDs []string) (map[string]string, bool) {
+		if len(scopeIDs) == 0 {
+			return map[string]string{}, true
+		}
+		vks, err := configStore.GetRedactedVirtualKeys(ctx, scopeIDs)
+		if err != nil {
+			return nil, false
+		}
+		names := make(map[string]string, len(vks))
+		for i := range vks {
+			names[vks[i].ID] = vks[i].Name
+		}
+		return names, true
 	})
 	return &GovernanceHandler{
 		governanceManager:           manager,
@@ -1461,26 +1520,49 @@ func buildVKModelConfigIndex(mcs []*configstoreTables.TableModelConfig) map[stri
 	return byKey
 }
 
-// hydrateVKListGovernance reverse-maps governance for a list of VKs using a single bulk load
-// of all VK-scoped model configs (avoids per-VK/per-provider queries).
-func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []configstoreTables.TableVirtualKey) {
+// vkHydrationChunkSize bounds how many VK ids one scoped model-config load
+// carries. The export and unpaginated list paths hand over every VK, and the
+// scoped load expands its id list into one bind parameter per id, so an
+// unchunked 100k-key list would exceed the Postgres bind-parameter limit.
+const vkHydrationChunkSize = 1000
+
+// hydrateVKListGovernance reverse-maps governance for a list of VKs from the VK-scoped
+// model configs of exactly those VKs, loaded in bounded id chunks (avoids both
+// per-VK/per-provider queries and loading every model config in the database).
+// A failed chunk fails the whole hydration: returning the keys without their
+// budgets and rate limits would present limited keys as unlimited.
+func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []configstoreTables.TableVirtualKey) error {
 	if len(vks) == 0 {
-		return
+		return nil
 	}
-	allMCs, err := h.configStore.GetModelConfigs(ctx)
-	if err != nil {
-		logger.Error("failed to load model configs for VK governance hydration: %v", err)
-		return
+	ids := make([]string, 0, len(vks))
+	seen := make(map[string]struct{}, len(vks))
+	for i := range vks {
+		if _, dup := seen[vks[i].ID]; dup || vks[i].ID == "" {
+			continue
+		}
+		seen[vks[i].ID] = struct{}{}
+		ids = append(ids, vks[i].ID)
 	}
-	ptrs := make([]*configstoreTables.TableModelConfig, len(allMCs))
-	for i := range allMCs {
-		ptrs[i] = &allMCs[i]
+	var pageMCs []configstoreTables.TableModelConfig
+	for start := 0; start < len(ids); start += vkHydrationChunkSize {
+		end := min(start+vkHydrationChunkSize, len(ids))
+		mcs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, ids[start:end])
+		if err != nil {
+			return fmt.Errorf("failed to load model configs for VK governance hydration: %w", err)
+		}
+		pageMCs = append(pageMCs, mcs...)
+	}
+	ptrs := make([]*configstoreTables.TableModelConfig, len(pageMCs))
+	for i := range pageMCs {
+		ptrs[i] = &pageMCs[i]
 	}
 	byKey := buildVKModelConfigIndex(ptrs)
 	perModelByKey := buildVKModelBudgetsIndex(ptrs)
 	for i := range vks {
 		applyVKGovernanceFromModelConfigs(&vks[i], byKey, perModelByKey)
 	}
+	return nil
 }
 
 // applyExternalBudgets swaps a VK's own budget and rate-limit rows for the ones
@@ -1920,7 +2002,11 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Reverse-map governance from VK-scoped model configs for display.
-		h.hydrateVKListGovernance(ctx, virtualKeys)
+		if err := h.hydrateVKListGovernance(ctx, virtualKeys); err != nil {
+			logger.Error("%v", err)
+			SendError(ctx, 500, "Failed to load virtual key governance")
+			return
+		}
 		for i := range virtualKeys {
 			h.applyExternalBudgets(ctx, &virtualKeys[i])
 		}
@@ -1943,7 +2029,11 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve virtual keys")
 		return
 	}
-	h.hydrateVKListGovernance(ctx, virtualKeys)
+	if err := h.hydrateVKListGovernance(ctx, virtualKeys); err != nil {
+		logger.Error("%v", err)
+		SendError(ctx, 500, "Failed to load virtual key governance")
+		return
+	}
 	for i := range virtualKeys {
 		h.applyExternalBudgets(ctx, &virtualKeys[i])
 	}
@@ -4201,10 +4291,48 @@ func (h *GovernanceHandler) enrichModelConfigManagedBy(ctx context.Context, conf
 }
 
 // enrichModelConfigScopeNames populates ScopeName for each non-global config in the slice.
+// Scopes with a batch resolver are prefetched with one lookup per scope, so a page
+// costs one query per scope rather than one per distinct scope target.
 func (h *GovernanceHandler) enrichModelConfigScopeNames(ctx context.Context, configs []configstoreTables.TableModelConfig) {
 	cache := map[string]string{}
+	h.prefetchModelConfigScopeNames(ctx, configs, cache)
 	for i := range configs {
 		h.resolveModelConfigScopeName(ctx, &configs[i], cache)
+	}
+}
+
+// prefetchModelConfigScopeNames fills cache (keyed like resolveModelConfigScopeName)
+// for every scope that has a batch resolver. Ids the batch did not resolve are
+// cached as "" so the per-id resolver is not retried for them, which matches the
+// per-id path's own caching of a miss. A failed batch leaves the cache untouched
+// and resolution falls back to the per-id resolver.
+func (h *GovernanceHandler) prefetchModelConfigScopeNames(ctx context.Context, configs []configstoreTables.TableModelConfig, cache map[string]string) {
+	idsByScope := map[string][]string{}
+	seen := map[string]struct{}{}
+	for i := range configs {
+		mc := &configs[i]
+		if mc.Scope == "" || mc.ScopeID == nil {
+			continue
+		}
+		key := mc.Scope + "|" + *mc.ScopeID
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		idsByScope[mc.Scope] = append(idsByScope[mc.Scope], *mc.ScopeID)
+	}
+	for scope, ids := range idsByScope {
+		batch, ok := lookupScopeNameBatchResolver(scope)
+		if !ok {
+			continue
+		}
+		names, ok := batch(ctx, ids)
+		if !ok {
+			continue
+		}
+		for _, id := range ids {
+			cache[scope+"|"+id] = names[id]
+		}
 	}
 }
 

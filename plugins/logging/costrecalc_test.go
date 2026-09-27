@@ -32,6 +32,10 @@ type fakeRecalcStore struct {
 	// updates captures single-row Update() writes, which is how a job kind's cost
 	// and its debug blob are persisted together.
 	updates map[string]map[string]any
+	// paginations records every pagination the job asked for, in order.
+	paginations []logstore.PaginationOptions
+	// byIDCalls counts single-row reads by RequestID (payload re-reads).
+	byIDCalls int
 }
 
 func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
@@ -85,8 +89,26 @@ func (s *fakeRecalcStore) SearchLogs(_ context.Context, f logstore.SearchFilters
 	if s.searchCalls > 1000 {
 		return nil, fmt.Errorf("SearchLogs called too many times; likely an infinite loop")
 	}
+	s.paginations = append(s.paginations, p)
+	// An exact primary-key read, like applyFilters' RequestID branch: the time
+	// window and scope filters do not apply.
+	if f.RequestID != "" {
+		s.byIDCalls++
+		for _, l := range s.logs {
+			if l.ID == f.RequestID {
+				return &logstore.SearchResult{Logs: []logstore.Log{l}}, nil
+			}
+		}
+		return &logstore.SearchResult{}, nil
+	}
 	var matched []logstore.Log
 	for _, l := range s.logs {
+		// Keyset cursor: strictly after (AfterTimestamp, AfterID) in ascending order.
+		if p.AfterTimestamp != nil && p.AfterID != "" {
+			if l.Timestamp.Before(*p.AfterTimestamp) || (l.Timestamp.Equal(*p.AfterTimestamp) && l.ID <= p.AfterID) {
+				continue
+			}
+		}
 		if f.StartTime != nil && l.Timestamp.Before(*f.StartTime) {
 			continue
 		}
@@ -282,9 +304,9 @@ func TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow(t *testing.T) {
 // through more same-timestamp rows than a single batch holds without skipping or
 // re-touching any — the case the old one-nanosecond nudge silently dropped.
 func TestRunCostRecalcJob_FullRecalcTiePagination(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	ts := base // all rows share one instant
@@ -323,9 +345,9 @@ func TestRunCostRecalcJob_FullRecalcTiePagination(t *testing.T) {
 // that stay uncosted, all at one timestamp spanning multiple batches. The carried
 // offset must skip exactly the already-seen rows that remain visible.
 func TestRunCostRecalcJob_MissingCostOnlyTiePagination(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	ts := base
@@ -372,9 +394,9 @@ func TestRunCostRecalcJob_MissingCostOnlyTiePagination(t *testing.T) {
 // folding in the failed batch's skip count, so retrying from that snapshot cannot
 // double-count skips or re-touch already-costed rows.
 func TestRunCostRecalcJob_SkipCountNotInflatedOnRetry(t *testing.T) {
-	restore := costRecalcBatchSize
-	costRecalcBatchSize = 3
-	defer func() { costRecalcBatchSize = restore }()
+	restore := costRecalcPageSize
+	costRecalcPageSize = 3
+	defer func() { costRecalcPageSize = restore }()
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	// Distinct timestamps, one skip per batch.

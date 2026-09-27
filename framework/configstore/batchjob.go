@@ -153,17 +153,26 @@ func (s *RDBConfigStore) ClaimProviderJob(ctx context.Context, jobID, runnerID s
 		blocked = []string{tables.ProviderJobAccountingStatusAccounted}
 	}
 	now := time.Now().UTC()
+	updates := map[string]any{
+		"accounting_status": tables.ProviderJobAccountingStatusProcessing,
+		"runner_id":         runnerID,
+		"claimed_at":        now,
+		"last_error":        nil,
+		"updated_at":        now,
+	}
+	if allowUnpriceable {
+		// Reaching "unpriceable" cleared next_check_at (finishProviderJob). Re-opening
+		// such a job makes it due again, so that if this attempt ends in
+		// FailProviderJob the sweeper still retries it, as it did when terminal jobs
+		// kept their last next_check_at. CASE reads the pre-update row.
+		updates["next_check_at"] = gorm.Expr("CASE WHEN accounting_status = ? AND next_check_at IS NULL THEN ? ELSE next_check_at END",
+			tables.ProviderJobAccountingStatusUnpriceable, now)
+	}
 	res := s.DB().WithContext(ctx).Model(&tables.TableProviderJob{}).
 		Where("id = ?", jobID).
 		Where("accounting_status NOT IN ?", blocked).
 		Where("(accounting_status <> ? OR claimed_at IS NULL OR claimed_at < ?)", tables.ProviderJobAccountingStatusProcessing, staleBefore).
-		Updates(map[string]any{
-			"accounting_status": tables.ProviderJobAccountingStatusProcessing,
-			"runner_id":         runnerID,
-			"claimed_at":        now,
-			"last_error":        nil,
-			"updated_at":        now,
-		})
+		Updates(updates)
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -222,6 +231,16 @@ func (s *RDBConfigStore) FailProviderJob(ctx context.Context, jobID, runnerID st
 	return s.finishProviderJob(ctx, jobID, runnerID, tables.ProviderJobAccountingStatusError, "", err)
 }
 
+// isTerminalAccountingStatus reports whether status is one the sweeper never
+// polls again: the set ListDueProviderJobs excludes.
+func isTerminalAccountingStatus(status string) bool {
+	return status == tables.ProviderJobAccountingStatusAccounted || status == tables.ProviderJobAccountingStatusUnpriceable
+}
+
+// finishProviderJob moves a job this runner holds in "processing" to status,
+// releasing the runner fence and recording reason and err. Terminal statuses
+// also clear next_check_at. Fenced on runner_id and processing, so ErrNotFound
+// means the claim was lost.
 func (s *RDBConfigStore) finishProviderJob(ctx context.Context, jobID, runnerID, status, reason string, err error) error {
 	if jobID == "" {
 		return fmt.Errorf("provider job id is required")
@@ -240,6 +259,12 @@ func (s *RDBConfigStore) finishProviderJob(ctx context.Context, jobID, runnerID,
 	}
 	if status == tables.ProviderJobAccountingStatusAccounted {
 		updates["unpriceable_reason"] = nil
+	}
+	// Accounted and unpriceable are the states ListDueProviderJobs never returns.
+	// Clearing next_check_at drops the row out of the partial idx_batch_jobs_due
+	// index, so the due scan stops re-reading every job that ever finished.
+	if isTerminalAccountingStatus(status) {
+		updates["next_check_at"] = nil
 	}
 	if reason != "" {
 		updates["unpriceable_reason"] = reason
