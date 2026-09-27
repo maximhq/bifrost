@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,14 +89,7 @@ func (g *liveGateway) resolveTarget(preReqCtx *schemas.BifrostContext, path stri
 // admit builds the session context, selects the one key that serves both models (OpenAI calls
 // the backend on it too) and opens the session's billing. The caller owns the returned cancel.
 func (g *liveGateway) admit(auth *authHeaders, preReqCtx *schemas.BifrostContext, middlewareValues map[any]any, path string, target liveTarget, sessionID string) (*liveAdmission, *schemas.BifrostError) {
-	ctx, cancel := createBifrostContextFromAuth(g.handlerStore, auth)
-	applyRealtimeMiddlewareValues(ctx, liveMiddlewareValues(middlewareValues, preReqCtx))
-	lib.SettleIdentity(ctx)
-	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
-	if strings.HasPrefix(path, "/openai") {
-		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
-	}
-
+	ctx, cancel := g.sessionContext(auth, preReqCtx, middlewareValues, path)
 	key, err := g.client.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, target.providerKey, target.voiceModel, target.backendModel)
 	if err != nil {
 		cancel()
@@ -110,18 +104,74 @@ func (g *liveGateway) admit(auth *authHeaders, preReqCtx *schemas.BifrostContext
 	return &liveAdmission{liveTarget: target, ctx: ctx, cancel: cancel, key: key, meter: meter, checkKeyModels: !isDirectKey}, nil
 }
 
+// sessionContext builds the context a session (or a sideband on it) runs under: the caller's
+// identity as the pre-request pipeline settled it. The caller owns the returned cancel.
+func (g *liveGateway) sessionContext(auth *authHeaders, preReqCtx *schemas.BifrostContext, middlewareValues map[any]any, path string) (*schemas.BifrostContext, context.CancelFunc) {
+	ctx, cancel := createBifrostContextFromAuth(g.handlerStore, auth)
+	applyRealtimeMiddlewareValues(ctx, liveMiddlewareValues(middlewareValues, preReqCtx))
+	lib.SettleIdentity(ctx)
+	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
+	if strings.HasPrefix(path, "/openai") {
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+	return ctx, cancel
+}
+
+// controlProvider resolves the provider a route on an existing session names: the integration
+// prefix, or, on the bare route, the standard OpenAI provider when configured, else the one
+// configured provider that serves live sessions. Custom OpenAI-based providers serve live
+// sessions too, so the bare route cannot be left to a scan alone.
+func (g *liveGateway) controlProvider(path string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
+	providerKey := realtimeDefaultProviderForPath(path)
+	if providerKey == "" {
+		configured, err := g.client.GetConfiguredProviders()
+		if err != nil {
+			return nil, "", newRealtimeWireBifrostError(500, "server_error", "failed to list providers: "+err.Error())
+		}
+		var candidates []schemas.ModelProvider
+		for _, candidate := range configured {
+			if _, ok := g.client.GetProviderByKey(candidate).(schemas.LiveProvider); ok {
+				candidates = append(candidates, candidate)
+			}
+		}
+		switch {
+		case slices.Contains(candidates, schemas.OpenAI):
+			providerKey = schemas.OpenAI
+		case len(candidates) == 1:
+			providerKey = candidates[0]
+		case len(candidates) == 0:
+			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "no configured provider serves live sessions")
+		default:
+			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "several providers serve live sessions; use the provider's route, such as /openai/v1/live/sessions/{session_id}/...")
+		}
+	}
+	provider, ok := g.client.GetProviderByKey(providerKey).(schemas.LiveProvider)
+	if !ok {
+		return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support live sessions: "+string(providerKey))
+	}
+	return provider, providerKey, nil
+}
+
+// controlKey selects the key a route on an existing session acts with. Sessions are not yet
+// bound to the key that opened them, so this is ordinary selection: the caller's pinned key, or
+// any key for the provider; the provider refuses a key that does not own the session.
+func (g *liveGateway) controlKey(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider) (schemas.Key, *schemas.BifrostError) {
+	key, err := g.client.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, providerKey, "")
+	if err != nil {
+		return schemas.Key{}, newRealtimeWireBifrostError(400, "invalid_request_error", err.Error())
+	}
+	return key, nil
+}
+
 // controller returns the session controller for this admission, driven by a transport through io.
-func (a *liveAdmission) controller(models liveModelChecker, io liveSessionIO) *liveSessionController {
+func (a *liveAdmission) controller(g *liveGateway, io liveSessionIO) *liveSessionController {
 	return &liveSessionController{
-		io:              io,
-		models:          models,
-		meter:           a.meter,
-		provider:        a.providerKey,
-		key:             a.key,
-		checkKeyModels:  a.checkKeyModels,
-		drainTimeout:    liveCloseDrainTimeout,
-		staleCheckEvery: liveStaleCheckInterval,
-		upstreamDone:    make(chan struct{}),
+		liveUpdatePolicy: liveUpdatePolicy{models: g.client, provider: a.providerKey, key: a.key, checkKeyModels: a.checkKeyModels},
+		io:               io,
+		meter:            a.meter,
+		drainTimeout:     liveCloseDrainTimeout,
+		staleCheckEvery:  liveStaleCheckInterval,
+		upstreamDone:     make(chan struct{}),
 	}
 }
 
@@ -188,15 +238,42 @@ type liveSessionIO interface {
 	abandonUpstream()
 }
 
+// liveUpdatePolicy checks a session.update against the session's key before it reaches the
+// provider. The primary and every sideband of a session apply it.
+type liveUpdatePolicy struct {
+	models         liveModelChecker
+	provider       schemas.ModelProvider
+	key            schemas.Key
+	checkKeyModels bool
+}
+
+// check returns the frame to forward with model names resolved, and the backend model it
+// switches to, if any.
+func (p liveUpdatePolicy) check(message []byte) ([]byte, string, *schemas.BifrostError) {
+	sent := providerUtils.GetJSONField(message, "session.delegation.responses.model").Str
+	if strings.TrimSpace(sent) == "" {
+		return message, "", nil
+	}
+	provider, model := schemas.ParseModelString(sent, p.provider)
+	if provider != p.provider {
+		return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("session.delegation.responses.model must be served by %s, the provider of session.model", p.provider))
+	}
+	if p.checkKeyModels && !p.models.KeySupportsModel(p.provider, p.key, model) {
+		return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("the key serving this session does not support model %s", model))
+	}
+	message, err := setLiveModel(message, "session.delegation.responses.model", sent, p.key.Aliases.Resolve(model))
+	if err != nil {
+		return nil, "", newRealtimeWireBifrostError(500, "server_error", "failed to prepare session.update: "+err.Error())
+	}
+	return message, model, nil
+}
+
 // liveSessionController is a live session's transport-neutral policy: update checks, metering,
 // budget refusal, and draining until session.closed.
 type liveSessionController struct {
+	liveUpdatePolicy
 	io              liveSessionIO
-	models          liveModelChecker
 	meter           *liveMeter
-	provider        schemas.ModelProvider
-	key             schemas.Key
-	checkKeyModels  bool
 	drainTimeout    time.Duration
 	staleCheckEvery time.Duration
 
@@ -232,6 +309,13 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 	switch schemas.LiveEventTypeOf(message) {
 	case schemas.LiveEventSessionStarted:
 		c.meter.setProviderSessionID(providerUtils.GetJSONField(message, "session.id").Str)
+	case schemas.LiveEventSessionUpdated:
+		// A sideband can switch the backend too; the primary bills whatever the session now runs.
+		if model := providerUtils.GetJSONField(message, "session.delegation.responses.model").Str; model != "" {
+			if refusal := c.meter.switchBackend(model); refusal != nil {
+				c.endForRefusal(refusal)
+			}
+		}
 	case schemas.LiveEventUsageUpdated:
 		if refusal := c.meter.onUsage(providerUtils.GetJSONField(message, "usage.seconds").Float()); refusal != nil {
 			c.endForRefusal(refusal)
@@ -289,25 +373,14 @@ func (c *liveSessionController) markUpstreamDone() {
 // admitSessionUpdate re-checks a changed backend model before it reaches OpenAI: the session's key
 // must serve it and governance must admit it.
 func (c *liveSessionController) admitSessionUpdate(message []byte) ([]byte, *schemas.BifrostError) {
-	sent := providerUtils.GetJSONField(message, "session.delegation.responses.model").Str
-	if strings.TrimSpace(sent) == "" {
-		return message, nil
-	}
-	provider, model := schemas.ParseModelString(sent, c.provider)
-	if provider != c.provider {
-		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("session.delegation.responses.model must be served by %s, the provider of session.model", c.provider))
-	}
-	if c.checkKeyModels && !c.models.KeySupportsModel(c.provider, c.key, model) {
-		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("the key serving this session does not support model %s", model))
+	checked, model, bifrostErr := c.check(message)
+	if bifrostErr != nil || model == "" {
+		return checked, bifrostErr
 	}
 	if bifrostErr := c.meter.switchBackend(model); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	message, err := setLiveModel(message, "session.delegation.responses.model", sent, c.key.Aliases.Resolve(model))
-	if err != nil {
-		return nil, newRealtimeWireBifrostError(500, "server_error", "failed to prepare session.update: "+err.Error())
-	}
-	return message, nil
+	return checked, nil
 }
 
 func (c *liveSessionController) sendError(bifrostErr *schemas.BifrostError) {
