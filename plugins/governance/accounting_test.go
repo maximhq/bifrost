@@ -641,9 +641,8 @@ func TestAccounting_SkipRequestCountChargesCostOnly(t *testing.T) {
 	assert.Equal(t, int64(10), f.tokens())
 }
 
-// TestAccounting_SessionContinuationSkipsRequestLimits: a billing unit of an admitted session
-// (a GPT Live window) is neither refused by nor counted against request limits, while its tokens
-// still are. The session's admission unit, without the flag, is refused once the limit is spent.
+// TestAccounting_SessionContinuationSkipsRequestLimits: a continuation unit (a GPT Live window) skips
+// request limits but still charges tokens; an admission unit is refused once the limit is spent.
 func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1, 1) // request limit already spent

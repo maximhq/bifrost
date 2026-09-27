@@ -3,18 +3,13 @@ package handlers
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -22,31 +17,25 @@ import (
 )
 
 const (
-	liveBootstrapTimeout   = 15 * time.Second
-	liveBootstrapMaxBytes  = 1 << 20
-	liveCloseDrainTimeout  = 15 * time.Second
-	liveStaleCheckInterval = 5 * time.Second
+	liveBootstrapTimeout  = 15 * time.Second
+	liveBootstrapMaxBytes = 1 << 20
 )
-
-const liveAuthRefusalMessage = "authentication is required for live sessions. Provide a virtual key (x-bf-vk or an sk-bf- bearer token)."
 
 // WSLiveHandler relays GPT Live primary WebSocket sessions and bills them as they run.
 type WSLiveHandler struct {
-	client       *bifrost.Bifrost
-	config       *lib.Config
-	handlerStore lib.HandlerStore
-	pool         *bfws.Pool
-	sessions     *bfws.SessionManager
+	gateway  *liveGateway
+	config   *lib.Config
+	pool     *bfws.Pool
+	sessions *bfws.SessionManager
 }
 
 // NewWSLiveHandler creates a new GPT Live WebSocket handler.
 func NewWSLiveHandler(client *bifrost.Bifrost, config *lib.Config, pool *bfws.Pool) *WSLiveHandler {
 	return &WSLiveHandler{
-		client:       client,
-		config:       config,
-		handlerStore: config,
-		pool:         pool,
-		sessions:     bfws.NewSessionManager(config.WebSocketConfig.MaxConnections),
+		gateway:  &liveGateway{client: client, config: config, handlerStore: config},
+		config:   config,
+		pool:     pool,
+		sessions: bfws.NewSessionManager(config.WebSocketConfig.MaxConnections),
 	}
 }
 
@@ -69,7 +58,7 @@ func (h *WSLiveHandler) Close() {
 func (h *WSLiveHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	path := string(ctx.Path())
 	auth := captureAuthHeaders(ctx)
-	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.handlerStore, auth)
+	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.gateway.handlerStore, auth)
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	if strings.HasPrefix(path, "/openai") {
 		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
@@ -77,9 +66,9 @@ func (h *WSLiveHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 
 	// Accepting the upgrade opens an upstream session on the operator's key, so an anonymous
 	// caller is refused with a plain 401 before it.
-	if h.config.ClientConfig.EnforceAuthOnInference && !governance.PresentedAnyCredential(preReqCtx) {
+	if authErr := h.gateway.refuseAnonymous(preReqCtx); authErr != nil {
 		preReqCancel()
-		SendBifrostError(ctx, newRealtimeWireBifrostError(401, "invalid_request_error", liveAuthRefusalMessage))
+		SendBifrostError(ctx, authErr)
 		return
 	}
 	populateRealtimeRequestContext(ctx, preReqCtx)
@@ -115,32 +104,11 @@ func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
 		return
 	}
-
-	// The model arrives in-band, so the pre-request pipeline (credential resolution, routing)
-	// runs after the upgrade, still before a session slot or an upstream connection exists.
-	providerKey, voiceModel := schemas.ParseModelString(start.Model, realtimeDefaultProviderForPath(path))
-	preReq := &schemas.BifrostRequest{
-		RequestType:      schemas.LiveRequest,
-		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: providerKey, Model: voiceModel},
-	}
-	h.client.RunPreRequestHooks(preReqCtx, preReq)
-	if h.config.ClientConfig.EnforceAuthOnInference && !governance.PresentedCredentialResolved(preReqCtx) {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(401, "invalid_request_error", realtimeUnresolvedCredentialMessage))
-		return
-	}
-	providerKey, voiceModel, _ = preReq.GetRequestFields()
-	if providerKey == "" || strings.TrimSpace(voiceModel) == "" {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("no provider could be resolved for model %q (set as provider/model or configure the model catalog)", start.Model)))
-		return
-	}
-	backendModel, err := liveBackendModel(start, providerKey)
-	if err != nil {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
-		return
-	}
-	liveProvider, ok := h.client.GetProviderByKey(providerKey).(schemas.LiveProvider)
-	if !ok {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support live sessions: "+string(providerKey)))
+	// The model arrives in-band, so the pre-request pipeline runs after the upgrade, still before
+	// a session slot or an upstream connection exists.
+	target, bifrostErr := h.gateway.resolveTarget(preReqCtx, path, start)
+	if bifrostErr != nil {
+		clientConn.writeRealtimeError(bifrostErr)
 		return
 	}
 
@@ -151,52 +119,23 @@ func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *
 	}
 	defer h.sessions.Remove(clientConn.conn)
 
-	bifrostCtx, cancel := createBifrostContextFromAuth(h.handlerStore, auth)
-	defer cancel()
-	applyRealtimeMiddlewareValues(bifrostCtx, liveMiddlewareValues(middlewareValues, preReqCtx))
-	lib.SettleIdentity(bifrostCtx)
-	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
-	if strings.HasPrefix(path, "/openai") {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
-	}
-
-	// One key serves the whole session: OpenAI calls the backend model on it too.
-	key, err := h.client.SelectKeyForProviderRequestType(bifrostCtx, schemas.LiveRequest, providerKey, voiceModel, backendModel)
-	if err != nil {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
-		return
-	}
-
-	meter := newLiveMeter(h.client, bifrostCtx, providerKey, key, session.ID())
-	if bifrostErr := meter.admit(voiceModel, backendModel); bifrostErr != nil {
+	admission, bifrostErr := h.gateway.admit(auth, preReqCtx, middlewareValues, path, target, session.ID())
+	if bifrostErr != nil {
 		clientConn.writeRealtimeError(bifrostErr)
 		return
 	}
+	defer admission.cancel()
 	// Every exit from here on bills what OpenAI reported; a session.closed finish runs first.
-	defer func() { meter.finish(meter.lastReportedSeconds()) }()
+	defer func() { admission.meter.finish(admission.meter.lastReportedSeconds()) }()
 
-	startFrame, err = rewriteLiveModels(startFrame, start, key, voiceModel, backendModel)
+	startFrame, err = rewriteLiveModels(startFrame, start, admission.key, target.voiceModel, target.backendModel)
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(500, "server_error", "failed to prepare session.start: "+err.Error()))
 		return
 	}
-	wsURL, bifrostErr := liveProvider.LiveWebSocketURL(key, schemas.LiveConnectionPrimary, "")
+	upstream, bifrostErr := h.dial(admission)
 	if bifrostErr != nil {
 		clientConn.writeRealtimeError(bifrostErr)
-		return
-	}
-	headers, bifrostErr := liveProvider.LiveHeaders(bifrostCtx, key)
-	if bifrostErr != nil {
-		clientConn.writeRealtimeError(bifrostErr)
-		return
-	}
-	var proxyConfig *schemas.ProxyConfig
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
-		proxyConfig = providerCfg.ProxyConfig
-	}
-	upstream, err := h.pool.Get(bfws.PoolKey{Provider: providerKey, KeyID: key.ID, Endpoint: wsURL}, mapToHTTPHeader(headers), proxyConfig)
-	if err != nil {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))
 		return
 	}
 	// A live socket is one session; it is never returned to the pool for reuse.
@@ -206,20 +145,30 @@ func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *
 		return
 	}
 
-	_, isDirectKey := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
-	relay := &liveRelay{
-		models:          h.client,
-		clientConn:      clientConn,
-		upstream:        upstream,
-		meter:           meter,
-		provider:        providerKey,
-		key:             key,
-		checkKeyModels:  !isDirectKey,
-		upstreamDone:    make(chan struct{}),
-		drainTimeout:    liveCloseDrainTimeout,
-		staleCheckEvery: liveStaleCheckInterval,
-	}
+	relay := &liveWSRelay{clientConn: clientConn, upstream: upstream}
+	relay.liveSessionController = admission.controller(h.gateway.client, relay)
 	relay.run()
+}
+
+// dial opens the upstream primary WebSocket on the session's key.
+func (h *WSLiveHandler) dial(admission *liveAdmission) (*bfws.UpstreamConn, *schemas.BifrostError) {
+	wsURL, bifrostErr := admission.provider.LiveWebSocketURL(admission.key, schemas.LiveConnectionPrimary, "")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	headers, bifrostErr := admission.provider.LiveHeaders(admission.ctx, admission.key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	var proxyConfig *schemas.ProxyConfig
+	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(admission.providerKey); cfgErr == nil && providerCfg != nil {
+		proxyConfig = providerCfg.ProxyConfig
+	}
+	upstream, err := h.pool.Get(bfws.PoolKey{Provider: admission.providerKey, KeyID: admission.key.ID, Endpoint: wsURL}, mapToHTTPHeader(headers), proxyConfig)
+	if err != nil {
+		return nil, newRealtimeWireBifrostError(502, "server_error", err.Error())
+	}
+	return upstream, nil
 }
 
 // readLiveSessionStart reads the bootstrap frame, which must be session.start.
@@ -251,82 +200,27 @@ func readLiveSessionStart(clientConn *realtimeClientConn) ([]byte, *schemas.Live
 	return message, event.Session, nil
 }
 
-// liveBackendModel returns the Responses backend model, which must be on the session's provider.
-// It is empty for client delegation, where the app calls its backend itself.
-func liveBackendModel(start *schemas.LiveSession, providerKey schemas.ModelProvider) (string, error) {
-	if start.Delegation == nil || start.Delegation.Type != schemas.LiveDelegationResponses || start.Delegation.Responses == nil {
-		return "", nil
-	}
-	backendProvider, model := schemas.ParseModelString(start.Delegation.Responses.Model, providerKey)
-	if strings.TrimSpace(model) == "" {
-		return "", errors.New("session.delegation.responses.model is required for responses delegation")
-	}
-	if backendProvider != providerKey {
-		return "", fmt.Errorf("session.delegation.responses.model must be served by %s, the provider of session.model", providerKey)
-	}
-	return model, nil
+// liveWSRelay carries a live session over WebSockets. Frames pass through untouched; the
+// controller reads control events by type, without decoding audio.
+type liveWSRelay struct {
+	*liveSessionController
+	clientConn *realtimeClientConn
+	upstream   *bfws.UpstreamConn
 }
 
-// rewriteLiveModels sends OpenAI the bare, alias-resolved model names; other bytes stay as sent.
-func rewriteLiveModels(frame []byte, start *schemas.LiveSession, key schemas.Key, voiceModel, backendModel string) ([]byte, error) {
-	frame, err := setLiveModel(frame, "session.model", start.Model, key.Aliases.Resolve(voiceModel))
-	if err != nil || backendModel == "" {
-		return frame, err
-	}
-	return setLiveModel(frame, "session.delegation.responses.model", start.Delegation.Responses.Model, key.Aliases.Resolve(backendModel))
+func (r *liveWSRelay) sendUpstream(message []byte) error {
+	return r.upstream.WriteMessage(ws.TextMessage, message)
 }
 
-func setLiveModel(frame []byte, path, sent, wire string) ([]byte, error) {
-	if sent == wire {
-		return frame, nil
-	}
-	encoded, err := schemas.Marshal(wire)
-	if err != nil {
-		return nil, err
-	}
-	return providerUtils.SetRawJSONField(frame, path, encoded)
+func (r *liveWSRelay) sendClient(message []byte) error {
+	return r.clientConn.WriteMessage(ws.TextMessage, message)
 }
 
-// liveMiddlewareValues adds what the pre-request pipeline resolved after the upgrade (routing,
-// identity) to the values captured from the transport middleware before it.
-func liveMiddlewareValues(snapshot map[any]any, preReqCtx *schemas.BifrostContext) map[any]any {
-	values := make(map[any]any, len(snapshot))
-	maps.Copy(values, snapshot)
-	for _, k := range realtimeMiddlewareKeys {
-		if v := preReqCtx.Value(k); v != nil {
-			values[k] = v
-		}
-	}
-	return values
+func (r *liveWSRelay) abandonUpstream() {
+	_ = r.upstream.Close()
 }
 
-// liveModelChecker is the slice of *bifrost.Bifrost the relay needs; tests substitute it.
-type liveModelChecker interface {
-	KeySupportsModel(providerKey schemas.ModelProvider, key schemas.Key, model string) bool
-}
-
-// liveRelay pumps frames both ways. Audio passes through untouched; only control events that
-// affect access or billing are read, by type, without decoding the frame.
-type liveRelay struct {
-	models          liveModelChecker
-	clientConn      *realtimeClientConn
-	upstream        *bfws.UpstreamConn
-	meter           *liveMeter
-	provider        schemas.ModelProvider
-	key             schemas.Key
-	checkKeyModels  bool // false for a caller-supplied direct key, which carries no model lists
-	drainTimeout    time.Duration
-	staleCheckEvery time.Duration
-
-	upstreamDone chan struct{}
-	clientGone   atomic.Bool
-	closeOnce    sync.Once
-	refusalOnce  sync.Once
-	drainMu      sync.Mutex
-	drainTimer   *time.Timer
-}
-
-func (r *liveRelay) run() {
+func (r *liveWSRelay) run() {
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
@@ -334,14 +228,12 @@ func (r *liveRelay) run() {
 	}()
 	go r.watchStale()
 	r.pumpUpstream()
-	r.stopDrainTimer()
 	r.releaseClient(clientDone)
 }
 
-// releaseClient ends the client side once the session is over. Close on a fasthttp hijacked
-// connection does not interrupt a pending read, so the reader is released with a read deadline,
-// repeated because a pong arriving meanwhile pushes the deadline out again.
-func (r *liveRelay) releaseClient(clientDone <-chan struct{}) {
+// releaseClient ends the client side. Close on a fasthttp hijacked connection does not interrupt
+// a pending read, so a repeated read deadline releases it (a pong pushes one deadline out).
+func (r *liveWSRelay) releaseClient(clientDone <-chan struct{}) {
 	if !r.clientGone.Load() {
 		// WriteControl is safe alongside the connection's other writers.
 		_ = r.clientConn.conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "live session ended"), time.Now().Add(realtimeWSWriteTimeout))
@@ -356,169 +248,47 @@ func (r *liveRelay) releaseClient(clientDone <-chan struct{}) {
 	}
 }
 
-func (r *liveRelay) pumpClient() {
+func (r *liveWSRelay) pumpClient() {
 	for {
 		messageType, message, err := r.clientConn.ReadMessage()
 		if err != nil {
-			// The client left: close the session upstream so its final usage still arrives.
-			r.clientGone.Store(true)
-			r.requestClose()
+			r.clientLeft()
 			return
 		}
 		if messageType != ws.TextMessage {
-			r.clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "live sessions only accept text messages"))
+			r.sendError(newRealtimeWireBifrostError(400, "invalid_request_error", "live sessions only accept text messages"))
 			continue
 		}
-		switch schemas.LiveEventTypeOf(message) {
-		case schemas.LiveEventSessionUpdate:
-			var bifrostErr *schemas.BifrostError
-			if message, bifrostErr = r.admitSessionUpdate(message); bifrostErr != nil {
-				r.clientConn.writeRealtimeError(bifrostErr)
-				continue
-			}
-		case schemas.LiveEventSessionClose:
-			r.closeOnce.Do(r.startDrainTimer)
+		forward, ok := r.fromClient(message)
+		if !ok {
+			continue
 		}
-		if err := r.upstream.WriteMessage(ws.TextMessage, message); err != nil {
+		if err := r.sendUpstream(forward); err != nil {
 			return
 		}
 	}
 }
 
-func (r *liveRelay) pumpUpstream() {
-	defer close(r.upstreamDone)
+func (r *liveWSRelay) pumpUpstream() {
 	for {
 		messageType, message, err := r.upstream.ReadMessage()
 		if err != nil {
-			// Ended without session.closed: bill up to what OpenAI last reported.
-			r.meter.finish(r.meter.lastReportedSeconds())
+			r.upstreamEnded()
 			if !r.clientGone.Load() && !isNormalWebSocketClosure(err) {
-				r.clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended before session.closed"))
+				r.sendError(newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended before session.closed"))
 			}
 			return
 		}
-		sessionClosed := messageType == ws.TextMessage && r.inspectUpstream(message)
-		r.forward(messageType, message)
+		if messageType != ws.TextMessage {
+			if !r.clientGone.Load() {
+				_ = r.clientConn.WriteMessage(messageType, message)
+			}
+			continue
+		}
+		sessionClosed := r.fromUpstream(message)
+		r.forwardToClient(message)
 		if sessionClosed {
 			return
-		}
-	}
-}
-
-// inspectUpstream meters an upstream control event and reports whether it ended the session.
-func (r *liveRelay) inspectUpstream(message []byte) bool {
-	switch schemas.LiveEventTypeOf(message) {
-	case schemas.LiveEventSessionStarted:
-		r.meter.setProviderSessionID(providerUtils.GetJSONField(message, "session.id").Str)
-	case schemas.LiveEventUsageUpdated:
-		if refusal := r.meter.onUsage(providerUtils.GetJSONField(message, "usage.seconds").Float()); refusal != nil {
-			r.endForRefusal(refusal)
-		}
-	case schemas.LiveEventResponseEvent:
-		switch schemas.ResponsesStreamResponseType(providerUtils.GetJSONField(message, "event.type").Str) {
-		case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete, schemas.ResponsesStreamResponseTypeFailed:
-			event, err := schemas.ParseLiveEvent(message)
-			if err != nil || event.Event == nil || event.Event.Response == nil {
-				logger.Warn("live session: failed to read backend usage from response.event: %v", err)
-				return false
-			}
-			if refusal := r.meter.onBackendResponse(event.Event.Response.Response); refusal != nil {
-				r.endForRefusal(refusal)
-			}
-		}
-	case schemas.LiveEventSessionClosed:
-		r.meter.finish(providerUtils.GetJSONField(message, "usage.seconds").Float())
-		return true
-	}
-	return false
-}
-
-// admitSessionUpdate re-checks a changed backend model before it reaches OpenAI: the session's key
-// must serve it and governance must admit it. A refused update is dropped.
-func (r *liveRelay) admitSessionUpdate(message []byte) ([]byte, *schemas.BifrostError) {
-	sent := providerUtils.GetJSONField(message, "session.delegation.responses.model").Str
-	if strings.TrimSpace(sent) == "" {
-		return message, nil
-	}
-	provider, model := schemas.ParseModelString(sent, r.provider)
-	if provider != r.provider {
-		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("session.delegation.responses.model must be served by %s, the provider of session.model", r.provider))
-	}
-	if r.checkKeyModels && !r.models.KeySupportsModel(r.provider, r.key, model) {
-		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("the key serving this session does not support model %s", model))
-	}
-	if bifrostErr := r.meter.switchBackend(model); bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	message, err := setLiveModel(message, "session.delegation.responses.model", sent, r.key.Aliases.Resolve(model))
-	if err != nil {
-		return nil, newRealtimeWireBifrostError(500, "server_error", "failed to prepare session.update: "+err.Error())
-	}
-	return message, nil
-}
-
-func (r *liveRelay) forward(messageType int, message []byte) {
-	if r.clientGone.Load() {
-		return
-	}
-	if err := r.clientConn.WriteMessage(messageType, message); err != nil {
-		r.clientGone.Store(true)
-		r.requestClose()
-	}
-}
-
-// endForRefusal tells the client why the session is ending, then closes it gracefully so the
-// usage already spent is still reported and billed.
-func (r *liveRelay) endForRefusal(refusal *schemas.BifrostError) {
-	r.refusalOnce.Do(func() {
-		if !r.clientGone.Load() {
-			r.clientConn.writeRealtimeError(refusal)
-		}
-		r.requestClose()
-	})
-}
-
-// requestClose sends session.close upstream once and bounds the wait for session.closed.
-func (r *liveRelay) requestClose() {
-	r.closeOnce.Do(func() {
-		select {
-		case <-r.upstreamDone:
-			return
-		default:
-		}
-		_ = r.upstream.WriteMessage(ws.TextMessage, []byte(`{"type":"session.close"}`))
-		r.startDrainTimer()
-	})
-}
-
-func (r *liveRelay) startDrainTimer() {
-	r.drainMu.Lock()
-	defer r.drainMu.Unlock()
-	if r.drainTimer == nil {
-		r.drainTimer = time.AfterFunc(r.drainTimeout, func() { _ = r.upstream.Close() })
-	}
-}
-
-func (r *liveRelay) stopDrainTimer() {
-	r.drainMu.Lock()
-	defer r.drainMu.Unlock()
-	if r.drainTimer != nil {
-		r.drainTimer.Stop()
-	}
-}
-
-// watchStale runs the budget check on wall time while OpenAI sends no usage.
-func (r *liveRelay) watchStale() {
-	ticker := time.NewTicker(r.staleCheckEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-r.upstreamDone:
-			return
-		case now := <-ticker.C:
-			if refusal := r.meter.checkStale(now); refusal != nil {
-				r.endForRefusal(refusal)
-			}
 		}
 	}
 }

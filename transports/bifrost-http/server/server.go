@@ -255,6 +255,7 @@ type BifrostHTTPServer struct {
 	devPprofHandler     *handlers.DevPprofHandler
 	IntegrationHandler  *handlers.IntegrationHandler
 	wsLiveHandler       *handlers.WSLiveHandler
+	webrtcLiveHandler   *handlers.WebRTCLiveHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
 	CORSMiddleware       *handlers.CorsMiddleware
@@ -2381,6 +2382,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
 	wsRealtimeHandler := handlers.NewWSRealtimeHandler(s.Client, s.Config, s.wsPool)
 	s.wsLiveHandler = handlers.NewWSLiveHandler(s.Client, s.Config, s.wsPool)
+	s.webrtcLiveHandler = handlers.NewWebRTCLiveHandler(s.Client, s.Config)
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
@@ -2405,6 +2407,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	s.wsLiveHandler.RegisterRoutes(s.Router, middlewares...)
+	s.webrtcLiveHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
@@ -3204,6 +3207,9 @@ func (s *BifrostHTTPServer) Start() error {
 		if s.wsLiveHandler != nil {
 			s.wsLiveHandler.Close()
 		}
+		if s.webrtcLiveHandler != nil {
+			s.webrtcLiveHandler.Close()
+		}
 		// Create shutdown context with timeout
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -3298,6 +3304,9 @@ func (s *BifrostHTTPServer) Start() error {
 		}
 		if s.wsLiveHandler != nil {
 			s.wsLiveHandler.Close()
+		}
+		if s.webrtcLiveHandler != nil {
+			s.webrtcLiveHandler.Close()
 		}
 		if s.wsPool != nil {
 			s.wsPool.Close()

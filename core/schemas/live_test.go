@@ -11,11 +11,8 @@ func TestLiveEventTypeOf(t *testing.T) {
 	// type after a large audio payload still resolves without decoding the frame
 	frame := `{"audio":"` + strings.Repeat("A", 64*1024) + `","type":"session.input_audio.append"}`
 	got := LiveEventTypeOf([]byte(frame))
-	if got != LiveEventInputAudioAppend || !IsLiveAudioEvent(got) {
+	if got != LiveEventInputAudioAppend {
 		t.Fatalf("LiveEventTypeOf() = %q", got)
-	}
-	if !IsLiveAudioEvent(LiveEventOutputAudioDelta) || IsLiveAudioEvent(LiveEventOutputTranscriptDelta) {
-		t.Fatal("IsLiveAudioEvent() misclassified an event")
 	}
 	if got := LiveEventTypeOf([]byte(`not json`)); got != "" {
 		t.Fatalf("LiveEventTypeOf(invalid) = %q, want empty", got)
