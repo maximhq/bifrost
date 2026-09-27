@@ -110,7 +110,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 	}
 
 	messages := &liveWebRTCMessages{}
-	messages.liveSessionController = admission.controller(h.gateway.client, messages)
+	messages.liveSessionController = admission.controller(h.gateway, messages)
 	var created *schemas.LiveCreateResponse
 	browserAnswer, bifrostErr := establishWebRTCRelay(webrtcRelaySetup{
 		requestType:      schemas.LiveRequest,
