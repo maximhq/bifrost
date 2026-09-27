@@ -1760,11 +1760,13 @@ export function LogDetailView({
 					/>
 					<HeroStat
 						label="Cost"
-						// Decisions bill fractions of a cent per call (jev: $42 per 1B input
-						// tokens), so the shared 4-dp rounding floors every value to $0.0000.
+						// Routing classifiers add sidecar cost to normal inference
+						// requests, so keep those totals visible at useful precision.
 						value={
 							log.cost != null
-								? log.object === "decisions" || (log.status === "cancelled" && log.stream && log.provider === "anthropic")
+								? log.object === "decisions" ||
+									(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 ||
+									(log.status === "cancelled" && log.stream && log.provider === "anthropic")
 									? formatCostPrecise(log.cost)
 									: formatCost(log.cost)
 								: "—"
@@ -2776,7 +2778,11 @@ export function LogDetailView({
 												label="Mechanism"
 												value={
 													<Badge variant="secondary" className="uppercase">
-														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+														{call.request_type === "decisions"
+															? "Jev Classification"
+															: call.output_tokens != null
+																? "LLM Classification"
+																: "Embedding"}
 													</Badge>
 												}
 											/>

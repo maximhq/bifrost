@@ -964,3 +964,236 @@ func TestGetComplexityConfigNeedsSemanticRow(t *testing.T) {
 
 	assert.Nil(t, applyComplexitySemanticConfigRow(decoded, nil))
 }
+
+// testJevAnalyzerConfig selects Jev as the primary classifier with no semantic block.
+func testJevAnalyzerConfig() *ComplexityAnalyzerConfig {
+	cfg := testComplexityAnalyzerConfig()
+	cfg.Classifier = ComplexityClassifierJev
+	return cfg
+}
+
+// TestComplexityJevConfigDecoding pins the accepted Jev JSON shapes: a
+// duration string or milliseconds for the timeout, and no unknown fields, so
+// a typo in config.json fails loudly instead of silently using defaults.
+func TestComplexityJevConfigDecoding(t *testing.T) {
+	var cfg ComplexityJevConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"previous_message_count":3,"timeout":"2s"}`), &cfg))
+	require.NotNil(t, cfg.PreviousMessageCount)
+	assert.Equal(t, 3, *cfg.PreviousMessageCount)
+	assert.Equal(t, 2*time.Second, cfg.Timeout)
+
+	cfg = ComplexityJevConfig{}
+	require.NoError(t, json.Unmarshal([]byte(`{"timeout":750}`), &cfg))
+	assert.Equal(t, 750*time.Millisecond, cfg.Timeout)
+	assert.Nil(t, cfg.PreviousMessageCount, "an omitted count must stay distinguishable from an explicit 0")
+
+	cfg = ComplexityJevConfig{}
+	require.NoError(t, json.Unmarshal([]byte(`{"previous_message_count":0}`), &cfg))
+	require.NotNil(t, cfg.PreviousMessageCount)
+	assert.Equal(t, 0, *cfg.PreviousMessageCount)
+	assert.Equal(t, 0, *cfg.normalized().PreviousMessageCount, "an explicit 0 must not be replaced by the default")
+
+	for name, raw := range map[string]string{
+		"unknown field":     `{"model":"jev-1.13.0"}`,
+		"negative timeout":  `{"timeout":"-1s"}`,
+		"negative millis":   `{"timeout":-5}`,
+		"malformed timeout": `{"timeout":"soon"}`,
+		"boolean timeout":   `{"timeout":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var cfg ComplexityJevConfig
+			require.Error(t, json.Unmarshal([]byte(raw), &cfg))
+		})
+	}
+}
+
+// TestComplexityJevConfigMarshalRoundTrip checks that a saved Jev block reads back unchanged.
+func TestComplexityJevConfigMarshalRoundTrip(t *testing.T) {
+	count := 4
+	original := ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 1200 * time.Millisecond}
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"previous_message_count":4,"timeout":"1.2s"}`, string(data))
+
+	var decoded ComplexityJevConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, original, decoded)
+}
+
+// TestComplexityJevConfigValidation pins the history-window bounds shared with the UI.
+func TestComplexityJevConfigValidation(t *testing.T) {
+	for _, count := range []int{0, 1, MaxComplexityJevPreviousMessageCount} {
+		value := count
+		assert.NoError(t, (&ComplexityJevConfig{PreviousMessageCount: &value}).Validate(), "count %d", count)
+	}
+	for _, count := range []int{-1, MaxComplexityJevPreviousMessageCount + 1} {
+		value := count
+		assert.ErrorContains(t, (&ComplexityJevConfig{PreviousMessageCount: &value}).Validate(), "previous_message_count", "count %d", count)
+	}
+	assert.Error(t, (&ComplexityJevConfig{Timeout: -time.Millisecond}).Validate())
+
+	cfg := testJevAnalyzerConfig()
+	outOfRange := MaxComplexityJevPreviousMessageCount + 1
+	cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &outOfRange}
+	normalized := cfg.Normalized()
+	assert.ErrorContains(t, normalized.Validate(), "previous_message_count", "an analyzer config must reject an invalid jev block")
+}
+
+// TestComplexityAnalyzerConfigNormalizedJev pins when a Jev block exists at
+// runtime: it is defaulted whenever Jev can run (primary or semantic
+// fallback) and left absent otherwise, and the classifier name is canonical.
+func TestComplexityAnalyzerConfigNormalizedJev(t *testing.T) {
+	t.Run("jev primary without block gets defaults", func(t *testing.T) {
+		normalized := testJevAnalyzerConfig().Normalized()
+		require.NotNil(t, normalized.Jev)
+		assert.Equal(t, DefaultComplexityJevPreviousMessageCount, *normalized.Jev.PreviousMessageCount)
+		assert.Equal(t, DefaultComplexityJevTimeout, normalized.Jev.Timeout)
+		require.NoError(t, normalized.Validate())
+	})
+
+	t.Run("semantic fallback jev without block gets defaults", func(t *testing.T) {
+		cfg := testSemanticAnalyzerConfig()
+		cfg.Semantic.Fallback = ComplexitySemanticFallbackJev
+		normalized := cfg.Normalized()
+		require.NotNil(t, normalized.Jev)
+		assert.Equal(t, ComplexityClassifierSemantic, normalized.Classifier)
+	})
+
+	t.Run("semantic without jev fallback has no block", func(t *testing.T) {
+		normalized := testSemanticAnalyzerConfig().Normalized()
+		assert.Nil(t, normalized.Jev)
+		assert.Equal(t, ComplexityClassifierSemantic, normalized.Classifier, "an omitted classifier defaults to semantic")
+	})
+
+	t.Run("classifier name is canonicalized", func(t *testing.T) {
+		cfg := testJevAnalyzerConfig()
+		cfg.Classifier = "  JEV "
+		normalized := cfg.Normalized()
+		assert.Equal(t, ComplexityClassifierJev, normalized.Classifier)
+		require.NoError(t, normalized.Validate())
+	})
+
+	t.Run("unknown classifier is rejected", func(t *testing.T) {
+		cfg := testComplexityAnalyzerConfig()
+		cfg.Classifier = "llm"
+		normalized := cfg.Normalized()
+		assert.ErrorContains(t, normalized.Validate(), "complexity classifier must be")
+	})
+
+	t.Run("jev session needs no semantic block", func(t *testing.T) {
+		cfg := testJevAnalyzerConfig()
+		cfg.Session = &ComplexitySessionConfig{Enabled: true}
+		normalized := cfg.Normalized()
+		require.NoError(t, normalized.Validate())
+
+		cfg.Classifier = ComplexityClassifierSemantic
+		normalized = cfg.Normalized()
+		assert.ErrorContains(t, normalized.Validate(), "requires a semantic config block")
+	})
+}
+
+// TestRDBConfigStore_ComplexityJevPersistence checks that the classifier
+// choice and Jev block survive a save and reload, including a UI-style save
+// that carries no hashes, and that switching back to semantic sticks.
+func TestRDBConfigStore_ComplexityJevPersistence(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	count := 3
+	cfg := testJevAnalyzerConfig()
+	cfg.Semantic = testSemanticConfig()
+	cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+	require.NoError(t, err)
+	cfg.ConfigHashes = hashes
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, ComplexityClassifierJev, got.Classifier)
+	require.NotNil(t, got.Jev)
+	assert.Equal(t, 3, *got.Jev.PreviousMessageCount)
+	assert.Equal(t, 900*time.Millisecond, got.Jev.Timeout)
+	require.NotNil(t, got.Semantic, "the dormant semantic block must be kept for switching back")
+	assert.Equal(t, hashes.ClassifierSettings, got.ConfigHashes.ClassifierSettings)
+	assert.Equal(t, hashes.JevSettings, got.ConfigHashes.JevSettings)
+
+	// A UI save omits hashes; the file-sync hashes must be carried over.
+	uiUpdate := testJevAnalyzerConfig()
+	uiUpdate.Semantic = testSemanticConfig()
+	uiUpdate.Jev = &ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, uiUpdate))
+	got, err = store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, hashes.ClassifierSettings, got.ConfigHashes.ClassifierSettings)
+	assert.Equal(t, hashes.JevSettings, got.ConfigHashes.JevSettings)
+
+	switched := testSemanticAnalyzerConfig()
+	switched.Classifier = ComplexityClassifierSemantic
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, switched))
+	got, err = store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, ComplexityClassifierSemantic, got.Classifier)
+
+	// Restart with the unchanged config.json: the UI switch must survive the
+	// file sync rather than being reverted to the file's classifier.
+	merged, err := MergeComplexityAnalyzerConfigByHashes(got, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, ComplexityClassifierSemantic, merged.Classifier)
+}
+
+// TestMergeComplexityAnalyzerConfigByHashesJev pins config.json sync for the
+// classifier choice and Jev block: an unchanged file keeps UI edits, a
+// changed file wins, and a file that says nothing keeps the DB choice.
+func TestMergeComplexityAnalyzerConfigByHashesJev(t *testing.T) {
+	withHashes := func(cfg *ComplexityAnalyzerConfig) *ComplexityAnalyzerConfig {
+		hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+		require.NoError(t, err)
+		cfg.ConfigHashes = hashes
+		return cfg
+	}
+	jevFile := func(count int) *ComplexityAnalyzerConfig {
+		cfg := testJevAnalyzerConfig()
+		cfg.Semantic = testSemanticConfig()
+		cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &count}
+		return withHashes(cfg)
+	}
+
+	t.Run("file switches a semantic DB to jev", func(t *testing.T) {
+		base := withHashes(testSemanticAnalyzerConfig())
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, jevFile(2))
+		require.NoError(t, err)
+		assert.Equal(t, ComplexityClassifierJev, merged.Classifier)
+		require.NotNil(t, merged.Jev)
+		assert.Equal(t, 2, *merged.Jev.PreviousMessageCount)
+	})
+
+	t.Run("unchanged file keeps UI edits", func(t *testing.T) {
+		base := jevFile(2)
+		// Simulate UI edits persisted after the last file sync.
+		base.Classifier = ComplexityClassifierSemantic
+		edited := 4
+		base.Jev.PreviousMessageCount = &edited
+
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, jevFile(2))
+		require.NoError(t, err)
+		assert.Equal(t, ComplexityClassifierSemantic, merged.Classifier)
+		assert.Equal(t, 4, *merged.Jev.PreviousMessageCount)
+	})
+
+	t.Run("changed jev block replaces the DB block", func(t *testing.T) {
+		merged, err := MergeComplexityAnalyzerConfigByHashes(jevFile(2), jevFile(5))
+		require.NoError(t, err)
+		assert.Equal(t, 5, *merged.Jev.PreviousMessageCount)
+	})
+
+	t.Run("file without classifier keeps DB choice", func(t *testing.T) {
+		file := withHashes(testSemanticAnalyzerConfig())
+		file.Classifier = ""
+		merged, err := MergeComplexityAnalyzerConfigByHashes(jevFile(2), file)
+		require.NoError(t, err)
+		assert.Equal(t, ComplexityClassifierJev, merged.Classifier)
+		require.NotNil(t, merged.Jev)
+		assert.Equal(t, 2, *merged.Jev.PreviousMessageCount)
+	})
+}

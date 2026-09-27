@@ -1945,24 +1945,22 @@ type BifrostCacheDebug = BifrostCacheMetadata
 // metadata; tier, mechanism, selected rule, provider, and model are exposed
 // through their dedicated routing fields.
 type BifrostRoutingMetadata struct {
-	// Calls holds one entry per billable internal call this request made. A
-	// request makes at most two: a semantic classification embed, and, only
-	// when semantic classification produced no tier, an llm classifier chat
-	// completion. Both are recorded when both run, so cost calculation,
-	// telemetry, and logs never have to choose one over the other.
+	// Calls holds each billable internal classification call. A request may run
+	// a semantic embed and, when it produces no tier, one LLM or Jev fallback.
+	// Both calls are retained so pricing, telemetry, and logs account for each.
 	Calls []BifrostRoutingCall `json:"calls,omitempty"`
 }
 
-// BifrostRoutingCall records one billable routing-classification call: a
-// semantic classification embed, or an llm classifier chat completion.
+// BifrostRoutingCall records one billable routing-classification call.
 type BifrostRoutingCall struct {
-	ProviderUsed *string `json:"provider_used,omitempty"`
-	ModelUsed    *string `json:"model_used,omitempty"`
-	InputTokens  *int    `json:"input_tokens,omitempty"`
-	// OutputTokens is present only when this call was a chat completion (the
-	// llm classifier). Its presence is the signal that cost calculation must
-	// price the call at chat rates; a semantic classification embed never
-	// sets it.
+	// RequestType selects the provider pricing mode when token shape alone is
+	// ambiguous, as it is for Jev's decision request.
+	RequestType  RequestType `json:"request_type,omitempty"`
+	ProviderUsed *string     `json:"provider_used,omitempty"`
+	ModelUsed    *string     `json:"model_used,omitempty"`
+	InputTokens  *int        `json:"input_tokens,omitempty"`
+	// OutputTokens is present for token-generating classification calls. When
+	// RequestType is empty, its presence distinguishes chat from embedding costs.
 	OutputTokens *int `json:"output_tokens,omitempty"`
 
 	// CountTowardBudgets carries the governance count_toward_budgets flag to
