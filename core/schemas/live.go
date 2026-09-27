@@ -49,11 +49,6 @@ const (
 	LiveEventTransportFailed       LiveEventType = "transport.failed"
 )
 
-// IsLiveAudioEvent reports whether the event carries base64 audio.
-func IsLiveAudioEvent(eventType LiveEventType) bool {
-	return eventType == LiveEventInputAudioAppend || eventType == LiveEventOutputAudioDelta
-}
-
 // LiveEventTypeOf reads an event's type without decoding the frame.
 func LiveEventTypeOf(raw []byte) LiveEventType {
 	return LiveEventType(gjson.GetBytes(raw, "type").Str)
@@ -92,7 +87,7 @@ type BifrostLiveEvent struct {
 	Content      *string `json:"content,omitempty"`
 	DelegationID *string `json:"delegation_id,omitempty"` // also on response.event
 
-	// Transcript text; audio deltas share this key, so skip decoding IsLiveAudioEvent frames.
+	// Transcript text; audio deltas share this key, so audio frames are never decoded.
 	Delta string `json:"delta,omitempty"`
 
 	// Session-timeline positions in milliseconds.
@@ -289,4 +284,20 @@ type LiveProvider interface {
 	// LiveWebSocketURL returns the upstream URL. sessionID is required for sideband and fork.
 	LiveWebSocketURL(key Key, kind LiveConnectionKind, sessionID string) (string, *BifrostError)
 	LiveHeaders(ctx *BifrostContext, key Key) (map[string]string, *BifrostError)
+	// CreateLiveWebRTCSession starts a WebRTC session. body is the create request,
+	// {session, transport: {type: "webrtc", sdp}}; the response carries the SDP answer.
+	CreateLiveWebRTCSession(ctx *BifrostContext, key Key, body []byte) (*LiveCreateResponse, *BifrostError)
+}
+
+// LiveCreateResponse is the answer to POST /v1/live/sessions.
+type LiveCreateResponse struct {
+	Session   *LiveSession   `json:"session"`
+	Transport *LiveTransport `json:"transport"`
+}
+
+// LiveTransport is the media transport of a Live session; its SDP is an offer in the request
+// and an answer in the response.
+type LiveTransport struct {
+	Type string `json:"type"`
+	SDP  string `json:"sdp"`
 }

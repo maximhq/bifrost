@@ -30,9 +30,8 @@ type liveBillingUnit struct {
 	preValues map[any]any
 }
 
-// liveLane is the rolling billing unit for one model. The next unit is admitted before the
-// current one closes, so usage always lands in a unit governance already admitted: when the
-// next unit is refused, usage keeps accruing on the current one until the session ends.
+// liveLane is one model's rolling billing unit. The next unit is admitted before the current one
+// closes, so usage always lands on a unit governance already admitted.
 type liveLane struct {
 	model   string
 	backend bool // backend Responses tokens rather than voice seconds
@@ -43,9 +42,8 @@ type liveLane struct {
 	serviceTier *schemas.BifrostServiceTier
 }
 
-// liveMeter bills one GPT Live session: voice seconds in windows, and each backend Responses
-// call once. It lives for the session, keyed by nothing but the session itself, and holds only
-// counters, so no stream-sized data is kept on any context.
+// liveMeter bills one GPT Live session: voice seconds in windows, each backend response once.
+// It holds only counters, never stream data.
 type liveMeter struct {
 	runner   liveUnitRunner
 	baseCtx  *schemas.BifrostContext
@@ -64,6 +62,7 @@ type liveMeter struct {
 	lastUsageAt       time.Time
 	billedResponses   map[string]struct{}
 	refusal           *schemas.BifrostError // set once the session may not continue
+	minimumSeconds    float64               // least voice time the session bills
 	finished          bool
 }
 
@@ -180,6 +179,14 @@ func (m *liveMeter) switchBackend(model string) *schemas.BifrostError {
 	return nil
 }
 
+// setMinimumSeconds sets the least voice time the session bills. OpenAI bills a WebRTC session
+// 15 seconds when it is created, credited against its running time.
+func (m *liveMeter) setMinimumSeconds(seconds float64) {
+	m.mu.Lock()
+	m.minimumSeconds = seconds
+	m.mu.Unlock()
+}
+
 // finish bills everything still accrued. finalSeconds is session.closed's usage, or the last
 // reported snapshot when the session ended without one.
 func (m *liveMeter) finish(finalSeconds float64) {
@@ -189,7 +196,7 @@ func (m *liveMeter) finish(finalSeconds float64) {
 		return
 	}
 	m.finished = true
-	m.accrueSecondsLocked(finalSeconds)
+	m.accrueSecondsLocked(max(finalSeconds, m.minimumSeconds))
 	if m.voice != nil {
 		m.closeLaneLocked(m.voice)
 	}
