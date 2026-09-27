@@ -33,6 +33,7 @@ func TestOpenRouter(t *testing.T) {
 		PromptCachingModel:   "anthropic/claude-sonnet-4", // Claude is the only OpenRouter model with explicit caching; its Responses half was broken until #6290
 		TranscriptionModel:   "openai/gpt-4o-mini-transcribe",
 		SpeechSynthesisModel: "minimax/speech-2.8-turbo",
+		DecisionModel:        "typesafe/jev-1.13",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			SimpleChat:                 true,
@@ -59,6 +60,7 @@ func TestOpenRouter(t *testing.T) {
 			SpeechSynthesisStream:      false, // Streaming not offered by upstream OpenRouter API
 			Transcription:              true,  // Supported via OpenAI-compatible /v1/audio/transcriptions
 			TranscriptionStream:        false, // Streaming not offered by upstream OpenRouter API
+			Decision:                   true,  // Native via /api/alpha/decisions for TypeSafe System One models
 		},
 	}
 
