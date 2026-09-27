@@ -1346,7 +1346,14 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 			if code := schemas.GetIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
 				statusCode = strconv.Itoa(code)
 			}
-			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)], attribute.String("status_code", statusCode))
+			// error_type mirrors Prometheus: status_code alone cannot attribute fault.
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostErrorType)
+			if errorType == "" {
+				errorType = string(schemas.ErrorTypeOther)
+			}
+			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)],
+				attribute.String("status_code", statusCode),
+				attribute.String("error_type", errorType))
 			exporter.RecordErrorRequest(ctx, errorAttrs...)
 		} else {
 			exporter.RecordSuccessRequest(ctx, spanAttrs...)
