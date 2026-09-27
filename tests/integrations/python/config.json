@@ -477,6 +477,9 @@
       }
     },
     "tencent": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
       "keys": [
         {
           "name": "Tencent TokenHub API Key",

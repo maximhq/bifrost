@@ -870,7 +870,7 @@ export const ProviderIcons = {
 			<svg
 				width={resolvedSize}
 				height={resolvedSize}
-				viewBox="255 77 543 393"
+				viewBox="255 77 555 393"
 				xmlns="http://www.w3.org/2000/svg"
 				className={className}
 			>
