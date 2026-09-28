@@ -119,6 +119,7 @@ export function ValueEditor({
 					onChange={handleMultiModelChange}
 					placeholder="Select models..."
 					allowCustomModel
+					unfiltered
 					className="!min-h-9 w-[360px]"
 				/>
 			);
@@ -144,6 +145,7 @@ export function ValueEditor({
 				onChange={handleOnChange}
 				placeholder="Search for a model..."
 				allowCustomModel
+				unfiltered
 				className="border-input w-[360px]"
 			/>
 		);
