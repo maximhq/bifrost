@@ -124,12 +124,12 @@ export const validateWarpModelRows = (rows: WarpModelValues[], enabled: boolean)
 		const provider = row.provider.trim();
 		const model = row.model.trim();
 		if (!provider || !model) {
-			if (index === 0) return enabled ? "Choose a provider and model to enable Warp." : null;
-			return "Choose a provider and model, or remove this model.";
+			if (index === 0) return enabled ? i18n.t("warp.validation.modelRequired", { ns: "config" }) : null;
+			return i18n.t("warp.validation.modelOrRemove", { ns: "config" });
 		}
 		// The pair is how a question names its model, so a repeat would be ambiguous between two keys.
 		const pair = `${provider}\u0000${model}`;
-		if (seen.has(pair)) return "This provider and model is already listed.";
+		if (seen.has(pair)) return i18n.t("warp.validation.modelDuplicate", { ns: "config" });
 		seen.add(pair);
 		return null;
 	});

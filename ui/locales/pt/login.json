@@ -47,6 +47,24 @@
 		"inMinutes": "em {{count}} minutos",
 		"invalidTitle": "Esta ligação já não é válida",
 		"invalidBody": "A ligação de autorização expirou, já foi utilizada ou o respetivo token foi removido. Reinicie a ligação a partir do seu cliente MCP para obter uma nova.",
-		"recognizeApplication": "Continue apenas se reconhecer esta aplicação e o seu destino de callback:"
+		"recognizeApplication": "Continue apenas se reconhecer esta aplicação e o seu destino de callback:",
+		"signInRedirectBody": "Esta autorização requer uma conta Bifrost com sessão iniciada. Vamos encaminhá-lo para o início de sessão — voltará logo a seguir a esta página.",
+		"signInToBifrost": "Iniciar sessão no Bifrost"
+	},
+	"setup": {
+		"instructionsIntro": "O token de configuração é um segredo definido pelo operador no servidor. Defina-o de uma de duas formas e reinicie o Bifrost:",
+		"instructionsEnv": "Defina a variável de ambiente <code>BIFROST_SETUP_TOKEN</code>.",
+		"instructionsConfig": "Adicione <code>setup_token</code> ao nível superior de <code>config.json</code>. Aceita um valor literal, uma referência <code>env.VAR</code> ou uma referência <code>vault.path</code>:",
+		"instructionsHeader": "Os clientes da API enviam o mesmo valor no cabeçalho <code>{{header}}</code>. O token deixa de funcionar assim que a autenticação do dashboard for ativada.",
+		"unreachable": "Não foi possível contactar o Bifrost. Verifique se o servidor está em execução.",
+		"invalidToken": "Token de configuração inválido",
+		"checkFailed": "O Bifrost devolveu {{status}} ao verificar o token",
+		"title": "Conclua a configuração do Bifrost",
+		"description": "A autenticação do dashboard não está configurada, pelo que a API está bloqueada. Introduza o token de configuração para continuar e criar uma conta de administrador.",
+		"tokenLabel": "Token de configuração",
+		"tokenPlaceholder": "Introduza o token de configuração",
+		"continue": "Continuar",
+		"whereToFind": "Onde encontro o token de configuração?",
+		"notConfigured": "Não há nenhum token de configuração definido neste servidor, pelo que a configuração ainda não pode continuar."
 	}
 }

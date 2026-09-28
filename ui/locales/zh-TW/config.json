@@ -23,7 +23,8 @@
 		"brandingDescription": "在儀表板與登入頁將 Bifrost 標誌替換為你自己的品牌。此功能屬於 Bifrost 企業版許可證。我們很想了解你的使用場景，以及如何更好地幫助你。",
 		"licenseTitle": "解鎖許可證管理",
 		"apiKeysTitle": "基於範圍的 API 金鑰",
-		"apiKeysDescription": "需要按範圍精細控制存取的 API 金鑰？企業客戶可為不同服務、團隊或環境建立多把具有特定許可權的 API 金鑰。"
+		"apiKeysDescription": "需要按範圍精細控制存取的 API 金鑰？企業客戶可為不同服務、團隊或環境建立多把具有特定許可權的 API 金鑰。",
+		"unknownOs": "未知作業系統"
 	},
 	"clientSettings": {
 		"title": "客戶端設定",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>拒絕列表：</span0>始終阻止轉發拒絕列表中的請求頭。",
 		"wildcardRules": "<span0>萬用字元：</span0>在模式末尾使用 <code1>*</code1> 可匹配字首（例如 <code2>anthropic-*</code2> 匹配所有以 <code3>anthropic-</code3> 開頭的請求頭）。單獨使用 <code4>*</code4> 可匹配所有請求頭。",
 		"headerNames": "允許列表和拒絕列表應填寫<span0>不帶</span0> <code1>x-bf-eh-</code1> 字首的請求頭名稱。",
-		"allowlistExample": "例如：要允許 <code0>x-bf-eh-custom-id</code0> 或直接請求頭 <code1>custom-id</code1>，請將 <code2>custom-id</code2> 加入允許列表。"
+		"allowlistExample": "例如：要允許 <code0>x-bf-eh-custom-id</code0> 或直接請求頭 <code1>custom-id</code1>，請將 <code2>custom-id</code2> 加入允許列表。",
+		"extraFieldsPlacement": "額外欄位位置",
+		"extraFieldsPlacementHelp": "推理回應在何處攜帶 Bifrost 的 <b>extra_fields</b> 中繼資料。<b>Body</b> 會將 extra_fields 物件保留在 JSON 回應中。<b>Headers</b> 會將其從回應主體和每個串流區塊中移除，並將其純量欄位作為 <b>x-bifrost-*</b> 回應頭傳送。",
+		"extraFieldsPlacementDroppedNote": "在 Headers 模式下，以下欄位會被捨棄，不會傳送到任何地方：原始請求、原始回應、路由中繼資料、護欄除錯資訊、解析錯誤，以及發生錯誤時的金鑰狀態、計費用量和 MCP 認證詳情。串流回應只會攜帶首個區塊之前已知的資訊（路由、回退、快取查詢），因此每個區塊的延遲、區塊索引和最終總計也會被捨棄。",
+		"extraFieldsBody": "Body",
+		"extraFieldsHeaders": "Headers",
+		"removeSecurityHeader_one": "移除安全請求頭：{{headers}}",
+		"removeSecurityHeader_other": "移除安全請求頭：{{headers}}"
 	},
 	"caching": {
 		"title": "本地快取",
@@ -296,7 +304,11 @@
 		"convertUnsupportedParamsHelp": "轉換模型不支援的引數值。",
 		"azureDeepseek": "對 Azure Deepseek 模型使用 Chat Completion API",
 		"azureDeepseekHelp": "讓 Claude Code、Codex 等對 Azure Deepseek 模型走 Chat Completion API。",
-		"toastSaved": "相容性設定已成功更新。"
+		"toastSaved": "相容性設定已成功更新。",
+		"forceReasoningOnlyToResponses": "對僅支援推理的 OpenAI 模型使用 Responses API",
+		"forceReasoningOnlyToResponsesHelp": "對於無法在 chat completions 上結合工具呼叫進行推理的模型，將對話補全請求路由到 Responses API，而不是關閉推理。",
+		"convertDecisionToResponses": "在非決策模型上模擬 Decisions API",
+		"convertDecisionToResponsesHelp": "對於沒有原生決策端點的模型，透過 Responses API 搭配強制函式工具來提示模型，以回應決策請求。關閉時，這些請求會因不受支援而失敗。"
 	},
 	"featureFlags": {
 		"title": "功能開關",
@@ -387,7 +399,26 @@
 		"allowedRedirectUrisHelp": "遠端 MCP 用戶端可能使用的精確回呼 URI，例如<code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>。新增 <code1>*</code1> 以允許任何 https 回呼；不支援部分通配符。始終允許環回回調和 <code2>cursor://anysphere.cursor-mcp</code2>。更改此清單需要儀表板身份驗證。",
 		"allowedRedirectUrisPlaceholder": "新增回調 URI（輸入）",
 		"anyCallbackAllowed": "允許任何回調",
-		"anyCallbackAllowedHelp": "任何 MCP 用戶端都可以在任何主機上註冊回調，因此同意頁面是針對向攻擊者發送授權代碼的用戶端的唯一檢查。更喜欢列出精确的回调 URI。"
+		"anyCallbackAllowedHelp": "任何 MCP 用戶端都可以在任何主機上註冊回調，因此同意頁面是針對向攻擊者發送授權代碼的用戶端的唯一檢查。更喜欢列出精确的回调 URI。",
+		"limitMaxSourceBytes": "最大原始碼大小（位元組）",
+		"limitMaxSourceBytesDesc": "單次執行可提交的程式碼大小上限。",
+		"limitMaxSteps": "最大運算步數",
+		"limitMaxStepsDesc": "每次執行的直譯器步數，包含內建函式內部的工作。",
+		"limitMaxMemoryBytes": "最大記憶體（位元組）",
+		"limitMaxMemoryBytesDesc": "每次執行的預估配置預算。每個並行執行都有各自獨立的預算。",
+		"limitMaxLogBytes": "最大日誌輸出（位元組）",
+		"limitMaxLogBytesDesc": "每次執行的 print 與工具日誌輸出，包含換行符。",
+		"limitMaxToolCalls": "最大工具呼叫次數",
+		"limitMaxToolCallsDesc": "每次執行中巢狀 MCP 工具呼叫的次數。",
+		"limitMaxValueBytes": "最大值大小（位元組）",
+		"limitMaxValueBytesDesc": "每個工具載荷和轉換結果的大小預算。至少為 {{min}}。",
+		"limitMaxNestingDepth": "最大巢狀深度",
+		"limitMaxNestingDepthDesc": "跨越工具邊界的值的巢狀深度。最多為 {{max}}。",
+		"limitNegative": "{{label}}不能為負數。",
+		"limitValueBytesMin": "最大值大小至少為 {{min}} 位元組。",
+		"limitNestingMax": "最大巢狀深度最多為 {{max}}。",
+		"codeModeLimitsTitle": "程式碼模式限制",
+		"codeModeLimitsDescription": "對每次程式碼執行的限制。欄位留空則使用其預設值。同時執行的數量不受限制。"
 	},
 	"modelSettings": {
 		"title": "模型設定",
@@ -733,7 +764,11 @@
 		"intoPath": " 到 {{path}}/",
 		"intoRoot": " 到 root",
 		"previewAfterSaving": "儲存後可預覽。",
-		"externalUrlRequired": "在 <settingsLink> 技能設定 </settingsLink> 中設定外部用戶端 URL 以啟用市場註冊。"
+		"externalUrlRequired": "在 <settingsLink> 技能設定 </settingsLink> 中設定外部用戶端 URL 以啟用市場註冊。",
+		"showLess": "顯示更少",
+		"showMore": "顯示更多",
+		"skillNotFound": "未找到技能",
+		"backToList": "返回清單"
 	},
 	"promptRepo": {
 		"loadFailed": "載入提示詞倉庫失敗",
@@ -933,7 +968,48 @@
 		"governancePlugin": "治理外掛",
 		"governancePluginDesc": "完整的存取控制、預算與速率限制指南",
 		"governancePluginContent": "掌握虛擬金鑰、分層預算、速率限制與用量跟蹤，構建安全的 AI 基礎設施。",
-		"viewGovernanceGuide": "檢視治理指南"
+		"viewGovernanceGuide": "檢視治理指南",
+		"heading": "全面強化你的 Bifrost 技術棧",
+		"viewFullDocumentation": "檢視完整文件",
+		"quickStartGuide": "快速入門指南",
+		"readMore": "閱讀更多",
+		"items": {
+			"quickStart": [
+				"HTTP 傳輸層設定",
+				"Go 套件用法",
+				"Docker 指南"
+			],
+			"architecture": [
+				"系統概覽",
+				"請求流程",
+				"並行模型",
+				"設計決策"
+			],
+			"usageGuides": [
+				"供應商設定",
+				"金鑰管理",
+				"錯誤處理",
+				"記憶體與網路"
+			],
+			"contributing": [
+				"貢獻指南",
+				"新增供應商",
+				"外掛開發",
+				"程式碼規範"
+			],
+			"integrationExamples": [
+				"OpenAI 整合",
+				"Anthropic 整合",
+				"GenAI 整合",
+				"遷移指南"
+			],
+			"benchmarks": [
+				"5K RPS 測試結果",
+				"效能指標",
+				"配置調優",
+				"硬體對比"
+			]
+		}
 	},
 	"warp": {
 		"saved": "Warp 設定已儲存。",
@@ -1036,7 +1112,10 @@
 			"searchLimit": "搜尋上限必須在 1 到 25 之間。",
 			"retentionRequired": "必須填寫一個值",
 			"retentionWhole": "必須為整天數",
-			"retentionMin": "必須為 0 天或更多（0 表示保留預設值）"
+			"retentionMin": "必須為 0 天或更多（0 表示保留預設值）",
+			"modelRequired": "請選擇供應商和模型以啟用 Warp。",
+			"modelOrRemove": "請選擇供應商和模型，或移除此模型。",
+			"modelDuplicate": "此供應商和模型已在清單中。"
 		},
 		"models": "型號",
 		"modelsHelp": "模型 Warp 進行推理並從中寫出答案。除非有人在「扭曲」面板中選擇另一個答案，否則將使用預設答案。一個有能力的模型在這裡是值得的。",
@@ -1047,5 +1126,26 @@
 		"modelNumber": "型號{{number}}",
 		"makeDefault": "設為預設",
 		"removeModel": "刪除型號{{number}}"
+	},
+	"agentGateway": {
+		"title": "代理網關設定",
+		"description": "配置代理網關（A2A）設定。",
+		"toastSaved": "代理網關設定已成功更新。",
+		"loadFailed": "載入代理網關設定失敗。",
+		"externalClientUrl": "外部用戶端 URL",
+		"externalClientUrlHelp": "Bifrost 的公開基礎 URL，用於提供代理卡片和推送通知回呼 URL。若留空，所有代理協定端點都會停用，代理管理仍可使用。支援環境變數語法（例如 <code>env.BIFROST_EXTERNAL_URL</code>）。",
+		"privateAllowlist": "私有網路允許清單",
+		"privateAllowlistHelp": "不含協定與連接埠的主機、IP 位址或 CIDR 範圍。當代理網關的探索、OAuth 及執行時請求解析到私有或回環位址時，允許其存取這些位置。連結本機位址和雲端中繼資料位址一律被阻止。",
+		"privateAllowlistPlaceholder": "新增主機、IP 或 CIDR（按 Enter 或逗號）",
+		"captureRaw": "擷取原始請求與回應",
+		"captureRawHelp": "在日誌記錄中持久化原始請求和回應載荷。gRPC 因使用二進位 protobuf 訊息而停用原始擷取；受大小限制的擷取可能截斷訊息，無法可靠地解碼或檢查。"
+	},
+	"skillsSettings": {
+		"description": "配置技能庫市集的對外服務。",
+		"toastSaved": "技能設定已成功更新。",
+		"loadFailed": "載入技能設定失敗。",
+		"retry": "重試",
+		"externalClientUrl": "外部用戶端 URL",
+		"externalClientUrlHelp": "供 Claude Code 與 Codex 市集使用的 Bifrost 公開基礎 URL。留空則停用市集服務與註冊，技能管理與下載仍可使用。支援環境變數和 vault 引用。"
 	}
 }

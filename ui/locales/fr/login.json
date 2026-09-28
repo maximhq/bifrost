@@ -47,6 +47,24 @@
 		"inMinutes": "dans {{count}} minutes",
 		"invalidTitle": "Ce lien n’est plus valide",
 		"invalidBody": "Le lien d’autorisation a expiré, a déjà été utilisé, ou son jeton a été retiré. Relancez la connexion depuis votre client MCP pour obtenir un nouveau lien.",
-		"recognizeApplication": "Continuez uniquement si vous reconnaissez cette application et sa destination de rappel :"
+		"recognizeApplication": "Continuez uniquement si vous reconnaissez cette application et sa destination de rappel :",
+		"signInRedirectBody": "Cette autorisation nécessite un compte Bifrost connecté. Nous vous redirigeons vers la connexion — vous reviendrez directement ici.",
+		"signInToBifrost": "Se connecter à Bifrost"
+	},
+	"setup": {
+		"instructionsIntro": "Le jeton d’installation est un secret que l’opérateur définit sur le serveur. Définissez-le de l’une des deux manières suivantes, puis redémarrez Bifrost :",
+		"instructionsEnv": "Définissez la variable d’environnement <code>BIFROST_SETUP_TOKEN</code>.",
+		"instructionsConfig": "Ajoutez <code>setup_token</code> au niveau racine de <code>config.json</code>. Il accepte une valeur littérale, une référence <code>env.VAR</code> ou une référence <code>vault.path</code> :",
+		"instructionsHeader": "Les clients d’API envoient la même valeur dans l’en-tête <code>{{header}}</code>. Le jeton cesse de fonctionner dès que l’authentification du tableau de bord est activée.",
+		"unreachable": "Impossible de joindre Bifrost. Vérifiez que le serveur est en cours d’exécution.",
+		"invalidToken": "Jeton d’installation invalide",
+		"checkFailed": "Bifrost a renvoyé {{status}} lors de la vérification du jeton",
+		"title": "Terminer la configuration de Bifrost",
+		"description": "L’authentification du tableau de bord n’est pas configurée, l’API est donc verrouillée. Saisissez le jeton d’installation pour continuer et créer un compte administrateur.",
+		"tokenLabel": "Jeton d’installation",
+		"tokenPlaceholder": "Saisissez le jeton d’installation",
+		"continue": "Continuer",
+		"whereToFind": "Où trouver le jeton d’installation ?",
+		"notConfigured": "Aucun jeton d’installation n’est configuré sur ce serveur, la configuration ne peut donc pas encore continuer."
 	}
 }

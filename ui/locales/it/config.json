@@ -23,7 +23,8 @@
 		"brandingDescription": "Replace the Bifrost logo with your own across the dashboard and login screen. Questa funzionalità fa parte della licenza Enterprise di Bifrost. Vorremmo saperne di più sul tuo caso d’uso e su come possiamo aiutarti.",
 		"licenseTitle": "Sblocca la gestione delle licenze",
 		"apiKeysTitle": "Chiavi API basate su scope",
-		"apiKeysDescription": "Hai bisogno di un controllo granulare degli accessi con chiavi API basate su ambiti? I clienti Enterprise possono creare più chiavi API con autorizzazioni specifiche per diversi servizi, team o ambienti."
+		"apiKeysDescription": "Hai bisogno di un controllo granulare degli accessi con chiavi API basate su ambiti? I clienti Enterprise possono creare più chiavi API con autorizzazioni specifiche per diversi servizi, team o ambienti.",
+		"unknownOs": "Sistema operativo sconosciuto"
 	},
 	"clientSettings": {
 		"title": "Impostazioni client",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>Denylist:</span0> Gli header nella denylist sono sempre bloccati dall'inoltro",
 		"wildcardRules": "<span0>Caratteri jolly:</span0> Usa <code1>*</code1> alla fine di un pattern per trovare corrispondenze con i prefissi (ad es. <code2>anthropic-*</code2> corrisponde a tutti gli header che iniziano con <code3>anthropic-</code3>). Usa <code4>*</code4> da solo per trovare corrispondenze con tutti gli header.",
 		"headerNames": "Le voci di allowlist/denylist devono essere il nome dell'header <span0>senza</span0> il prefisso <code1>x-bf-eh-</code1>",
-		"allowlistExample": "Esempio: per consentire <code0>x-bf-eh-custom-id</code0> o <code1>custom-id</code1> diretto, aggiungi <code2>custom-id</code2> all'allowlist"
+		"allowlistExample": "Esempio: per consentire <code0>x-bf-eh-custom-id</code0> o <code1>custom-id</code1> diretto, aggiungi <code2>custom-id</code2> all'allowlist",
+		"extraFieldsPlacement": "Posizione dei campi extra",
+		"extraFieldsPlacementHelp": "Dove le risposte di inference includono i metadati <b>extra_fields</b> di Bifrost. <b>Body</b> mantiene l'oggetto extra_fields nella risposta JSON. <b>Headers</b> lo rimuove dal body e da ogni chunk dello streaming, inviandone i campi scalari come header di risposta <b>x-bifrost-*</b>.",
+		"extraFieldsPlacementDroppedNote": "In modalità Headers, questi campi vengono eliminati e non inviati altrove: richiesta grezza, risposta grezza, metadati di routing, debug guardrail, errori di parsing e, in caso di errore, stato delle chiavi, utilizzo addebitato e dettagli di autenticazione MCP. Le risposte in streaming includono solo i dati noti prima del primo chunk (routing, fallback, ricerca cache); vengono quindi eliminati anche latenza per chunk, indice del chunk e totali finali.",
+		"extraFieldsBody": "Body",
+		"extraFieldsHeaders": "Headers",
+		"removeSecurityHeader_one": "Rimuovi header di sicurezza: {{headers}}",
+		"removeSecurityHeader_other": "Rimuovi header di sicurezza: {{headers}}"
 	},
 	"caching": {
 		"title": "Cache locale",
@@ -296,7 +304,11 @@
 		"convertUnsupportedParamsHelp": "Converte i valori dei parametri non supportati dal modello.",
 		"azureDeepseek": "Usa le API Chat Completion per i modelli Azure Deepseek",
 		"azureDeepseekHelp": "Usa le API Chat Completion per Claude Code, Codex, ecc. per i modelli Azure Deepseek.",
-		"toastSaved": "Impostazioni di compatibilità aggiornate con successo."
+		"toastSaved": "Impostazioni di compatibilità aggiornate con successo.",
+		"forceReasoningOnlyToResponses": "Usa Responses API per i modelli OpenAI solo di reasoning",
+		"forceReasoningOnlyToResponsesHelp": "Instrada le richieste di completamento chat alla Responses API per i modelli che non supportano il reasoning con chiamate agli strumenti nei completamenti chat, invece di disattivare il reasoning.",
+		"convertDecisionToResponses": "Emula Decisions API sui modelli senza supporto decisionale",
+		"convertDecisionToResponsesHelp": "Rispondi alle richieste decision tramite Responses API con uno strumento funzione forzato, per i modelli senza endpoint decision nativo. Se disattivato, queste richieste restituiscono un errore di operazione non supportata."
 	},
 	"featureFlags": {
 		"title": "Feature flag",
@@ -387,7 +399,26 @@
 		"allowedRedirectUrisHelp": "URI di callback esatti che i client MCP remoti possono usare, ad es. <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Aggiungi <code1>*</code1> per consentire qualsiasi callback https; i caratteri jolly parziali non sono supportati. I callback loopback e <code2>cursor://anysphere.cursor-mcp</code2> sono sempre consentiti. La modifica di questo elenco richiede l'autenticazione della dashboard.",
 		"allowedRedirectUrisPlaceholder": "Aggiungi URI di callback (Invio)",
 		"anyCallbackAllowed": "Qualsiasi callback è consentito",
-		"anyCallbackAllowedHelp": "Qualsiasi client MCP può registrarsi con un callback su qualsiasi host, quindi la pagina di consenso è l'unico controllo contro un client che invia i codici di autorizzazione a un malintenzionato. Meglio elencare gli URI di callback esatti."
+		"anyCallbackAllowedHelp": "Qualsiasi client MCP può registrarsi con un callback su qualsiasi host, quindi la pagina di consenso è l'unico controllo contro un client che invia i codici di autorizzazione a un malintenzionato. Meglio elencare gli URI di callback esatti.",
+		"limitMaxSourceBytes": "Dimensione massima sorgente (byte)",
+		"limitMaxSourceBytesDesc": "Quantità massima di codice che una singola esecuzione può inviare.",
+		"limitMaxSteps": "Numero massimo di passaggi di calcolo",
+		"limitMaxStepsDesc": "Passaggi dell'interprete per esecuzione, incluso il lavoro eseguito nelle funzioni integrate.",
+		"limitMaxMemoryBytes": "Memoria massima (byte)",
+		"limitMaxMemoryBytesDesc": "Budget stimato di allocazione per esecuzione. Ogni esecuzione simultanea ha il proprio budget.",
+		"limitMaxLogBytes": "Output massimo dei log (byte)",
+		"limitMaxLogBytesDesc": "Output di stampa e dei log degli strumenti per esecuzione, incluse le nuove righe.",
+		"limitMaxToolCalls": "Chiamate massime agli strumenti",
+		"limitMaxToolCallsDesc": "Chiamate MCP annidate agli strumenti per esecuzione.",
+		"limitMaxValueBytes": "Dimensione massima valore (byte)",
+		"limitMaxValueBytesDesc": "Budget di dimensione per ogni payload dello strumento e risultato convertito. Deve essere almeno {{min}}.",
+		"limitMaxNestingDepth": "Profondità massima di annidamento",
+		"limitMaxNestingDepthDesc": "Profondità di annidamento dei valori che attraversano il confine dello strumento. Massimo {{max}}.",
+		"limitNegative": "{{label}} non può essere negativo.",
+		"limitValueBytesMin": "La dimensione massima del valore deve essere almeno {{min}} byte.",
+		"limitNestingMax": "La profondità massima di annidamento deve essere al massimo {{max}}.",
+		"codeModeLimitsTitle": "Limiti della modalità codice",
+		"codeModeLimitsDescription": "Limiti per ogni esecuzione del codice. Lascia un campo vuoto per usare il valore predefinito. Il numero di esecuzioni simultanee non è limitato."
 	},
 	"modelSettings": {
 		"title": "Impostazioni modelli",
@@ -733,7 +764,11 @@
 		"intoPath": " in {{path}}/",
 		"intoRoot": " nella radice",
 		"previewAfterSaving": "Anteprima disponibile dopo il salvataggio.",
-		"externalUrlRequired": "Imposta l'URL client esterno in <settingsLink>Impostazioni Skills</settingsLink> per abilitare la registrazione nel marketplace."
+		"externalUrlRequired": "Imposta l'URL client esterno in <settingsLink>Impostazioni Skills</settingsLink> per abilitare la registrazione nel marketplace.",
+		"showLess": "Mostra meno",
+		"showMore": "Mostra di più",
+		"skillNotFound": "Skill non trovata",
+		"backToList": "Torna all'elenco"
 	},
 	"promptRepo": {
 		"loadFailed": "Impossibile caricare il repository dei prompt",
@@ -933,7 +968,48 @@
 		"governancePlugin": "Plugin Governance",
 		"governancePluginDesc": "Guida completa a controllo degli accessi, budget e rate limiting",
 		"governancePluginContent": "Padroneggia le chiavi virtuali, i budget gerarchici, il rate limiting e il monitoraggio dell'utilizzo per un'infrastruttura IA sicura.",
-		"viewGovernanceGuide": "Visualizza la guida alla governance"
+		"viewGovernanceGuide": "Visualizza la guida alla governance",
+		"heading": "Potenzia il tuo stack Bifrost",
+		"viewFullDocumentation": "Visualizza la documentazione completa",
+		"quickStartGuide": "Guida introduttiva",
+		"readMore": "Leggi di più",
+		"items": {
+			"quickStart": [
+				"Configurazione HTTP Transport",
+				"Utilizzo del pacchetto Go",
+				"Guida Docker"
+			],
+			"architecture": [
+				"Panoramica del sistema",
+				"Flusso delle richieste",
+				"Modello di concorrenza",
+				"Scelte progettuali"
+			],
+			"usageGuides": [
+				"Configurazione provider",
+				"Gestione delle chiavi",
+				"Gestione degli errori",
+				"Memoria e rete"
+			],
+			"contributing": [
+				"Guida ai contributi",
+				"Aggiungere provider",
+				"Sviluppo plugin",
+				"Convenzioni del codice"
+			],
+			"integrationExamples": [
+				"Integrazione OpenAI",
+				"Integrazione Anthropic",
+				"Integrazione GenAI",
+				"Guide alla migrazione"
+			],
+			"benchmarks": [
+				"Risultati test 5K RPS",
+				"Metriche di prestazione",
+				"Ottimizzazione della configurazione",
+				"Confronti hardware"
+			]
+		}
 	},
 	"warp": {
 		"saved": "Configurazione Warp salvata.",
@@ -1036,7 +1112,10 @@
 			"searchLimit": "Il limite di ricerca deve essere tra 1 e 25.",
 			"retentionRequired": "È richiesto un valore",
 			"retentionWhole": "Deve essere un numero intero di giorni",
-			"retentionMin": "Deve essere 0 o più giorni (0 mantiene il default)"
+			"retentionMin": "Deve essere 0 o più giorni (0 mantiene il default)",
+			"modelRequired": "Scegli un provider e un modello per abilitare Warp.",
+			"modelOrRemove": "Scegli un provider e un modello oppure rimuovi questo modello.",
+			"modelDuplicate": "Questo provider e modello sono già nell'elenco."
 		},
 		"models": "Modelli",
 		"modelsHelp": "I modelli con cui Warp ragiona e scrive le risposte. Risponde il modello predefinito, a meno che qualcuno non ne scelga un altro nel pannello Warp. Qui un modello potente ripaga.",
@@ -1047,5 +1126,26 @@
 		"modelNumber": "Modello {{number}}",
 		"makeDefault": "Imposta come predefinito",
 		"removeModel": "Rimuovi modello {{number}}"
+	},
+	"agentGateway": {
+		"title": "Impostazioni Agent Gateway",
+		"description": "Configura le impostazioni di Agent Gateway (A2A).",
+		"toastSaved": "Impostazioni di Agent Gateway aggiornate correttamente.",
+		"loadFailed": "Impossibile caricare le impostazioni di Agent Gateway.",
+		"externalClientUrl": "URL client esterno",
+		"externalClientUrlHelp": "URL di base pubblico di Bifrost, usato per le schede agente pubblicate e gli URL callback delle notifiche push. Se lasciato vuoto, tutti gli endpoint del protocollo agente sono disabilitati. La gestione degli agenti resta disponibile. Supporta la sintassi delle variabili d'ambiente (ad es. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"privateAllowlist": "Elenco consentiti rete privata",
+		"privateAllowlistHelp": "Host, indirizzi IP o intervalli CIDR, senza schema né porta, che Agent Gateway può raggiungere per discovery, OAuth e richieste runtime quando risolvono in un indirizzo privato o loopback. Gli indirizzi link-local e dei metadati cloud sono sempre bloccati.",
+		"privateAllowlistPlaceholder": "Aggiungi host, IP o CIDR (Invio o virgola)",
+		"captureRaw": "Acquisisci richieste e risposte grezze",
+		"captureRawHelp": "Salva i payload grezzi di richieste e risposte nei record dei log. L'acquisizione grezza è disabilitata per gRPC perché usa messaggi protobuf binari; un'acquisizione con limite di dimensione può interrompere un messaggio e impedirne la decodifica o l'ispezione affidabile."
+	},
+	"skillsSettings": {
+		"description": "Configura la pubblicazione del marketplace del repository Skills.",
+		"toastSaved": "Impostazioni Skills aggiornate correttamente.",
+		"loadFailed": "Impossibile caricare le impostazioni Skills.",
+		"retry": "Riprova",
+		"externalClientUrl": "URL client esterno",
+		"externalClientUrlHelp": "URL di base pubblico di Bifrost per i marketplace Claude Code e Codex. Lascialo vuoto per disabilitare la pubblicazione e la registrazione del marketplace. La gestione e il download delle skill restano disponibili. Supporta riferimenti a variabili d'ambiente e vault."
 	}
 }

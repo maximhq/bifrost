@@ -32,7 +32,7 @@ interface MultiBudgetLinesProps {
 
 export default function MultiBudgetLines({
 	"data-testid": testId,
-	label = "Budget Configuration",
+	label: labelProp,
 	lines,
 	onChange,
 	options = budgetResetDurationOptions,
@@ -41,6 +41,8 @@ export default function MultiBudgetLines({
 	maxLines,
 }: MultiBudgetLinesProps) {
 	const { t } = useTranslation("governance");
+	const { t: tModels } = useTranslation("models");
+	const label = labelProp ?? tModels("virtualKeys.budgetConfiguration");
 	// Track which reset durations are already used (for duplicate detection)
 	const usedDurations = useMemo(() => {
 		const counts = new Map<string, number>();
@@ -133,7 +135,7 @@ export default function MultiBudgetLines({
 							</div>
 							<Button
 								data-testid={`${testId}-remove-${index}`}
-								aria-label={`Remove budget ${index + 1}`}
+								aria-label={t("sheet.removeBudgetAria", { number: index + 1 })}
 								variant="ghost"
 								size="icon"
 								type="button"
@@ -154,9 +156,7 @@ export default function MultiBudgetLines({
 								/>
 							</div>
 						)}
-						{isDuplicate && (
-							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period; each budget line must use a different interval.</p>
-						)}
+						{isDuplicate && <p className="text-destructive pl-0.5 text-xs">{t("sheet.duplicateResetPeriod")}</p>}
 					</div>
 				);
 			})}

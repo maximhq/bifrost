@@ -51,7 +51,15 @@
 			"updateAction": "Aggiorna cliente",
 			"createAction": "Crea cliente",
 			"calendarAlignHelp": "L'abilitazione dell'allineamento al calendario reimposterà l'utilizzo del budget a <bold0>$0.00</bold0> e i contatori dei limiti di frequenza di token/richieste a <bold1>0</bold1> per questo cliente, quindi allineerà ciascuna data di reimpostazione all'inizio del relativo periodo corrente (es. inizio del giorno, della settimana, del mese o dell'anno). L'azzeramento dell'utilizzo non può essere annullato, ma l'allineamento al calendario potrà essere disattivato in seguito. Questa modifica avrà effetto quando salvi."
-		}
+		},
+		"detail": {
+			"title": "Dettagli cliente",
+			"description": "Dettagli di utilizzo di questo cliente.",
+			"info": "Informazioni",
+			"name": "Nome",
+			"noBudgets": "Nessun budget configurato"
+		},
+		"actionsAria": "Azioni cliente {{name}}"
 	},
 	"teams": {
 		"title": "Team",
@@ -98,10 +106,13 @@
 			"updateAction": "Aggiorna team",
 			"createAction": "Crea team",
 			"calendarAlignHelp": "L'attivazione dell'allineamento al calendario reimposterà l'utilizzo del budget a <bold0>$0.00</bold0> e i contatori del limite di frequenza di token/richieste a <bold1>0</bold1> per questo team, per poi allineare ciascuna data di reimpostazione all'inizio del rispettivo periodo corrente (ad es. inizio del giorno, della settimana, del mese o dell'anno). La reimpostazione dell'utilizzo non può essere annullata, ma l'allineamento al calendario può essere disattivato in seguito. Questa modifica avrà effetto quando salvi."
-		}
+		},
+		"actionsAria": "Azioni team per {{name}}"
 	},
 	"virtualKeys": {
-		"loadFailed": "Impossibile caricare le chiavi virtuali: {{message}}"
+		"loadFailed": "Impossibile caricare le chiavi virtuali: {{message}}",
+		"metadataFilterInvalid": "La chiave del filtro dei metadati in questo link non è valida, quindi non verrà applicata. Le chiavi devono contenere da 1 a 256 lettere, numeri, punto, trattino basso o trattino.",
+		"clearFilter": "Cancella filtro"
 	},
 	"plugins": {
 		"title": "Plugin",
@@ -353,7 +364,26 @@
 			"filterEvent": "Evento",
 			"filterResponseStatus": "Stato della risposta",
 			"filterWebhooks": "Webhook",
-			"searchWebhooks": "Cerca webhook..."
+			"searchWebhooks": "Cerca webhook...",
+			"table": {
+				"waiting": "In attesa di nuove consegne...",
+				"empty": "Nessuna consegna trovata. Prova a modificare i filtri e/o l'intervallo di tempo.",
+				"range": "{{from}}-{{to}} di {{total}} consegne"
+			},
+			"header": {
+				"searchByDeliveryId": "Cerca per ID consegna",
+				"switchLookup": "Passa dalla ricerca per ID richiesta a quella per ID consegna"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "ID consegna",
+				"actions": "Azioni",
+				"collapseSends": "Comprimi invii",
+				"expandSends": "Espandi invii",
+				"noPermission": "Non hai l'autorizzazione per ripetere la consegna",
+				"openInLogs": "{{id}} — apri nei log"
+			},
+			"copyRequestId": "Copia ID richiesta {{id}}"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "Sblocca le classifiche degli utenti per una maggiore visibilità"
 	},
 	"promptDeployments": {
-		"unlockTitle": "Sblocca i deployment dei prompt per un migliore versioning dei prompt e test A/B."
+		"unlockTitle": "Sblocca i deployment dei prompt per un migliore versioning dei prompt e test A/B.",
+		"accordionTitle": "Distribuzioni"
 	},
 	"connectorsUnlock": {
 		"splunk": "Sblocca l'ingestione nativa dei dati su Splunk per una migliore osservabilità",
@@ -389,7 +420,8 @@
 		"datadog": "Sblocca l'ingestione nativa dei dati su Datadog per una migliore osservabilità",
 		"bigquery": "Sblocca l'ingestione nativa dei dati su BigQuery per le analisi",
 		"kafka": "Sblocca lo streaming nativo dei log su Kafka per un'osservabilità in tempo reale",
-		"kafkaDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Invia in streaming le tracce delle richieste completate in formato JSON su un topic Kafka per analisi in tempo reale, avvisi ed elaborazione a valle."
+		"kafkaDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Invia in streaming le tracce delle richieste completate in formato JSON su un topic Kafka per analisi in tempo reale, avvisi ed elaborazione a valle.",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "Sblocca i profili di accesso per prestazioni migliori",
@@ -439,7 +471,9 @@
 		"reset": "Reimposta",
 		"addBudgetButton": "Aggiungi budget",
 		"maximumSpend": "Spesa massima (USD)",
-		"noBudgetLimits": "Nessun limite di budget configurato."
+		"noBudgetLimits": "Nessun limite di budget configurato.",
+		"removeBudgetAria": "Rimuovi budget {{number}}",
+		"duplicateResetPeriod": "Periodo di ripristino duplicato; ogni riga di budget deve usare un intervallo diverso."
 	},
 	"filters": {
 		"filters": "Filtri",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} pattern",
 		"removeAria": "Rimuovi {{name}}",
 		"noneLeftClick": "Nessun altro fornitore da configurare. Clicca per aggiungere"
+	},
+	"orgChart": {
+		"unlockTitle": "Sblocca l'organigramma",
+		"unlockDescription": "Visualizza budget, spesa, modelli e strumenti per unità aziendali, team e utenti in un unico albero. Questa funzionalità è inclusa nella licenza enterprise di Bifrost."
+	},
+	"usage": {
+		"budgetAria": "Utilizzo budget",
+		"tokenAria": "Utilizzo token",
+		"requestAria": "Utilizzo richieste",
+		"resets": "Si azzera {{period}}",
+		"tokens": "{{value}} token",
+		"req": "{{value}} richieste",
+		"tokenTooltip": "{{used}} / {{max}} token",
+		"requestTooltip": "{{used}} / {{max}} richieste",
+		"keyCount_one": "{{count}} chiave",
+		"keyCount_other": "{{count}} chiavi"
+	},
+	"budgetOverride": {
+		"updated": "Override budget aggiornato",
+		"added": "Override budget aggiunto",
+		"removed": "Override budget rimosso",
+		"invalidInput": "Input non valido",
+		"editOverride": "Modifica override",
+		"addOverride": "Aggiungi override",
+		"editTitle": "Modifica override budget",
+		"addTitle": "Aggiungi override budget",
+		"description": "Aggiungi temporaneamente capacità di spesa senza modificare il budget base {{budget}}.",
+		"additionalBudget": "Budget aggiuntivo",
+		"duration": "Durata",
+		"modeCycles": "Per un numero di cicli di ripristino",
+		"modeForever": "Fino alla rimozione",
+		"resetCycles": "Cicli di ripristino",
+		"cycleHint": "Il ciclo di ripristino corrente viene conteggiato come primo ciclo.",
+		"validUntil": "Valido fino al <b0>{{date}}</b0>",
+		"currentEffectiveLimit": "Limite effettivo attuale: <b0>{{limit}}</b0>",
+		"removeOverride": "Rimuovi override",
+		"updateOverride": "Aggiorna override",
+		"managerDescription": "Aggiungi temporaneamente capacità di spesa a un budget senza modificarne il limite base.",
+		"rowActive": "Override +{{amount}} · effettivo {{effective}}",
+		"rowBase": "Base {{amount}}",
+		"edit": "Modifica",
+		"remove": "Rimuovi",
+		"update": "Aggiorna",
+		"add": "Aggiungi"
 	}
 }

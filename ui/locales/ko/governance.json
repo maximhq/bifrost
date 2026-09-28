@@ -51,7 +51,15 @@
 			"updateAction": "고객 업데이트",
 			"createAction": "고객 생성",
 			"calendarAlignHelp": "달력 정렬을 활성화하면 이 고객에 대한 예산 사용량이 <bold0>$0.00</bold0>로, 토큰/요청 속도 제한 카운터가 <bold1>0</bold1>로 재설정돼요. 그런 다음 각 재설정 날짜를 현재 기간의 시작(예: 일, 주, 월 또는 연도의 시작)으로 맞춥니다. 사용량 재설정은 실행 취소할 수 없지만 나중에 달력 정렬을 해제할 수 있어요. 저장하면 적용돼요."
-		}
+		},
+		"detail": {
+			"title": "고객 상세 정보",
+			"description": "이 고객의 사용량 상세 정보예요.",
+			"info": "정보",
+			"name": "이름",
+			"noBudgets": "구성된 예산이 없어요"
+		},
+		"actionsAria": "고객 작업 {{name}}"
 	},
 	"teams": {
 		"title": "팀",
@@ -98,10 +106,13 @@
 			"updateAction": "업데이트 팀",
 			"createAction": "팀 만들기",
 			"calendarAlignHelp": "달력 정렬을 활성화하면 이 팀의 예산 사용량이 <bold0>$0.00</bold0>로, 토큰/요청 속도 제한 카운터가 <bold1>0</bold1>로 재설정돼요. 그런 다음 각 재설정 날짜를 현재 기간의 시작(예: 일, 주, 월 또는 연도의 시작)으로 맞춥니다. 사용량 재설정은 실행 취소할 수 없지만 나중에 달력 정렬을 해제할 수 있어요. 저장하면 적용돼요."
-		}
+		},
+		"actionsAria": "{{name}} 팀 작업"
 	},
 	"virtualKeys": {
-		"loadFailed": "가상 키를 로드하지 못했습니다: {{message}}"
+		"loadFailed": "가상 키를 로드하지 못했습니다: {{message}}",
+		"metadataFilterInvalid": "이 링크의 메타데이터 필터 키가 올바르지 않아 적용되지 않았어요. 키는 1~256자의 영문자, 숫자, \".\", \"_\", \"-\"를 사용해요.",
+		"clearFilter": "필터 지우기"
 	},
 	"plugins": {
 		"title": "플러그인",
@@ -353,7 +364,26 @@
 			"filterEvent": "이벤트",
 			"filterResponseStatus": "응답상태",
 			"filterWebhooks": "웹훅",
-			"searchWebhooks": "웹훅 검색..."
+			"searchWebhooks": "웹훅 검색...",
+			"table": {
+				"waiting": "새 전송 내역을 기다리는 중...",
+				"empty": "전송 내역이 없어요. 필터나 시간 범위를 조정해 보세요.",
+				"range": "전송 {{total}}건 중 {{from}}-{{to}}"
+			},
+			"header": {
+				"searchByDeliveryId": "전송 ID로 검색",
+				"switchLookup": "요청 ID와 전송 ID 조회 간 전환"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "전송 ID",
+				"actions": "작업",
+				"collapseSends": "전송 접기",
+				"expandSends": "전송 펼치기",
+				"noPermission": "재전송할 권한이 없어요",
+				"openInLogs": "{{id}} — 로그에서 열기"
+			},
+			"copyRequestId": "요청 ID {{id}} 복사"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "더 나은 가시성을 위해 사용자 순위 잠금 해제"
 	},
 	"promptDeployments": {
-		"unlockTitle": "더 나은 프롬프트 버전 관리 및 A/B 테스트를 위해 프롬프트 배포를 잠금 해제하세요."
+		"unlockTitle": "더 나은 프롬프트 버전 관리 및 A/B 테스트를 위해 프롬프트 배포를 잠금 해제하세요.",
+		"accordionTitle": "배포"
 	},
 	"connectorsUnlock": {
 		"splunk": "더 나은 관찰 가능성을 위해 기본 Splunk 데이터 수집을 잠금 해제해요.",
@@ -389,7 +420,8 @@
 		"datadog": "더 나은 관찰 가능성을 위해 기본 Datadog 데이터 수집을 잠금 해제해요.",
 		"bigquery": "분석을 위한 기본 BigQuery 데이터 수집 활용",
 		"kafka": "실시간 관찰을 위한 기본 Kafka 로그 스트리밍 잠금 해제",
-		"kafkaDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. 실시간 분석, 경고 및 다운스트림 처리를 위해 완료된 요청 추적을 JSON으로 Kafka 주제로 스트리밍해요."
+		"kafkaDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. 실시간 분석, 경고 및 다운스트림 처리를 위해 완료된 요청 추적을 JSON으로 Kafka 주제로 스트리밍해요.",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "더 나은 성능을 위해 액세스 프로필을 잠금 해제하세요",
@@ -439,7 +471,9 @@
 		"reset": "초기화",
 		"addBudgetButton": "예산 추가",
 		"maximumSpend": "최대 지출(USD)",
-		"noBudgetLimits": "구성된 예산 한도가 없습니다."
+		"noBudgetLimits": "구성된 예산 한도가 없습니다.",
+		"removeBudgetAria": "예산 {{number}} 제거",
+		"duplicateResetPeriod": "재설정 기간이 중복되었어요. 각 예산 항목은 서로 다른 간격을 사용해야 해요."
 	},
 	"filters": {
 		"filters": "필터",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} 패턴",
 		"removeAria": "{{name}} 삭제",
 		"noneLeftClick": "구성할 프로바이더가 남지 않았습니다. 클릭하여 추가"
+	},
+	"orgChart": {
+		"unlockTitle": "조직도 잠금 해제",
+		"unlockDescription": "사업부, 팀, 사용자 전반의 예산, 지출, 모델, 도구를 하나의 트리에서 확인하세요. 이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다."
+	},
+	"usage": {
+		"budgetAria": "예산 사용량",
+		"tokenAria": "토큰 사용량",
+		"requestAria": "요청 사용량",
+		"resets": "{{period}} 재설정",
+		"tokens": "{{value}} 토큰",
+		"req": "{{value}} 요청",
+		"tokenTooltip": "{{used}} / {{max}} 토큰",
+		"requestTooltip": "{{used}} / {{max}} 요청",
+		"keyCount_one": "키 {{count}}개",
+		"keyCount_other": "키 {{count}}개"
+	},
+	"budgetOverride": {
+		"updated": "예산 재정의가 업데이트되었어요",
+		"added": "예산 재정의가 추가되었어요",
+		"removed": "예산 재정의가 제거되었어요",
+		"invalidInput": "입력이 올바르지 않아요",
+		"editOverride": "재정의 편집",
+		"addOverride": "재정의 추가",
+		"editTitle": "예산 재정의 편집",
+		"addTitle": "예산 재정의 추가",
+		"description": "기본 {{budget}} 예산을 변경하지 않고 지출 한도를 일시적으로 늘려요.",
+		"additionalBudget": "추가 예산",
+		"duration": "기간",
+		"modeCycles": "지정한 재설정 주기 횟수 동안",
+		"modeForever": "제거할 때까지",
+		"resetCycles": "재설정 주기",
+		"cycleHint": "현재 재설정 주기가 첫 번째 주기로 계산돼요.",
+		"validUntil": "<b0>{{date}}</b0>까지 유효",
+		"currentEffectiveLimit": "현재 유효 한도: <b0>{{limit}}</b0>",
+		"removeOverride": "재정의 제거",
+		"updateOverride": "재정의 업데이트",
+		"managerDescription": "기본 한도를 변경하지 않고 예산의 지출 한도를 일시적으로 늘려요.",
+		"rowActive": "+{{amount}} 재정의 · 유효 {{effective}}",
+		"rowBase": "기본 {{amount}}",
+		"edit": "편집",
+		"remove": "제거",
+		"update": "업데이트",
+		"add": "추가"
 	}
 }

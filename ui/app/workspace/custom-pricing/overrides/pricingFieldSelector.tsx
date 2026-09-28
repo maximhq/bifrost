@@ -78,8 +78,8 @@ export function PricingFieldSelector({ values, errors, selectedRequestTypes, onC
 
 	const filteredFields = useMemo(() => {
 		if (!isSearching) return null;
-		return PRICING_FIELDS.filter((f) => f.label.toLowerCase().includes(trimmedSearch) || f.key.toLowerCase().includes(trimmedSearch));
-	}, [isSearching, trimmedSearch]);
+		return PRICING_FIELDS.filter((f) => t(f.labelKey).toLowerCase().includes(trimmedSearch) || f.key.toLowerCase().includes(trimmedSearch));
+	}, [isSearching, trimmedSearch, t]);
 
 	// Fields visible per group when not searching, respecting activeCategories filter
 	const visibleGroupedFields = useMemo(
@@ -123,7 +123,7 @@ export function PricingFieldSelector({ values, errors, selectedRequestTypes, onC
 		onChange(key, value);
 	};
 
-	const renderFieldRow = (field: { key: PricingFieldKey; label: string }) => {
+	const renderFieldRow = (field: { key: PricingFieldKey; labelKey: ParseKeys<"models"> }) => {
 		const isActive = activeFields.has(field.key);
 		const hasValue = values[field.key]?.trim();
 		const error = errors[field.key];
@@ -138,7 +138,7 @@ export function PricingFieldSelector({ values, errors, selectedRequestTypes, onC
 					data-testid={`pricing-field-activate-${field.key}`}
 				>
 					<Plus className="text-muted-foreground h-3.5 w-3.5 shrink-0" />
-					<span className="text-muted-foreground">{field.label}</span>
+					<span className="text-muted-foreground">{t(field.labelKey)}</span>
 				</button>
 			);
 		}
@@ -146,7 +146,7 @@ export function PricingFieldSelector({ values, errors, selectedRequestTypes, onC
 		return (
 			<div key={field.key} className="rounded-sm px-1 py-1.5">
 				<div className="mb-1 flex items-center gap-2">
-					<span className="flex-1 text-sm font-medium">{field.label}</span>
+					<span className="flex-1 text-sm font-medium">{t(field.labelKey)}</span>
 					<button
 						type="button"
 						className="text-muted-foreground hover:text-foreground rounded-sm p-0.5 transition-colors"

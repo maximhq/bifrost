@@ -360,7 +360,11 @@
 			"followUp": "提出追问，当前回答结束后会发送…",
 			"placeholder": "询问你的 Bifrost 数据…",
 			"stop": "停止",
-			"send": "发送"
+			"send": "发送",
+			"commandClear": "开始新对话",
+			"settings": "Warp 设置",
+			"switchModel": "切换模型",
+			"defaultModel": "默认"
 		},
 		"question": {
 			"label": "问题",
@@ -543,6 +547,54 @@
 					"或者在 Warp 设置中选择你的账户有权使用的模型。"
 				]
 			}
+		},
+		"dock": {
+			"resize": "调整 Warp 面板大小",
+			"description": "向 Warp 询问此部署的日志、用量和支出。"
+		},
+		"chart": {
+			"openInLogs": "在日志中打开",
+			"empty": "此时间窗口内没有数据。"
 		}
+	},
+	"rssSources": {
+		"newsOn": "已开启新闻",
+		"newsOff": "已为此网关关闭新闻",
+		"updateSettingsFailed": "无法更新新闻设置",
+		"updateFeedFailed": "无法更新 {{name}}",
+		"updatedLogo": "已更新 {{name}} 的 Logo",
+		"removedLogo": "已移除 {{name}} 的 Logo",
+		"updateLogoFailed": "无法更新 {{name}} 的 Logo",
+		"removed": "已移除 {{name}}",
+		"removeFailed": "无法移除 {{name}}",
+		"title": "新闻来源",
+		"description": "选择哪些 RSS 订阅源显示在此网关所有人的通知托盘「新闻」标签页中。",
+		"showNews": "在通知托盘中显示新闻",
+		"showNewsHelp": "关闭后，此网关上所有人都将看不到「新闻」标签页，并且不再获取新闻条目。下方的来源会被保留。",
+		"settingLoadFailed": "无法加载此设置。",
+		"tryAgain": "重试",
+		"loading": "正在加载来源",
+		"loadFailed": "无法加载来源。",
+		"builtinFeeds": "内置订阅源",
+		"customFeeds": "自定义订阅源",
+		"noCustomFeeds": "暂无自定义订阅源。请在下方添加任意 RSS 或 Atom URL。",
+		"removeAria": "移除 {{name}}",
+		"disableAria": "禁用 {{name}}",
+		"enableAria": "启用 {{name}}",
+		"changeLogoAria": "更换 {{name}} 的 Logo",
+		"uploadLogo": "上传 Logo",
+		"removeLogo": "移除 Logo",
+		"addedFeed": "已添加 {{name}}",
+		"addFeedTitle": "添加订阅源",
+		"name": "名称",
+		"namePlaceholder": "Bifrost 发布动态",
+		"feedUrl": "订阅源 URL",
+		"logo": "Logo",
+		"optional": "（可选）",
+		"logoPreviewName": "Logo 预览",
+		"uploadedImage": "已上传的图片",
+		"upload": "上传",
+		"logoHelp": "图片 URL，或不超过 96 KB 的 PNG、JPEG、GIF、WebP、SVG 或 ICO。默认使用网站的 favicon。",
+		"addFeed": "添加订阅源"
 	}
 }

@@ -16,85 +16,60 @@ import { useForm, type Resolver } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-// Known beta headers with their prefixes, descriptions, and default support per provider.
+// Known beta headers with their prefixes and default support per provider. Labels and
+// descriptions live in the models catalog under providers.betaHeaders.known.<prefix>.
 // This mirrors the Go ProviderFeatures map in core/providers/anthropic/types.go.
 const KNOWN_BETA_HEADERS = [
 	{
 		prefix: "computer-use-",
-		label: "Computer Use",
-		description: "Computer use client tool",
 		defaults: { anthropic: true, vertex: true, bedrock: true, bedrock_mantle: true, azure: true },
 	},
 	{
 		prefix: "structured-outputs-",
-		label: "Structured Outputs",
-		description: "Strict tool validation and output_format",
 		defaults: { anthropic: true, vertex: false, bedrock: true, bedrock_mantle: true, azure: true },
 	},
 	{
 		prefix: "advanced-tool-use-",
-		label: "Advanced Tool Use",
-		description: "defer_loading, input_examples, allowed_callers",
 		defaults: { anthropic: true, vertex: false, bedrock: false, bedrock_mantle: false, azure: true },
 	},
 	{
 		prefix: "mcp-client-",
-		label: "MCP Client",
-		description: "MCP connector support",
 		defaults: { anthropic: true, vertex: false, bedrock: false, bedrock_mantle: false, azure: true },
 	},
 	{
 		prefix: "prompt-caching-scope-",
-		label: "Prompt Caching Scope",
-		description: "Prompt caching scope control",
 		defaults: { anthropic: true, vertex: false, bedrock: false, bedrock_mantle: false, azure: true },
 	},
 	{
 		prefix: "compact-",
-		label: "Compaction",
-		description: "Server-side context compaction",
 		defaults: { anthropic: true, vertex: true, bedrock: true, bedrock_mantle: true, azure: true },
 	},
 	{
 		prefix: "context-management-",
-		label: "Context Management",
-		description: "Context editing (clear_tool_uses, clear_thinking)",
 		defaults: { anthropic: true, vertex: true, bedrock: true, bedrock_mantle: true, azure: true },
 	},
 	{
 		prefix: "files-api-",
-		label: "Files API",
-		description: "Files API support",
 		defaults: { anthropic: true, vertex: false, bedrock: false, bedrock_mantle: false, azure: true },
 	},
 	{
 		prefix: "interleaved-thinking-",
-		label: "Interleaved Thinking",
-		description: "Interleaved thinking between tool calls",
 		defaults: { anthropic: true, vertex: true, bedrock: true, bedrock_mantle: true, azure: true },
 	},
 	{
 		prefix: "skills-",
-		label: "Skills",
-		description: "Agent Skills",
 		defaults: { anthropic: true, vertex: false, bedrock: false, bedrock_mantle: false, azure: true },
 	},
 	{
 		prefix: "context-1m-",
-		label: "Context 1M",
-		description: "1M context window (beta for Sonnet 4.5/4)",
 		defaults: { anthropic: true, vertex: true, bedrock: true, bedrock_mantle: true, azure: true },
 	},
 	{
 		prefix: "fast-mode-",
-		label: "Fast Mode",
-		description: "Fast mode (Opus 4.6 research preview)",
 		defaults: { anthropic: true, vertex: false, bedrock: false, bedrock_mantle: false, azure: false },
 	},
 	{
 		prefix: "redact-thinking-",
-		label: "Redact Thinking",
-		description: "Redact thinking blocks in responses",
 		defaults: { anthropic: true, vertex: false, bedrock: false, bedrock_mantle: false, azure: true },
 	},
 ] as const;
@@ -108,7 +83,6 @@ const TYPESAFE_BETA_HEADERS = [
 	{
 		prefix: "typesafe-danger-zone-images",
 		header: "TypeSafe-Danger-Zone-Images",
-		description: "Images and box questions, sent only with requests that carry them",
 	},
 ] as const;
 

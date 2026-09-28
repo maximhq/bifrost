@@ -360,7 +360,11 @@
 			"followUp": "Ask a follow-up, it is sent when this answer finishes...",
 			"placeholder": "Ask about your Bifrost data...",
 			"stop": "Stop",
-			"send": "Send"
+			"send": "Send",
+			"commandClear": "Start a new conversation",
+			"settings": "Warp settings",
+			"switchModel": "Switch model",
+			"defaultModel": "Default"
 		},
 		"question": {
 			"label": "Question",
@@ -543,6 +547,54 @@
 					"Or set Warp to a model your account is allowed to use in Warp settings."
 				]
 			}
+		},
+		"dock": {
+			"resize": "Resize Warp panel",
+			"description": "Ask Warp questions about this deployment's logs, usage and spend."
+		},
+		"chart": {
+			"openInLogs": "Open in Logs",
+			"empty": "No data in this window."
 		}
+	},
+	"rssSources": {
+		"newsOn": "News turned on",
+		"newsOff": "News turned off for this gateway",
+		"updateSettingsFailed": "Couldn't update news settings",
+		"updateFeedFailed": "Couldn't update {{name}}",
+		"updatedLogo": "Updated the logo for {{name}}",
+		"removedLogo": "Removed the logo from {{name}}",
+		"updateLogoFailed": "Couldn't update the logo for {{name}}",
+		"removed": "Removed {{name}}",
+		"removeFailed": "Couldn't remove {{name}}",
+		"title": "News sources",
+		"description": "Choose which RSS feeds appear in the News tab of the notification tray for everyone on this gateway.",
+		"showNews": "Show news in the notification tray",
+		"showNewsHelp": "Turning this off hides the News tab for everyone on this gateway and stops fetching news items. Your sources below are kept.",
+		"settingLoadFailed": "Couldn't load this setting.",
+		"tryAgain": "Try again",
+		"loading": "Loading sources",
+		"loadFailed": "Sources could not be loaded.",
+		"builtinFeeds": "Built-in feeds",
+		"customFeeds": "Custom feeds",
+		"noCustomFeeds": "No custom feeds yet. Add any RSS or Atom URL below.",
+		"removeAria": "Remove {{name}}",
+		"disableAria": "Disable {{name}}",
+		"enableAria": "Enable {{name}}",
+		"changeLogoAria": "Change the logo for {{name}}",
+		"uploadLogo": "Upload logo",
+		"removeLogo": "Remove logo",
+		"addedFeed": "Added {{name}}",
+		"addFeedTitle": "Add a feed",
+		"name": "Name",
+		"namePlaceholder": "Bifrost releases",
+		"feedUrl": "Feed URL",
+		"logo": "Logo",
+		"optional": "(optional)",
+		"logoPreviewName": "Logo preview",
+		"uploadedImage": "Uploaded image",
+		"upload": "Upload",
+		"logoHelp": "An image URL or a PNG, JPEG, GIF, WebP, SVG or ICO up to 96 KB. Defaults to the site's favicon.",
+		"addFeed": "Add feed"
 	}
 }

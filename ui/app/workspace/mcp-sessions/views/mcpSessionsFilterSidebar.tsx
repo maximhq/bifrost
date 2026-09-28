@@ -56,29 +56,6 @@ interface FilterOption {
 	icon?: React.ReactNode;
 }
 
-// Labels mirror the Type column's TypeBadge ("OAuth" / "Headers") so the
-// filter vocabulary matches what the user sees in the table.
-const KIND_OPTIONS: FilterOption[] = [
-	{ value: "token", label: "OAuth" },
-	{ value: "header", label: "Headers" },
-];
-
-const STATUS_OPTIONS: FilterOption[] = [
-	{ value: "active", label: "Active" },
-	{ value: "orphaned", label: "Orphaned" },
-	{ value: "needs_reauth", label: "Needs re-auth" },
-	{ value: "needs_update", label: "Needs update" },
-	{ value: "pending", label: "Pending" },
-];
-
-// Identity-mode icons match the glyphs used in BindingCell so the sidebar
-// reads as the same vocabulary as the rendered table column.
-const AUTH_MODE_OPTIONS: FilterOption[] = [
-	{ value: "user", label: "User", icon: <UserRound className="size-3.5" /> },
-	{ value: "vk", label: "Virtual key", icon: <KeyRound className="size-3.5" /> },
-	{ value: "session", label: "Session", icon: <Fingerprint className="size-3.5" /> },
-];
-
 interface SidebarProps {
 	filters: MCPSessionFilters;
 	onFiltersChange: (filters: MCPSessionFilters) => void;
@@ -92,6 +69,36 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	const { t } = useTranslation("mcp");
 	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
+
+	// Labels mirror the Type column's TypeBadge ("OAuth" / "Headers") so the
+	// filter vocabulary matches what the user sees in the table.
+	const kindOptions: FilterOption[] = useMemo(
+		() => [
+			{ value: "token", label: t("sessions.kind.oauth") },
+			{ value: "header", label: t("sessions.kind.headers") },
+		],
+		[t],
+	);
+	const statusOptions: FilterOption[] = useMemo(
+		() => [
+			{ value: "active", label: t("sessions.status.active") },
+			{ value: "orphaned", label: t("sessions.status.orphaned") },
+			{ value: "needs_reauth", label: t("sessions.status.needsReauth") },
+			{ value: "needs_update", label: t("sessions.status.needsUpdate") },
+			{ value: "pending", label: t("sessions.status.pending") },
+		],
+		[t],
+	);
+	// Identity-mode icons match the glyphs used in BindingCell so the sidebar
+	// reads as the same vocabulary as the rendered table column.
+	const authModeOptions: FilterOption[] = useMemo(
+		() => [
+			{ value: "user", label: t("sessions.filter.user"), icon: <UserRound className="size-3.5" /> },
+			{ value: "vk", label: t("sessions.filter.virtualKeyOption"), icon: <KeyRound className="size-3.5" /> },
+			{ value: "session", label: t("sessions.filter.session"), icon: <Fingerprint className="size-3.5" /> },
+		],
+		[t],
+	);
 
 	useEffect(() => {
 		if (typeof window === "undefined") return;
@@ -200,7 +207,7 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 				<div className="flex grow flex-col gap-1">
 					<CheckboxFilterSection
 						title={t("sessions.filter.type")}
-						options={KIND_OPTIONS}
+						options={kindOptions}
 						selected={filters.kind}
 						defaultOpen
 						onChange={(kind) => onFiltersChange({ ...filters, kind })}
@@ -208,14 +215,14 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 					/>
 					<CheckboxFilterSection
 						title={t("sessions.filter.status")}
-						options={STATUS_OPTIONS}
+						options={statusOptions}
 						selected={filters.status}
 						onChange={(status) => onFiltersChange({ ...filters, status })}
 						testIdPrefix="mcp-sessions-filter-status"
 					/>
 					<CheckboxFilterSection
 						title={t("sessions.filter.identity")}
-						options={AUTH_MODE_OPTIONS}
+						options={authModeOptions}
 						selected={filters.auth_mode}
 						onChange={(auth_mode) => onFiltersChange({ ...filters, auth_mode })}
 						testIdPrefix="mcp-sessions-filter-auth-mode"
@@ -358,7 +365,7 @@ function SearchableCheckboxList({
 	items,
 	isSelected,
 	onToggle,
-	placeholder = "Search...",
+	placeholder,
 	inputRef,
 	testIdPrefix,
 	onSearch,
@@ -373,6 +380,7 @@ function SearchableCheckboxList({
 	onSearch?: (query: string) => void;
 	fetching?: boolean;
 }) {
+	const { t } = useTranslation("mcp");
 	const [query, setQuery] = useState("");
 	const normalized = query.trim().toLowerCase();
 	const filtered = normalized ? items.filter((item) => item.label.toLowerCase().includes(normalized)) : items;
@@ -409,7 +417,7 @@ function SearchableCheckboxList({
 					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
 				/>
 			))}
-			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">{t("common.noResults")}</div>}
 		</>
 	);
 }
@@ -459,7 +467,7 @@ function MCPClientFilterSection({ filters, onFiltersChange }: SidebarProps) {
 		>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search MCP servers"
+				placeholder={t("sessions.filter.searchMcpServers")}
 				items={mcpClients.map((client) => ({ key: client.config.client_id, label: client.config.name || client.config.client_id }))}
 				isSelected={(key) => filters.mcp_client_id.includes(key)}
 				onToggle={toggle}
@@ -506,7 +514,7 @@ function VirtualKeyFilterSection({ filters, onFiltersChange }: SidebarProps) {
 		>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search virtual keys"
+				placeholder={t("sessions.filter.searchVirtualKeys")}
 				items={virtualKeys.map((vk) => ({ key: vk.id, label: vk.name || vk.id }))}
 				isSelected={(key) => filters.virtual_key_id.includes(key)}
 				onToggle={toggle}
@@ -560,7 +568,7 @@ function UsersFilterSection({ filters, onFiltersChange }: SidebarProps) {
 		>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search by name or email"
+				placeholder={t("sessions.filter.searchUsers")}
 				items={users.map((user) => ({ key: user.id, label: user.label }))}
 				isSelected={(key) => filters.user_id.includes(key)}
 				onToggle={toggle}

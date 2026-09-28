@@ -408,7 +408,7 @@ export default function MCPClientSheet({
 				replaceBaselineFailed.current = true;
 			}
 			if (token === replaceDraftToken.current && !isMissingStoredSpec(error)) {
-				setReplaceParseError(`Could not load the stored document: ${getErrorMessage(error)}`);
+				setReplaceParseError(t("registry.sheet.replaceLoadStoredFailed", { message: getErrorMessage(error) }));
 			}
 		}
 	};

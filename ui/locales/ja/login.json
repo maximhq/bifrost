@@ -47,6 +47,24 @@
 		"inMinutes": "{{count}} 分後",
 		"invalidTitle": "このリンクは無効です",
 		"invalidBody": "認可リンクの期限切れ、使用済み、またはトークンが除去されています。MCP クライアントから接続を再開して新しいリンクを取得してください。",
-		"recognizeApplication": "このアプリケーションとコールバック先に心当たりがある場合のみ続行してください："
+		"recognizeApplication": "このアプリケーションとコールバック先に心当たりがある場合のみ続行してください：",
+		"signInRedirectBody": "この認可には Bifrost アカウントでのサインインが必要です。サインインページに移動します。完了するとすぐにここへ戻ります。",
+		"signInToBifrost": "Bifrost にサインイン"
+	},
+	"setup": {
+		"instructionsIntro": "セットアップトークンは、オペレーターがサーバーに設定するシークレットです。次のいずれかの方法で設定し、Bifrost を再起動してください。",
+		"instructionsEnv": "<code>BIFROST_SETUP_TOKEN</code> 環境変数を設定します。",
+		"instructionsConfig": "<code>config.json</code> のトップレベルに <code>setup_token</code> を追加します。リテラル値、<code>env.VAR</code> 参照、または <code>vault.path</code> 参照を指定できます。",
+		"instructionsHeader": "API クライアントは同じ値を <code>{{header}}</code> ヘッダーで送信します。ダッシュボード認証が有効になると、このトークンは使用できなくなります。",
+		"unreachable": "Bifrost に接続できませんでした。サーバーが実行中か確認してください。",
+		"invalidToken": "セットアップトークンが無効です",
+		"checkFailed": "トークンの確認中に Bifrost が {{status}} を返しました",
+		"title": "Bifrost のセットアップを完了",
+		"description": "ダッシュボード認証が構成されていないため、API はロックされています。続行して管理者アカウントを作成するには、セットアップトークンを入力してください。",
+		"tokenLabel": "セットアップトークン",
+		"tokenPlaceholder": "セットアップトークンを入力",
+		"continue": "続行",
+		"whereToFind": "セットアップトークンはどこで確認できますか？",
+		"notConfigured": "このサーバーにはセットアップトークンが構成されていないため、セットアップを続行できません。"
 	}
 }

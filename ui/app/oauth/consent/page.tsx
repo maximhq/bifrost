@@ -323,6 +323,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 // Bounces a signed-out visitor through /login and back via ?goto= (SSO stashes
 // it across the IdP hop). The card covers a blocked redirect.
 function RedirectToSignIn({ loginHref }: { loginHref: string }) {
+	const { t } = useTranslation("login");
 	useEffect(() => {
 		// replace(), so Back from /login doesn't re-enter the redirect.
 		window.location.replace(loginHref);
@@ -331,14 +332,12 @@ function RedirectToSignIn({ loginHref }: { loginHref: string }) {
 	return (
 		<Shell>
 			<div className="text-center">
-				<h1 className="text-xl font-semibold tracking-tight">Sign in to continue</h1>
-				<p className="text-muted-foreground mt-2 text-sm">
-					This authorization needs a signed-in Bifrost account. Taking you to sign in — you'll come straight back here.
-				</p>
+				<h1 className="text-xl font-semibold tracking-tight">{t("consent.signInToContinue")}</h1>
+				<p className="text-muted-foreground mt-2 text-sm">{t("consent.signInRedirectBody")}</p>
 				<Button asChild className="mt-6 w-full">
 					<a href={loginHref} data-testid="oauth-consent-signin-required-link">
 						<LogIn className="mr-2 size-4" />
-						Sign in to Bifrost
+						{t("consent.signInToBifrost")}
 					</a>
 				</Button>
 			</div>

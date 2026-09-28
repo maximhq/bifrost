@@ -66,7 +66,11 @@
 		"mcpServers": "MCP サーバー",
 		"virtualMcp": "仮想 MCP",
 		"virtualMcps": "仮想 MCP",
-		"video": "動画"
+		"video": "動画",
+		"agents": "エージェント",
+		"providers": "プロバイダー",
+		"webhookEndpoints": "Webhook エンドポイント",
+		"modelLimits": "モデル制限"
 	},
 	"aboutField": "{{field}}について",
 	"thisField": "このフィールド",
@@ -109,7 +113,8 @@
 		"selectModel": "モデルを選択",
 		"searching": "検索中…",
 		"loadingMore": "さらに読み込み中…",
-		"useModel": "<name>{{name}}</name> を使用"
+		"useModel": "<name>{{name}}</name> を使用",
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} ブロック"
 	},
 	"providerSelect": {
 		"select": "プロバイダーを選択",
@@ -118,12 +123,393 @@
 		"couldntLoad": "プロバイダーを読み込めませんでした。",
 		"noMatching": "一致するプロバイダーがありません。",
 		"noneAvailable": "利用可能なプロバイダーがありません。",
-		"loading": "プロバイダーを読み込み中…"
+		"loading": "プロバイダーを読み込み中…",
+		"customProviders": "カスタムプロバイダー"
 	},
 	"providerList": {
 		"moreProviders_one": "他 {{count}} 件のプロバイダー",
 		"moreProviders_other": "他 {{count}} 件のプロバイダー",
 		"moreCount": "+他 {{count}} 件"
 	},
-	"failedToLoadMoreEntities": "{{entity}}をさらに読み込めませんでした"
+	"failedToLoadMoreEntities": "{{entity}}をさらに読み込めませんでした",
+	"multiSelect": {
+		"placeholder": "オプションを選択",
+		"announce": {
+			"oneSelected": "{{label}} を選択しました。{{total}} 件中 {{selected}} 件のオプションが選択されています。",
+			"manySelected": "{{count}} 件のオプションを選択しました。全 {{total}} 件中 {{selected}} 件が選択されています。",
+			"removed": "オプションを削除しました。{{total}} 件中 {{selected}} 件のオプションが選択されています。",
+			"opened": "ドロップダウンを開きました。{{count}} 件のオプションが利用できます。矢印キーで移動します。",
+			"closed": "ドロップダウンを閉じました。",
+			"found_one": "「{{query}}」に一致するオプションが {{count}} 件見つかりました",
+			"found_other": "「{{query}}」に一致するオプションが {{count}} 件見つかりました"
+		},
+		"dropdownHelp": "複数選択ドロップダウン。矢印キーで移動、Enter で選択、Escape で閉じます。",
+		"noneSelected": "選択されたオプションはありません",
+		"selectedList_one": "{{count}} 件のオプションを選択中: {{labels}}",
+		"selectedList_other": "{{count}} 件のオプションを選択中: {{labels}}",
+		"triggerAria": "複数選択: {{total}} 件中 {{selected}} 件のオプションが選択されています。{{placeholder}}",
+		"removeFromSelection": "{{label}} を選択から削除",
+		"clearAllAria_one": "選択したオプションをクリア",
+		"clearAllAria_other": "選択した {{count}} 件のオプションをすべてクリア",
+		"availableOptions": "利用可能なオプション",
+		"searchPlaceholder": "オプションを検索...",
+		"searchAria": "利用可能なオプションを検索",
+		"searchHelp": "入力してオプションを絞り込みます。矢印キーで結果を移動します。",
+		"selectAllAria": "{{count}} 件のオプションをすべて選択",
+		"selectAll": "（すべて選択）",
+		"selectAllWithCount": "（すべて選択 - {{count}} 件）",
+		"optionSelectedAria": "{{label}}、選択済み{{disabled}}",
+		"optionNotSelectedAria": "{{label}}、未選択{{disabled}}",
+		"disabledSuffix": "、無効",
+		"clear": "クリア"
+	},
+	"quarterStart": {
+		"fiscalYearStarts": "会計年度の開始",
+		"nextReset": "次回のリセットは <date>{{reset}}</date> です。現在の四半期は {{end}} に終了します。"
+	},
+	"headersTable": {
+		"headerName": "ヘッダー名",
+		"headerValue": "ヘッダー値",
+		"headers": "ヘッダー",
+		"name": "名前",
+		"value": "値",
+		"unsupportedKey": "このキー名はサポートされていません",
+		"duplicateKey": "キーが重複しています"
+	},
+	"sidebar": {
+		"toggle": "サイドバーを切り替え"
+	},
+	"sheet": {
+		"collapse": "折りたたむ",
+		"expand": "展開"
+	},
+	"tabs": {
+		"showMore_one": "さらに {{count}} 個のタブを表示",
+		"showMore_other": "さらに {{count}} 個のタブを表示"
+	},
+	"promoCard": {
+		"dismiss": "閉じる"
+	},
+	"searchSelect": {
+		"failedToLoad": "読み込みに失敗しました。"
+	},
+	"numberAndSelect": {
+		"resetPeriod": "リセット期間"
+	},
+	"secretVar": {
+		"resolvedAfterSave": "解決後の値は保存後に表示されます"
+	},
+	"agentGrants": {
+		"label": "エージェントアクセス",
+		"tooltip": "このキーに登録済みエージェントへのアクセスを付与します。キーは各エージェントを <path0>{{path}}</path0> で呼び出せるようになります。すべてのキーに公開されているエージェントには付与は不要です。",
+		"selectPlaceholder": "追加するエージェントを選択",
+		"removeAria": "{{name}} を削除"
+	},
+	"calendarAlignment": {
+		"rollingNotice": "{{durations}} は全期間にわたってローリングウィンドウを使用します。カレンダー整列は 1d、1w、1M、1Q、1Y にのみ適用されます。"
+	},
+	"formFooter": {
+		"noPermission": "この操作を実行する権限がありません",
+		"saving": "保存中...",
+		"fixValidation": "検証エラーを修正してください",
+		"update": "{{label}}を更新",
+		"create": "{{label}}を作成"
+	},
+	"loadError": {
+		"failedToLoad": "{{entity}}の読み込みに失敗しました。",
+		"retry": "再試行"
+	},
+	"notAvailableBanner": {
+		"title": "設定ストアのセットアップがありません。",
+		"description": "UI は設定データを保存するためにデータベース接続を必要としますが、現在データベースが設定されていません。",
+		"enableHintPrefix": "UI を有効にするには、config.json にデータベース設定を追加してください（",
+		"documentation": "ドキュメント",
+		"enableHintSuffix": "を参照）。"
+	},
+	"scopeChips": {
+		"showAll_one": "{{count}} 件のスコープを表示",
+		"showAll_other": "{{count}} 件のスコープをすべて表示",
+		"grantedScopes": "付与されたスコープ"
+	},
+	"theme": {
+		"light": "ライト",
+		"dark": "ダーク",
+		"system": "システム",
+		"toggle": "テーマを切り替え"
+	},
+	"trialBanner": {
+		"expired": "Bifrost Enterprise のトライアルは終了しました。サポートが必要な場合は<link0>お問い合わせ</link0>ください。",
+		"expiresIn_one": "Bifrost Enterprise のトライアルはあと {{count}} 日で終了します。サポートが必要な場合は<link0>お問い合わせ</link0>ください。",
+		"expiresIn_other": "Bifrost Enterprise のトライアルはあと {{count}} 日で終了します。サポートが必要な場合は<link0>お問い合わせ</link0>ください。",
+		"expiredSubject": "期限切れのエンタープライズトライアルについてサポートが必要です",
+		"extendSubject": "エンタープライズトライアルの延長についてサポートが必要です"
+	},
+	"calendarAlignedLabel": "{{label}}（カレンダー）",
+	"resetsWhen": "{{when}}にリセット",
+	"budgetDisplay": {
+		"usageAria": "予算使用状況",
+		"override": "オーバーライド",
+		"baseTooltip": "基本 {{base}} + オーバーライド {{override}}"
+	},
+	"rateLimit": {
+		"tokens": "トークン",
+		"req": "リクエスト",
+		"tokensUsageAria": "トークン使用量",
+		"requestUsageAria": "リクエスト使用量"
+	},
+	"sidekiq": {
+		"sectionAria": "バックグラウンドジョブ",
+		"emptyTitle": "バックグラウンドジョブはありません",
+		"emptyDescription": "長時間実行されるタスクの進行状況がここに表示されます。",
+		"status": {
+			"pending": "キュー待ち",
+			"running": "実行中",
+			"completed": "完了",
+			"failed": "失敗",
+			"cancelled": "キャンセル済み"
+		},
+		"dismissAria": "{{label}}を閉じる",
+		"progressAria": "{{label}}の進捗",
+		"done": "完了",
+		"started": "{{when}}に開始",
+		"finished": "{{when}}に終了",
+		"stopJob": "ジョブを停止",
+		"keep": "保持"
+	},
+	"tableColumns": {
+		"configAria": "列の設定",
+		"toggle": "列の表示切り替え",
+		"resetToDefault": "デフォルトに戻す",
+		"actionsAria": "列のアクション",
+		"hide": "列を非表示",
+		"unpin": "固定を解除",
+		"pinLeft": "左に固定",
+		"pinRight": "右に固定"
+	},
+	"configSyncAlert": {
+		"message": "この設定は <code0>config.json</code0> から同期されています。今後 config.json が更新されると、UI での変更は上書きされます。config.json を初期設定のブートストラップにのみ使用している場合は、このアラートを無視して問題ありません。"
+	},
+	"breadcrumb": {
+		"label": "パンくずリスト",
+		"more": "その他"
+	},
+	"modelParameters": {
+		"keepBetween": "{{label}}は {{min}} から {{max}} の間で指定してください。",
+		"addString": "文字列を追加",
+		"select": "選択"
+	},
+	"entityAssociation": {
+		"placeholders": {
+			"virtualKey": "仮想キー名を追加...",
+			"team": "チーム名を追加...",
+			"customer": "顧客名を追加...",
+			"user": "ユーザー名を追加...",
+			"provider": "プロバイダー名を追加...",
+			"apiKey": "API キー名を追加..."
+		},
+		"noOptions": {
+			"virtualKey": "仮想キーが見つかりません",
+			"team": "チームが見つかりません",
+			"customer": "顧客が見つかりません",
+			"user": "ユーザーが見つかりません",
+			"provider": "プロバイダーが見つかりません",
+			"apiKey": "API キーが見つかりません"
+		},
+		"selected": "選択済み",
+		"createOption": "「{{value}}」を追加"
+	},
+	"combobox": {
+		"selectEllipsis3": "選択...",
+		"select": "選択…",
+		"clearSelection": "選択を解除",
+		"clearSearch": "検索をクリア",
+		"search": "検索...",
+		"typeOrSelect": "入力または選択...",
+		"use": "「{{value}}」を使用",
+		"noResults": "結果が見つかりません。",
+		"selectedCount": "{{count}} 件選択中",
+		"removeAria": "{{label}}を削除"
+	},
+	"validation": {
+		"customProviderNameIsRequired": "カスタムプロバイダー名は必須です",
+		"endpointIsRequired": "エンドポイントは必須です",
+		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 認証には、クライアント ID、クライアントシークレット、テナント ID がすべて必要です",
+		"tokenLifetimeMustBeAWholeNumberOfSeconds": "トークンの有効期間は整数の秒数で指定してください",
+		"tokenLifetimeMustBeAtLeast600Seconds": "トークンの有効期間は 600 秒以上にしてください",
+		"tokenLifetimeMustBeAtMost43200Seconds": "トークンの有効期間は 43200 秒以下にしてください",
+		"projectIdIsRequired": "プロジェクト ID は必須です",
+		"regionIsRequired": "リージョンは必須です",
+		"authCredentialsIsRequiredForServiceAccountJsonAuthentication": "サービスアカウント JSON 認証には認証情報が必要です",
+		"workloadIdentityPoolProviderAudienceIsRequired": "Workload Identity Pool プロバイダーのオーディエンスは必須です",
+		"removeTheAuthCredentialsJsonWhenUsingAwsWorkloadIdentity": "AWS ワークロードアイデンティティを使用する場合は、認証情報 JSON を削除してください",
+		"bucketNameIsRequired": "バケット名は必須です",
+		"bothAccessKeyAndSecretKeyAreRequiredForExplicit": "明示的な認証情報には、アクセスキーとシークレットキーの両方が必要です",
+		"modelNameIsRequired": "モデル名は必須です",
+		"serverUrlIsRequired": "サーバー URL は必須です",
+		"chooseAGrantType": "グラントタイプを選択してください",
+		"tokenUrlIsRequired": "トークン URL は必須です",
+		"tokenUrlMustBeAnHttpsUrl": "トークン URL は https の URL にしてください",
+		"tokenUrlMustNotCarryUserinfoAQueryOrA": "トークン URL にはユーザー情報、クエリ、フラグメントを含めないでください。追加のパラメーターは extra_params で送信してください",
+		"clientIdIsRequiredForClientCredentials": "クライアントクレデンシャルにはクライアント ID が必要です",
+		"clientSecretIsRequiredForClientCredentials": "クライアントクレデンシャルにはクライアントシークレットが必要です",
+		"privateKeyIsRequiredForJwtBearer": "JWT bearer には秘密鍵が必要です",
+		"privateKeyMustBeAnRsaOrEcPemBlock": "秘密鍵は RSA または EC の PEM ブロックにしてください",
+		"issuerIsRequiredForJwtBearer": "JWT bearer には発行者が必要です",
+		"audienceIsRequiredForJwtBearer": "JWT bearer にはオーディエンスが必要です",
+		"assertionLifetimeMustBeBetween1And3600Seconds0": "アサーションの有効期間は 1 〜 3600 秒の間で指定してください (0 でデフォルト)",
+		"accountIdIsRequired": "アカウント ID は必須です",
+		"workspaceUrlIsRequired": "ワークスペース URL は必須です",
+		"clientIdAndClientSecretAreBothRequiredForOauth": "OAuth M2M 認証には、クライアント ID とクライアントシークレットの両方が必要です",
+		"clientIdAndClientSecretMustBeSetTogether": "クライアント ID とクライアントシークレットは両方まとめて設定する必要があります",
+		"modelIdIsRequired": "モデル ID は必須です",
+		"idIsRequired": "ID は必須です",
+		"nameIsRequired": "名前は必須です",
+		"weightMustBeAValidNumberBetween0And1": "重みは 0 から 1 の間の有効な数値にしてください",
+		"weightMustBeEqualToOrGreaterThan0": "重みは 0 以上にしてください",
+		"weightMustBeEqualToOrLessThan1": "重みは 1 以下にしてください",
+		"apiKeyIsRequired": "API キーは必須です",
+		"timeoutMustBeGreaterThan0Seconds": "タイムアウトは 0 秒より大きくしてください",
+		"timeoutMustBeLessThan3600Seconds": "タイムアウトは 3600 秒未満にしてください",
+		"maxRetriesMustBeGreaterThan0": "最大再試行回数は 0 より大きくしてください",
+		"maxRetriesMustBeLessThan10": "最大再試行回数は 10 未満にしてください",
+		"streamIdleTimeoutMustBeAWholeNumberOfSeconds": "ストリームのアイドルタイムアウトは整数の秒数で指定してください",
+		"streamIdleTimeoutMustBeAtLeast5Seconds": "ストリームのアイドルタイムアウトは 5 秒以上にしてください",
+		"streamIdleTimeoutMustBeAtMost3600SecondsI": "ストリームのアイドルタイムアウトは 3600 秒 (60 分) 以下にしてください",
+		"keepAliveTimeoutMustBeAWholeNumberOfSeconds": "Keep-alive タイムアウトは整数の秒数で指定してください",
+		"keepAliveTimeoutMustBeAtLeast1Second": "Keep-alive タイムアウトは 1 秒以上にしてください",
+		"keepAliveTimeoutMustBeAtMost3600SecondsI": "Keep-alive タイムアウトは 3600 秒 (60 分) 以下にしてください",
+		"maxConnectionsMustBeAWholeNumber": "最大接続数は整数で指定してください",
+		"maxConnectionsMustBeAtLeast1": "最大接続数は 1 以上にしてください",
+		"maxConnectionsMustBeAtMost10000": "最大接続数は 10000 以下にしてください",
+		"http2PingIntervalMustBeAWholeNumberOf": "HTTP/2 ping 間隔は整数の秒数で指定してください",
+		"http2PingIntervalMustBeAtLeast0Seconds": "HTTP/2 ping 間隔は 0 秒以上にしてください",
+		"http2PingIntervalMustBeAtMost3600Seconds": "HTTP/2 ping 間隔は 3600 秒 (60 分) 以下にしてください",
+		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial は retry_backoff_max 以下にしてください",
+		"mustBeAValidHttpOrHttpsUrl": "有効な HTTP または HTTPS の URL にしてください",
+		"timeoutMustBeANumber": "タイムアウトは数値で指定してください",
+		"timeoutMustBeLessThan172800SecondsIE48": "タイムアウトは 172800 秒 (48 時間) 未満にしてください",
+		"maxRetriesMustBeANumber": "最大再試行回数は数値で指定してください",
+		"retryBackoffInitialMustBeANumber": "初期再試行バックオフは数値で指定してください",
+		"retryBackoffInitialMustBeAtLeast100ms": "初期再試行バックオフは 100ms 以上にしてください",
+		"retryBackoffInitialMustBeAtMost1000000ms": "初期再試行バックオフは 1000000ms 以下にしてください",
+		"retryBackoffMaxMustBeANumber": "最大再試行バックオフは数値で指定してください",
+		"retryBackoffMaxMustBeAtLeast100ms": "最大再試行バックオフは 100ms 以上にしてください",
+		"retryBackoffMaxMustBeAtMost1000000ms": "最大再試行バックオフは 1000000ms 以下にしてください",
+		"streamIdleTimeoutMustBeANumber": "ストリームのアイドルタイムアウトは数値で指定してください",
+		"keepAliveTimeoutMustBeANumber": "Keep-alive タイムアウトは数値で指定してください",
+		"maxConnectionsMustBeANumber": "最大接続数は数値で指定してください",
+		"http2PingIntervalMustBeANumber": "HTTP/2 ping 間隔は数値で指定してください",
+		"initialBackoffMustBeLessThanOrEqualToMax": "初期バックオフは最大バックオフ以下にしてください",
+		"concurrencyMustBeGreaterThan0": "同時実行数は 0 より大きくしてください",
+		"concurrencyMustBeLessThanOrEqualTo100": "同時実行数は 100 以下にしてください",
+		"bufferSizeMustBeGreaterThan0": "バッファサイズは 0 より大きくしてください",
+		"bufferSizeMustBeLessThanOrEqualTo1000": "バッファサイズは 1000 以下にしてください",
+		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "HTTP または SOCKS5 プロキシを使用する場合はプロキシ URL が必要です",
+		"mustBeAValidUrlEGHttpProxyExample": "有効な URL にしてください (例: http://proxy.example.com:8080)",
+		"setARoleAnIndexOrBothAPointWith": "ロール、インデックス、またはその両方を設定してください。どちらもないポイントは何にも一致しません",
+		"use164LettersDigitsOr": "1 〜 64 文字の英字、数字、_ または - を使用してください",
+		"pickAnMcpServer": "MCP サーバーを選択してください",
+		"pickATool": "ツールを選択してください",
+		"waitingForTheMcpServerToLoad": "MCP サーバーの読み込みを待っています",
+		"anotherToolAlreadyUsesThisName": "この名前は別のツールで既に使用されています",
+		"thisMcpToolIsAlreadyInjected": "この MCP ツールは既に注入されています",
+		"isKeylessIsNotAllowedForBedrock": "Bedrock ではキーレスは使用できません",
+		"baseProviderTypeIsRequired": "ベースプロバイダータイプは必須です",
+		"atLeastOneKeyIsRequired": "キーが少なくとも 1 つ必要です",
+		"providerNameIsRequired": "プロバイダー名は必須です",
+		"embeddingModelIsRequired": "埋め込みモデルは必須です",
+		"dimensionMustBeGreaterThan1ForProviderBackedSemantic": "プロバイダーを利用するセマンティックキャッシュでは、次元数は 1 より大きくしてください",
+		"maxValueBytesMustBe0OrAtLeast1024": "max_value_bytes は 0 または 1024 以上にしてください",
+		"concurrencyMustBeANumber": "同時実行数は数値で指定してください",
+		"concurrencyMustBeLessThan100000": "同時実行数は 100000 未満にしてください",
+		"bufferSizeMustBeANumber": "バッファサイズは数値で指定してください",
+		"bufferSizeMustBeLessThan100000": "バッファサイズは 100000 未満にしてください",
+		"concurrencyMustBeLessThanOrEqualToBufferSize": "同時実行数はバッファサイズ以下にしてください",
+		"pleaseSelectATraceType": "トレースタイプを選択してください",
+		"pleaseSelectAProtocol": "プロトコルを選択してください",
+		"portMustBeBetween1And65535": "ポートは 1 〜 65535 の間で指定してください",
+		"collectorAddressIsRequired": "コレクターのアドレスは必須です",
+		"metricsEndpointIsRequiredWhenMetricsPushIsEnabled": "メトリクスのプッシュを有効にする場合は、メトリクスエンドポイントが必要です",
+		"atLeastOneProfileIsRequired": "プロファイルが少なくとも 1 つ必要です",
+		"apiKeyIsRequired2": "API キーは必須です",
+		"apiKeyMustStartWithSkMx": "API キーは 'sk_mx_' で始まる必要があります",
+		"mustBeAValidUrlEGHttpPushgateway9091": "有効な URL にしてください (例: http://pushgateway:9091)",
+		"passwordIsRequiredWhenUsernameIsProvided": "ユーザー名を指定する場合はパスワードが必要です",
+		"usernameIsRequiredWhenPasswordIsProvided": "パスワードを指定する場合はユーザー名が必要です",
+		"pushGatewayUrlIsRequiredWhenThePushGatewayIs": "プッシュゲートウェイを有効にする場合は、プッシュゲートウェイ URL が必要です",
+		"specUrlMustBeAValidHttpOrHttpsUrl": "仕様の URL は有効な http:// または https:// の URL にしてください",
+		"baseUrlMustBeAValidHttpOrHttpsUrl": "ベース URL は有効な http:// または https:// の URL にしてください",
+		"pasteOrUploadASpecOrProvideASpecUrl": "仕様を貼り付けるかアップロードするか、仕様の URL を指定してください",
+		"clientNameCannotContainHyphens": "クライアント名にハイフンは使用できません",
+		"clientNameCannotContainSpaces": "クライアント名にスペースは使用できません",
+		"clientNameCannotStartWithANumber": "クライアント名を数字で始めることはできません",
+		"headerNameCannotBeEmpty": "ヘッダー名を空にすることはできません",
+		"duplicateHeaderNamesAreNotAllowed": "ヘッダー名を重複させることはできません",
+		"wildcardCannotBeCombinedWithOtherToolNames": "ワイルドカード '*' を他のツール名と組み合わせることはできません",
+		"duplicateToolNamesAreNotAllowed": "ツール名を重複させることはできません",
+		"costMustBeNonNegative": "コストは 0 以上にしてください",
+		"toolSyncIntervalMustBe0OrAPositiveNumber": "ツール同期間隔は 0 または正の分数で指定してください",
+		"wildcardCannotBeCombinedWithSpecificHeaderNames": "ワイルドカード '*' を特定のヘッダー名と組み合わせることはできません",
+		"authorizeUrlMustStartWithHttpOrHttps": "認可 URL は http:// または https:// で始まる必要があります",
+		"tokenUrlMustStartWithHttpOrHttps": "トークン URL は http:// または https:// で始まる必要があります",
+		"registrationUrlMustStartWithHttpOrHttps": "登録 URL は http:// または https:// で始まる必要があります",
+		"audienceIsRequired": "オーディエンスは必須です",
+		"authorizationServerUrlMustStartWithHttpOrHttps": "認可サーバー URL は http:// または https:// で始まる必要があります",
+		"declareAtLeastOneHeaderNameUsersMustSupply": "ユーザーが指定する必要があるヘッダー名を少なくとも 1 つ宣言してください。",
+		"proxyUrlIsRequiredWhenProxyIsEnabled": "プロキシを有効にする場合はプロキシ URL が必要です",
+		"ruleNameIsRequired": "ルール名は必須です",
+		"ruleNameMustBeLessThan255Characters": "ルール名は 255 文字未満にしてください",
+		"descriptionMustBeLessThan1000Characters": "説明は 1000 文字未満にしてください",
+		"providerIsRequired": "プロバイダーは必須です",
+		"priorityMustBe0OrGreater": "優先度は 0 以上にしてください",
+		"priorityMustBe1000OrLess": "優先度は 1000 以下にしてください",
+		"scopeIdIsRequiredWhenScopeIsNotGlobal": "スコープがグローバルでない場合はスコープ ID が必要です",
+		"additionalBudgetMustBeGreaterThan0": "追加予算は 0 より大きくしてください。",
+		"resetCyclesMustBeAPositiveWholeNumber": "リセットサイクルは正の整数にしてください。",
+		"enterTheSetupTokenConfiguredForThisBifrostInstance": "この Bifrost インスタンスに設定されたセットアップトークンを入力してください",
+		"giveTheFeedAName": "フィードに名前を付けてください",
+		"nameMustBe120CharactersOrFewer": "名前は 120 文字以内にしてください",
+		"enterTheFeedUrl": "フィードの URL を入力してください",
+		"urlIsTooLong": "URL が長すぎます",
+		"urlMustStartWithHttpOrHttps": "URL は http:// または https:// で始まる必要があります",
+		"logoMustBeAnHttpSImageUrlOrAn": "ロゴは http(s) の画像 URL またはアップロードした画像にしてください",
+		"fieldRequired": "この項目は必須です",
+		"validNumber": "有効な数値にしてください",
+		"validText": "有効なテキスト値にしてください",
+		"trueOrFalse": "true または false にしてください",
+		"expectedReceived": "{{expected}} が必要ですが、{{received}} を受け取りました",
+		"minNumber": "{{minimum}} 以上にしてください",
+		"atLeastOneItem": "項目が少なくとも 1 つ必要です",
+		"maxNumber": "{{maximum}} 以下にしてください",
+		"maxChars": "{{maximum}} 文字以内にしてください",
+		"validUrl": "有効な URL にしてください",
+		"validEmail": "有効なメールアドレスにしてください",
+		"grpcHostPortFormat": "gRPC では <host>:<port> の形式にしてください (例: {{example}})",
+		"invalidInput": "入力が無効です"
+	},
+	"permissionDenied": {
+		"create": "{{entity}}を作成する権限がありません。",
+		"edit": "{{entity}}を編集する権限がありません。",
+		"delete": "{{entity}}を削除する権限がありません。",
+		"rotate": "{{entity}}をローテーションする権限がありません。"
+	},
+	"duration": {
+		"unknown": "不明",
+		"second_one": "{{count}} 秒",
+		"second_other": "{{count}} 秒",
+		"minute_one": "{{count}} 分",
+		"minute_other": "{{count}} 分",
+		"hour_one": "{{count}} 時間",
+		"hour_other": "{{count}} 時間",
+		"day_one": "{{count}} 日",
+		"day_other": "{{count}} 日",
+		"week_one": "{{count}} 週間",
+		"week_other": "{{count}} 週間",
+		"month_one": "{{count}} か月",
+		"month_other": "{{count}} か月",
+		"quarter_one": "{{count}} 四半期",
+		"quarter_other": "{{count}} 四半期",
+		"year_one": "{{count}} 年",
+		"year_other": "{{count}} 年"
+	}
 }
