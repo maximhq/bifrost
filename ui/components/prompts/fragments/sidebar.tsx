@@ -196,7 +196,7 @@ export function PromptSidebar() {
 									variant="outline"
 									className="h-8 w-8 shrink-0 bg-transparent"
 									data-testid="sidebar-create-menu"
-									aria-label="Create prompt or folder"
+									aria-label="Add prompt or folder"
 								>
 									<PlusIcon className="h-3.5 w-3.5" />
 								</Button>
@@ -209,7 +209,7 @@ export function PromptSidebar() {
 										onCreatePrompt();
 									}}
 								>
-									New Prompt
+									Add Prompt
 								</DropdownMenuItem>
 								<DropdownMenuItem
 									data-testid="sidebar-create-folder"
@@ -218,7 +218,7 @@ export function PromptSidebar() {
 										onCreateFolder();
 									}}
 								>
-									New Folder
+									Add Folder
 								</DropdownMenuItem>
 							</DropdownMenuContent>
 						</DropdownMenu>
@@ -429,7 +429,7 @@ function DroppableFolder({
 									}}
 								>
 									<Plus className="mr-2 h-4 w-4" />
-									New Prompt
+									Add Prompt
 								</DropdownMenuItem>
 							)}
 							{canCreate && (canUpdate || canDelete) && <DropdownMenuSeparator />}

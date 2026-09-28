@@ -1,0 +1,114 @@
+# Decisions API schemas
+
+DecisionRequest:
+  type: object
+  required:
+    - model
+    - state
+    - questions
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+      example: typesafe/jev-1.13.0
+    state:
+      description: State to evaluate. A plain string, or structured data (object or array).
+      oneOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
+    questions:
+      type: object
+      minProperties: 1
+      description: Map of named questions. Question identifiers become answer field names.
+      additionalProperties:
+        $ref: '#/DecisionQuestion'
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models in provider/model format
+
+DecisionQuestion:
+  type: object
+  required:
+    - kind
+    - instructions
+  properties:
+    kind:
+      type: string
+      enum: [noul, choice, score]
+      description: How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions.
+    instructions:
+      description: Instructions for this question. A string, or structured data preserved losslessly.
+      oneOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
+    criteria:
+      description: |
+        Applicable criteria. Optional `true`/`false` descriptions for `noul`; a
+        required map of option to description for `choice` (at most 255 options);
+        a required ordered array of 2-10 level descriptions for `score`.
+      oneOf:
+        - type: object
+          additionalProperties:
+            type: string
+        - type: array
+          items:
+            type: string
+
+DecisionResponse:
+  type: object
+  required:
+    - model
+    - answers
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the decision response
+    model:
+      type: string
+      description: Model that performed the decision
+    answers:
+      type: object
+      description: Map matching question identifiers to answers. Every requested question produces an answer.
+      additionalProperties:
+        $ref: '#/DecisionAnswer'
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+DecisionAnswer:
+  type: object
+  required:
+    - kind
+    - value
+  properties:
+    kind:
+      type: string
+      enum: [noul, choice, score]
+      description: The question's decision kind
+    value:
+      description: The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.
+      oneOf:
+        - type: number
+        - type: string
+    confidence:
+      type: number
+      description: Model confidence for this answer, when supplied
+    probabilities:
+      type: object
+      additionalProperties:
+        type: number
+      description: Probability distribution over options or levels, when supplied
+    legend:
+      type: object
+      additionalProperties:
+        type: string
+      description: Legend mapping levels to descriptions, when supplied

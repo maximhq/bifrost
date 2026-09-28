@@ -1,6 +1,6 @@
+import { BaseProviderSelector } from "@/components/ui/baseProviderSelector";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
@@ -130,21 +130,9 @@ export function ApiStructureFormFragment({ provider }: Props) {
 						render={({ field }) => (
 							<FormItem>
 								<FormLabel>Base Provider Type</FormLabel>
-								<Select onValueChange={field.onChange} value={field.value}>
-									<FormControl>
-										<SelectTrigger disabled={true}>
-											<SelectValue placeholder="Select base provider" />
-										</SelectTrigger>
-									</FormControl>
-									<SelectContent>
-										<SelectItem value="openai">OpenAI</SelectItem>
-										<SelectItem value="anthropic">Anthropic</SelectItem>
-										<SelectItem value="bedrock">AWS Bedrock</SelectItem>
-										<SelectItem value="cohere">Cohere</SelectItem>
-										<SelectItem value="gemini">Gemini</SelectItem>
-										<SelectItem value="replicate">Replicate</SelectItem>
-									</SelectContent>
-								</Select>
+								<FormControl>
+									<BaseProviderSelector placeholder="Select base provider" value={field.value} onChange={field.onChange} disabled />
+								</FormControl>
 								<FormDescription>The underlying provider this custom provider will use</FormDescription>
 								<FormMessage />
 							</FormItem>

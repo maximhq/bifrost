@@ -655,3 +655,52 @@ func TestMCPContentSearch_Postgres(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(result.Logs), "Should find 1 MCP log matching 'temperature' in result")
 }
+
+// TestGetUserSpendMatViewPath checks that on Postgres with the matview ready, a window
+// of a day or more reads mv_logs_hourly: a row inserted after the refresh is not seen.
+func TestGetUserSpendMatViewPath(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	end := time.Now().UTC().Truncate(time.Hour)
+	start := end.Add(-7 * 24 * time.Hour)
+	insertSpendLog(t, db, "a1", "alice", end.Add(-3*time.Hour), 3)
+	insertSpendLog(t, db, "a2", "alice", end.Add(-5*24*time.Hour), 2)
+	insertSpendLog(t, db, "b1", "bob", end.Add(-2*time.Hour), 7)
+	insertSpendLog(t, db, "n1", "", end.Add(-time.Hour), 50)
+	refreshTestMatViews(t, db)
+	store.matViewsReady.Store(true)
+	insertSpendLog(t, db, "late", "carol", end.Add(-time.Hour), 9) // only in the raw table
+
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	got, err := store.GetUserSpend(ctx, filters)
+	require.NoError(t, err)
+	assert.Equal(t, []UserSpendEntry{{UserID: "alice", TotalCost: 5}, {UserID: "bob", TotalCost: 7}}, sortedSpend(got))
+}
+
+// TestGetUserSpendMatViewTrimsBoundaryHours checks a window that starts and ends mid-hour
+// counts only rows inside it: whole hours come from the matview, and the two partial
+// boundary hours come from the raw table, so rows in those hours but outside the window
+// are not counted.
+func TestGetUserSpendMatViewTrimsBoundaryHours(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-3 * 24 * time.Hour)
+	start := base.Add(30 * time.Minute)                                     // mid-hour
+	end := base.Add(2*24*time.Hour + 30*time.Minute)                        // mid-hour, a 48h window
+	insertSpendLog(t, db, "before", "alice", base.Add(10*time.Minute), 100) // start's hour, before start
+	insertSpendLog(t, db, "head", "alice", base.Add(45*time.Minute), 1)     // start's hour, inside
+	insertSpendLog(t, db, "mid", "alice", base.Add(24*time.Hour), 2)        // interior hour
+	insertSpendLog(t, db, "tail", "bob", end.Add(-10*time.Minute), 4)       // end's hour, inside
+	insertSpendLog(t, db, "after", "bob", end.Add(10*time.Minute), 200)     // end's hour, after end
+	refreshTestMatViews(t, db)
+	store.matViewsReady.Store(true)
+
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	got, err := store.GetUserSpend(ctx, filters)
+	require.NoError(t, err)
+	assert.Equal(t, []UserSpendEntry{{UserID: "alice", TotalCost: 3}, {UserID: "bob", TotalCost: 4}}, sortedSpend(got))
+}

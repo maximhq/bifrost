@@ -280,6 +280,7 @@ func TestResponsesToolMarshalUnmarshalRoundTrip(t *testing.T) {
 		{name: "file_search", in: `{"type":"file_search","vector_store_ids":["vs_1"]}`},
 		{name: "mcp", in: `{"type":"mcp","server_label":"srv","server_url":"https://example.com"}`},
 		{name: "local_shell", in: `{"type":"local_shell"}`},
+		{name: "computer", in: `{"type":"computer"}`},
 		{name: "image_generation", in: `{"type":"image_generation"}`},
 		{name: "web_search canonical", in: `{"type":"web_search","max_uses":3}`},
 		{
@@ -323,6 +324,25 @@ func TestResponsesToolMarshalUnmarshalRoundTrip(t *testing.T) {
 			assert.JSONEq(t, want, string(out))
 		})
 	}
+}
+
+// TestResponsesToolComputerRoundTripsBare locks in issue #7425: OpenAI's
+// computer tool for GPT-6 Astra / GPT-5.6 is exactly {"type":"computer"}. It
+// used to be folded into computer_use_preview by the "computer" prefix match
+// (meant for Anthropic's dated computer_20250124 variants), and OpenAI then
+// rejected the request with "Tool 'computer_use_preview' is not supported".
+// Byte-equality matters: OpenAI 400s on any extra field (display_*, environment).
+func TestResponsesToolComputerRoundTripsBare(t *testing.T) {
+	const in = `{"type":"computer"}`
+
+	var tool ResponsesTool
+	require.NoError(t, Unmarshal([]byte(in), &tool))
+	assert.Equal(t, ResponsesToolTypeComputer, tool.Type)
+	assert.Nil(t, tool.ResponsesToolComputerUsePreview)
+
+	out, err := MarshalSorted(tool)
+	require.NoError(t, err)
+	assert.Equal(t, in, string(out))
 }
 
 // =============================================================================

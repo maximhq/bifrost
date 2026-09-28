@@ -356,15 +356,24 @@ func (s *RDBConfigStore) DB() *gorm.DB {
 }
 
 // ScopedDB returns the DB bound to ctx with any QueryScope on ctx
-// pre-applied. Use this in read paths that should respect caller-
-// driven row visibility. Use DB().WithContext(ctx) for writes and for
-// internal lookups (e.g. inference VK auth) that must bypass scoping.
-func (s *RDBConfigStore) ScopedDB(ctx context.Context) *gorm.DB {
-	db := s.DB().WithContext(ctx)
-	if scope := queryscope.FromContext(ctx); scope != nil {
-		db = scope(db)
+// pre-applied, or the caller's transaction when one is passed, so a read
+// taken inside a transaction sees that transaction's own writes instead of
+// the state it started from. The scope is applied either way: reading
+// through a transaction does not widen what the caller may see.
+//
+// Use this in read paths that should respect caller-driven row visibility.
+// Use DB().WithContext(ctx) for writes and for internal lookups (e.g.
+// inference VK auth) that must bypass scoping.
+func (s *RDBConfigStore) ScopedDB(ctx context.Context, tx ...*gorm.DB) *gorm.DB {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
 	}
-	return db
+	scoped := db.WithContext(ctx)
+	if scope := queryscope.FromContext(ctx); scope != nil {
+		scoped = scope(scoped)
+	}
+	return scoped
 }
 
 // RunMigration opens a throwaway connection against the same
@@ -3694,6 +3703,10 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		assignmentClauses = append(assignmentClauses, "team_id = ?")
 		assignmentArgs = append(assignmentArgs, params.TeamID)
 	}
+	if params.BusinessUnitID != "" {
+		assignmentClauses = append(assignmentClauses, "business_unit_id = ?")
+		assignmentArgs = append(assignmentArgs, params.BusinessUnitID)
+	}
 	if params.UserID != "" {
 		assignmentClauses = append(assignmentClauses, "1 = 0")
 	}
@@ -3919,7 +3932,7 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			}
 		}
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
+			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "disable_content_logging", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
@@ -4903,9 +4916,9 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 // returns ErrNotFound; the caller cannot distinguish "doesn't exist"
 // from "not visible," matching the leak-prevention contract used by
 // the other governance entities.
-func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
+func (s *RDBConfigStore) GetTeam(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableTeam, error) {
 	var team tables.TableTeam
-	if err := s.ScopedDB(ctx).
+	if err := s.ScopedDB(ctx, tx...).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit").
 		First(&team, "governance_teams.id = ?", id).Error; err != nil {
@@ -5097,9 +5110,9 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 // scope returns ErrNotFound; the caller cannot distinguish "doesn't
 // exist" from "not visible," matching the leak-prevention contract
 // used by the other governance entities.
-func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
+func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer
-	if err := preloadCustomerRelations(s.ScopedDB(ctx), "").
+	if err := preloadCustomerRelations(s.ScopedDB(ctx, tx...), "").
 		First(&customer, "governance_customers.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -5793,6 +5806,11 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 		// created_at is immutable: Save writes every column, so a caller passing a rule it
 		// didn't read from the DB would otherwise zero it out. Always keep the persisted value.
 		rule.CreatedAt = existing.CreatedAt
+		// enabled is NOT NULL with a DB default, and Save writes a nil Enabled as NULL.
+		// An omitted value keeps the persisted state.
+		if rule.Enabled == nil {
+			rule.Enabled = existing.Enabled
+		}
 		if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 			return err
 		}
@@ -5890,6 +5908,11 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 			// selects every column, so an unset CreatedAt would overwrite the original insert
 			// timestamp with the zero time. Carry the persisted value forward.
 			rule.CreatedAt = existing.CreatedAt
+			// config.json rules usually omit "enabled"; keep the persisted value instead of
+			// letting Save write NULL into the NOT NULL column.
+			if rule.Enabled == nil {
+				rule.Enabled = existing.Enabled
+			}
 			if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 				return err
 			}

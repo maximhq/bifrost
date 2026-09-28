@@ -1,11 +1,11 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import {
 	MAX_LLM_MESSAGE_HISTORY,
@@ -19,7 +19,7 @@ import { ModelProvider, ModelProviderName } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Info, LoaderCircle, Save, TriangleAlert } from "lucide-react";
-import type { ReactNode } from "react";
+import { useCallback, type ReactNode } from "react";
 import { Controller, type Control, type FieldErrors, type UseFormRegister, type UseFormSetValue } from "react-hook-form";
 import type { AnalyzerFormValues, LLMFormValues, SemanticFormValues } from "../formSchema";
 import { llmTimeoutFieldValue, semanticTimeoutFieldValue } from "../formSchema";
@@ -42,7 +42,7 @@ interface Props {
 	llm: LLMFormValues | undefined;
 	canUpdate: boolean;
 	providers: ModelProvider[];
-	// Ids of the selected provider's enabled keys. Handed to ModelMultiselect so
+	// Ids of the selected provider's enabled keys. Handed to ModelSelector so
 	// the model list is narrowed to what those keys are allowed to serve.
 	providerKeyIds: string[];
 	// Chat-capable providers/keys for the inline llm fallback fields — a
@@ -96,6 +96,11 @@ export default function EmbeddingConfigSheet({
 	onSave,
 	submitError,
 }: Props) {
+	// The two pools are narrowed by the parent, so the selectors filter the full provider
+	// list back down to them rather than re-deriving the capability rules here.
+	const isEmbeddingProvider = useCallback((provider: ModelProvider) => providers.some((p) => p.name === provider.name), [providers]);
+	const isLLMProvider = useCallback((provider: ModelProvider) => llmProviders.some((p) => p.name === provider.name), [llmProviders]);
+
 	const noProviders = !providersLoading && providers.length === 0;
 	const isConfigured = Boolean(semantic?.provider && semantic?.embedding_model);
 	// A provider saved earlier can drop out of the selectable list — its keys get
@@ -180,32 +185,19 @@ export default function EmbeddingConfigSheet({
 									control={control}
 									name="semantic.provider"
 									render={({ field }) => (
-										<Select
-											value={field.value || undefined}
-											onValueChange={(value: ModelProviderName) => {
+										<ProviderSelector
+											inputId="semantic-provider"
+											data-testid="complexity-router-semantic-provider-select"
+											filter={isEmbeddingProvider}
+											value={field.value || ""}
+											onChange={(value: string) => {
 												if (value === field.value) return;
-												field.onChange(value);
+												field.onChange(value as ModelProviderName);
 												// A model name is only meaningful for its own provider.
 												setValue("semantic.embedding_model", "", { shouldDirty: true });
 											}}
 											disabled={!canUpdate || noProviders}
-										>
-											<SelectTrigger className="w-full" id="semantic-provider" data-testid="complexity-router-semantic-provider-select">
-												<SelectValue placeholder="Select provider" />
-											</SelectTrigger>
-											<SelectContent>
-												{providers
-													.filter((provider) => provider.name)
-													.map((provider) => (
-														<SelectItem key={provider.name} value={provider.name}>
-															<div className="flex items-center gap-2">
-																<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
-																<span>{getProviderLabel(provider.name)}</span>
-															</div>
-														</SelectItem>
-													))}
-											</SelectContent>
-										</Select>
+										/>
 									)}
 								/>
 								{errors?.provider && <p className="text-destructive text-xs">{errors.provider.message}</p>}
@@ -217,16 +209,16 @@ export default function EmbeddingConfigSheet({
 									control={control}
 									name="semantic.embedding_model"
 									render={({ field }) => (
-										<ModelMultiselect
+										<ModelSelector
 											inputId="semantic-embedding-model"
 											data-testid="complexity-router-semantic-model-select"
-											isSingleSelect
 											provider={semantic?.provider || undefined}
 											keys={providerKeyIds}
 											value={field.value ?? ""}
 											onChange={(model) => {
 												field.onChange(model);
 											}}
+											allowCustomModel
 											placeholder={semantic?.provider ? "Search or type an embedding model…" : "Select a provider first"}
 											disabled={!canUpdate || !semantic?.provider}
 										/>
@@ -492,32 +484,19 @@ export default function EmbeddingConfigSheet({
 											control={control}
 											name="llm.provider"
 											render={({ field }) => (
-												<Select
-													value={field.value || undefined}
-													onValueChange={(value: ModelProviderName) => {
+												<ProviderSelector
+													inputId="llm-provider"
+													data-testid="complexity-router-llm-provider-select"
+													filter={isLLMProvider}
+													value={field.value || ""}
+													onChange={(value: string) => {
 														if (value === field.value) return;
-														field.onChange(value);
+														field.onChange(value as ModelProviderName);
 														// A model name is only meaningful for its own provider.
 														setValue("llm.model", "", { shouldDirty: true });
 													}}
 													disabled={!canUpdate || noLLMProviders}
-												>
-													<SelectTrigger className="w-full" id="llm-provider" data-testid="complexity-router-llm-provider-select">
-														<SelectValue placeholder="Select provider" />
-													</SelectTrigger>
-													<SelectContent>
-														{llmProviders
-															.filter((provider) => provider.name)
-															.map((provider) => (
-																<SelectItem key={provider.name} value={provider.name}>
-																	<div className="flex items-center gap-2">
-																		<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
-																		<span>{getProviderLabel(provider.name)}</span>
-																	</div>
-																</SelectItem>
-															))}
-													</SelectContent>
-												</Select>
+												/>
 											)}
 										/>
 										{llmErrors?.provider && <p className="text-destructive text-xs">{llmErrors.provider.message}</p>}
@@ -529,16 +508,16 @@ export default function EmbeddingConfigSheet({
 											control={control}
 											name="llm.model"
 											render={({ field }) => (
-												<ModelMultiselect
+												<ModelSelector
 													inputId="llm-model"
 													data-testid="complexity-router-llm-model-select"
-													isSingleSelect
 													provider={llm?.provider || undefined}
 													keys={llmProviderKeyIds}
 													value={field.value ?? ""}
 													onChange={(model) => {
 														field.onChange(model);
 													}}
+													allowCustomModel
 													placeholder={llm?.provider ? "Search or type a chat model…" : "Select a provider first"}
 													disabled={!canUpdate || !llm?.provider}
 												/>

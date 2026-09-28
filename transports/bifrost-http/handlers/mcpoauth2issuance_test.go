@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +136,34 @@ func TestHandleRegister_DCR(t *testing.T) {
 		assert.Equal(t, "none", resp["token_endpoint_auth_method"])
 		assert.Equal(t, "mcp", resp["scope"])
 		assert.Equal(t, []any{"authorization_code"}, resp["grant_types"])
+	})
+
+	// RFC 7591 §2 puts no bound on client_name or scope; both were varchar(255),
+	// which Postgres enforces, so a long value failed registration with an opaque
+	// server_error. They must be stored and echoed verbatim.
+	t.Run("long client_name and scope are accepted and stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		longName := strings.Repeat("n", 1024)
+		longScope := longScopeValue()
+		body, err := json.Marshal(map[string]any{
+			"client_name":   longName,
+			"redirect_uris": []string{"http://127.0.0.1:1234/cb"},
+			"scope":         longScope,
+		})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		ctx.Request.Header.SetContentType("application/json")
+
+		h.handleRegister(ctx)
+		require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, longScope, resp["scope"])
+		stored, err := store.GetOAuth2ClientByClientID(context.Background(), resp["client_id"].(string))
+		require.NoError(t, err)
+		assert.Equal(t, longName, stored.ClientName)
+		assert.Equal(t, longScope, stored.Scope)
 	})
 
 	t.Run("missing redirect_uris is rejected", func(t *testing.T) {
@@ -282,6 +312,74 @@ func TestHandleAuthorize(t *testing.T) {
 		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
 		assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
 	})
+
+	// RFC 6749 §4.1.1 puts no bound on state, and platforms pack connector
+	// context into it (620 chars in the reported case). The column used to be
+	// varchar(512), which Postgres enforces, turning the request into an opaque
+	// server_error. It must reach consent with the state stored verbatim.
+	t.Run("state longer than 512 chars reaches consent and is stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		v := base(cid, "http://127.0.0.1/cb")
+		longState := strings.Repeat("s", 620)
+		v.Set("state", longState)
+		ctx := getCtx("/oauth2/authorize?" + v.Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+		loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+		require.NoError(t, err)
+		require.Contains(t, loc.Path, "/oauth/consent")
+		flowID := loc.Query().Get("flow")
+		require.NotEmpty(t, flowID)
+
+		stored, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), flowID)
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		assert.Equal(t, longState, stored.State)
+	})
+
+	// RFC 6749 §3.3 puts no bound on scope either. It is copied from the
+	// registration into the request and later the tokens, so a long registered
+	// scope must be requestable in full.
+	t.Run("long scope within the registered scope reaches consent and is stored verbatim", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		longScope := longScopeValue()
+		client := &configtables.TableOAuth2Client{
+			ID:           "client-row-long",
+			ClientID:     "client-long",
+			ClientName:   "Long Scope Client",
+			RedirectURIs: []string{"http://127.0.0.1/cb"},
+			GrantTypes:   []string{"authorization_code"},
+			Scope:        longScope,
+			CreatedAt:    time.Now(),
+		}
+		require.NoError(t, store.CreateOAuth2Client(context.Background(), client))
+		v := base(client.ClientID, "http://127.0.0.1/cb")
+		v.Set("scope", longScope)
+		ctx := getCtx("/oauth2/authorize?" + v.Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+		loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+		require.NoError(t, err)
+		require.Contains(t, loc.Path, "/oauth/consent", loc.String())
+
+		stored, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), loc.Query().Get("flow"))
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		assert.Equal(t, longScope, stored.Scope)
+	})
+}
+
+// longScopeValue returns a well-formed space-separated scope far past the old
+// varchar(255) bound, with unique tokens so the subset check sees no duplicates.
+func longScopeValue() string {
+	parts := []string{"mcp"}
+	for i := 0; i < 200; i++ {
+		parts = append(parts, fmt.Sprintf("read:%d", i))
+	}
+	return strings.Join(parts, " ")
 }
 
 func TestHandleToken_AuthorizationCode(t *testing.T) {

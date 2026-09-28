@@ -47,7 +47,7 @@ export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDi
 						<TooltipTrigger asChild>
 							<div className="space-y-1.5">
 								<div className="flex items-center justify-between gap-4">
-									<span className="font-medium text-xs">
+									<span className="text-xs font-medium">
 										{formatCurrency(effectiveMaxLimit)}
 										{b.label ? <span className="text-muted-foreground ml-1 text-xs font-normal">{b.label}</span> : null}
 										{hasOverride ? <span className="text-muted-foreground ml-1 text-[10px]">override</span> : null}

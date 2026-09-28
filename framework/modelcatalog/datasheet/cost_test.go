@@ -255,6 +255,19 @@ func makeRerankResponse(provider schemas.ModelProvider, model string, usage *sch
 	}
 }
 
+// makeDecisionResponse builds a minimal BifrostResponse for a decision request.
+func makeDecisionResponse(provider schemas.ModelProvider, model string, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		DecisionResponse: &schemas.BifrostDecisionResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.DecisionRequest,
+				RoutingInfo: routingInfoFor(provider, model),
+			},
+		},
+	}
+}
+
 // makeImageResponse builds a minimal BifrostResponse for an image generation request.
 func makeImageResponse(provider schemas.ModelProvider, model string, usage *schemas.ImageUsage) *schemas.BifrostResponse {
 	return &schemas.BifrostResponse{
@@ -296,6 +309,10 @@ func computeEmbeddingCostTotal(pricing *configstoreTables.TableModelPricing, usa
 
 func computeRerankCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
 	return bcTotal(computeRerankCost(pricing, usage, tier))
+}
+
+func computeDecisionCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+	return bcTotal(computeDecisionCost(pricing, usage, tier))
 }
 
 func computeSpeechCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) float64 {
@@ -5366,6 +5383,63 @@ func TestCalculateCost_RerankPerQuery(t *testing.T) {
 		resp := makeRerankResponse(schemas.Cohere, "rerank-v3.5", nil)
 		assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
 	})
+}
+
+// =========================================================================
+// computeDecisionCost — unit tests
+// =========================================================================
+
+func TestComputeDecisionCost_InputOnlyBilling(t *testing.T) {
+	// Typesafe's jev pricing shape: input tokens billed, output tokens free.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000000042),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     50000,
+		CompletionTokens: 40,
+		TotalTokens:      50040,
+	}
+	cost := computeDecisionCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 50000*0.000000042, cost, 1e-12)
+}
+
+func TestComputeDecisionCost_OutputRateHonored(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000001),
+		OutputCostPerToken: bifrost.Ptr(0.000002),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+	}
+	cost := computeDecisionCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 1000*0.000001+500*0.000002, cost, 1e-12)
+}
+
+func TestComputeDecisionCost_NilUsage(t *testing.T) {
+	p := configstoreTables.TableModelPricing{InputCostPerToken: new(0.000000042)}
+	assert.Equal(t, 0.0, computeDecisionCostTotal(&p, nil, serviceTier{}))
+}
+
+func TestCalculateCost_DecisionTokenBilling(t *testing.T) {
+	// Pins the dispatch arm: an unhandled request type silently falls into
+	// CalculateCost's default nil branch and every decision would cost zero.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("jev-1.13.0", "typesafe", "decisions"): {
+			Model: "jev-1.13.0", Provider: "typesafe", Mode: "decisions",
+			InputCostPerToken:  bifrost.Ptr(0.000000042),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+		},
+	})
+
+	resp := makeDecisionResponse(schemas.Typesafe, "jev-1.13.0", &schemas.BifrostLLMUsage{
+		PromptTokens: 50000,
+		TotalTokens:  50000,
+	})
+
+	assert.InDelta(t, 50000*0.000000042, s.CalculateCost(resp, nil), 1e-12)
 }
 
 func TestCalculateCost_RerankPerTokenStillWorks(t *testing.T) {

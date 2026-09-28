@@ -7,7 +7,7 @@ description: "v2.2.1 changelog - 2026-09-19"
 
 ## Changelog
 
-v2.2.1 moves the enterprise gateway onto OSS transports v2.2.1. API key scopes are now clamped to the caller's own permissions at create and update, closing a privilege escalation where any key-creating user could mint a token carrying every permission in the system. Virtual key search now matches the assigned user's name or email, and the assignee column is resolved in one batched query per page instead of one request per row. The OSS release also carries three security fixes: resource IDs are validated before they enter outbound URL paths, Bedrock S3 bucket names can no longer redirect signed requests to a caller-chosen host, and the billing idempotency key can no longer be forged through the `x-request-id` header.
+v2.2.1 moves the enterprise gateway onto OSS transports v2.2.1. API key scopes are now clamped to the caller's own permissions at create and update. Virtual key search now matches the assigned user's name or email, and the assignee column is resolved in one batched query per page instead of one request per row. The OSS release also carries three security fixes: resource IDs are validated before they enter outbound URL paths, Bedrock S3 bucket names can no longer redirect signed requests to a caller-chosen host, and the billing idempotency key can no longer be forged through the `x-request-id` header.
 
 ## ✨ Features
 

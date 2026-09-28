@@ -1,0 +1,420 @@
+package schemas
+
+import (
+	"slices"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+// Warp is the dashboard's question-answering agent. It reads the deployment's
+// own telemetry — logs, metrics, user and virtual-key usage, model performance —
+// through a read-only tool set and answers in natural language.
+//
+// Its model is configured separately from the gateway's provider pool on
+// purpose. The pool is what the deployment *serves*; Warp is what the
+// deployment *runs for itself*. Sharing them would mean a key rotation aimed at
+// tenant traffic silently changes who answers dashboard questions, and would
+// make Warp's spend indistinguishable from tenant spend in the very logs it
+// reads.
+const (
+	// WarpDefaultMaxIterations bounds the agent loop: how many times Warp may
+	// call tools and feed the results back before it must answer with what it
+	// has. Eight covers a discovery call plus a multi-flow question (metrics ->
+	// rankings -> drill-down) with room to spare; past that a loop is almost
+	// always the model failing to converge rather than a genuinely deep query.
+	WarpDefaultMaxIterations = 8
+
+	// WarpMinMaxIterations is the smallest budget that can answer.
+	//
+	// The loop keeps its final step for answering rather than researching, so one
+	// step can only do one of the two - and it spends it on a tool, ending the
+	// run out of iterations every time. Two is the smallest that both looks and
+	// replies.
+	WarpMinMaxIterations = 2
+
+	// WarpMaxIterationsCeiling is the highest value an operator may configure.
+	// Every iteration is a billable round trip whose cost the operator does not
+	// see until the invoice, so the ceiling is a guardrail rather than a
+	// technical limit.
+	WarpMaxIterationsCeiling = 20
+
+	// WarpDefaultRequestTimeoutSeconds bounds a single upstream call.
+	WarpDefaultRequestTimeoutSeconds = 120
+
+	// WarpDefaultHistoryRetentionDays is how long a saved chat is kept when the
+	// operator has not chosen.
+	//
+	// Thirty days, and deliberately not logs_store.retention_days. The two
+	// answer different questions: how long request telemetry is worth paying to
+	// store, and how long somebody's saved conversations should remain theirs to
+	// reopen. Tying them together means either transcripts vanish with a short
+	// log window or logs are kept for as long as anyone might want a chat back.
+	WarpDefaultHistoryRetentionDays = 30
+	// WarpDefaultSemanticSearchThreshold is the minimum similarity accepted by
+	// semantic log search when an operator has not supplied one.
+	WarpDefaultSemanticSearchThreshold = 0.80
+
+	// WarpDefaultSemanticSearchLimit is the default number of semantic matches.
+	WarpDefaultSemanticSearchLimit = 10
+
+	// WarpMaxSemanticSearchLimit bounds tool output and scoped rehydration work.
+	WarpMaxSemanticSearchLimit = 25
+
+	// WarpDefaultLogVectorStoreNamespace is deliberately Warp-specific: sharing
+	// an embedding namespace with another feature mixes incompatible metadata.
+	WarpDefaultLogVectorStoreNamespace = "BifrostWarpLogs"
+
+	// WarpMinTemperature and WarpMaxTemperature bound a configured temperature.
+	// 2 is OpenAI's own ceiling, the widest of the providers Warp can run
+	// against; a narrower provider (Anthropic caps at 1) rejects an
+	// out-of-its-range value itself, with its own error, rather than Warp
+	// silently clamping a number the operator typed to something else.
+	WarpMinTemperature = 0.0
+	WarpMaxTemperature = 2.0
+)
+
+// WarpReasoningEfforts is every value ReasoningEffort accepts, in the order
+// the settings page lists them. It mirrors ResponsesParametersReasoning.Effort
+// rather than the other way around - Warp does not invent a vocabulary the
+// wire format does not already have.
+var WarpReasoningEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// IsWarpReasoningEffort reports whether value is one of WarpReasoningEfforts.
+func IsWarpReasoningEffort(value string) bool {
+	return slices.Contains(WarpReasoningEfforts, value)
+}
+
+// WarpConfig is the deployment's Warp settings. Exactly one row exists.
+type WarpConfig struct {
+	Enabled bool `json:"enabled"`
+	// Provider and Model name the model that runs the agent loop.
+	Provider ModelProvider `json:"provider"`
+	Model    string        `json:"model"`
+	// APIKeyID names one of the provider's already-configured keys.
+	//
+	// This is a reference, not a credential: Warp reaches its model through this
+	// Bifrost, which resolves the id against its own key pool. Storing a
+	// reference rather than a secret is what lets this whole type skip
+	// encryption at rest, redaction on read, and the "was the key omitted or
+	// cleared?" ambiguity a write-only secret field forces on every caller.
+	//
+	// Empty is valid and common: a provider on a trusted network, or one using
+	// ambient IAM credentials, needs no key at all.
+	APIKeyID string `json:"api_key_id,omitempty"`
+	// BaseURL overrides the provider's default endpoint. Required for
+	// self-hosted and proxied deployments, empty otherwise.
+	BaseURL string `json:"base_url,omitempty"`
+	// MaxIterations bounds the agent loop. Zero means WarpDefaultMaxIterations.
+	MaxIterations int `json:"max_iterations,omitempty"`
+	// RequestTimeoutSeconds bounds a single upstream call. Zero means
+	// WarpDefaultRequestTimeoutSeconds. This feeds the dedicated Warp client's
+	// NetworkConfig, which is why it is stored rather than hardcoded: a local
+	// model behind BaseURL can be far slower than a hosted frontier model.
+	RequestTimeoutSeconds int `json:"request_timeout_seconds,omitempty"`
+	// HistoryRetentionDays is how long a saved chat is kept after its last turn.
+	// Zero means WarpDefaultHistoryRetentionDays.
+	//
+	// There is no ceiling. WarpMaxConversationsPerOwner already bounds how large
+	// the table can get, so this setting is about how long a transcript should
+	// remain readable, which is a policy question with no technically correct
+	// maximum.
+	HistoryRetentionDays int `json:"history_retention_days,omitempty"`
+	// SystemPromptSuffix is appended to Warp's built-in system prompt. It is
+	// additive only: operators can teach Warp about their naming conventions
+	// and cost model, but cannot remove the tool-use and scoping instructions
+	// the built-in prompt establishes.
+	SystemPromptSuffix string `json:"system_prompt_suffix,omitempty"`
+	// Temperature overrides the model's sampling temperature. Nil leaves it
+	// unset, so the provider applies its own default - the behavior every
+	// deployment already had before this field existed. Nil is deliberately
+	// not the same as 0: 0 is a real, fully deterministic value some operators
+	// specifically want for a tool whose whole job is reporting numbers
+	// correctly, and collapsing "not configured" onto it would make that
+	// choice impossible to express.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// ReasoningEffort sets a reasoning model's effort level ("low", "medium",
+	// "high", ...; see WarpReasoningEfforts). Empty leaves it unset, so nothing
+	// is sent - most configured models are not reasoning models, and sending
+	// an effort to one that is not is a parameter a provider may simply
+	// reject.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
+	// EmbeddingProvider, EmbeddingModel and EmbeddingAPIKeyID identify the
+	// separately configured model used to index and search gateway logs.
+	EmbeddingProvider       ModelProvider `json:"embedding_provider"`
+	EmbeddingModel          string        `json:"embedding_model"`
+	EmbeddingAPIKeyID       string        `json:"embedding_api_key_id,omitempty"`
+	EmbeddingDimension      int           `json:"embedding_dimension"`
+	LogVectorStoreNamespace string        `json:"log_vector_store_namespace"`
+	SemanticSearchThreshold float64       `json:"semantic_search_threshold"`
+	SemanticSearchLimit     int           `json:"semantic_search_limit"`
+	// RetiredLogVectorStoreNamespaces is internal lifecycle state. It is stored
+	// so source-log deletion can clean embedding spaces that are no longer read.
+	RetiredLogVectorStoreNamespaces []string `json:"-"`
+
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// EffectiveMaxIterations resolves the configured loop bound, substituting the
+// default for an unset value and clamping anything above the ceiling. Callers
+// use this rather than reading MaxIterations directly, so a row written before
+// the ceiling existed cannot uncap the loop.
+func (c *WarpConfig) EffectiveMaxIterations() int {
+	if c == nil || c.MaxIterations <= 0 {
+		return WarpDefaultMaxIterations
+	}
+	// Floored at two. The loop reserves its last step for answering, so a budget
+	// of one is spent on a tool call and the run always ends out of iterations
+	// with no answer at all. Validation refuses 1 now, but a row written before
+	// that rule would otherwise keep a budget that can never produce anything.
+	return min(max(c.MaxIterations, WarpMinMaxIterations), WarpMaxIterationsCeiling)
+}
+
+// EffectiveRequestTimeoutSeconds resolves the per-call timeout, substituting
+// the default for an unset value.
+func (c *WarpConfig) EffectiveRequestTimeoutSeconds() int {
+	if c == nil || c.RequestTimeoutSeconds <= 0 {
+		return WarpDefaultRequestTimeoutSeconds
+	}
+	return c.RequestTimeoutSeconds
+}
+
+// EffectiveHistoryRetentionDays resolves how long saved chats are kept,
+// substituting the default for an unset value.
+//
+// Zero has to mean "the default" rather than "expire everything": rows written
+// before this setting existed carry a zero, and reading that literally would
+// delete every saved chat on the deployment the first time the sweep ran.
+func (c *WarpConfig) EffectiveHistoryRetentionDays() int {
+	if c == nil || c.HistoryRetentionDays <= 0 {
+		return WarpDefaultHistoryRetentionDays
+	}
+	return c.HistoryRetentionDays
+}
+
+func (c *WarpConfig) EffectiveSemanticSearchThreshold() float64 {
+	if c == nil || c.SemanticSearchThreshold <= 0 {
+		return WarpDefaultSemanticSearchThreshold
+	}
+	return c.SemanticSearchThreshold
+}
+
+func (c *WarpConfig) EffectiveSemanticSearchLimit() int {
+	if c == nil || c.SemanticSearchLimit <= 0 {
+		return WarpDefaultSemanticSearchLimit
+	}
+	return min(c.SemanticSearchLimit, WarpMaxSemanticSearchLimit)
+}
+
+func (c *WarpConfig) EffectiveLogVectorStoreNamespace() string {
+	if c == nil {
+		return WarpDefaultLogVectorStoreNamespace
+	}
+	// Trimmed, not returned raw. This value names a namespace in the vector
+	// store and feeds embeddingConfigSignature, so returning "  Bifrost  "
+	// verbatim made it a genuinely different namespace from "Bifrost" -
+	// indexing into one while a running backfill was frozen against the other,
+	// with nothing in the UI showing a difference.
+	trimmed := strings.TrimSpace(c.LogVectorStoreNamespace)
+	if trimmed == "" {
+		return WarpDefaultLogVectorStoreNamespace
+	}
+	return trimmed
+}
+
+// IsConfigured reports whether Warp has enough settings to answer a question.
+// A row can exist and still be unusable — the settings page writes as the
+// operator fills it in — so callers must check this rather than the row's
+// presence.
+//
+// The key reference is deliberately not part of the test: a provider on a
+// trusted network, or one using ambient credentials, needs none.
+func (c *WarpConfig) IsConfigured() bool {
+	return c != nil && c.Enabled && c.Provider != "" && c.Model != "" &&
+		c.EmbeddingProvider != "" && c.EmbeddingModel != "" &&
+		c.EmbeddingDimension > 0 && strings.TrimSpace(c.EffectiveLogVectorStoreNamespace()) != ""
+}
+
+// WarpUnavailableReason tells the dashboard *why* Warp cannot answer, because
+// the two causes need opposite treatment in the UI: an unconfigured Warp is
+// fixable by the operator and must stay visible with a link to its settings,
+// while a deployment with no log store has nothing for Warp to read and no
+// in-panel remedy, so the launcher is hidden entirely.
+//
+// Both are served as 503. Without this field the dashboard would have to guess
+// from the message text, which is exactly the kind of coupling that breaks
+// silently when the message is reworded.
+type WarpUnavailableReason string
+
+const (
+	// WarpUnavailableNotConfigured means Warp has no usable settings, or is
+	// switched off. The dashboard shows a configure prompt.
+	WarpUnavailableNotConfigured WarpUnavailableReason = "not_configured"
+	// WarpUnavailableNoLogStore means the deployment persists no logs. The
+	// dashboard hides Warp.
+	WarpUnavailableNoLogStore WarpUnavailableReason = "no_log_store"
+	// WarpUnavailableNoVectorStore means semantic log storage is not connected.
+	WarpUnavailableNoVectorStore WarpUnavailableReason = "no_vector_store"
+)
+
+// WarpUnavailableResponse is the 503 body for both reasons above.
+type WarpUnavailableResponse struct {
+	Reason  WarpUnavailableReason `json:"reason"`
+	Message string                `json:"message"`
+}
+
+// Conversation history.
+//
+// A conversation is owned by whoever created it. On a deployment with
+// authentication that is the user id; without one there is no identity to scope
+// by, so every conversation shares a single owner and the history is common to
+// the deployment. Both cases use the same column and the same query - the only
+// difference is what WarpOwnerID resolves to - so there is no second code path
+// that could get the scoping wrong.
+const (
+	// WarpUserOwnerPrefix namespaces every authenticated owner id, keeping the
+	// authenticated and unauthenticated key spaces disjoint by construction.
+	WarpUserOwnerPrefix = "user:"
+
+	// WarpGlobalOwnerID owns conversations on deployments with no user identity.
+	//
+	// A sentinel rather than an empty string: empty reads as "not set yet" at
+	// every call site it passes through, and a scoping value that can be confused
+	// with a missing one is how conversations end up visible to the wrong person.
+	WarpGlobalOwnerID = "__global__"
+
+	// WarpMaxConversationsPerOwner caps stored conversations. Warp's history is a
+	// convenience, not a record of account: past this the oldest are pruned, so a
+	// deployment that never cleans up cannot grow the table without bound.
+	WarpMaxConversationsPerOwner = 100
+
+	// WarpConversationTitleChars bounds the generated title.
+	WarpConversationTitleChars = 80
+)
+
+// WarpConversation is one thread, without its messages.
+type WarpConversation struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// MessageCount lets the list render without loading every transcript.
+	MessageCount int `json:"message_count"`
+	// TotalTokens and TotalCost are the thread's spend so far, summed from its
+	// answers, so the list can show what each conversation cost.
+	TotalTokens int       `json:"total_tokens"`
+	TotalCost   float64   `json:"total_cost"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// WarpConversationDetail is a conversation with its transcript, bounded at the
+// repository to the newest messages.
+type WarpConversationDetail struct {
+	WarpConversation
+	Messages []WarpStoredMessage `json:"messages"`
+	// Truncated marks that the transcript hit the repository bound and older
+	// messages were cut. MessageCount still reports the thread's real size, so
+	// a bounded transcript renders as bounded rather than complete.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// WarpStoredMessage is one persisted turn.
+type WarpStoredMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ToolCalls records what Warp queried, so a reopened thread shows the same
+	// provenance the live one did. Without it a restored answer looks like it
+	// came from nowhere.
+	ToolCalls []WarpStoredToolCall `json:"tool_calls,omitempty"`
+	Error     string               `json:"error,omitempty"`
+	// FinishReason is "partial" when the answer was given on the last research
+	// step without settling, so a reopened thread still shows it as partial.
+	FinishReason string `json:"finish_reason,omitempty"`
+	// TotalTokens and Cost are what this answer cost to produce. Zero on user
+	// turns.
+	TotalTokens int       `json:"total_tokens,omitempty"`
+	Cost        float64   `json:"cost,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	// Question is the structured clarifying question this turn ended with, when
+	// it ended by asking. Stored structurally, not as prose: a reopened thread
+	// must render the same selectable card the live turn showed, with the hints
+	// intact so a pick still sends the short form rather than its label.
+	Question *WarpStoredQuestion `json:"question,omitempty"`
+}
+
+// WarpStoredQuestion mirrors the agent's structured question for persistence
+// and the conversation API. The JSON shape matches the live question event, so
+// the client rebuilds the same card either way.
+type WarpStoredQuestion struct {
+	Question   string                  `json:"question"`
+	Options    []WarpStoredQuestionOpt `json:"options"`
+	AllowOther bool                    `json:"allow_other"`
+	Kind       string                  `json:"kind,omitempty"`
+}
+
+// WarpStoredQuestionOpt is one pickable answer.
+type WarpStoredQuestionOpt struct {
+	Label string `json:"label"`
+	// Hint is the shorter form Warp should receive back, e.g. "-7d".
+	Hint string `json:"hint,omitempty"`
+}
+
+// WarpStoredToolCall is the persisted trace of one tool call.
+type WarpStoredToolCall struct {
+	Name       string `json:"name"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Failed     bool   `json:"failed,omitempty"`
+	// TextOffset is how many Unicode code points of the answer preceded this
+	// call, so a reopened thread interleaves narration and tool calls the way
+	// the live turn did. Zero on rows filed before it existed, which renders
+	// every call ahead of the text, as those rows always did.
+	TextOffset int `json:"text_offset,omitempty"`
+}
+
+// WarpConversationTitle derives a thread title from its opening question.
+//
+// The first question is used verbatim rather than asking a model to summarise
+// it: a title is worth nothing if generating it costs a round trip, and the
+// question someone typed is already the best short description of the thread.
+func WarpConversationTitle(question string) string {
+	title := strings.TrimSpace(question)
+	if title == "" {
+		return "New chat"
+	}
+	// Collapse whitespace so a pasted multi-line question does not become a
+	// multi-line row in the history list.
+	title = strings.Join(strings.Fields(title), " ")
+	// Runes, not bytes. The bound is documented in characters, and slicing a
+	// byte offset splits a multi-byte rune - so a CJK or emoji question became
+	// mojibake in the history list.
+	if utf8.RuneCountInString(title) <= WarpConversationTitleChars {
+		return title
+	}
+	// The ellipsis is part of the budget, not an extra three characters on top.
+	runes := []rune(title)
+	trimmed := string(runes[:WarpConversationTitleChars-3])
+	// Prefer a word boundary so the truncation does not cut mid-word.
+	if space := strings.LastIndex(trimmed, " "); space > 0 && utf8.RuneCountInString(trimmed[:space]) > WarpConversationTitleChars/2 {
+		trimmed = trimmed[:space]
+	}
+	return trimmed + "..."
+}
+
+// WarpOwnerID resolves the owner for a caller, falling back to the shared owner
+// when the deployment has no user identity.
+func WarpOwnerID(userID string) string {
+	// Trimmed only to decide whether there is an id at all; the id itself is
+	// namespaced verbatim. A JWT subject is an opaque string where whitespace is
+	// significant, and injectJWTContext stores it unchanged - so folding " u-1 "
+	// onto "u-1" handed one authenticated caller another's saved conversations.
+	if strings.TrimSpace(userID) == "" {
+		return WarpGlobalOwnerID
+	}
+	// Every authenticated id is namespaced, not just the one that collides with
+	// the sentinel. Prefixing only the sentinel moves the collision rather than
+	// removing it: a caller whose real id is "user:__global__" would land on the
+	// same owner as the caller called "__global__". Prefixing unconditionally is
+	// injective, so distinct ids stay distinct and none of them can ever equal
+	// the unauthenticated bucket.
+	return WarpUserOwnerPrefix + userID
+}

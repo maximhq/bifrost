@@ -579,6 +579,8 @@ Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/
 
 These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
 
+**Never skip any error status code in a harness test script.** Do not open a test with an early-return guard like `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }` — every unexpected status, including auth failures, rate limits, and 5xx, must fail the assertion loudly rather than silently passing the case. Assert the exact status (or bound) the case expects and include `pm.response.text()` in the failure message.
+
 Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
 
 ```bash
@@ -930,6 +932,26 @@ Available today: `virtualKeySelector`, `teamSelector`, `customerSelector` (OSS);
 Do not edit `entitySelector.tsx` to accommodate one surface. It only carries behaviour identical across every entity; per-entity differences belong in the wrapper, per-surface differences in props (`trigger`, `triggerClassName`, `excludeIds`, `noPortal`, `className`).
 
 **OSS ↔ enterprise placement.** `entitySelector.tsx` and any selector whose API is OSS live in `ui/components/entitySelectors/`. A selector for an enterprise-only API lives in `bifrost-enterprise/enterprise-ui/app/components/entitySelectors/` and OSS must never import it directly — OSS reaches it through a runtime registry (`ui/lib/registries/userPicker.tsx`, `ui/lib/registries/modelLimitScopes.tsx`), with an empty fallback under `ui/app/_fallbacks/enterprise/` so OSS-only builds simply hide the option. Keep single mode prop-compatible with the registry contract (`{ value, onChange, disabled, fallbackOption }`) so the selector can be registered as-is.
+
+---
+
+### Provider and model pickers — always `ProviderSelector` / `ModelSelector`
+
+Every provider or model picker goes through `ui/components/ui/providerSelector.tsx` or `modelSelector.tsx`. Never hand-roll a `Select` over `VisibleProviderNames`, a `Combobox` over `useGetProvidersQuery`, or a search box over `useGetModelsQuery`: these already carry provider icons and labels, server-side model search with paging, deprecated demotion, a pinned "Selected" row for a value no longer in the list, and multi-mode chips.
+
+```tsx
+<ProviderSelector value={p} onChange={setP} />                              // single
+<ProviderSelector multiple value={ps} onChange={setPs} />                   // multi
+<ProviderSelector mode="add" onSelect={add} trigger={<Button>Add</Button>} /> // fire-and-forget
+<ModelSelector provider={p} value={m} onChange={setM} allowCustomModel />
+```
+
+- `source` on `ProviderSelector`: `"configured"` (default, what the user set up), `"catalog"` (everything Bifrost supports, for add flows), `"values"` (a list from elsewhere, e.g. analytics labels that may name a deleted provider).
+- Scope models with `provider` / `keys` / `vks`; `baseModelsWithoutProvider` collapses duplicates when no provider is picked, `allowCustomModel` accepts a name off-catalog, `unfiltered` bypasses the provider's model pool.
+- Rows outside the source list go in `extraOptions` (above), `footerOptions` (below), or `allOption` for an "All Providers" sentinel. `ALL_MODELS_OPTION` is exported for the `*` row. Never merge them into the fetched array yourself.
+- They own fetch, search, paging and reset. No parent `useState` mirror, debounce, or refetch-on-open.
+- Per-surface differences are props, not forks: `size="sm"`, `contentWidth`, `noPortal` (inside a sheet), `className`, `inputId` / `ariaDescribedBy` / `ariaInvalid`, `data-testid`, `optionTestId`, `contentTestId`. For selectability use `getOptionState` (model) or `disabled` + `disabledReason` on an option (provider). Anything new is a prop defaulting to today's behaviour.
+- Pure helpers live in `providerSelector.utils.ts` with a case in `providerSelector.test.ts`, since the components pull in the store.
 
 ---
 
