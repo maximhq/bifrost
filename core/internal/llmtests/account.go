@@ -821,7 +821,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     8, // Local service, fewer retries needed
 				RetryBackoffInitial:            250 * time.Millisecond,
 				RetryBackoffMax:                4 * time.Second,
-				BaseURL:                        schemas.NewSecretVar(os.Getenv("OLLAMA_BASE_URL")),
+				BaseURL:                        schemas.NewSecretVar("env.OLLAMA_BASE_URL"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -857,7 +857,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.SGL:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                        schemas.NewSecretVar(os.Getenv("SGL_BASE_URL")),
+				BaseURL:                        schemas.NewSecretVar("env.SGL_BASE_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // SGL (self-hosted) can be variable
 				RetryBackoffInitial:            1 * time.Second,
@@ -975,7 +975,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.VLLM:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                        schemas.NewSecretVar(os.Getenv("VLLM_BASE_URL")),
+				BaseURL:                        schemas.NewSecretVar("env.VLLM_BASE_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // vllm is stable
 				RetryBackoffInitial:            5 * time.Second,
