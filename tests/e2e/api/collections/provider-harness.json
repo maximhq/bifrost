@@ -173302,6 +173302,327 @@
           }
         }
       ]
+    },
+    {
+      "name": "121. Typesafe SDK fidelity (#7599)",
+      "description": "Regression pins for #7599: the native /typesafe surface must accept what the official TypeSafe JS SDK v0.6.0 sends and keep the native contract intact. The SDK's EntryType allows null for state, instructions and criteria descriptions, and the SDK forwards additional top-level request properties (classifier.dev uses `images`). Pre-fix, null state failed locally with 400 'failed to convert request to Bifrost format', null instructions with 'question has no instructions', null noul/score descriptions were rejected, extensions were silently dropped (an image request degraded to text-only inference), upstream headers (x-typesafe-request-id, Retry-After) were not forwarded, native error detail collapsed to error_type 'api_error', and /typesafe/v1/models served a static catalog instead of the endpoint's GET /v1/models. Cases: null state forwarded and the endpoint's own 422 validation detail relayed natively (api.typesafe.ai refuses null state, per typesafe-ai/typesafe-sdk-js#6); null instructions with criteria and null descriptions accepted; upstream request-id header forwarded on success; a bare noul relays the endpoint's own 400 verdict and native detail; extension forwarded on /v1/decisions under x-bf-passthrough-extra-params (pinned through extra_fields.raw_request, which the shared profile enables); live catalog lists documented aliases with release dates.",
+      "item": [
+        {
+          "name": "[EXPECT-422] /typesafe/v1/systemone - null state forwarded and endpoint validation detail relayed natively - typesafe jev-1.13.0 - #7599",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// The SDK's EntryType allows state null; api.typesafe.ai itself refuses it with a",
+                  "// 422 validation detail (typesafe-ai/typesafe-sdk-js#6). The gateway must forward",
+                  "// the request and relay that native verdict, never reject it locally with 400.",
+                  "pm.test('endpoint verdict is relayed with its own status', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(422);",
+                  "});",
+                  "pm.test('no local Bifrost rejection replaced the native validation detail', function () {",
+                  "    pm.expect(pm.response.text()).to.not.include('failed to convert request to Bifrost format');",
+                  "    pm.expect(pm.response.text()).to.not.include('\"error_type\":\"api_error\"');",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.detail, 'body: ' + pm.response.text()).to.exist;",
+                  "    pm.expect(JSON.stringify(body.detail)).to.include('state');",
+                  "});",
+                  "pm.test('upstream x-typesafe-request-id header is forwarded on the error', function () {",
+                  "    var id = pm.response.headers.get('x-typesafe-request-id');",
+                  "    pm.expect(id, 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"jev-1.13.0\",\n  \"state\": null,\n  \"questions\": {\n    \"q\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Evaluate this state.\"\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/typesafe/v1/systemone - null instructions with criteria and null descriptions accepted - typesafe jev-1.13.0 - #7599",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Live-verified shapes (typesafe-ai/typesafe-sdk-js#6): a noul with null instructions",
+                  "// is accepted when criteria carries at least one described side; descriptions may be null.",
+                  "pm.test('SDK-valid nullable inputs are accepted', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('no local rejection message leaked', function () {",
+                  "    pm.expect(pm.response.text()).to.not.include('has no instructions');",
+                  "    pm.expect(pm.response.text()).to.not.include('must be a string, object, or array');",
+                  "});",
+                  "pm.test('typed answers come back for every question', function () {",
+                  "    pm.expect(body.answers.is_question.type).to.eql('noul');",
+                  "    pm.expect(body.answers.is_question.noul).to.be.a('number');",
+                  "    pm.expect(body.answers.category.type).to.eql('choice');",
+                  "    pm.expect(['billing', 'other']).to.include(body.answers.category.choice);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"jev-1.13.0\",\n  \"state\": \"Is anyone there? I have a question about my invoice.\",\n  \"questions\": {\n    \"is_question\": {\n      \"type\": \"noul\",\n      \"instructions\": null,\n      \"criteria\": {\n        \"true\": \"the state asks a question\",\n        \"false\": null\n      }\n    },\n    \"category\": {\n      \"type\": \"choice\",\n      \"instructions\": \"Pick the bucket\",\n      \"criteria\": {\n        \"billing\": null,\n        \"other\": null\n      }\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/typesafe/v1/systemone - upstream request id header forwarded on success - typesafe jev-1.13.0 - #7599",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native systemone succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('upstream x-typesafe-request-id header is forwarded', function () {",
+                  "    var id = pm.response.headers.get('x-typesafe-request-id');",
+                  "    pm.expect(id, 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.be.a('string');",
+                  "    pm.expect(id.length).to.be.above(0);",
+                  "});",
+                  "pm.test('native answer shape retained', function () {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.answers.is_billing.type).to.eql('noul');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"jev-1.13.0\",\n  \"state\": \"Customer message: I was charged twice.\",\n  \"questions\": {\n    \"is_billing\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is this about billing?\"\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /typesafe/v1/systemone - bare noul relays endpoint 400 with native detail - typesafe jev-1.13.0 - #7599",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// A noul with neither instructions nor criteria is SDK-valid; api.typesafe.ai refuses it",
+                  "// with 400 'Noul question must have criteria or instructions: q' (typesafe-sdk-js#6).",
+                  "// Pre-fix Bifrost answered its own local 400 ('has no instructions') and dropped the",
+                  "// upstream request id; the endpoint's verdict must come back verbatim.",
+                  "pm.test('endpoint verdict is relayed with its own status', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('native detail survives instead of a local rejection', function () {",
+                  "    pm.expect(pm.response.text()).to.include('must have criteria or instructions');",
+                  "    pm.expect(pm.response.text()).to.not.include('has no instructions');",
+                  "    pm.expect(pm.response.text()).to.not.include('\"error_type\":\"api_error\"');",
+                  "});",
+                  "pm.test('upstream x-typesafe-request-id header is forwarded on the error', function () {",
+                  "    var id = pm.response.headers.get('x-typesafe-request-id');",
+                  "    pm.expect(id, 'headers: ' + JSON.stringify(pm.response.headers.toJSON())).to.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"jev-1.13.0\",\n  \"state\": \"fixture\",\n  \"questions\": {\n    \"q\": {\n      \"type\": \"noul\"\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - native extension forwarded to typesafe under passthrough header - typesafe/jev-1.13.0 - #7599",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// api.typesafe.ai refuses unknown top-level fields with 400",
+                  "// {\"detail\":{\"error_type\":\"api_usage_error\"}} (hence [EXPECT-400]); a compatible",
+                  "// endpoint that accepts them would answer 200. Either way the field must reach the wire",
+                  "// (raw_request, enabled by the shared profile) and the endpoint's own verdict must come",
+                  "// back - never a local drop-and-200.",
+                  "var body = pm.response.json();",
+                  "pm.test('the endpoint itself rejected the extension (native api_usage_error relayed)', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(body.error && body.error.type, 'body: ' + pm.response.text()).to.eql('api_usage_error');",
+                  "});",
+                  "pm.test('extension reached the provider wire', function () {",
+                  "    var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "    pm.expect(raw, 'extra_fields: ' + JSON.stringify(body.extra_fields)).to.exist;",
+                  "    var text = typeof raw === 'string' ? raw : JSON.stringify(raw);",
+                  "    pm.expect(text).to.include('harness_marker');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"fixture\",\n  \"harness_marker\": \"7599\",\n  \"questions\": {\n    \"q\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a fixture?\"\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/typesafe/v1/models - live upstream catalog lists documented aliases with release dates - typesafe jev-latest - #7599",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('models list succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('native catalog carries name, description and release_date per model', function () {",
+                  "    pm.expect(body.models, 'body: ' + pm.response.text()).to.be.an('array');",
+                  "    pm.expect(body.models.length).to.be.above(0);",
+                  "    body.models.forEach(function (m) {",
+                  "        pm.expect(m.name).to.be.a('string');",
+                  "        pm.expect(m.name).to.not.include('typesafe/');",
+                  "        pm.expect(m.release_date, 'model ' + m.name).to.be.a('string');",
+                  "    });",
+                  "    var names = body.models.map(function (m) { return m.name; });",
+                  "    pm.expect(names).to.include('jev-latest');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "models"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

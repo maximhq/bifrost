@@ -21,6 +21,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/tidwall/gjson"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -1306,18 +1307,21 @@ func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Deci
 	if err != nil {
 		return nil, nil, err
 	}
-	if req.State == nil {
+	// An explicit null state is SDK-valid and forwarded; only an absent key is
+	// rejected here.
+	if req.State == nil && !gjson.GetBytes(ctx.PostBody(), "state").Exists() {
 		return nil, nil, fmt.Errorf("state is required for decision")
 	}
 	if len(req.Questions) == 0 {
 		return nil, nil, fmt.Errorf("questions are required for decision")
 	}
 	return req, &schemas.BifrostDecisionRequest{
-		Provider:  base.Provider,
-		Model:     base.ModelName,
-		State:     req.State,
-		Questions: req.Questions,
-		Fallbacks: base.Fallbacks,
+		Provider:    base.Provider,
+		Model:       base.ModelName,
+		State:       req.State,
+		Questions:   req.Questions,
+		Fallbacks:   base.Fallbacks,
+		ExtraParams: base.ExtraParams,
 	}, nil
 }
 
