@@ -41,6 +41,7 @@ import { ExternalLink, Info, LoaderCircle, RotateCcw, Save, Settings2, TriangleA
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { useTranslation, Trans } from "react-i18next";
 import {
 	AnalyzerFormValues,
 	analyzerConfigSchema,
@@ -104,6 +105,9 @@ function testIdPart(value: string) {
 }
 
 export default function ComplexityRouterPage() {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
+	const tcpx = (key: string, opts?: Record<string, unknown>) => t(`routing.complexityUi.${key}`, opts);
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery();
 	const [updateConfig, { isLoading: isSaving }] = useUpdateComplexityAnalyzerConfigMutation();
@@ -321,10 +325,10 @@ export default function ComplexityRouterPage() {
 			.then((defaults) => {
 				promptEdited.current = false;
 				reset(toFormValues(defaults));
-				toast.success("Reset to defaults", { position: "top-right" });
+				toast.success(t("routing.resetToDefaults"), { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(`Couldn’t restore the default phrases. ${getErrorMessage(err)}`);
+				setSubmitError(tcpx("restoreFailed", { error: getErrorMessage(err) }));
 			});
 	};
 
@@ -333,11 +337,11 @@ export default function ComplexityRouterPage() {
 		retrySemanticWarmup()
 			.unwrap()
 			.then(() => {
-				toast.success("Semantic warmup restarted", { position: "top-right" });
+				toast.success(tcpx("warmupRestarted"), { position: "top-right" });
 				void refetchStatus();
 			})
 			.catch((err) => {
-				toast.error(`Couldn’t retry semantic warmup. ${getErrorMessage(err)}`, { position: "top-right" });
+				toast.error(tcpx("warmupRetryFailed", { error: getErrorMessage(err) }), { position: "top-right" });
 			});
 	};
 
@@ -365,10 +369,10 @@ export default function ComplexityRouterPage() {
 				promptEdited.current = false;
 				reset(toFormValues(res));
 				setEmbeddingSheetOpen(false);
-				toast.success("Configuration saved", { position: "top-right" });
+				toast.success(t("routing.configSaved"), { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(`Couldn’t save the Complexity Router configuration. ${getErrorMessage(err)}`);
+				setSubmitError(tcpx("saveFailed", { error: getErrorMessage(err) }));
 			});
 	};
 
@@ -392,10 +396,10 @@ export default function ComplexityRouterPage() {
 	if (error && !data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
-				<p className="text-sm font-medium">Couldn’t load the Complexity Router configuration.</p>
+				<p className="text-sm font-medium">{t("routing.complexityLoadFailed")}</p>
 				<p className="text-muted-foreground text-sm">{getErrorMessage(error)}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
+					{tc("retry")}
 				</Button>
 			</div>
 		);
@@ -404,9 +408,9 @@ export default function ComplexityRouterPage() {
 	if (!data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
-				<p className="text-muted-foreground font-mono text-sm">No complexity router configuration is available.</p>
+				<p className="text-muted-foreground font-mono text-sm">{t("routing.complexityUnavailable")}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
+					{tc("retry")}
 				</Button>
 			</div>
 		);
@@ -425,10 +429,7 @@ export default function ComplexityRouterPage() {
 	const reembedAllWarning = willReembedAll ? (
 		<Alert variant="warning" data-testid="complexity-router-reembed-warning">
 			<TriangleAlert className="h-4 w-4" />
-			<AlertDescription>
-				Saving will embed all {totalPhrases} reference phrases through the selected provider. Changing the provider or model invalidates
-				every stored vector, so the whole list is embedded again. This uses embedding tokens and may take a short time.
-			</AlertDescription>
+			<AlertDescription>{tcpx("reembedAll", { count: totalPhrases })}</AlertDescription>
 		</Alert>
 	) : null;
 
@@ -438,10 +439,7 @@ export default function ComplexityRouterPage() {
 		!willReembedAll && newPhraseCount > 0 ? (
 			<Alert variant="warning" data-testid="complexity-router-new-phrase-warning">
 				<TriangleAlert className="h-4 w-4" />
-				<AlertDescription>
-					Saving will embed {newPhraseCount} new reference phrase{newPhraseCount === 1 ? "" : "s"} through the selected provider. The other{" "}
-					{reusedPhraseCount} reuse the embeddings this gateway already holds.
-				</AlertDescription>
+				<AlertDescription>{tcpx("newPhraseWarning", { count: newPhraseCount, reused: reusedPhraseCount })}</AlertDescription>
 			</Alert>
 		) : null;
 
@@ -463,11 +461,14 @@ export default function ComplexityRouterPage() {
 						    dead air above the phrase lists, which are the page's real
 						    work surface. */}
 						<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-end">
-							<PageTitle title="Complexity Router" beta>
-								Each request is embedded and takes the tier of the nearest reference phrase, filling the{" "}
-								<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules target.
-								{isLLMFallbackEnabled ? " Requests matching no phrase confidently fall back to the LLM classifier." : ""}
-								{liveSession.enabled ? " Session-aware routing keeps the highest tier reached during the active session." : ""}
+							<PageTitle title={t("routing.complexityTitle")} beta>
+								<Trans
+									t={t}
+									i18nKey="routing.complexityUi.description"
+									components={{ code: <code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs" /> }}
+								/>
+								{isLLMFallbackEnabled ? ` ${tcpx("descriptionLlm")}` : ""}
+								{liveSession.enabled ? ` ${tcpx("descriptionSession")}` : ""}
 							</PageTitle>
 
 							{/* Status and embedding setup ride in the header rather than as
@@ -498,19 +499,15 @@ export default function ComplexityRouterPage() {
 									data-testid="complexity-router-embedding-config-button"
 								>
 									<Settings2 className="size-3.5" />
-									{isClassifierConfigured ? "Edit embedding configuration" : "Configure embedding"}
+									{isClassifierConfigured ? tcpx("editEmbedding") : tcpx("configureEmbedding")}
 									{hasUnsavedEmbeddingConfigChanges && (
-										<span
-											className="size-1.5 rounded-full bg-amber-500"
-											role="status"
-											aria-label="Unsaved embedding configuration changes"
-										/>
+										<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label={tcpx("unsavedEmbeddingAria")} />
 									)}
 								</Button>
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
 									<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
 										<ExternalLink className="size-3.5" />
-										Docs
+										{t("routing.complexityDocs")}
 									</a>
 								</Button>
 							</div>
@@ -524,21 +521,20 @@ export default function ComplexityRouterPage() {
 						{/* ── Phrase to Tier Mapping ── */}
 						<div className="space-y-3">
 							<SectionHeading
-								title="Phrase to Tier Mapping"
-								description="A request takes the tier of its nearest phrase."
+								title={tcpx("phraseMappingTitle")}
+								description={tcpx("phraseMappingDescription")}
 								aside={
 									<span className="text-muted-foreground font-mono text-[11px] tabular-nums" data-testid="complexity-router-phrase-total">
-										{isClassifierConfigured ? `${totalPhrases} / ${MAX_SEMANTIC_PHRASES} phrases` : `${totalPhrases} phrases`}
+										{isClassifierConfigured
+											? tcpx("phrasesCap", { count: totalPhrases, max: MAX_SEMANTIC_PHRASES })
+											: tcpx("phraseCount", { count: totalPhrases })}
 									</span>
 								}
 							/>
 
 							<Alert variant="info" data-testid="complexity-router-phrase-defaults-callout">
 								<Info className="h-4 w-4" />
-								<AlertDescription>
-									The added reference phrases are examples to help you get started. We recommend auditing, refining and adding your own
-									reference phrases.
-								</AlertDescription>
+								<AlertDescription>{tcpx("phraseDefaultsCallout")}</AlertDescription>
 							</Alert>
 
 							{/* Root-level phrase issues such as cross-tier duplicates have no single
@@ -553,33 +549,38 @@ export default function ComplexityRouterPage() {
 							    each other, and equal-width columns keep a phrase's tier obvious
 							    from its position. */}
 							<div className="grid items-stretch gap-3 md:grid-cols-3">
-								{TIER_PHRASE_LIST_DEFINITIONS.map(({ key, label, description }) => {
+								{TIER_PHRASE_LIST_DEFINITIONS.map(({ key }) => {
 									const fieldError = keywordErrors?.[key as KeywordListKey];
 									const errorId = `keywords-${key}-error`;
+									const labelKey =
+										key === "simple_keywords" ? "tierSimple" : key === "medium_keywords" ? "tierMedium" : "tierComplex";
+									const descKey =
+										key === "simple_keywords" ? "tierSimpleDesc" : key === "medium_keywords" ? "tierMediumDesc" : "tierComplexDesc";
+									const label = tcpx(labelKey);
 									return (
 										<div key={key} className="bg-card relative flex flex-col overflow-hidden rounded-sm border">
 											<Controller
 												control={control}
 												name={`keywords.${key}` as const}
 												rules={{
-													validate: (value) => (value.length > 0 ? true : `${label} phrases cannot be empty`),
+													validate: (value) => (value.length > 0 ? true : tcpx("phrasesEmpty", { tier: label })),
 												}}
 												render={({ field }) => (
 													<div className="flex flex-1 flex-col space-y-2 p-4 pl-5">
 														<div className="flex items-center justify-between">
 															<span className="text-xs font-medium">{label}</span>
 															<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
-																{field.value.length} {field.value.length === 1 ? "phrase" : "phrases"}
+																{tcpx("phraseCount", { count: field.value.length })}
 															</span>
 														</div>
-														<p className="text-muted-foreground grow text-xs leading-relaxed">{description}</p>
+														<p className="text-muted-foreground grow text-xs leading-relaxed">{tcpx(descKey)}</p>
 														<TagInput
 															data-testid={`complexity-router-keywords-${testIdPart(key)}-input`}
 															value={field.value}
 															onValueChange={field.onChange}
 															listHeight={PHRASE_LIST_HEIGHT}
 															submitOnComma={false}
-															placeholder="Type a reference phrase and press Enter"
+															placeholder={tcpx("phrasePlaceholder")}
 															aria-invalid={fieldError ? true : undefined}
 															aria-describedby={fieldError ? errorId : undefined}
 															className={cn(fieldError && "border-destructive")}
@@ -601,11 +602,8 @@ export default function ComplexityRouterPage() {
 						{/* ── Session-aware routing ── */}
 						<div className="bg-card flex items-center justify-between gap-6 rounded-sm border p-4">
 							<div className="space-y-1">
-								<FieldLabel htmlFor="complexity-router-session-enabled">Session-aware routing</FieldLabel>
-								<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">
-									Keep each session at its highest complexity tier for 24 hours of inactivity. Harder turns can move up; easier turns stay
-									put to reduce model changes. Requests without a session ID route independently.
-								</p>
+								<FieldLabel htmlFor="complexity-router-session-enabled">{tcpx("sessionTitle")}</FieldLabel>
+								<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">{tcpx("sessionHelp")}</p>
 								{errors.session?.enabled && (
 									<p id="complexity-router-session-enabled-error" className="text-destructive text-xs">
 										{errors.session.enabled.message}
@@ -637,8 +635,8 @@ export default function ComplexityRouterPage() {
 						{isLLMFallbackEnabled && (
 							<div className="space-y-3">
 								<SectionHeading
-									title="Fallback Classification Prompt"
-									description="Customize the classification model's system prompt; a default is provided when no phrase matches."
+									title={tcpx("fallbackPromptTitle")}
+									description={tcpx("fallbackPromptDescription")}
 									aside={
 										<Button
 											type="button"
@@ -652,7 +650,7 @@ export default function ComplexityRouterPage() {
 											data-testid="complexity-router-llm-prompt-reset-button"
 										>
 											<RotateCcw className="h-3.5 w-3.5" />
-											Reset to default
+											{tcpx("resetToDefault")}
 										</Button>
 									}
 								/>
@@ -684,8 +682,7 @@ export default function ComplexityRouterPage() {
 									<p className="text-destructive text-xs">{errors.llm.prompt.message}</p>
 								) : (
 									<p className="text-muted-foreground text-xs leading-relaxed">
-										Leave blank to use default guidance. Bifrost always appends a fixed response-format section (the tier names and the JSON
-										answer contract), so edits here refine what the tiers mean but cannot break routing.{" "}
+										{tcpx("fallbackPromptHelp")}{" "}
 										<span className="font-mono tabular-nums">
 											{livePrompt.length}/{MAX_LLM_PROMPT_CHARACTERS}
 										</span>
@@ -720,7 +717,7 @@ export default function ComplexityRouterPage() {
 							disabled={!canUpdate || isSaving || isResetting}
 						>
 							{isResetting ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-							Restore defaults
+							{t("routing.restoreDefaults")}
 						</Button>
 						<Button
 							data-testid="complexity-router-discard-changes-button"
@@ -730,11 +727,11 @@ export default function ComplexityRouterPage() {
 							onClick={handleDiscard}
 							disabled={!isDirty || isSaving || isResetting || isFetching}
 						>
-							Discard changes
+							{t("routing.discard")}
 						</Button>
 						<Button data-testid="complexity-router-save-changes-button" type="submit" size="sm" disabled={!canSave || isSaving}>
 							{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-							{isSaving ? "Saving…" : "Save changes"}
+							{isSaving ? t("routing.saving") : t("routing.save")}
 						</Button>
 					</div>
 				</div>
@@ -767,12 +764,8 @@ export default function ComplexityRouterPage() {
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Restore defaults</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will replace the phrase to tier mapping with the default reference phrases. Your current phrases will be lost and this
-							action cannot be undone. Your embedding configuration is kept, so classification keeps running and the restored phrases are
-							embedded through the configured provider straight away.
-						</AlertDialogDescription>
+						<AlertDialogTitle>{t("routing.restoreDefaults")}</AlertDialogTitle>
+						<AlertDialogDescription>{tcpx("restoreDefaultsDesc")}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel
@@ -780,7 +773,7 @@ export default function ComplexityRouterPage() {
 							onClick={() => setRestoreDialogOpen(false)}
 							disabled={isResetting}
 						>
-							Cancel
+							{tc("cancel")}
 						</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="complexity-router-restore-confirm-button"
@@ -790,7 +783,7 @@ export default function ComplexityRouterPage() {
 							}}
 							disabled={!canUpdate || isResetting}
 						>
-							Restore defaults
+							{t("routing.restoreDefaults")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

@@ -60,6 +60,7 @@ import {
 	X,
 } from "lucide-react";
 import { ReactNode, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { IconWrap, InfoBox } from "./authorizerUi";
 import MCPClientSheet from "./mcpClientSheet";
 import { authScopeOf } from "./mcpClientFormFields";
@@ -109,6 +110,8 @@ function MCPClientActionsMenu({
 	onVerifyExchange: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
+	const { t } = useTranslation("mcp");
+	const { t: tCommon } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(false);
 
 	return (
@@ -118,7 +121,7 @@ function MCPClientActionsMenu({
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label="MCP server actions"
+					aria-label={t("registry.actionsAria")}
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
 					disabled={isReconnecting || isRefreshingTools || isReauthorizing || isVerifyingExchange}
 				>
@@ -150,7 +153,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<PencilIcon className="h-4 w-4" />
-						Edit
+						{t("registry.actions.edit")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && client.state === "pending_verification" && (
@@ -165,7 +168,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<KeyRound className="h-4 w-4" />
-						Authorize
+						{t("registry.actions.authorize")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && canReconnect && (
@@ -181,7 +184,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<RefreshCcw className="h-4 w-4" />
-						Reconnect
+						{t("registry.actions.reconnect")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && (
@@ -198,7 +201,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<ListRestart className="h-4 w-4" />
-						Refresh tools
+						{t("registry.actions.refreshTools")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess &&
@@ -216,7 +219,7 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							{client.config.auth_type === "per_user_oauth" ? "Refresh admin credential" : "Reauthorize"}
+							{client.config.auth_type === "per_user_oauth" ? t("registry.actions.refreshAdminCredential") : t("registry.actions.reauthorize")}
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
@@ -237,7 +240,7 @@ function MCPClientActionsMenu({
 							    credential rather than redoing consent with it, and the two
 							    sat side by side with identical icons. */}
 							<RotateCcwKey className="h-4 w-4" />
-							Reauthorize with a new client
+							{t("registry.actions.reauthorizeNewClient")}
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
@@ -254,7 +257,7 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							Refresh admin credential
+							{t("registry.actions.refreshAdminCredential")}
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
@@ -272,7 +275,7 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							Re-verify as me
+							{t("registry.actions.reverifyAsMe")}
 						</DropdownMenuItem>
 					)}
 				{hasDeleteAccess && (
@@ -286,7 +289,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<Trash2 className="h-4 w-4" />
-						Delete
+						{tCommon("delete")}
 					</DropdownMenuItem>
 				)}
 			</DropdownMenuContent>
@@ -313,7 +316,8 @@ interface MCPClientsTableProps {
 // ClientEndpointCell shows the /mcp/<slug> path and copies the full external URL on click.
 // Matches the Virtual MCPs table cell: the copy icon reveals on row hover (group-hover).
 function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string }) {
-	const { copy, copied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
+	const { t } = useTranslation("mcp");
+	const { copy, copied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
 	if (!slug) return <span className="text-muted-foreground text-sm">-</span>;
 	return (
 		<Tooltip>
@@ -322,7 +326,7 @@ function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string 
 					type="button"
 					onClick={() => copy(`${baseUrl}/mcp/${slug}`)}
 					className="text-muted-foreground hover:text-foreground flex w-full min-w-0 cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
-					aria-label="Copy endpoint URL"
+					aria-label={t("registry.sheet.copyEndpointAria")}
 					data-testid={`mcp-client-endpoint-copy-${slug}`}
 				>
 					<span className="truncate">/mcp/{slug}</span>
@@ -350,6 +354,8 @@ export default function MCPClientsTable({
 	limit,
 	onOffsetChange,
 }: MCPClientsTableProps) {
+	const { t } = useTranslation("mcp");
+	const { t: tCommon } = useTranslation("common");
 	const [formOpen, setFormOpen] = useState(false);
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
@@ -430,13 +436,13 @@ export default function MCPClientsTable({
 			setReconnectingClients((prev) => [...prev, client.config.client_id]);
 			await reconnectMCPClient(client.config.client_id).unwrap();
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
-			toast({ title: "Reconnected", description: `Client ${client.config.name} reconnected successfully.` });
+			toast({ title: t("registry.toast.reconnected"), description: t("registry.toast.reconnectedDesc", { name: client.config.name }) });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
 
@@ -449,14 +455,14 @@ export default function MCPClientsTable({
 		try {
 			const result = await refreshMCPClientTools(client.config.client_id).unwrap();
 			toast({
-				title: "Tools refreshed",
-				description: `Client ${client.config.name} is now serving ${result.tool_count} ${result.tool_count === 1 ? "tool" : "tools"}.`,
+				title: t("registry.toast.toolsRefreshed"),
+				description: t("registry.toast.toolsRefreshedDesc", { name: client.config.name, count: result.tool_count }),
 			});
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setRefreshingToolsClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -494,13 +500,13 @@ export default function MCPClientsTable({
 				});
 			} else {
 				toast({
-					title: "Authorization failed",
-					description: "Unexpected response from server. Please try again.",
+					title: t("registry.toast.authorizationFailed"),
+					description: t("registry.toast.unexpectedResponse"),
 					variant: "destructive",
 				});
 			}
 		} catch (error) {
-			toast({ title: "Authorization failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("registry.toast.authorizationFailed"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setAuthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -526,13 +532,13 @@ export default function MCPClientsTable({
 				});
 			} else {
 				toast({
-					title: "Reauthorization failed",
-					description: "Unexpected response from server. Please try again.",
+					title: t("registry.toast.reauthorizationFailed"),
+					description: t("registry.toast.unexpectedResponse"),
 					variant: "destructive",
 				});
 			}
 		} catch (error) {
-			toast({ title: "Reauthorization failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("registry.toast.reauthorizationFailed"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setReauthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -563,12 +569,12 @@ export default function MCPClientsTable({
 		try {
 			setVerifyingExchangeClients((prev) => [...prev, client.config.client_id]);
 			const response = await verifyMCPClientExchange(client.config.client_id).unwrap();
-			toast({ title: "Verified", description: response.message });
+			toast({ title: t("registry.toast.verified"), description: response.message });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Verification failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("registry.toast.verificationFailed"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setVerifyingExchangeClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -577,12 +583,12 @@ export default function MCPClientsTable({
 	const handleDelete = async (client: MCPClient) => {
 		try {
 			await deleteMCPClient(client.config.client_id).unwrap();
-			toast({ title: "Deleted", description: `Client ${client.config.name} removed successfully.` });
+			toast({ title: t("registry.toast.deleted"), description: t("registry.toast.deletedDesc", { name: client.config.name }) });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
 
@@ -687,7 +693,7 @@ export default function MCPClientsTable({
 	// Rendered on the empty branch too, not just the populated one: PageTitle
 	// draws nothing inline, and leaving it out drops the topbar to the
 	// route-derived fallback, which for this route reads "MCP Registry".
-	const pageTitle = <PageTitle title="MCP Server Catalog">Manage servers that can connect to the MCP Tools endpoint.</PageTitle>;
+	const pageTitle = <PageTitle title={t("registry.title")}>{t("registry.description")}</PageTitle>;
 
 	// True empty state: no servers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -715,19 +721,17 @@ export default function MCPClientsTable({
 			<AlertDialog open={!!reregisterTarget} onOpenChange={(open) => !open && setReregisterTarget(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Reauthorize {reregisterTarget?.config.name} with a new client</AlertDialogTitle>
+						<AlertDialogTitle>{t("registry.reregister.title", { name: reregisterTarget?.config.name })}</AlertDialogTitle>
 						<AlertDialogDescription>
-							Bifrost will register a new OAuth client with this server&apos;s provider and run the consent flow against it, replacing the
-							client it currently uses. Use this when the provider no longer recognises the client it issued, which shows up as
-							&quot;invalid_client&quot; on refresh and leaves a plain reauthorize unable to recover the connection.
+							{t("registry.reregister.description")}{" "}
 							{reregisterTarget?.config.auth_type === "per_user_oauth"
-								? " Every user of this server will be signed out and will have to authenticate again."
-								: " Every credential currently issued for this server will be signed out."}{" "}
-							Otherwise use Reauthorize, which keeps the current client.
+								? t("registry.reregister.perUser")
+								: t("registry.reregister.shared")}{" "}
+							{t("registry.reregister.otherwise")}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="mcp-client-reregister-confirm"
 							onClick={() => {
@@ -736,7 +740,7 @@ export default function MCPClientsTable({
 								if (target) void handleReauthorize(target, true);
 							}}
 						>
-							Register and reauthorize
+							{t("registry.reregister.confirm")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -744,21 +748,20 @@ export default function MCPClientsTable({
 			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Remove MCP Server</AlertDialogTitle>
+						<AlertDialogTitle>{t("registry.removeTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to remove MCP server {clientToDelete?.config.name}? You will need to reconnect the server to continue
-							using it.
+							{t("registry.removeDescription", { name: clientToDelete?.config.name })}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								if (clientToDelete) void handleDelete(clientToDelete);
 							}}
 							className="bg-destructive hover:bg-destructive/90"
 						>
-							Delete
+							{tCommon("delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -769,7 +772,7 @@ export default function MCPClientsTable({
 					onClose={() => setBootstrapAuthorize(null)}
 					onSuccess={async () => {
 						toast({
-							title: "Success",
+							title: t("common.success"),
 							description: bootstrapAuthorize.isPerUserOauth
 								? "OAuth setup verified successfully. Each user will authenticate individually."
 								: "MCP client connected successfully",
@@ -780,11 +783,11 @@ export default function MCPClientsTable({
 						}
 					}}
 					onError={(error) => {
-						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+						toast({ title: t("registry.toast.authorizationFailed"), description: error, variant: "destructive" });
 					}}
 					onConflict={(error) => {
 						setBootstrapAuthorize(null);
-						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+						toast({ title: t("registry.toast.authorizationFailed"), description: error, variant: "destructive" });
 					}}
 					authorizeUrl={bootstrapAuthorize.authorizeUrl}
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
@@ -798,7 +801,7 @@ export default function MCPClientsTable({
 					onClose={() => setBootstrapHeadersClient(null)}
 					onSuccess={async () => {
 						toast({
-							title: "Success",
+							title: t("common.success"),
 							description: "Headers verified successfully. Each user will submit their own values when using this MCP server.",
 						});
 						setBootstrapHeadersClient(null);
@@ -812,7 +815,7 @@ export default function MCPClientsTable({
 					onConflict={async (error) => {
 						// 409: tools were already discovered (e.g. double submit or a
 						// concurrent verification) — the client is verified; refresh.
-						toast({ title: "Already verified", description: error });
+						toast({ title: t("registry.toast.alreadyVerified"), description: error });
 						setBootstrapHeadersClient(null);
 						if (refetch) {
 							await refetch();
@@ -862,12 +865,12 @@ export default function MCPClientsTable({
 							/>
 							<div className="min-w-0 space-y-0.5">
 								<DialogTitle className="text-sm leading-snug font-medium">
-									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "Re-verify as me"}
+									{exchangeVerifyClient?.state === "pending_verification" ? t("registry.verify.verifyAsMe") : t("registry.verify.reverifyAsMe")}
 								</DialogTitle>
 								<DialogDescription className="text-xs leading-relaxed">
 									{exchangeVerifyClient?.state === "pending_verification"
-										? "Establish Bifrost's discovery credential using your identity."
-										: "Renew Bifrost's own discovery credential using your identity."}
+										? t("registry.verify.establishTitle")
+										: t("registry.verify.renewTitle")}
 								</DialogDescription>
 							</div>
 						</div>
@@ -875,20 +878,18 @@ export default function MCPClientsTable({
 					<div className="space-y-3 px-5 py-4">
 						<InfoBox icon={<KeyRound className="size-4" />}>
 							<p>
-								This exchanges your own signed-in identity to{" "}
-								{exchangeVerifyClient?.state === "pending_verification" ? "establish" : "renew"} Bifrost&apos;s discovery credential for{" "}
-								<strong>{exchangeVerifyClient?.config.name}</strong>.
+								{t("registry.verify.exchangeBody", {
+									action: exchangeVerifyClient?.state === "pending_verification" ? t("registry.verify.establish") : t("registry.verify.renew"),
+									name: exchangeVerifyClient?.config.name,
+								})}
 							</p>
 							{exchangeVerifyClient?.state === "pending_verification" ? (
 								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request.
+									{t("registry.verify.pendingHint")}
 								</p>
 							) : (
 								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
-									running it any time is safe.
+									{t("registry.verify.renewHint")}
 								</p>
 							)}
 						</InfoBox>
@@ -900,7 +901,7 @@ export default function MCPClientsTable({
 								onClick={() => setExchangeVerifyClient(null)}
 								data-testid="verify-exchange-cancel-btn"
 							>
-								Cancel
+								{tCommon("cancel")}
 							</Button>
 							<Button
 								size="sm"
@@ -916,7 +917,9 @@ export default function MCPClientsTable({
 								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
 									<Loader2 className="size-3.5 animate-spin" />
 								) : null}
-								Continue
+								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id)
+									? t("registry.verify.verifying")
+									: t("common.continue")}
 							</Button>
 						</div>
 					</div>
@@ -957,12 +960,12 @@ export default function MCPClientsTable({
 							/>
 							<div className="min-w-0 space-y-0.5">
 								<DialogTitle className="text-sm leading-snug font-medium">
-									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "Re-verify as me"}
+									{exchangeVerifyClient?.state === "pending_verification" ? t("registry.verify.verifyAsMe") : t("registry.verify.reverifyAsMe")}
 								</DialogTitle>
 								<DialogDescription className="text-xs leading-relaxed">
 									{exchangeVerifyClient?.state === "pending_verification"
-										? "Establish Bifrost's discovery credential using your identity."
-										: "Renew Bifrost's own discovery credential using your identity."}
+										? t("registry.verify.establishTitle")
+										: t("registry.verify.renewTitle")}
 								</DialogDescription>
 							</div>
 						</div>
@@ -970,20 +973,18 @@ export default function MCPClientsTable({
 					<div className="space-y-3 px-5 py-4">
 						<InfoBox icon={<KeyRound className="size-4" />}>
 							<p>
-								This exchanges your own signed-in identity to{" "}
-								{exchangeVerifyClient?.state === "pending_verification" ? "establish" : "renew"} Bifrost&apos;s discovery credential for{" "}
-								<strong>{exchangeVerifyClient?.config.name}</strong>.
+								{t("registry.verify.exchangeBody", {
+									action: exchangeVerifyClient?.state === "pending_verification" ? t("registry.verify.establish") : t("registry.verify.renew"),
+									name: exchangeVerifyClient?.config.name,
+								})}
 							</p>
 							{exchangeVerifyClient?.state === "pending_verification" ? (
 								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request.
+									{t("registry.verify.pendingHint")}
 								</p>
 							) : (
 								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-									are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
-									running it any time is safe.
+									{t("registry.verify.renewHint")}
 								</p>
 							)}
 						</InfoBox>
@@ -995,7 +996,7 @@ export default function MCPClientsTable({
 								onClick={() => setExchangeVerifyClient(null)}
 								data-testid="verify-exchange-cancel-btn"
 							>
-								Cancel
+								{tCommon("cancel")}
 							</Button>
 							<Button
 								size="sm"
@@ -1011,7 +1012,9 @@ export default function MCPClientsTable({
 								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
 									<Loader2 className="size-3.5 animate-spin" />
 								) : null}
-								Continue
+								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id)
+									? t("registry.verify.verifying")
+									: t("common.continue")}
 							</Button>
 						</div>
 					</div>
@@ -1025,8 +1028,8 @@ export default function MCPClientsTable({
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search MCP servers by name"
-						placeholder="Search by name..."
+						aria-label={t("registry.searchAria")}
+						placeholder={t("registry.searchPlaceholder")}
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -1041,7 +1044,7 @@ export default function MCPClientsTable({
 						onClick={onServerFilterClear}
 						data-testid="mcp-client-server-filter-clear-btn"
 					>
-						Server filter
+						{t("registry.serverFilter")}
 						<X className="size-3" />
 					</Button>
 				)}
@@ -1050,20 +1053,20 @@ export default function MCPClientsTable({
 					<MCPUsageGuideSheet />
 					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
 						{/* The label is hidden below sm, leaving a bare icon. */}
-						<Link to="/workspace/mcp-registry/library" aria-label="MCP server library">
+						<Link to="/workspace/mcp-registry/library" aria-label={t("registry.libraryAria")}>
 							<Box />
-							<span className="hidden sm:inline">Library</span>
+							<span className="hidden sm:inline">{t("common.library")}</span>
 						</Link>
 					</Button>
 					<Button
 						onClick={handleCreate}
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
-						aria-label="Add MCP Server"
+						aria-label={t("registry.addServer")}
 						className="h-8 gap-2"
 					>
 						<Plus />
-						<span className="hidden sm:inline">Add MCP Server</span>
+						<span className="hidden sm:inline">{t("registry.addServer")}</span>
 					</Button>
 				</div>
 			</div>
@@ -1073,18 +1076,18 @@ export default function MCPClientsTable({
 					<Table data-testid="mcp-clients-table" containerClassName="h-full overflow-auto" className="w-full min-w-[1516px] table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead className="w-[260px] font-semibold">Name</TableHead>
-								<TableHead className="w-[180px] font-semibold">Endpoint</TableHead>
-								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
-								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
-								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
-								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
-								<TableHead className="w-[150px] font-semibold">Access</TableHead>
-								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
-								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
+								<TableHead className="w-[260px] font-semibold">{t("registry.columns.name")}</TableHead>
+								<TableHead className="w-[180px] font-semibold">{t("registry.columns.endpoint")}</TableHead>
+								<TableHead className="w-[150px] font-semibold">{t("registry.columns.connectionType")}</TableHead>
+								<TableHead className="w-[150px] font-semibold">{t("registry.columns.authType")}</TableHead>
+								<TableHead className="w-[140px] font-semibold">{t("registry.columns.authScope")}</TableHead>
+								<TableHead className="w-[120px] font-semibold">{t("registry.columns.codeMode")}</TableHead>
+								<TableHead className="w-[150px] font-semibold">{t("registry.columns.access")}</TableHead>
+								<TableHead className="w-[130px] font-semibold">{t("registry.columns.enabledTools")}</TableHead>
+								<TableHead className="w-[160px] font-semibold">{t("registry.columns.autoExecuteTools")}</TableHead>
 								<TableHead className="w-[140px] font-semibold">
 									<HeaderWithTooltip
-										label="State"
+										label={t("registry.columns.state")}
 										tooltip={
 											<>
 												<p>
@@ -1101,13 +1104,13 @@ export default function MCPClientsTable({
 													rel="noreferrer"
 													className="text-primary mt-2 inline-block underline"
 												>
-													See all connection states
+													{t("registry.seeAllConnectionStates")}
 												</a>
 											</>
 										}
 									/>
 								</TableHead>
-								<TableHead className="w-[90px] font-semibold">Status</TableHead>
+								<TableHead className="w-[90px] font-semibold">{t("registry.columns.status")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -1115,7 +1118,7 @@ export default function MCPClientsTable({
 							{mcpClients.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={12} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching MCP servers found.</span>
+										<span className="text-muted-foreground text-sm">{t("registry.noMatch")}</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -1168,7 +1171,7 @@ export default function MCPClientsTable({
 												    that can't be reached right now is still configured for code
 												    mode or not. */}
 												<Badge className={c.config.is_code_mode_client ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}>
-													{c.config.is_code_mode_client ? "Enabled" : "Disabled"}
+													{c.config.is_code_mode_client ? t("common.enabled") : t("common.disabled")}
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">
@@ -1228,11 +1231,11 @@ export default function MCPClientsTable({
 														})
 															.unwrap()
 															.then(() => {
-																toast({ title: `Server ${checked ? "enabled" : "disabled"} successfully` });
+																toast({ title: checked ? t("registry.toast.serverEnabled") : t("registry.toast.serverDisabled") });
 																if (refetch) refetch();
 															})
 															.catch((err) => {
-																toast({ title: "Error", description: getErrorMessage(err), variant: "destructive" });
+																toast({ title: tCommon("error"), description: getErrorMessage(err), variant: "destructive" });
 															})
 															.finally(() => {
 																setTogglingClientIds((prev) => {
@@ -1281,8 +1284,11 @@ export default function MCPClientsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("common.ofEntries", {
+								from: (offset + 1).toLocaleString(),
+								to: Math.min(offset + limit, totalCount).toLocaleString(),
+								total: totalCount.toLocaleString(),
+							})}
 						</div>
 
 						<div className="flex items-center gap-2">
@@ -1292,15 +1298,15 @@ export default function MCPClientsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="mcp-clients-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label={t("common.previousPage")}
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>{t("common.page")}</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								<span>{t("common.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
 							</div>
 
 							<Button
@@ -1309,7 +1315,7 @@ export default function MCPClientsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="mcp-clients-pagination-next-btn"
-								aria-label="Next page"
+								aria-label={t("common.nextPage")}
 							>
 								<ChevronRight className="size-3" />
 							</Button>
@@ -1325,23 +1331,23 @@ export default function MCPClientsTable({
 					onClose={() => setReauthorizeFlow(null)}
 					onSuccess={() => {
 						toast({
-							title: "Success",
+							title: t("common.success"),
 							description: reauthorizeFlow.isPerUserOauth
-								? "Admin discovery credential refreshed successfully."
-								: "MCP client re-authorized successfully",
+								? t("registry.toast.adminCredentialRefreshed")
+								: t("registry.toast.reauthorized"),
 						});
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
 					onError={(error) => {
-						toast({ title: "Reauthorization failed", description: error, variant: "destructive" });
+						toast({ title: t("registry.toast.reauthorizationFailed"), description: error, variant: "destructive" });
 					}}
 					onConflict={(error) => {
 						// 409: the server refused to complete because the consent
 						// never actually finished (the flow is still pending, or no
 						// fresh credential was written). Nothing was repaired, so
 						// say so instead of claiming success.
-						toast({ title: "Reauthorization did not complete", description: error, variant: "destructive" });
+						toast({ title: t("registry.toast.reauthorizationDidNotComplete"), description: error, variant: "destructive" });
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
@@ -1375,7 +1381,7 @@ export default function MCPClientsTable({
 					open={!!headersRefreshFlow}
 					onClose={() => setHeadersRefreshFlow(null)}
 					onSuccess={() => {
-						toast({ title: "Success", description: "Admin discovery credential refreshed successfully." });
+						toast({ title: t("common.success"), description: t("registry.toast.adminCredentialRefreshed") });
 						setHeadersRefreshFlow(null);
 						if (refetch) void refetch();
 					}}
@@ -1386,7 +1392,7 @@ export default function MCPClientsTable({
 						// 409: the flow's completion raced (double submit / concurrent
 						// verification) or the credential no longer needed a refresh;
 						// either way the client is fine, so treat it as success.
-						toast({ title: "Already verified", description: error });
+						toast({ title: t("registry.toast.alreadyVerified"), description: error });
 						setHeadersRefreshFlow(null);
 						if (refetch) void refetch();
 					}}

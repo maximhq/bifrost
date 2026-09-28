@@ -4,6 +4,7 @@ import { getErrorMessage, useGetMCPSessionsQuery } from "@/lib/store";
 import { AuthMode, MCPSessionKind, MCPSessionStatus } from "@/lib/types/mcpSessions";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { MCPSessionFilters, MCPSessionsFilterSidebar } from "./views/mcpSessionsFilterSidebar";
 import SessionsTable from "./views/sessionsTable";
 
@@ -12,6 +13,7 @@ import SessionsTable from "./views/sessionsTable";
 const PAGE_SIZE = 50;
 
 export default function MCPSessionsPage() {
+	const { t } = useTranslation("mcp");
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			q: parseAsString.withDefault(""),
@@ -87,7 +89,7 @@ export default function MCPSessionsPage() {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
 				<div className="border-destructive bg-destructive/10 text-destructive rounded-lg border p-6 text-sm">
-					Failed to load MCP sessions: {getErrorMessage(error)}
+					{t("sessions.loadFailed", { message: getErrorMessage(error) })}
 				</div>
 			</div>
 		);

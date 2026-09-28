@@ -1,5 +1,6 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { buildCodexConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { CodexConfigScope, HarnessInstallProps } from "../types";
@@ -14,6 +15,7 @@ export function CodexHarnessInstall({
 	selectedServers,
 	serverScope,
 }: HarnessInstallProps) {
+	const { t } = useTranslation("mcp");
 	const [configScope, setConfigScope] = useState<CodexConfigScope>("user");
 
 	const config = useMemo(
@@ -39,12 +41,12 @@ export function CodexHarnessInstall({
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="user">User</SelectItem>
-							<SelectItem value="project">Project</SelectItem>
+						<SelectItem value="user">{t("usageGuide.scopeUser")}</SelectItem>
+						<SelectItem value="project">{t("usageGuide.scopeProject")}</SelectItem>
 						</SelectContent>
 					</Select>
 				}
-				copySuccessMessage="Config copied"
+				copySuccessMessage={t("common.configCopied")}
 				emptyMessage={emptyMessage}
 				harnessName="Codex"
 				label="config.toml"

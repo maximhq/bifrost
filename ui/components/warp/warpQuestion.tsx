@@ -4,6 +4,7 @@ import { isTypingInto, type WarpQuestion } from "@/components/warp/warpStream.ut
 import { cn } from "@/lib/utils";
 import { MessageCircleQuestion } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface WarpQuestionCardProps {
 	question: WarpQuestion;
@@ -29,6 +30,7 @@ const OPTION_KEYS = ["A", "B", "C", "D", "E", "F", "G", "H"];
  * can proceed on its own judgement as long as it says what it assumed.
  */
 export default function WarpQuestionCard({ question, onAnswer, onSkip }: WarpQuestionCardProps) {
+	const { t } = useTranslation("shell");
 	// Which option is selected. Without it the letter keys and arrows work but
 	// look like they do nothing, so the card reads as click-only and the whole
 	// keyboard affordance goes unused.
@@ -106,7 +108,7 @@ export default function WarpQuestionCard({ question, onAnswer, onSkip }: WarpQue
 			<div className="border-primary/25 bg-primary/3 space-y-3 rounded-md border p-3">
 				<div className="text-muted-foreground flex items-center gap-2 text-xs font-normal">
 					<MessageCircleQuestion className="size-3.5 shrink-0" />
-					<span>Question</span>
+					<span>{t("warp.question.label")}</span>
 				</div>
 
 				{/* The only medium weight in the card. Everything else is normal, so the
@@ -160,13 +162,13 @@ export default function WarpQuestionCard({ question, onAnswer, onSkip }: WarpQue
 					    centre line. As bare siblings they inherited different
 					    line-heights and sat a pixel apart. */}
 						<span className="flex items-center gap-1.5">
-							<span>Skip</span>
+							<span>{t("warp.question.skip")}</span>
 							<kbd className="text-muted-foreground font-mono text-[10px] leading-none">Esc</kbd>
 						</span>
 					</Button>
 				</div>
 
-				{question.allow_other && <p className="text-muted-foreground text-[11px]">Or type your own answer below.</p>}
+				{question.allow_other && <p className="text-muted-foreground text-[11px]">{t("warp.question.orType")}</p>}
 			</div>
 		</div>
 	);

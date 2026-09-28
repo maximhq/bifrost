@@ -54,6 +54,45 @@ BIFROST_PORT=8080
 - **Real-time**: WebSocket integration
 - **HTTP Client**: Axios with typed service layer
 - **Theme**: Dark/light mode support
+- **i18n**: i18next + react-i18next (English default; zh-CN, zh-TW, ja, ko, es, pt, fr, de, it, ru)
+
+### Internationalization (i18n)
+
+UI copy uses `i18next`. Source and fallback locale stay **en**. Also supported: zh-CN, zh-TW, ja, ko, es, pt, fr, de, it, ru. The selection is persisted in `localStorage` under `bifrost.locale`.
+
+#### Layout
+
+| Path | Purpose |
+| --- | --- |
+| `lib/i18n/index.ts` | Init; exports `i18n` / `SUPPORTED_LOCALES` / `changeLocale` / `getLocale` |
+| `lib/i18n/resources.ts` | Aggregates namespace JSON |
+| `locales/en/*.json` | English (source and fallback) |
+| `locales/<code>/*.json` | Other supported locales, same keys as English |
+
+Namespaces include `common`, `shell`, `login`, `observability`, `models`, `mcp`, `governance`, and `config`.
+
+#### Adding copy
+
+1. Add the same key to `locales/en/<ns>.json` and each `locales/<code>/<ns>.json`.
+2. For a new namespace: create the JSON files and register them in `lib/i18n/resources.ts`.
+3. In components:
+
+```tsx
+import { useTranslation } from "react-i18next";
+
+const { t } = useTranslation("common");
+return <button>{t("save")}</button>;
+
+// Other namespaces
+const { t: tShell } = useTranslation("shell");
+```
+
+Default namespace is `common`. `I18nextProvider` is mounted in `app/clientLayout.tsx`, so any Router child can use `useTranslation`.
+
+#### Switching language
+
+- UI: topbar `LanguageSwitcher` (labels come from `SUPPORTED_LOCALES`; default remains English)
+- Programmatically: `import { changeLocale, getLocale } from "@/lib/i18n"`, then `await changeLocale("zh-CN")`
 
 ### Integration Model
 

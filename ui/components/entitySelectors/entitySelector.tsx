@@ -21,7 +21,21 @@
 
 import { CheckIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
 import { type ComponentType, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { components } from "react-select";
+
+const ENTITY_NOUN_KEYS: Record<string, string> = {
+	team: "entities.team",
+	teams: "entities.teams",
+	customer: "entities.customer",
+	customers: "entities.customers",
+	"virtual key": "entities.virtualKey",
+	"virtual keys": "entities.virtualKeys",
+	"MCP server": "entities.mcpServer",
+	"MCP servers": "entities.mcpServers",
+	"Virtual MCP": "entities.virtualMcp",
+	"Virtual MCPs": "entities.virtualMcps",
+};
 
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
@@ -175,6 +189,7 @@ interface EntitySelectorChromeProps {
 export type EntitySelectorProps = EntitySelectorChromeProps & EntitySelectorCommonProps & EntitySelectorModeProps;
 
 export function EntitySelector(props: EntitySelectorProps) {
+	const { t } = useTranslation("common");
 	const {
 		entityLabel,
 		entityLabelPlural,
@@ -272,10 +287,14 @@ export function EntitySelector(props: EntitySelectorProps) {
 		onOpenChange(false);
 	};
 
-	const resolvedPlaceholder = placeholder ?? (isMulti ? `Select ${entityLabelPlural}...` : `Select a ${entityLabel}...`);
-	const resolvedSearchPlaceholder = searchPlaceholder ?? `Search ${entityLabelPlural}...`;
-	const emptyMessage = debouncedSearch ? `No matching ${entityLabelPlural}` : `No ${entityLabelPlural} found`;
-	const errorMessage = `Failed to load ${entityLabelPlural}`;
+	const entityKey = ENTITY_NOUN_KEYS[entityLabel];
+	const entitiesKey = ENTITY_NOUN_KEYS[entityLabelPlural];
+	const entity = entityKey ? t(entityKey) : entityLabel;
+	const entities = entitiesKey ? t(entitiesKey) : entityLabelPlural;
+	const resolvedPlaceholder = placeholder ?? (isMulti ? t("selectEntities", { entity: entities }) : t("selectEntity", { entity }));
+	const resolvedSearchPlaceholder = searchPlaceholder ?? t("searchEntities", { entity: entities });
+	const emptyMessage = debouncedSearch ? t("noMatchingEntities", { entity: entities }) : t("noEntitiesFound", { entity: entities });
+	const errorMessage = t("failedToLoadEntities", { entity: entities });
 
 	// ---------------------------------------------------------------------
 	// Multi mode — react-select, so chips live inside the control.
@@ -382,7 +401,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		isAdd && !fullWidth ? (
 			<Button type="button" variant="outline" size="sm" disabled={disabled} className="h-7.5 gap-1.5 px-2 py-1 text-sm font-medium">
 				<PlusIcon className="size-4" />
-				{placeholder ?? `Add ${entityLabel}`}
+				{placeholder ?? t("addEntity", { entity })}
 			</Button>
 		) : (
 			<Button

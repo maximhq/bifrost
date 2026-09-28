@@ -48,13 +48,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
+import { Trans, useTranslation } from "react-i18next";
 import { formatFileSize } from "./helpers";
 
 const FILE_SOURCE_OPTIONS = [
-	{ value: "text", label: "Via text", shortLabel: "Text" },
-	{ value: "url", label: "Via URL", shortLabel: "URL" },
-	{ value: "dataurl", label: "Via data URL", shortLabel: "Data URL" },
-	{ value: "upload", label: "Via upload", shortLabel: "Upload" },
+	{ value: "text", labelKey: "skillsRepo.viaText" },
+	{ value: "url", labelKey: "skillsRepo.viaUrl" },
+	{ value: "dataurl", labelKey: "skillsRepo.viaDataUrl" },
+	{ value: "upload", labelKey: "skillsRepo.viaUpload" },
 ];
 
 function getSourceOption(sourceType: string) {
@@ -106,6 +107,8 @@ interface FileAddFormProps {
 }
 
 function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel, onAdd, onCancel, className }: FileAddFormProps) {
+	const { t } = useTranslation("config");
+	const { t: tc } = useTranslation("common");
 	const [uploadSkillFile, { isLoading: isUploading }] = useUploadSkillFileMutation();
 	const sourceType = initialSourceType;
 	const sourceOption = getSourceOption(sourceType);
@@ -118,7 +121,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 	const [mimeType, setMimeType] = useState(initialEntry?.mime_type ?? "text/plain");
 	const [error, setError] = useState<string | null>(null);
 
-	const locationLabel = folderPath ? `${folderPath}/` : "root";
+	const locationLabel = folderPath ? `${folderPath}/` : t("skillsRepo.root");
 	// Adding a new file asks for its name in-tree first; source-specific fields
 	// are edited in the right-hand pane after the file is inserted.
 	const isNewFileNameOnly = !initialEntry;
@@ -173,7 +176,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 		};
 
 		if (sourceType === "upload") {
-			if (!selectedFile) return setError("Select a file to upload");
+			if (!selectedFile) return setError(t("skillsRepo.selectFileToUpload"));
 			const sizeErr = validateSkillFileSize(selectedFile.size);
 			if (sizeErr) return setError(sizeErr);
 			try {
@@ -220,7 +223,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 						}}
 						placeholder="filename.ext"
 						className="h-7 max-w-xs font-mono text-xs"
-						aria-label="Filename"
+						aria-label={t("skillsRepo.filename")}
 					/>
 					<Button variant="ghost" size="sm" className="h-7 w-7 p-0" data-testid="skill-file-confirm-btn" onClick={handleSubmit}>
 						<Check className="h-3 w-3" />
@@ -244,14 +247,14 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 			{!isNewFileNameOnly && (
 				<div className="flex items-center gap-3">
 					<span className="border-border/60 text-muted-foreground inline-flex h-5 shrink-0 items-center rounded-full border bg-transparent px-2 text-xs leading-none font-medium">
-						{sourceOption.label}
+						{t(sourceOption.labelKey)}
 					</span>
-					<span className="text-muted-foreground font-mono text-xs">Location: {locationLabel}</span>
+					<span className="text-muted-foreground font-mono text-xs">{t("skillsRepo.location", { location: locationLabel })}</span>
 				</div>
 			)}
 
 			<div>
-				<Label className="text-muted-foreground text-xs">Filename</Label>
+				<Label className="text-muted-foreground text-xs">{t("skillsRepo.filename")}</Label>
 				<Input
 					data-testid="skill-file-filename-input"
 					value={filename}
@@ -266,9 +269,9 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 					data-testid="skill-file-url-input"
 					value={url}
 					onChange={(e) => setUrl(e.target.value)}
-					placeholder="https://example.com/file.py"
+					placeholder={t("skillsRepo.sourceUrlPlaceholder")}
 					className="h-8 font-mono text-xs"
-					aria-label="Source URL"
+					aria-label={t("skillsRepo.sourceUrl")}
 				/>
 			)}
 			{sourceType === "text" && !isNewFileNameOnly && (
@@ -276,10 +279,10 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 					data-testid="skill-file-content-textarea"
 					value={content}
 					onChange={(e) => setContent(e.target.value)}
-					placeholder="File content..."
+					placeholder={t("skillsRepo.fileContentPlaceholder")}
 					className="min-h-20 font-mono text-xs"
 					rows={4}
-					aria-label="File content"
+					aria-label={t("skillsRepo.fileContent")}
 				/>
 			)}
 			{sourceType === "dataurl" && (
@@ -287,10 +290,10 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 					data-testid="skill-file-dataurl-textarea"
 					value={dataurl}
 					onChange={(e) => setDataurl(e.target.value)}
-					placeholder="data:text/plain;base64,..."
+					placeholder={t("skillsRepo.dataUrlPlaceholder")}
 					className="font-mono text-xs"
 					rows={2}
-					aria-label="Data URL"
+					aria-label={t("skillsRepo.dataUrl")}
 				/>
 			)}
 			{sourceType === "upload" && (
@@ -300,7 +303,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 						type="file"
 						onChange={(e) => handleUploadFileChange(e.target.files?.[0] ?? null)}
 						className="h-8 text-xs"
-						aria-label="Choose file to upload"
+						aria-label={t("skillsRepo.chooseFileToUpload")}
 					/>
 					{selectedFile && (
 						<div className="text-muted-foreground flex items-center gap-2 text-xs">
@@ -315,7 +318,7 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 			{sourceType === "url" && (
 				<div className="flex items-start gap-2 rounded-sm border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200">
 					<Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-					<span>This source is saved as a live reference. Bifrost will read from this URL when the skill file is retrieved.</span>
+					<span>{t("skillsRepo.liveReferenceAdd")}</span>
 				</div>
 			)}
 
@@ -328,18 +331,18 @@ function FileAddForm({ folderPath, initialSourceType, initialEntry, submitLabel,
 
 			<div className="flex justify-end gap-2 pt-1">
 				<Button variant="ghost" size="sm" className="h-7 text-xs" data-testid="skill-file-cancel-btn" onClick={onCancel}>
-					Cancel
+					{tc("cancel")}
 				</Button>
 				<Button size="sm" className="h-7 text-xs" data-testid="skill-file-save-btn" onClick={handleSubmit} disabled={isUploading}>
 					{isUploading ? (
 						<>
 							<Loader2 className="h-3 w-3 animate-spin" />
-							Uploading...
+							{t("skillsRepo.uploading")}
 						</>
 					) : (
 						<>
 							<Plus className="h-3 w-3" />
-							{submitLabel ?? (sourceType === "upload" ? "Upload & add" : "Add")}
+							{submitLabel ?? (sourceType === "upload" ? t("skillsRepo.uploadAndAdd") : t("skillsRepo.add"))}
 						</>
 					)}
 				</Button>
@@ -467,6 +470,8 @@ export function FileManagerSection({
 	searchQuery?: string;
 	onSearchChange?: (value: string) => void;
 }) {
+	const { t } = useTranslation("config");
+	const { t: tc } = useTranslation("common");
 	const [uploadSkillFile] = useUploadSkillFileMutation();
 	const folderUploadInputRef = useRef<HTMLInputElement | null>(null);
 	const folderUploadTargetRef = useRef("");
@@ -681,7 +686,7 @@ export function FileManagerSection({
 		const targetFolderPath = fileUploadTargetRef.current;
 		const fullPath = joinPath(targetFolderPath, file.name);
 		if (files.some((f) => f.path === fullPath)) {
-			toast.error("A file already exists at that path");
+			toast.error(t("skillsRepo.fileExists"));
 			return;
 		}
 		const pathErr = validateFilePath(fullPath);
@@ -793,7 +798,7 @@ export function FileManagerSection({
 		const nextPath = joinPath(folderPath, basename(file.path));
 		if (nextPath === file.path) return;
 		if (files.some((f, i) => i !== index && f.path === nextPath)) {
-			toast.error("A file already exists at that path");
+			toast.error(t("skillsRepo.fileExists"));
 			return;
 		}
 		onUpdateFile(index, { path: nextPath });
@@ -816,7 +821,7 @@ export function FileManagerSection({
 			return files.some((f) => !f.path.startsWith(`${folderPath}/`) && f.path === movedPath);
 		});
 		if (hasCollision) {
-			toast.error("A file already exists at that path");
+			toast.error(t("skillsRepo.fileExists"));
 			return;
 		}
 
@@ -924,7 +929,7 @@ export function FileManagerSection({
 
 	const handleAdd = (entry: SkillFileEntry) => {
 		if (files.some((f) => f.path === entry.path)) {
-			toast.error("A file already exists at that path");
+			toast.error(t("skillsRepo.fileExists"));
 			return;
 		}
 		onAddFile(entry);
@@ -945,7 +950,7 @@ export function FileManagerSection({
 		}
 		const nextPath = joinPath(parentPath, newFolderName);
 		if (folders.includes(nextPath) || files.some((file) => file.path === nextPath || file.path.startsWith(`${nextPath}/`))) {
-			setNewFolderError("A folder with this name already exists here");
+			setNewFolderError(t("skillsRepo.folderExists"));
 			return;
 		}
 		const pathErr = validateFilePath(`${nextPath}/placeholder.txt`);
@@ -1071,8 +1076,8 @@ export function FileManagerSection({
 		if (item.kind === "empty-folder") {
 			return (
 				<div className="text-muted-foreground ml-1 flex items-center gap-2 py-1 text-xs">
-					<span>Empty folder</span>
-					<span className="text-muted-foreground/60 text-xs">Not saved until it contains a file.</span>
+					<span>{t("skillsRepo.emptyFolder")}</span>
+					<span className="text-muted-foreground/60 text-xs">{t("skillsRepo.emptyFolderHint")}</span>
 				</div>
 			);
 		}
@@ -1122,7 +1127,7 @@ export function FileManagerSection({
 								onChange={(e) => {
 									const newPath = joinPath(dirname(file.path), e.target.value);
 									if (files.some((f, i) => i !== index && f.path === newPath)) {
-										toast.error("A file already exists at that path");
+										toast.error(t("skillsRepo.fileExists"));
 										return;
 									}
 									onUpdateFile(index, { path: newPath });
@@ -1154,7 +1159,7 @@ export function FileManagerSection({
 								}}
 								placeholder="filename.ext"
 								className="h-7 min-w-0 flex-1 font-mono text-xs"
-								aria-label="Rename file"
+								aria-label={t("skillsRepo.renameFile")}
 							/>
 						) : (
 							<span className="min-w-0 flex-1 truncate font-mono text-xs" title={basename(file.path)}>
@@ -1176,7 +1181,7 @@ export function FileManagerSection({
 										size="icon"
 										className="text-muted-foreground h-6 w-6"
 										data-testid={`skill-file-actions-${basename(file.path)}`}
-										aria-label={`Actions for ${file.path}`}
+										aria-label={t("skillsRepo.actionsForAria", { name: file.path })}
 									>
 										<MoreHorizontal className="h-3.5 w-3.5" />
 									</Button>
@@ -1195,11 +1200,11 @@ export function FileManagerSection({
 											setEditingFileOriginal({ path: file.path });
 										}}
 									>
-										Rename
+										{t("skillsRepo.rename")}
 									</DropdownMenuItem>
 									{fileMoveTargets.length > 0 && (
 										<DropdownMenuSub>
-											<DropdownMenuSubTrigger>Move to…</DropdownMenuSubTrigger>
+											<DropdownMenuSubTrigger>{t("skillsRepo.moveTo")}</DropdownMenuSubTrigger>
 											<DropdownMenuSubContent>
 												{fileMoveTargets.map((folderPath) => (
 													<DropdownMenuItem
@@ -1211,7 +1216,7 @@ export function FileManagerSection({
 															moveFileToFolder(index, folderPath);
 														}}
 													>
-														{folderPath || "root"}
+														{folderPath || t("skillsRepo.root")}
 													</DropdownMenuItem>
 												))}
 											</DropdownMenuSubContent>
@@ -1229,7 +1234,7 @@ export function FileManagerSection({
 											})
 										}
 									>
-										Delete
+										{tc("delete")}
 									</DropdownMenuItem>
 								</DropdownMenuContent>
 							</DropdownMenu>
@@ -1265,7 +1270,7 @@ export function FileManagerSection({
 				}}
 				role={hasChildren ? "button" : undefined}
 				tabIndex={hasChildren ? 0 : undefined}
-				aria-label={hasChildren ? `${isExpanded ? "Collapse" : "Expand"} ${isRoot ? "root" : item.name}` : undefined}
+				aria-label={hasChildren ? `${isExpanded ? t("skillsRepo.collapse") : t("skillsRepo.expand")} ${isRoot ? t("skillsRepo.root") : item.name}` : undefined}
 			>
 				{hasChildren ? (
 					<span className="text-muted-foreground flex h-4 w-4 items-center justify-center" aria-hidden="true">
@@ -1275,8 +1280,8 @@ export function FileManagerSection({
 					<span className="h-4 w-4" />
 				)}
 				{isRoot ? <BookOpen className="text-muted-foreground h-4 w-4" /> : <Folder className="text-muted-foreground h-4 w-4" />}
-				<span className="min-w-0 flex-1 truncate font-mono text-xs font-medium" title={isRoot ? "root" : `${item.name}/`}>
-					{isRoot ? "root" : `${item.name}/`}
+				<span className="min-w-0 flex-1 truncate font-mono text-xs font-medium" title={isRoot ? t("skillsRepo.root") : `${item.name}/`}>
+					{isRoot ? t("skillsRepo.root") : `${item.name}/`}
 				</span>
 				{!readOnly && (
 					<div
@@ -1296,21 +1301,21 @@ export function FileManagerSection({
 									size="icon"
 									className="text-muted-foreground h-6 w-6"
 									data-testid="skill-file-folder-actions"
-									aria-label={`Actions for ${isRoot ? "root" : item.path}`}
+									aria-label={t("skillsRepo.actionsForAria", { name: isRoot ? t("skillsRepo.root") : item.path })}
 								>
 									<MoreHorizontal className="h-3.5 w-3.5" />
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end" className="w-44">
 								<DropdownMenuSub>
-									<DropdownMenuSubTrigger>Add file</DropdownMenuSubTrigger>
+									<DropdownMenuSubTrigger>{t("skillsRepo.addFile")}</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
 										<DropdownMenuItem
 											className="cursor-pointer"
 											disabled={isFolderUploading}
 											onSelect={() => handleAddFileUploadClick(item.path)}
 										>
-											Upload
+											{t("skillsRepo.upload")}
 										</DropdownMenuItem>
 										<DropdownMenuItem
 											className="cursor-pointer"
@@ -1324,7 +1329,7 @@ export function FileManagerSection({
 												setEditingFileOriginal(null);
 											}}
 										>
-											From text
+											{t("skillsRepo.fromText")}
 										</DropdownMenuItem>
 										<DropdownMenuItem
 											className="cursor-pointer"
@@ -1338,7 +1343,7 @@ export function FileManagerSection({
 												setEditingFileOriginal(null);
 											}}
 										>
-											From URL
+											{t("skillsRepo.fromUrl")}
 										</DropdownMenuItem>
 										<DropdownMenuItem
 											className="cursor-pointer"
@@ -1352,7 +1357,7 @@ export function FileManagerSection({
 												setEditingFileOriginal(null);
 											}}
 										>
-											From data URL
+											{t("skillsRepo.fromDataUrl")}
 										</DropdownMenuItem>
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
@@ -1364,23 +1369,23 @@ export function FileManagerSection({
 										setNewFolderError(null);
 									}}
 								>
-									Add folder
+									{t("skillsRepo.addFolder")}
 								</DropdownMenuItem>
 								<DropdownMenuItem
 									className="cursor-pointer"
 									disabled={isFolderUploading}
 									onSelect={() => handleFolderUploadClick(item.path)}
 								>
-									Upload folder
+									{t("skillsRepo.uploadFolder")}
 								</DropdownMenuItem>
 								{isRoot && (
 									<>
 										<DropdownMenuSeparator />
 										<DropdownMenuItem className="cursor-pointer" disabled={isAllExpanded} onSelect={onExpandAll}>
-											Expand all
+											{t("skillsRepo.expandAll")}
 										</DropdownMenuItem>
 										<DropdownMenuItem className="cursor-pointer" disabled={isAllCollapsed} onSelect={onCollapseAll}>
-											Collapse all
+											{t("skillsRepo.collapseAll")}
 										</DropdownMenuItem>
 									</>
 								)}
@@ -1389,7 +1394,7 @@ export function FileManagerSection({
 										<DropdownMenuSeparator />
 										{folderMoveTargets.length > 0 && (
 											<DropdownMenuSub>
-												<DropdownMenuSubTrigger>Move to…</DropdownMenuSubTrigger>
+												<DropdownMenuSubTrigger>{t("skillsRepo.moveTo")}</DropdownMenuSubTrigger>
 												<DropdownMenuSubContent>
 													{folderMoveTargets.map((folderPath) => (
 														<DropdownMenuItem
@@ -1401,14 +1406,14 @@ export function FileManagerSection({
 																moveFolderToFolder(item.path, folderPath);
 															}}
 														>
-															{folderPath || "root"}
+															{folderPath || t("skillsRepo.root")}
 														</DropdownMenuItem>
 													))}
 												</DropdownMenuSubContent>
 											</DropdownMenuSub>
 										)}
 										<DropdownMenuItem variant="destructive" className="cursor-pointer" onSelect={() => requestRemoveFolder(item.path)}>
-											Delete folder
+											{t("skillsRepo.deleteFolder")}
 										</DropdownMenuItem>
 									</>
 								)}
@@ -1447,8 +1452,13 @@ export function FileManagerSection({
 				<div className="mb-2 flex items-center gap-2 rounded-sm border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200">
 					<Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
 					<span>
-						Uploading folder files {folderUploadState.completed}/{folderUploadState.total}
-						{folderUploadState.folderPath ? ` into ${folderUploadState.folderPath}/` : " into root"}
+						{t("skillsRepo.uploadingFolderFiles", {
+							completed: folderUploadState.completed,
+							total: folderUploadState.total,
+						})}
+						{folderUploadState.folderPath
+							? t("skillsRepo.intoPath", { path: folderUploadState.folderPath })
+							: t("skillsRepo.intoRoot")}
 					</span>
 				</div>
 			)}
@@ -1466,9 +1476,9 @@ export function FileManagerSection({
 					<Input
 						value={searchQuery}
 						onChange={(e) => setSearchQuery(e.target.value)}
-						placeholder="Search files..."
+						placeholder={t("skillsRepo.searchFiles")}
 						className="h-7 text-xs"
-						aria-label="Search files"
+						aria-label={t("skillsRepo.searchFilesAria")}
 					/>
 				</div>
 			)}
@@ -1492,21 +1502,14 @@ export function FileManagerSection({
 			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete folder?</AlertDialogTitle>
+						<AlertDialogTitle>{t("skillsRepo.deleteFolderTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
 							{folderDeleteImpact?.nestedFiles.length ? (
-								<>
-									This will remove the folder <b>{folderToDelete}</b>, its nested folders, and all files inside it from this skill draft.
-								</>
+								<Trans t={t} i18nKey="skillsRepo.deleteFolderWithFiles" values={{ name: folderToDelete }} components={{ b0: <b /> }} />
 							) : folderDeleteImpact?.nestedFolders.length ? (
-								<>
-									This will remove the folder <b>{folderToDelete}</b> and its nested folders from this skill draft. There are no files in
-									the hierarchy of this folder.
-								</>
+								<Trans t={t} i18nKey="skillsRepo.deleteFolderWithFolders" values={{ name: folderToDelete }} components={{ b0: <b /> }} />
 							) : (
-								<>
-									This will remove the empty folder <b>{folderToDelete}</b> from this skill draft.
-								</>
+								<Trans t={t} i18nKey="skillsRepo.deleteEmptyFolder" values={{ name: folderToDelete }} components={{ b0: <b /> }} />
 							)}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
@@ -1514,7 +1517,7 @@ export function FileManagerSection({
 					{folderDeleteImpact?.nestedFiles.length ? (
 						<div className="bg-muted/20 flex flex-col gap-3 rounded-sm border p-3 text-xs">
 							<div className="flex flex-col gap-1">
-								<div className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Files</div>
+								<div className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{t("skillsRepo.files")}</div>
 								<ul className="text-muted-foreground flex max-h-32 flex-col gap-1 overflow-auto font-mono">
 									{folderDeleteImpact.nestedFiles.map((file) => (
 										<li key={file}>{file}</li>
@@ -1525,14 +1528,14 @@ export function FileManagerSection({
 					) : null}
 
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								if (folderToDelete) removeFolder(folderToDelete);
 								setFolderToDelete(null);
 							}}
 						>
-							Delete folder
+							{t("skillsRepo.deleteFolder")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -1546,37 +1549,36 @@ export function FileManagerSection({
 			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Remove file?</AlertDialogTitle>
+						<AlertDialogTitle>{t("skillsRepo.removeFileTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
 							{fileToRemove?.isLocal ? (
-								<>
-									This will remove <b>{fileToRemove.path}</b> from this skill draft.
-								</>
+								<Trans t={t} i18nKey="skillsRepo.removeFileLocal" values={{ name: fileToRemove.path }} components={{ b0: <b /> }} />
 							) : (
-								<>
-									This will remove <b>{fileToRemove?.path}</b> from this skill draft. The file stops being tracked only after you save these
-									changes. If you need it back before saving, reload the page to discard this draft state; any other unsaved changes will be
-									lost too.
-								</>
+								<Trans
+									t={t}
+									i18nKey="skillsRepo.removeFileTracked"
+									values={{ name: fileToRemove?.path }}
+									components={{ b0: <b /> }}
+								/>
 							)}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 
 					{!fileToRemove?.isLocal && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
-							After saving, restoring this file requires re-adding or re-uploading it again.
+							{t("skillsRepo.restoreWarning")}
 						</div>
 					)}
 
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								if (fileToRemove) removeFile(fileToRemove.index);
 								setFileToRemove(null);
 							}}
 						>
-							Remove file
+							{t("skillsRepo.removeFile")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

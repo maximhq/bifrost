@@ -8,6 +8,7 @@ import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
 import { MCPCostChart } from "./charts/mcpCostChart";
 import { MCPTopToolsChart } from "./charts/mcpTopToolsChart";
 import { MCPVolumeChart } from "./charts/mcpVolumeChart";
+import { useTranslation } from "react-i18next";
 
 export interface MCPTabProps {
 	// Data
@@ -47,6 +48,7 @@ function MCPTabImpl({
 	onMcpVolumeChartToggle,
 	onMcpCostChartToggle,
 }: MCPTabProps) {
+	const { t } = useTranslation("observability");
 	const mcpVolumeTotal = useMemo(() => {
 		if (!mcpHistogramData?.buckets) return null;
 		return mcpHistogramData.buckets.reduce((sum, b) => sum + (b.count ?? 0), 0);
@@ -66,21 +68,21 @@ function MCPTabImpl({
 		<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
 			{/* MCP Tool Calls Volume */}
 			<ChartCard
-				title="MCP Tool Calls"
+				title={t("dashboard.charts.mcpToolCalls")}
 				loading={loadingMcpHistogram}
 				testId="chart-mcp-volume"
-				totalLabel="Total"
+				totalLabel={t("labels.total")}
 				total={mcpVolumeTotal !== null ? <NumberFlow value={mcpVolumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
 				totalTooltip={mcpVolumeTotal !== null ? mcpVolumeTotal.toLocaleString("en-US") : undefined}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						<span className="flex items-center gap-1">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
-							<span className="text-muted-foreground">Success</span>
+							<span className="text-muted-foreground">{t("labels.success")}</span>
 						</span>
 						<span className="flex items-center gap-1">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
-							<span className="text-muted-foreground">Error</span>
+							<span className="text-muted-foreground">{t("labels.error")}</span>
 						</span>
 					</div>
 				}
@@ -97,10 +99,10 @@ function MCPTabImpl({
 
 			{/* MCP Cost */}
 			<ChartCard
-				title="MCP Cost"
+				title={t("dashboard.charts.mcpCost")}
 				loading={loadingMcpCost}
 				testId="chart-mcp-cost"
-				totalLabel="Total"
+				totalLabel={t("labels.total")}
 				total={
 					mcpCostTotal !== null ? (
 						<NumberFlow value={mcpCostTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
@@ -115,7 +117,7 @@ function MCPTabImpl({
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						<span className="flex items-center gap-1">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cost }} />
-							<span className="text-muted-foreground">Cost</span>
+							<span className="text-muted-foreground">{t("labels.cost")}</span>
 						</span>
 					</div>
 				}
@@ -128,10 +130,10 @@ function MCPTabImpl({
 
 			{/* Top 10 MCP Tools */}
 			<ChartCard
-				title="Top 10 MCP Tools"
+				title={t("dashboard.charts.topMcpTools")}
 				loading={loadingMcpTopTools}
 				testId="chart-mcp-top-tools"
-				totalLabel="Total"
+				totalLabel={t("labels.total")}
 				total={mcpTopToolsTotal !== null ? <NumberFlow value={mcpTopToolsTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
 				totalTooltip={mcpTopToolsTotal !== null ? mcpTopToolsTotal.toLocaleString("en-US") : undefined}
 			>

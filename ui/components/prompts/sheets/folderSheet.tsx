@@ -9,6 +9,7 @@ import { useCreateFolderMutation, useUpdateFolderMutation } from "@/lib/store/ap
 import { Folder } from "@/lib/types/prompts";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface FolderFormData {
@@ -24,6 +25,8 @@ interface FolderSheetProps {
 }
 
 export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheetProps) {
+	const { t } = useTranslation("config");
+	const { t: tc } = useTranslation("common");
 	const [createFolder, { isLoading: isCreating }] = useCreateFolderMutation();
 	const [updateFolder, { isLoading: isUpdating }] = useUpdateFolderMutation();
 	const canSave = useRbac(RbacResource.PromptRepository, folder ? RbacOperation.Update : RbacOperation.Create);
@@ -56,18 +59,18 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 					id: folder.id,
 					data: { name: data.name.trim(), description: data.description.trim() || undefined },
 				}).unwrap();
-				toast.success("Folder updated");
+				toast.success(t("promptRepo.toastFolderUpdated"));
 			} else {
 				await createFolder({
 					name: data.name.trim(),
 					description: data.description.trim() || undefined,
 				}).unwrap();
-				toast.success("Folder created");
+				toast.success(t("promptRepo.toastFolderCreated"));
 			}
 			onSaved();
 			onOpenChange(false);
 		} catch (err) {
-			toast.error(`Failed to ${isEditing ? "update" : "create"} folder`, {
+			toast.error(t("promptRepo.toastFolderFailed", { action: isEditing ? t("promptRepo.updateAction") : t("promptRepo.createAction") }), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -84,22 +87,22 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 			>
 				<form onSubmit={handleSubmit(onSubmit)}>
 					<SheetHeader className="flex flex-col items-start">
-						<SheetTitle>{isEditing ? "Edit Folder" : "Create Folder"}</SheetTitle>
+						<SheetTitle>{isEditing ? t("promptRepo.editFolder") : t("promptRepo.createFolder")}</SheetTitle>
 						<SheetDescription>
-							{isEditing ? "Update the folder name and description." : "Create a new folder to organize your prompts."}
+							{isEditing ? t("promptRepo.updateFolderDesc") : t("promptRepo.createFolderDesc")}
 						</SheetDescription>
 					</SheetHeader>
 
 					<div className="mt-6 space-y-4">
 						<div className="space-y-2">
-							<Label htmlFor="name">Name</Label>
+							<Label htmlFor="name">{t("promptRepo.name")}</Label>
 							<Input
 								id="name"
 								data-testid="folder-name-input"
-								placeholder="My Prompts"
+								placeholder={t("promptRepo.folderNamePlaceholder")}
 								{...register("name", {
-									required: "Folder name is required",
-									validate: (v) => v.trim().length > 0 || "Folder name cannot be blank",
+									required: t("promptRepo.folderNameRequired"),
+									validate: (v) => v.trim().length > 0 || t("promptRepo.folderNameBlank"),
 								})}
 								autoFocus
 							/>
@@ -107,11 +110,11 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 						</div>
 
 						<div className="space-y-2">
-							<Label htmlFor="description">Description (optional)</Label>
+							<Label htmlFor="description">{t("promptRepo.descriptionOptional")}</Label>
 							<Textarea
 								id="description"
 								data-testid="folder-description-input"
-								placeholder="Prompts for customer support use cases..."
+								placeholder={t("promptRepo.folderDescriptionPlaceholder")}
 								className="resize-none"
 								{...register("description")}
 							/>
@@ -120,15 +123,15 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 
 					<SheetFooter className="mt-6 flex flex-row items-center justify-end gap-2 p-0">
 						<Button type="button" variant="outline" data-testid="folder-cancel" onClick={() => onOpenChange(false)}>
-							Cancel
+							{tc("cancel")}
 						</Button>
 						<Button
 							type="submit"
 							data-testid="folder-submit"
 							disabled={isLoading || !canSave}
-							title={canSave ? undefined : "You do not have permission to change prompt folders"}
+							title={canSave ? undefined : t("promptRepo.noChangeFolderPermission")}
 						>
-							{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+							{isLoading ? t("promptRepo.savingDots") : isEditing ? t("promptRepo.update") : tc("create")}
 						</Button>
 					</SheetFooter>
 				</form>

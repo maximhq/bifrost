@@ -3,6 +3,7 @@ import { BifrostOCRResponse, OCRDocument } from "@/lib/types/logs";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 function getImageSrc(b64: string): string {
 	if (b64.startsWith("/9j/")) return `data:image/jpeg;base64,${b64}`;
@@ -18,6 +19,7 @@ interface OCRViewProps {
 }
 
 export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
+	const { t } = useTranslation("observability");
 	const pages = ocrOutput?.pages ?? [];
 	const totalPages = pages.length;
 	const [currentIndex, setCurrentIndex] = useState(0);
@@ -43,7 +45,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<FileText className="h-4 w-4" />
-						OCR Input
+						{t("logs.ocrInput")}
 					</div>
 					<div className="space-y-4 p-6">
 						<div>
@@ -152,8 +154,8 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 											variant="outline"
 											size="sm"
 											onClick={goToPrevious}
-											aria-label="Previous page"
-											title="Previous page"
+											aria-label={t("labels.previousPage")}
+											title={t("labels.previousPage")}
 											data-testid="ocr-view-pagination-prev-button"
 										>
 											<ChevronLeft className="h-4 w-4" />
@@ -165,8 +167,8 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 											variant="outline"
 											size="sm"
 											onClick={goToNext}
-											aria-label="Next page"
-											title="Next page"
+											aria-label={t("labels.nextPage")}
+											title={t("labels.nextPage")}
 											data-testid="ocr-view-pagination-next-button"
 										>
 											<ChevronRight className="h-4 w-4" />

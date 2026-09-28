@@ -15,6 +15,7 @@ import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
+import { useTranslation } from "react-i18next";
 
 interface Props {
 	show: boolean;
@@ -24,56 +25,63 @@ interface Props {
 
 const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "bedrock_mantle", "azure"];
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, isAnthropicFamily: boolean) => {
+const availableTabs = (
+	hasCustomProviderConfig: boolean,
+	hasGovernanceAccess: boolean,
+	isOpenAI: boolean,
+	isAnthropicFamily: boolean,
+	t: (key: string) => string,
+) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
 			id: "api-structure",
-			label: "API Structure",
+			label: t("providers.apiStructure"),
 		});
 	}
 	tabs.push({
 		id: "network",
-		label: "Network",
+		label: t("providers.network"),
 	});
 	tabs.push({
 		id: "proxy",
-		label: "Proxy",
+		label: t("providers.proxy"),
 	});
 	tabs.push({
 		id: "performance",
-		label: "Performance",
+		label: t("providers.performance"),
 	});
 	if (hasGovernanceAccess) {
 		tabs.push({
 			id: "governance",
-			label: "Governance",
+			label: t("providers.governance"),
 		});
 	}
 	if (isAnthropicFamily) {
 		tabs.push({
 			id: "beta-headers",
-			label: "Beta Headers",
+			label: t("providers.betaHeaders"),
 		});
 	}
 	tabs.push({
 		id: "prompt-cache",
-		label: "Prompt Caching",
+		label: t("providers.promptCaching"),
 	});
 	tabs.push({
 		id: "debugging",
-		label: "Debugging",
+		label: t("providers.debugging"),
 	});
 	if (isOpenAI) {
 		tabs.push({
 			id: "openai-config",
-			label: "OpenAI Config",
+			label: t("providers.openaiConfig"),
 		});
 	}
 	return tabs;
 };
 
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
+	const { t } = useTranslation("models");
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
@@ -81,8 +89,8 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily, t);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily, t]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -108,7 +116,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							<div className="flex items-center">
 								<Provider provider={provider.name} size={24} className="mt-0" />
 							</div>
-							Provider configuration
+							{t("providers.configurationTitle")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>

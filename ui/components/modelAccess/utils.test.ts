@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import i18n from "@/lib/i18n";
 import {
 	addPattern,
 	modelAccessPlaceholder,
@@ -9,6 +10,10 @@ import {
 	summarizeModelAccess,
 	validateModelRegex,
 } from "./utils";
+
+beforeAll(async () => {
+	await i18n.changeLanguage("en");
+});
 
 describe("splitModelAccess", () => {
 	it("separates names from regex: entries and strips the prefix", () => {
