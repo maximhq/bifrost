@@ -642,6 +642,8 @@ ResponsesResponseUsage:
       $ref: "#/ResponsesResponseOutputTokens"
     total_tokens:
       type: integer
+    tool_usage:
+      $ref: "./usage.yaml#/ToolUsage"
     cost:
       $ref: "./usage.yaml#/BifrostCost"
 
@@ -684,6 +686,8 @@ ResponsesResponseOutputTokens:
       type: integer
     num_search_queries:
       type: integer
+      deprecated: true
+      description: Deprecated, use tool_usage.web_search.num_requests. Will be removed in 3.0.0.
 
 ResponsesStreamResponse:
   type: object
