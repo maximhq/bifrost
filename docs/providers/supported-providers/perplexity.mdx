@@ -454,7 +454,7 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
 </Tab>
 </Tabs>
 
-Bifrost's Perplexity provider always forwards `extra_params` for this operation — unlike most other providers, no `x-bf-passthrough-extra-params` header or context flag is needed.
+Bifrost's Perplexity provider forwards `extra_params` for Responses requests that use Perplexity's Agent API route — unlike most other providers, no `x-bf-passthrough-extra-params` header or context flag is needed. The `sonar-*` fallback to Chat Completions (see the routing caveat above) does not enable this passthrough, so `preset` and `max_steps` in `extra_params` are omitted for those models.
 
 <Note>
 An explicit `model` always wins over a `preset`'s own default model (live-verified against api.perplexity.ai) — the example above pins `openai/gpt-5.6-sol` regardless of `preset`. To let the preset choose the model instead, set `"model": "perplexity/preset"` — a Bifrost-only sentinel, not a real Perplexity model — together with `preset`: Bifrost omits `model` from the wire request in that case so Perplexity's preset default applies. Bare `sonar` and every other real model name are unaffected and always win over `preset`, same as any other explicit model.
