@@ -1,8 +1,17 @@
 import { TZDate } from "@date-fns/tz";
 import { startOfDay, startOfMonth, startOfWeek } from "date-fns";
+import type { ParseKeys } from "i18next";
 import { getPreferredTimezone } from "@/lib/timezones";
 
-export const TIME_PERIODS = [
+export const TIME_PERIODS: { label: string; value: string; labelKey: ParseKeys<"common"> }[] = [
+	{ label: "Last hour", value: "1h", labelKey: "timePeriods.1h" },
+	{ label: "Last 6 hours", value: "6h", labelKey: "timePeriods.6h" },
+	{ label: "Last 24 hours", value: "24h", labelKey: "timePeriods.24h" },
+	{ label: "Last 7 days", value: "7d", labelKey: "timePeriods.7d" },
+	{ label: "Last 30 days", value: "30d", labelKey: "timePeriods.30d" },
+	{ label: "Today", value: "today", labelKey: "timePeriods.today" },
+	{ label: "This week", value: "this_week", labelKey: "timePeriods.this_week" },
+	{ label: "This month", value: "this_month", labelKey: "timePeriods.this_month" },
 	{ label: "Last hour", value: "1h", labelKey: "timePeriods.1h" },
 	{ label: "Last 6 hours", value: "6h", labelKey: "timePeriods.6h" },
 	{ label: "Last 24 hours", value: "24h", labelKey: "timePeriods.24h" },

@@ -56,6 +56,9 @@
 		"tokenLimit": "Limite de tokens",
 		"requestLimit": "Limite de pedidos",
 		"apiStructure": "Estrutura da API",
+		"networkTab": "Rede",
+		"betaHeadersTab": "Cabeçalhos beta",
+		"debuggingTab": "Depuração",
 		"performance": "Desempenho",
 		"governance": "Governação",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "Listar modelos",
+				"model_retrieve": "Obter modelo",
 				"text_completion": "Conclusão de texto",
 				"text_completion_stream": "Stream de conclusão de texto",
 				"chat_completion": "Conclusão de chat",
@@ -442,7 +446,9 @@
 				"image_edit": "Edição de imagem",
 				"image_edit_stream": "Stream de edição de imagem",
 				"image_variation": "Variação de imagem",
-				"count_tokens": "Contar tokens"
+				"count_tokens": "Contar tokens",
+				"decisions": "Decisões",
+				"live": "Em direto"
 			},
 			"title": "Tipos de pedido permitidos",
 			"description": "Selecione quais os tipos de pedido que este fornecedor personalizado pode tratar.",

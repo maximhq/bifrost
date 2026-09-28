@@ -57,6 +57,7 @@ import {
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle, Check, CircleDashed, Loader2, X } from "lucide-react";
 import { ReactNode, useEffect, useMemo, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 
 interface Props {
@@ -68,7 +69,7 @@ interface Props {
 
 type Stage = "intro" | "loading" | "preview" | "running" | "finished";
 
-const API_FORMAT_KEYS: Record<DatabricksApiFormat, string> = {
+const API_FORMAT_KEYS: Record<DatabricksApiFormat, ParseKeys<"models">> = {
 	auto: "providers.databricksMigration.apiAuto",
 	model_serving: "providers.databricksMigration.apiModelServing",
 	ai_gateway: "providers.databricksMigration.apiAiGateway",

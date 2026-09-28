@@ -56,6 +56,9 @@
 		"tokenLimit": "トークン制限",
 		"requestLimit": "リクエスト制限",
 		"apiStructure": "API 構造",
+		"networkTab": "ネットワーク",
+		"betaHeadersTab": "ベータヘッダー",
+		"debuggingTab": "デバッグ",
 		"performance": "パフォーマンス",
 		"governance": "ガバナンス",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "モデルを一覧表示",
+				"model_retrieve": "モデルの取得",
 				"text_completion": "テキスト補完",
 				"text_completion_stream": "テキスト補完ストリーム",
 				"chat_completion": "チャット補完",
@@ -442,7 +446,9 @@
 				"image_edit": "画像編集",
 				"image_edit_stream": "画像編集ストリーム",
 				"image_variation": "画像のバリエーション",
-				"count_tokens": "トークンを数える"
+				"count_tokens": "トークンを数える",
+				"decisions": "決定",
+				"live": "ライブ"
 			},
 			"title": "許可されたリクエストタイプ",
 			"description": "このカスタムプロバイダーが処理できるリクエストの種類を選択してください。",
