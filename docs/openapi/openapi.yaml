@@ -1293,6 +1293,12 @@ paths:
   /inspect:
     $ref: "./paths/management/inspect.yaml#/inspect"
 
+  # API Keys
+  /api/api-keys:
+    $ref: "./paths/management/apikeys.yaml#/api-keys"
+  /api/api-keys/{id}:
+    $ref: "./paths/management/apikeys.yaml#/api-keys-by-id"
+
   # Webhooks
   /api/webhooks:
     $ref: "./paths/management/webhooks.yaml#/webhooks"
@@ -1352,6 +1358,16 @@ components:
 
         Virtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -
         the sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.
+
+        Authentication alone is not sufficient in Bifrost Enterprise: each operation page shows a
+        **Required Permissions** table (`Resource:Operation`, for example `Dashboard:View`) above
+        its Authorizations section, and the caller's RBAC role or management API key scopes must
+        include what it lists, otherwise the request is rejected with `403 Forbidden`.
+
+        A local admin — authenticated with the admin password, or any caller on a deployment with
+        dashboard auth disabled — bypasses these checks and can call every management endpoint.
+        See [Required permissions](/api/procuring-api-keys#required-permissions) for how
+        permissions are derived and which endpoints are exempt.
     BasicAuth:
       type: http
       scheme: basic
@@ -2013,6 +2029,22 @@ components:
       $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
+
+    # API Keys
+    APIKey:
+      $ref: "./schemas/management/apikeys.yaml#/APIKey"
+    APIKeyScopes:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyScopes"
+    APIKeyCreateRequest:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyCreateRequest"
+    APIKeyUpdateRequest:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyUpdateRequest"
+    APIKeyResponse:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyResponse"
+    APIKeyCreatedResponse:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyCreatedResponse"
+    APIKeyList:
+      $ref: "./schemas/management/apikeys.yaml#/APIKeyList"
 
     # Webhooks
     WebhookEvent:

@@ -527,11 +527,12 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	if len(decision.Fallbacks) > 0 {
 		resolvedFallbacks := make([]schemas.Fallback, 0, len(decision.Fallbacks))
 		for _, fb := range decision.Fallbacks {
-			resolved := fb.Fallback
+			resolved := fb.Resolved()
 			resolved.Provider = schemas.ModelProvider(strings.TrimSpace(string(resolved.Provider)))
 			resolved.Model = strings.TrimSpace(resolved.Model)
 			resolved.KeyID = strings.TrimSpace(resolved.KeyID)
 			if resolved.Provider == "" {
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelWarn, fmt.Sprintf("Rule '%s': fallback %q skipped: it does not name a known provider", decision.MatchedRuleName, fb.String()))
 				continue
 			}
 			if resolved.Model == "" && model != "" {

@@ -2436,6 +2436,12 @@ type UserRankingEntry struct {
 	TotalCost     float64 `json:"total_cost"`
 }
 
+// UserSpendEntry is one user's total cost inside a window.
+type UserSpendEntry struct {
+	UserID    string  `json:"user_id"`
+	TotalCost float64 `json:"total_cost"`
+}
+
 // UserRankingTrend represents the percentage change compared to the previous period.
 // TokensTrend and CostTrend follow ModelRankingTrend's nil convention.
 type UserRankingTrend struct {

@@ -148,7 +148,21 @@ func (f *RoutingFallback) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*f = RoutingFallback(decoded)
+	// Trim now: an unpinned object is persisted as the legacy string, where padding would become an unknown provider prefix after a restart.
+	f.Provider = schemas.ModelProvider(strings.TrimSpace(string(f.Provider)))
+	f.Model = strings.TrimSpace(f.Model)
+	f.KeyID = strings.TrimSpace(f.KeyID)
 	return nil
+}
+
+// Resolved returns the fallback to route on. A legacy "provider/model" string is re-parsed on each
+// call, because rules are decoded at boot before custom providers are registered (#7538).
+func (f RoutingFallback) Resolved() schemas.Fallback {
+	if f.raw == "" {
+		return f.Fallback
+	}
+	provider, model := schemas.ParseModelString(f.raw, "")
+	return schemas.Fallback{Provider: provider, Model: model, KeyID: f.KeyID}
 }
 
 // RoutingFallbackStrings renders a fallback slice in its legacy string form, for logs.
