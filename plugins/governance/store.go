@@ -1581,10 +1581,18 @@ func grantedVirtualMCP(ctx context.Context, slug string) (*configstoreTables.Tab
 // have been recorded addressable during resolution (assigned=false → the caller answers 403); its
 // tools are then narrowed to what the request's access grants, so an excluded tool can't leak. A nil
 // access restricts nothing, so the vMCP's own tools are served as-is.
-func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool) {
+func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, instructions schemas.MCPVirtualInstructions, assigned bool) {
 	target, ok := grantedVirtualMCP(ctx, slug)
 	if !ok {
-		return nil, false
+		return nil, schemas.MCPVirtualInstructions{}, false
+	}
+
+	instructions = schemas.MCPVirtualInstructions{Name: target.Name, Mode: schemas.MCPVirtualInstructionsMode(target.InstructionsMode)}
+	if target.Instructions != nil {
+		instructions.Text = *target.Instructions
+	}
+	if instructions.Mode == "" {
+		instructions.Mode = schemas.MCPVirtualInstructionsModeAppend
 	}
 
 	var clientNames map[string]string
@@ -1608,9 +1616,9 @@ func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext
 		}
 	}
 	if access == nil {
-		return requested, true
+		return requested, instructions, true
 	}
-	return access.NarrowMCPToolIncludeList(requested), true
+	return access.NarrowMCPToolIncludeList(requested), instructions, true
 }
 
 // MCPClientToolAccess resolves what a /mcp/<slug> request may see for one MCP client: the client's tools

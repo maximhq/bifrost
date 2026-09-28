@@ -8,11 +8,18 @@ export interface VirtualMCPToolSpec {
 	tool_names: string[];
 }
 
+// How a Virtual MCP's own instructions combine with the ones inherited from the
+// upstream servers it draws tools from.
+export type VirtualMCPInstructionsMode = "append" | "replace";
+
 export interface VirtualMCP {
 	id: number;
 	name: string;
 	endpoint_slug: string;
 	description?: string;
+	// Model-facing guidance, unlike description which is for operators.
+	instructions?: string;
+	instructions_mode?: VirtualMCPInstructionsMode;
 	enabled: boolean;
 	tools: VirtualMCPToolSpec[];
 	// Assigned VK ids: batch-loaded on list, loaded on get/update.
@@ -26,6 +33,8 @@ export interface VirtualMCPRequest {
 	name: string;
 	endpoint_slug?: string;
 	description?: string;
+	instructions?: string;
+	instructions_mode?: VirtualMCPInstructionsMode;
 	enabled?: boolean;
 	tools: VirtualMCPToolSpec[];
 }

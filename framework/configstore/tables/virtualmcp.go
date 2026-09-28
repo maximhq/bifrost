@@ -27,6 +27,10 @@ type TableVirtualMCP struct {
 	Description  *string `gorm:"type:text" json:"description,omitempty"`
 	Enabled      bool    `gorm:"not null;default:true" json:"enabled"`
 
+	// Model-facing, unlike Description.
+	Instructions     *string `gorm:"type:text" json:"instructions,omitempty"`
+	InstructionsMode string  `gorm:"type:varchar(20);default:'append'" json:"instructions_mode,omitempty"`
+
 	Tools       *string       `gorm:"type:text" json:"-"` // JSON of ParsedTools stored in DB
 	ParsedTools []MCPToolSpec `gorm:"-" json:"tools"`     // decoded tool specs
 	ConfigHash  string        `gorm:"type:varchar(255);null" json:"config_hash,omitempty"`

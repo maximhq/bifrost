@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	// instructionTagPrefix names the block tag. Tag-shaped occurrences of it in upstream text
-	// are neutralized so a server cannot draw a boundary and speak as another; bare mentions
-	// in prose are left alone. See instructionTagPattern.
 	instructionTagPrefix = "mcp_server"
+
+	// instructionsOmittedNotice stands in when the budget cannot hold a Virtual MCP's text.
+	instructionsOmittedNotice = "[virtual mcp instructions omitted: instruction size limit reached]"
 )
 
 // GetServerInstructions returns the initialize `instructions` of every MCP client this
@@ -134,6 +134,28 @@ func AggregateServerInstructions(parts []schemas.MCPServerInstructions, caps Ins
 	return b.String()
 }
 
+// fitLimit bounds a body under both caps: perClient covers the text, remaining covers text plus
+// notice. Charged after perClient, which can force a cut remaining alone would not.
+func fitLimit(bodyLen, perClient, remaining int) int {
+	if limit := min(perClient, remaining); bodyLen <= limit {
+		return limit
+	}
+	return min(perClient, remaining-len(truncationNotice(bodyLen)))
+}
+
+// remainingAfter is the total left once base and the "\n\n" below it are spent.
+func remainingAfter(base string, total int) int {
+	return total - len(base) - 2
+}
+
+// truncationNotice marks bytes dropped by a cap, or is empty when nothing was.
+func truncationNotice(omitted int) string {
+	if omitted <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n[truncated: %d bytes omitted]", omitted)
+}
+
 // instructionBlock wraps one upstream's text in its tagged block. The client name is attribute
 // escaped for the same reason the body is sanitized: it is operator-supplied, and a quote in it
 // would otherwise break out of the attribute.
@@ -143,16 +165,14 @@ func instructionBlock(clientName, text string, omitted int) string {
 	b.WriteString(escapeInstructionAttr(clientName))
 	b.WriteString("\">\n")
 	b.WriteString(text)
-	if omitted > 0 {
-		b.WriteString(fmt.Sprintf("\n[truncated: %d bytes omitted]", omitted))
-	}
+	b.WriteString(truncationNotice(omitted))
 	b.WriteString("\n</mcp_server>")
 	return b.String()
 }
 
 // blockOverhead is the byte cost of the tags plus a worst-case truncation notice.
 func blockOverhead(clientName string, bodyLen int) int {
-	return len(instructionBlock(clientName, "", 0)) + len(fmt.Sprintf("\n[truncated: %d bytes omitted]", bodyLen))
+	return len(instructionBlock(clientName, "", 0)) + len(truncationNotice(bodyLen))
 }
 
 // instructionTagPattern matches a literal block tag, open or close, in any case. Bare mentions of
@@ -175,6 +195,40 @@ func sanitizeInstructionBody(s string) string {
 func escapeInstructionAttr(s string) string {
 	r := strings.NewReplacer(`&`, "&amp;", `"`, "&quot;", `<`, "&lt;", `>`, "&gt;")
 	return r.Replace(s)
+}
+
+// ApplyVirtualMCPInstructions combines a Virtual MCP's own text with the blocks it inherits.
+// Empty text returns base unchanged.
+func ApplyVirtualMCPInstructions(base string, v schemas.MCPVirtualInstructions, caps InstructionCaps) string {
+	if v.Text == "" {
+		return base
+	}
+	caps = caps.orDefaults()
+	body := sanitizeInstructionBody(v.Text)
+
+	// Unwrapped and last: a Virtual MCP is Bifrost's concept, so this is the endpoint speaking,
+	// not a quoted source — and trailing gives the operator the last word.
+	if v.Mode == schemas.MCPVirtualInstructionsModeReplace || base == "" {
+		limit := fitLimit(len(body), caps.PerClient, caps.Total)
+		if limit <= 0 {
+			// Never fall back to the blocks replace was asked to drop. Marker is best effort.
+			if len(instructionsOmittedNotice) <= caps.Total {
+				return instructionsOmittedNotice
+			}
+			return ""
+		}
+		text, omitted := truncateInstructions(body, limit)
+		return text + truncationNotice(omitted)
+	}
+	limit := fitLimit(len(body), caps.PerClient, remainingAfter(base, caps.Total))
+	if limit <= 0 {
+		if len(base)+1+len(instructionsOmittedNotice) <= caps.Total {
+			return base + "\n" + instructionsOmittedNotice
+		}
+		return base
+	}
+	text, omitted := truncateInstructions(body, limit)
+	return base + "\n\n" + text + truncationNotice(omitted)
 }
 
 // truncateInstructions cuts s to at most limit bytes on a rune boundary, returning the kept

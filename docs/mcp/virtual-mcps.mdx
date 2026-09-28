@@ -87,7 +87,11 @@ Same key, same vMCPs: the MCP gateway isolates per slug, while the LLM gateway a
   <img src="/media/mcp/ui-virtual-mcp-list.png" alt="Virtual MCPs list page with create button" />
 </Frame>
 
-2. **General** - Enter a **Name** (required). Optionally set an **Endpoint slug** (leave blank to derive it from the name) and a **Description**, and toggle **Enabled**. The page you'll be served at is previewed as `/mcp/<slug>`.
+2. **General** - Enter a **Name** (required). Optionally set an **Endpoint slug** (leave blank to derive it from the name), a **Description**, and **Server Instructions**, and toggle **Enabled**. The page you'll be served at is previewed as `/mcp/<slug>`.
+
+<Note>
+**Description** is for operators browsing the list. **Server Instructions** is sent to the model. See [Server instructions](#server-instructions) below.
+</Note>
 
 <Frame>
   <img src="/media/mcp/ui-virtual-mcp-wizard-general.png" alt="Virtual MCP wizard General step with name, slug, description" />
@@ -173,7 +177,9 @@ curl -X POST http://localhost:8080/api/mcp/virtual-mcps \
 |-------|------|----------|-------------|
 | `name` | string | Yes | Display name |
 | `endpoint_slug` | string | No | Honored on create only; derived from `name` when omitted; immutable after |
-| `description` | string | No | Free text |
+| `description` | string | No | Free text. Operator-facing; never sent to a model |
+| `instructions` | string | No | Model-facing guidance served on `initialize`. On update, `""` clears the stored text; omitting the field leaves it unchanged |
+| `instructions_mode` | string | No | `append` (default) keeps the source servers' own instructions and adds these after; `replace` sends only these |
 | `enabled` | boolean | No | Defaults to `true` |
 | `tools` | array | Yes | Tool specs: `mcp_client_id` + `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
 
@@ -211,7 +217,9 @@ Virtual MCPs are declared under `mcp.virtual_mcps`. They are reconciled into the
 | `id` | integer | No | Positive integer (>= 1). When set, the reconciler matches by this ID first and falls back to name when no stored vMCP has that ID; a name match keeps its existing stored ID |
 | `name` | string | Yes | Display name (unique) |
 | `endpoint_slug` | string | No | Lowercase URL-safe kebab-case (pattern `^[a-z0-9]+(-[a-z0-9]+)*$`) path served at `/mcp/<endpoint_slug>`. Derived from the name when omitted; immutable after creation; unique across vMCPs and direct MCP clients |
-| `description` | string | No | Free text |
+| `description` | string | No | Free text. Operator-facing; never sent to a model |
+| `instructions` | string | No | Model-facing guidance served on `initialize`. Empty inherits only what the source MCP servers advertise |
+| `instructions_mode` | string | No | `append` (default) or `replace`. `replace` drops the inherited text from every source server |
 | `enabled` | boolean | No | Defaults to `true`. A disabled vMCP is not served |
 | `tools` | array | Yes | At least one entry. Each item needs `mcp_client_id` or `mcp_client_name`, plus `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
 | `virtual_key_ids` | string[] | No | Virtual keys the vMCP is attached to |
@@ -243,6 +251,62 @@ Attaching a vMCP to a key changes what that key sees on both paths:
 - **LLM gateway** - the vMCP's tools are added to the key's tool union that the model sees, alongside any tools the key already grants directly.
 
 Detaching reverses both. A tool reachable both directly and via a vMCP appears once, not duplicated.
+
+---
+
+## Server instructions
+
+An MCP server can return an `instructions` string from its `initialize` handshake describing
+how its tools should be used. A Virtual MCP inherits those from the servers it draws tools
+from, and can add its own on top or replace them entirely.
+
+<Note>
+Inherited instructions are only forwarded when `mcp.tool_manager_config.server_instructions_mode`
+is `gateway` or `all` — see [Server Instructions](/mcp/overview#server-instructions). A Virtual
+MCP's own text follows the same setting.
+</Note>
+
+Set the text in **General -> Server Instructions**, then choose how it combines with what the
+source servers provide:
+
+| Toggle | Result |
+|--------|--------|
+| **Use source server instructions** on (default) | The source servers' text, then yours after it |
+| **Use source server instructions** off | Only your text |
+
+Turn it off when the Virtual MCP exposes **part** of a server rather than all of it. The
+inherited text describes the whole server, so it will tell the model how to use tools this
+endpoint deliberately withheld — and name them.
+
+<Warning>
+Turning it off drops the inherited text from **every** source server on this endpoint, not just
+the one you were narrowing. With three servers where only one is over-broad, you lose the other
+two as well.
+</Warning>
+
+Each block is labeled with where it came from, so the model can tell a source server's guidance
+from yours:
+
+```
+<mcp_server name="github">
+Always call get_me first to understand current user permissions.
+</mcp_server>
+
+Read-only lookups only. Never modify production data.
+```
+
+Source servers are quoted and attributed; your own text is the endpoint speaking, so it is
+unwrapped and comes last. A Virtual MCP is a Bifrost concept, so nothing names it to the model
+— to the client this is simply the server it connected to. With `replace`, your text is all the
+client receives.
+
+Via the API, the fields are `instructions` and `instructions_mode` (`append` or `replace`):
+
+```bash
+curl -X PUT http://localhost:8080/api/mcp/virtual-mcps/$ID \
+  -H "Content-Type: application/json" \
+  -d '{"instructions":"Read-only lookups only.","instructions_mode":"replace"}'
+```
 
 ---
 
