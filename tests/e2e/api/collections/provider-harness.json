@@ -173730,6 +173730,197 @@
           }
         }
       ]
+    },
+    {
+      "name": "123. Bedrock invoke thinking token breakdown (#7649)",
+      "description": "Regression for #7649. The /bedrock/model/{id}/invoke and /invoke-with-response-stream routes accept an Anthropic-native InvokeModel body but were served by Converse upstream, and AWS Converse TokenUsage has no thinking-token breakdown (verified live 2026-09-28: same Sonnet 5 adaptive-thinking request returns {inputTokens, outputTokens, totalTokens, cache*} on Converse and usage.output_tokens_details.thinking_tokens on InvokeModel). Two layers dropped the count: the provider never had it, and the invoke egress (toBedrockInvokeAnthropicResponse / toAnthropicInvokeStreamBytes) had no output_tokens_details field even when Bifrost did. Fix: the invoke ingress marks the context, responsesUsesAnthropicInvokePath routes marked Anthropic-family thinking requests to InvokeModel upstream (where the shared anthropic handlers already map thinking_tokens -> ReasoningTokens), and the egress writes output_tokens_details.thinking_tokens. Case 1 pins the non-streaming route, case 2 the stream's message_delta, case 3 guards that thinking-disabled requests stay on Converse with no output_tokens_details.",
+      "item": [
+        {
+          "name": "Bedrock invoke: adaptive thinking token breakdown reaches usage.output_tokens_details (Sonnet 5) - #7649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// #7649: AWS Converse TokenUsage has no thinking-token breakdown, so a /bedrock/.../invoke request",
+                  "// translated to Converse upstream came back with usage.output_tokens_details absent even though",
+                  "// InvokeModel returns output_tokens_details.thinking_tokens for the same call. Red before the fix",
+                  "// (no output_tokens_details on the response), green after (InvokeModel upstream + egress carries it).",
+                  "pm.test('Bedrock invoke adaptive thinking token breakdown (Sonnet 5) - #7649: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock invoke adaptive thinking token breakdown (Sonnet 5) - #7649: a thinking block is present', function () {",
+                  "  var blocks = Array.isArray(body.content) ? body.content : [];",
+                  "  var thinking = blocks.filter(function (b) { return b && b.type === 'thinking'; });",
+                  "  pm.expect(thinking.length, 'effort high should produce a thinking block: ' + txt.slice(0, 400)).to.be.above(0);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock invoke adaptive thinking token breakdown (Sonnet 5) - #7649: usage.output_tokens_details.thinking_tokens is a positive subset of output_tokens', function () {",
+                  "  var usage = body.usage || {};",
+                  "  pm.expect(usage.output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(usage)).to.be.a('number');",
+                  "  var details = usage.output_tokens_details;",
+                  "  pm.expect(details, 'usage.output_tokens_details dropped by the Bedrock provider (thinking token breakdown lost): ' + JSON.stringify(usage)).to.be.an('object');",
+                  "  pm.expect(details.thinking_tokens, 'thinking_tokens must be a number: ' + JSON.stringify(usage)).to.be.a('number');",
+                  "  pm.expect(details.thinking_tokens, 'thinking_tokens must be > 0 when a thinking block was produced: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(details.thinking_tokens, 'thinking_tokens is a subset of output_tokens, never additive: ' + JSON.stringify(usage)).to.be.at.most(usage.output_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 1200,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Reason it out, then answer in one sentence.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: adaptive thinking token breakdown on message_delta (Sonnet 5) - #7649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text() || '';",
+                  "",
+                  "pm.test('Bedrock invoke-with-response-stream adaptive thinking token breakdown (Sonnet 5) - #7649: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock invoke-with-response-stream adaptive thinking token breakdown (Sonnet 5) - #7649: message_delta.usage.output_tokens_details.thinking_tokens present', function () {",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var thinkingStarts = events.filter(function (e) { return e.type === 'content_block_start' && e.content_block && e.content_block.type === 'thinking'; });",
+                  "  pm.expect(thinkingStarts.length, 'effort high should stream a thinking block: ' + JSON.stringify(events).slice(0, 500)).to.be.above(0);",
+                  "  var deltas = events.filter(function (e) { return e.type === 'message_delta' && e.usage; });",
+                  "  pm.expect(deltas.length, 'expected a message_delta event carrying usage: ' + JSON.stringify(events).slice(0, 500)).to.be.above(0);",
+                  "  var usage = deltas[deltas.length - 1].usage;",
+                  "  pm.expect(usage.output_tokens, 'message_delta.usage.output_tokens missing: ' + JSON.stringify(usage)).to.be.a('number');",
+                  "  var details = usage.output_tokens_details;",
+                  "  pm.expect(details, 'message_delta.usage.output_tokens_details dropped (thinking token breakdown lost): ' + JSON.stringify(usage)).to.be.an('object');",
+                  "  pm.expect(details.thinking_tokens, 'thinking_tokens must be > 0: ' + JSON.stringify(usage)).to.be.a('number').and.to.be.above(0);",
+                  "  pm.expect(details.thinking_tokens, 'thinking_tokens is a subset of output_tokens: ' + JSON.stringify(usage)).to.be.at.most(usage.output_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 1200,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Reason it out, then answer in one sentence.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke: thinking disabled keeps Converse usage shape, no output_tokens_details (Sonnet 5) - #7649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// #7649 guard: only thinking requests move to InvokeModel upstream. With thinking disabled the",
+                  "// request stays on Converse and the response must not grow an output_tokens_details object,",
+                  "// matching what Anthropic returns for a non-thinking response.",
+                  "pm.test('Bedrock invoke thinking disabled no thinking token breakdown (Sonnet 5) - #7649: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock invoke thinking disabled no thinking token breakdown (Sonnet 5) - #7649: no thinking block and no output_tokens_details', function () {",
+                  "  var blocks = Array.isArray(body.content) ? body.content : [];",
+                  "  pm.expect(blocks.filter(function (b) { return b && b.type === 'thinking'; }).length, 'thinking disabled must not produce a thinking block: ' + txt.slice(0, 400)).to.eql(0);",
+                  "  var usage = body.usage || {};",
+                  "  pm.expect(usage.output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(usage)).to.be.a('number');",
+                  "  pm.expect(usage.output_tokens_details, 'non-thinking response must not carry output_tokens_details: ' + JSON.stringify(usage)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"disabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
