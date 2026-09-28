@@ -201,3 +201,11 @@ fi
 echo ""
 echo "🧪 Running api-management newman collection..."
 "$RUNNER" $REPORT_ARGS
+
+# Warp boots its own server on its own database (bifrost_warp_e2e on the same
+# Postgres), because its answers cover every row in the logs table and the
+# api-management run above has just written to this server's. It reuses the
+# compose stack's Weaviate and the job's OPENAI_API_KEY.
+echo ""
+echo "🧪 Running Warp newman collection..."
+"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS
