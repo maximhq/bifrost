@@ -111,14 +111,12 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 		batchBilled: make(map[string]time.Time),
 	}
 
-	// Start background workers for business logic
+	// Workers start only after all governance maps have been hydrated.
 	tracker.trackerCtx, tracker.trackerCancel = context.WithCancel(context.Background())
-	tracker.startWorkers(tracker.trackerCtx)
-
 	return tracker
 }
 
-// UpdateUsage queues a usage update for async processing (main business entry point)
+// UpdateUsage applies request usage to its resolved budgets and rate limits.
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// Bill for tokens the provider actually processed, even when the
 	// request ultimately failed or was cancelled. A failed request is only
