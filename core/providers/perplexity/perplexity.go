@@ -240,6 +240,12 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 // Responses performs a responses request to the Perplexity API.
 // Models available on Perplexity's /v1/responses endpoint are routed there via the
 // OpenAI-compatible handler; sonar-* models not supported on responses fall back to /chat/completions.
+//
+// /v1/responses is also Perplexity's Agent API alias for OpenAI SDK compatibility
+// (docs.perplexity.ai/docs/agent-api/quickstart), so this is also the Agent API path.
+// Agent-only fields with no typed Bifrost equivalent (e.g. `preset`, `max_steps`) are
+// forwarded as-is via ExtraParams; passthrough is always on for this path so callers
+// don't need the x-bf-passthrough-extra-params header just to reach them.
 func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
@@ -249,11 +255,12 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
-		request,
+		withWireModelForAgentAPI(request),
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -266,9 +273,51 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 	)
 }
 
+// withWireModelForAgentAPI returns request unchanged, or a shallow copy with Model
+// rewritten to wireModelForAgentAPI(request.Model) or cleared, so the caller's
+// request is never mutated.
+//
+// A `preset` (fast/low/medium/high/xhigh/wide-research — see
+// docs.perplexity.ai/docs/agent-api/presets) can supply its own default model,
+// but only when the wire request carries no `model` field at all: an explicit
+// model, even an empty string, always wins over the preset's default.
+// Live-verified against api.perplexity.ai on 2026-09-24:
+//   - {"model":"perplexity/sonar","preset":"fast",...}        -> model=perplexity/sonar
+//   - {"preset":"fast",...} (no model key)                    -> preset's own default model
+//   - {"model":"","preset":"fast",...}                        -> same as above (empty == absent)
+//
+// Bifrost requires a non-empty Model for internal routing, so a caller who wants
+// the preset to pick the model opts in explicitly with the perplexityAgentPresetModel
+// sentinel ("preset", not a real Perplexity model — see its doc comment) instead of
+// naming a real model. Every other model, including bare "sonar" (Perplexity's own
+// base model — see wireModelForAgentAPI), is left for the preset/model interplay
+// Perplexity itself already resolves correctly (an explicit model always wins).
+func withWireModelForAgentAPI(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if strings.TrimPrefix(request.Model, "perplexity/") == perplexityAgentPresetModel && request.Params != nil {
+		if presetVal, ok := request.Params.ExtraParams["preset"]; ok {
+			if preset, ok := presetVal.(string); ok && preset != "" {
+				reqCopy := *request
+				reqCopy.Model = ""
+				return &reqCopy
+			}
+		}
+	}
+
+	wireModel := wireModelForAgentAPI(request.Model)
+	if wireModel == request.Model {
+		return request
+	}
+	reqCopy := *request
+	reqCopy.Model = wireModel
+	return &reqCopy
+}
+
 // ResponsesStream performs a streaming responses request to the Perplexity API.
 // Models available on Perplexity's /v1/responses endpoint are streamed from there via the
 // OpenAI-compatible handler; sonar-* models not supported on responses fall back to /chat/completions.
+//
+// See Responses above: /v1/responses doubles as the Agent API alias, and ExtraParams
+// passthrough is always on here for the same reason (`preset`, `max_steps`, etc.).
 func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
@@ -281,11 +330,12 @@ func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		)
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
-		request,
+		withWireModelForAgentAPI(request),
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,

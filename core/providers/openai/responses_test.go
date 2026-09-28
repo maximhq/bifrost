@@ -2295,6 +2295,149 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 	}
 }
 
+// TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchDomainFilter
+// covers the CodeRabbit-flagged gap in filterUnsupportedTools' Perplexity
+// web_search exemption: Bifrost's cross-provider ResponsesToolWebSearchFilters.AllowedDomains
+// field was being forwarded unchanged, but Perplexity's Agent API wire format
+// only understands search_domain_filter (docs.perplexity.ai/docs/agent-api/tools/web-search).
+func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchDomainFilter(t *testing.T) {
+	buildRequest := func(filters *schemas.ResponsesToolWebSearchFilters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Perplexity,
+			Model:    "sonar",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{
+					{
+						Type: schemas.ResponsesToolTypeWebSearch,
+						ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+							Filters: filters,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("maps AllowedDomains onto search_domain_filter on the wire", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			AllowedDomains: []string{"wikipedia.org", "nasa.gov"},
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result == nil || len(result.Tools) != 1 {
+			t.Fatalf("expected 1 tool in result, got %+v", result)
+		}
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if filters == nil {
+			t.Fatal("expected filters to be non-nil")
+		}
+		if len(filters.AllowedDomains) != 0 {
+			t.Fatalf("expected AllowedDomains to be cleared, got %v", filters.AllowedDomains)
+		}
+		if want := []string{"wikipedia.org", "nasa.gov"}; len(filters.SearchDomainFilter) != len(want) ||
+			filters.SearchDomainFilter[0] != want[0] || filters.SearchDomainFilter[1] != want[1] {
+			t.Fatalf("expected SearchDomainFilter=%v, got %v", want, filters.SearchDomainFilter)
+		}
+
+		data, err := json.Marshal(result.Tools[0])
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		body := string(data)
+		if !strings.Contains(body, `"search_domain_filter":["wikipedia.org","nasa.gov"]`) {
+			t.Fatalf("expected serialized filters.search_domain_filter, got %s", body)
+		}
+		if strings.Contains(body, "allowed_domains") {
+			t.Fatalf("expected filters.allowed_domains to be absent from the wire payload, got %s", body)
+		}
+
+		// The caller's own request must not be mutated.
+		if len(bifrostReq.Params.Tools[0].ResponsesToolWebSearch.Filters.AllowedDomains) != 2 {
+			t.Fatal("caller's AllowedDomains was mutated")
+		}
+	})
+
+	t.Run("does not clobber an explicitly-set native search_domain_filter", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			AllowedDomains:     []string{"wikipedia.org"},
+			SearchDomainFilter: []string{"nasa.gov"},
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if len(filters.SearchDomainFilter) != 1 || filters.SearchDomainFilter[0] != "nasa.gov" {
+			t.Fatalf("expected native SearchDomainFilter to win, got %v", filters.SearchDomainFilter)
+		}
+		if len(filters.AllowedDomains) != 0 {
+			t.Fatalf("expected AllowedDomains to still be cleared, got %v", filters.AllowedDomains)
+		}
+	})
+
+	t.Run("leaves other Perplexity-native filter fields untouched", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			SearchRecencyFilter: schemas.Ptr("week"),
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if filters == nil || filters.SearchRecencyFilter == nil || *filters.SearchRecencyFilter != "week" {
+			t.Fatalf("expected search_recency_filter to pass through unchanged, got %+v", filters)
+		}
+	})
+}
+
+// TestToOpenAIResponsesRequest_PerplexityCustomProviderRetainsNativeTools covers
+// a gap CodeRabbit flagged in filterUnsupportedTools: it checked resp.Provider
+// directly for the Perplexity exemption, but a custom provider backed by
+// Perplexity reports its own provider key on resp.Provider while the resolved
+// base provider (schemas.BifrostContextKeyBaseProviderType, read through
+// schemas.ResolveBaseProvider) is Perplexity. That mismatch silently stripped
+// the Agent API's server-side tools and fell back to the generic
+// AllowedDomains-only web_search handling for such a custom provider.
+func TestToOpenAIResponsesRequest_PerplexityCustomProviderRetainsNativeTools(t *testing.T) {
+	const customProvider = schemas.ModelProvider("my-perplexity-clone")
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: customProvider,
+		Model:    "sonar",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFetchURL},
+				{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+						Filters: &schemas.ResponsesToolWebSearchFilters{
+							AllowedDomains: []string{"wikipedia.org"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+		schemas.BifrostContextKeyBaseProviderType, schemas.Perplexity)
+
+	result := ToOpenAIResponsesRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 2, "fetch_url must survive filtering for a custom provider based on Perplexity")
+	require.Equal(t, schemas.ResponsesToolTypeFetchURL, result.Tools[0].Type)
+
+	webSearch := result.Tools[1].ResponsesToolWebSearch
+	require.NotNil(t, webSearch)
+	require.NotNil(t, webSearch.Filters)
+	require.Empty(t, webSearch.Filters.AllowedDomains, "AllowedDomains should have been mapped, not forwarded unchanged")
+	require.Equal(t, []string{"wikipedia.org"}, webSearch.Filters.SearchDomainFilter)
+}
+
 func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing.T) {
 	tests := []struct {
 		name         string

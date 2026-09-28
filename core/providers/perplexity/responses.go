@@ -14,6 +14,32 @@ func isPerplexityResponsesSupported(model string) bool {
 	return !strings.HasPrefix(strings.TrimPrefix(model, "perplexity/"), "sonar-")
 }
 
+// perplexityAgentSonarModel is Perplexity's own base Sonar model name.
+const perplexityAgentSonarModel = "sonar"
+
+// perplexityAgentPresetModel is a Bifrost-only sentinel (not a real Perplexity
+// model): it tells withWireModelForAgentAPI to omit `model` from the wire and let
+// an ExtraParams `preset` (fast/low/medium/high/xhigh/wide-research) pick Perplexity's
+// own default model. Unlike bare "sonar" — a real product name a caller may want
+// regardless of any preset — "preset" has no meaning as an actual wire model, so
+// both the bare and "perplexity/"-prefixed spellings are treated identically.
+const perplexityAgentPresetModel = "preset"
+
+// wireModelForAgentAPI returns the model string to send on the wire to Perplexity's
+// Agent API (/v1/responses). Live-verified against api.perplexity.ai on 2026-09-17:
+// Perplexity's own bare "sonar" model requires the "perplexity/" vendor-namespace
+// prefix on this endpoint specifically — {"model":"sonar",...} 400s with
+// `validation failed: model "sonar" is not supported`, while
+// {"model":"perplexity/sonar",...} succeeds. Third-party Agent API models (e.g.
+// "openai/gpt-5.6-sol") already carry their own vendor prefix and are returned
+// unchanged, as is any input that already spells out "perplexity/sonar".
+func wireModelForAgentAPI(model string) string {
+	if strings.TrimPrefix(model, "perplexity/") == perplexityAgentSonarModel {
+		return "perplexity/" + perplexityAgentSonarModel
+	}
+	return model
+}
+
 // ToPerplexityResponsesRequest converts a BifrostResponsesRequest to PerplexityChatRequest
 func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *PerplexityChatRequest {
 	if bifrostReq == nil {
@@ -116,7 +142,6 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 			if responseFormat, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "response_format"); ok {
 				perplexityReq.ResponseFormat = &responseFormat
 			}
-
 
 			// Perplexity-specific request fields
 			if numSearchResults, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_search_results"]); ok {

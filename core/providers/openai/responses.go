@@ -834,7 +834,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Filter out tools that the OpenAI-compatible target doesn't support.
 	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
-	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider))
+	req.filterUnsupportedTools(toolProvider, supportsWebSearchContentTypes(toolCaps, toolProvider))
 	req.keepDeferLoading = toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel))
 
 	if bifrostReq.Params != nil {
@@ -970,7 +970,7 @@ func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.Re
 	return message
 }
 
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool) {
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(provider schemas.ModelProvider, webSearchContentTypesSupported bool) {
 	if len(resp.Tools) == 0 {
 		return
 	}
@@ -998,6 +998,15 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 	if resp.Provider == schemas.XAI {
 		supportedTypes[schemas.ResponsesToolTypeXSearch] = true
 	}
+	// Perplexity Agent API server-side tools (docs.perplexity.ai/docs/agent-api/tools).
+	// Match on the resolved base provider, not resp.Provider: a custom provider
+	// backed by Perplexity reports its own key (see the toolProvider comment above).
+	if provider == schemas.Perplexity {
+		supportedTypes[schemas.ResponsesToolTypeSandbox] = true
+		supportedTypes[schemas.ResponsesToolTypeFetchURL] = true
+		supportedTypes[schemas.ResponsesToolTypeFinanceSearch] = true
+		supportedTypes[schemas.ResponsesToolTypePeopleSearch] = true
+	}
 
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
@@ -1020,6 +1029,28 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 					// EnableZoom is intentionally omitted (nil) - OpenAI doesn't support it
 				}
 				newTool.ResponsesToolComputerUsePreview = newComputerUse
+				filteredTools = append(filteredTools, newTool)
+			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil && provider == schemas.Perplexity {
+				// Perplexity's Agent API web_search tool accepts its own superset of
+				// fields (search_domain_filter, search_recency_filter, date filters,
+				// max_results, max_tokens, max_tokens_per_page — see
+				// docs.perplexity.ai/docs/agent-api/tools/web-search), so none of the
+				// OpenAI-specific stripping below applies. The one bridge still needed:
+				// AllowedDomains is Bifrost's cross-provider allow-list field, but
+				// Perplexity's wire format only understands search_domain_filter, so map
+				// it across (without clobbering an explicitly-set native value) and drop
+				// the field Perplexity doesn't recognize.
+				newTool := tool
+				if filters := tool.ResponsesToolWebSearch.Filters; filters != nil && len(filters.AllowedDomains) > 0 {
+					newFilters := *filters
+					if len(newFilters.SearchDomainFilter) == 0 {
+						newFilters.SearchDomainFilter = append([]string(nil), filters.AllowedDomains...)
+					}
+					newFilters.AllowedDomains = nil
+					newWebSearch := *tool.ResponsesToolWebSearch
+					newWebSearch.Filters = &newFilters
+					newTool.ResponsesToolWebSearch = &newWebSearch
+				}
 				filteredTools = append(filteredTools, newTool)
 			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil {
 				// Create a proper deep copy with new nested pointers to avoid mutating the original
