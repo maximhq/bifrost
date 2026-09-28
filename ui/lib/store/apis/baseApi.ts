@@ -181,6 +181,7 @@ export const baseApi = createApi({
 		"UserGovernance",
 		"LargePayloadConfig",
 		"LoadBalancerConfig",
+		"LoadBalancerHistory",
 		"Folders",
 		"Prompts",
 		"Versions",
