@@ -125,9 +125,16 @@ OpenRouter supports extended thinking on compatible models:
 
 ### Prompt Caching
 
-Bifrost forwards Anthropic-style cache breakpoints to OpenRouter, but the two API
+Bifrost forwards Anthropic-style cache breakpoints to OpenRouter, but its API
 surfaces take them in different shapes. Bifrost translates automatically, so you
 send `cache_control` either way.
+
+**Anthropic Messages integration** (`/anthropic/v1/messages`) routes Claude models
+to OpenRouter's native `/api/v1/messages` endpoint, for both unary and streaming
+requests. It preserves `cache_control` on `tool_use`, `tool_result`, text blocks,
+and tool definitions, including `ttl: "1h"`. The model remains the OpenRouter slug,
+for example `openrouter/anthropic/claude-sonnet-4` at the gateway and
+`anthropic/claude-sonnet-4` upstream.
 
 **Chat Completions** accepts per-block `cache_control` directly, and Bifrost
 passes it through unchanged:
@@ -187,10 +194,12 @@ defines, so a `cache_control` carrying any other value is dropped rather than
 turned into a breakpoint.
 </Note>
 
-Two markers have no Responses representation and are still dropped: `cache_control`
-on tool definitions (OpenRouter documents no tool-level Responses breakpoint) and on
-`function_call_output` blocks (a text-only output array is collapsed to a single
-string before it reaches the wire). Put your breakpoints on `input_text` blocks.
+On the native Responses route, `cache_control` on tool definitions,
+`function_call` items, and `function_call_output` items is still dropped. OpenRouter
+documents no equivalent Responses breakpoint for these locations; a text-only
+function output array is also collapsed to a single string before it reaches the
+wire. Put your breakpoints on `input_text` blocks, or use the Anthropic Messages
+integration for Claude tool-block cache boundaries.
 
 Verify caching worked by reading `cached_tokens` in the response usage. A `200`
 alone does not mean the cache was hit.
@@ -220,7 +229,9 @@ OpenRouter supports all standard OpenAI message types, tools, responses, and str
 
 # 2. Responses API
 
-OpenRouter's Responses API is handled as a distinct endpoint at `/v1/responses`. This API is currently in **beta** on OpenRouter.
+Native Responses requests use OpenRouter's distinct `/v1/responses` endpoint,
+which is currently in **beta**. Claude requests arriving through the Anthropic
+Messages integration instead use the native Messages endpoint described above.
 
 Same parameter support as Chat Completions, with requests forwarded directly to the Responses API endpoint without conversion to Chat Completions.
 

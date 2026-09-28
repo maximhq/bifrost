@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -400,8 +401,36 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	)
 }
 
+// useAnthropicMessages keeps Anthropic ingress on OpenRouter's native Messages
+// wire for Claude. The Responses wire has no equivalent for tool cache markers.
+// Native Responses clients continue to use /v1/responses.
+func useAnthropicMessages(ctx *schemas.BifrostContext, model string) bool {
+	integration, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	return integration == "anthropic" && schemas.IsAnthropicModelFamily(ctx, model)
+}
+
 // Responses performs a responses request to the OpenRouter API.
 func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if useAnthropicMessages(ctx, request.Model) {
+		headers := openai.BearerAuthHeader(key)
+		headers["anthropic-version"] = "2023-06-01"
+		return anthropic.HandleAnthropicResponsesRequest(
+			ctx,
+			provider.client,
+			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
+			request,
+			anthropic.AnthropicRequestBuildConfig{
+				Provider:                  provider.GetProviderKey(),
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+				ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			},
+			headers,
+			provider.networkConfig.ExtraHeaders,
+			nil,
+			provider.logger,
+		)
+	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -421,6 +450,39 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 
 // ResponsesStream performs a streaming responses request to the OpenRouter API.
 func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if useAnthropicMessages(ctx, request.Model) {
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  provider.GetProviderKey(),
+			IsStreaming:               true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		headers := openai.BearerAuthHeader(key)
+		headers["anthropic-version"] = "2023-06-01"
+		headers["Accept"] = "text/event-stream"
+		headers["Cache-Control"] = "no-cache"
+		return anthropic.HandleAnthropicResponsesStream(
+			ctx,
+			provider.streamingClient,
+			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
+			body,
+			headers,
+			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
+			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			provider.GetProviderKey(),
+			postHookRunner,
+			nil,
+			nil,
+			provider.logger,
+			postHookSpanFinalizer,
+		)
+	}
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
