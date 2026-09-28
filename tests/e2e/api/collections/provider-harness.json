@@ -43607,10 +43607,10 @@
     },
     {
       "name": "25. DeepSeek Anthropic-Compatible Migration",
-      "description": "DeepSeek Chat Completions and the Responses API now route to DeepSeek's Anthropic-compatible endpoint (/anthropic/v1/messages, authenticated with x-api-key) instead of the OpenAI-compatible /chat/completions endpoint. Responses no longer falls back to ChatCompletion+ToBifrostResponsesResponse conversion - it calls the Anthropic Responses handler directly. The migration also enables correct multiple-tool-call handling for DeepSeek (previously limited on the OpenAI-compatible path). These cases pin: (1) basic chat completions still work end-to-end through the new endpoint, non-streaming and streaming, (2) a single turn can request two independent tools and get both tool calls back, and (3) the native /v1/responses route (no chat-completion fallback) works independently.",
+      "description": "DeepSeek's Anthropic-compatible endpoint (/anthropic/v1/messages, x-api-key auth) is opt-in: ResolveUseAnthropicEndpoints (core/providers/anthropic/utils.go) reads the resolved alias config, then key.use_anthropic_endpoints, and falls back to the OpenAI-compatible /chat/completions wire when neither is set. The shared harness DeepSeek key deliberately leaves the flag unset so the ~240 other deepseek rows keep pinning the OpenAI-compatible path; this folder targets the deepseek-v4-flash-anthropic alias declared on that key in tests/integrations/python/config.json, which carries use_anthropic_endpoints: true (#7610).\n\nEvery row asserts the OUTBOUND payload via extra_fields.raw_request, not just the response: the Anthropic wire carries max_tokens and content-block arrays, the OpenAI-compatible wire carries max_completion_tokens and plain strings. Before #7610 the rows only asserted on the response, which is identical on both wires, so they passed for months without ever reaching /anthropic/v1/messages.\n\nCases: (1) chat completions non-streaming and (2) streaming (raw_request is attached to the final SSE frame), (3) two independent tools requested in one turn come back as two tool_calls, (4) native /v1/responses (no chat-completion fallback). All four cases send reasoning.effort none, which reaches the wire as thinking.type disabled (each row asserts it): DeepSeek's Anthropic endpoint thinks by default and thinking tokens count toward max_tokens, so a reasoning-on turn at a small budget returns stop_reason length with a reasoning item and no message item.",
       "item": [
         {
-          "name": "deepseek/deepseek-v4-flash chat completions (non-streaming)",
+          "name": "deepseek/deepseek-v4-flash-anthropic chat completions (non-streaming) - #7610",
           "request": {
             "method": "POST",
             "header": [
@@ -43621,7 +43621,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -43645,9 +43645,27 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
                   "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json();",
                   "pm.test('deepseek anthropic-compatible chat completions: content non-empty', function () {",
-                  "  var msg = pm.response.json().choices[0].message;",
+                  "  var msg = j.choices[0].message;",
                   "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "// #7610: the assertions above pass on either DeepSeek wire. Only the outbound payload proves",
+                  "// the alias-carried use_anthropic_endpoints routed this call through /anthropic/v1/messages:",
+                  "// Anthropic takes max_tokens + content blocks, the OpenAI-compatible wire takes",
+                  "// max_completion_tokens + a plain string.",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('deepseek anthropic-compatible chat completions: outbound wire is Anthropic-shaped (#7610)', function () {",
+                  "  pm.expect(rr, 'raw_request missing - send_back_raw_request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.max_tokens, 'max_tokens absent - request went out on the OpenAI-compatible wire: ' + wire).to.be.a('number');",
+                  "  pm.expect(rr.max_completion_tokens, 'max_completion_tokens present - request went out on the OpenAI-compatible wire: ' + wire).to.be.undefined;",
+                  "  pm.expect(rr.messages, 'messages missing on the wire: ' + wire).to.be.an('array');",
+                  "  pm.expect(rr.messages[0].content, 'user content is a plain string - OpenAI-compatible wire: ' + wire).to.be.an('array');",
+                  "});",
+                  "pm.test('deepseek anthropic-compatible chat completions: reasoning.effort none reached the wire as thinking disabled (#7610)', function () {",
+                  "  pm.expect(rr && rr.thinking && rr.thinking.type, 'thinking not disabled on the wire - a reasoning-on turn spends max_tokens on reasoning before any content or tool call: ' + wire).to.eql('disabled');",
                   "});"
                 ]
               }
@@ -43655,7 +43673,7 @@
           ]
         },
         {
-          "name": "deepseek/deepseek-v4-flash chat completions streaming (SSE)",
+          "name": "deepseek/deepseek-v4-flash-anthropic chat completions streaming (SSE) - #7610",
           "request": {
             "method": "POST",
             "header": [
@@ -43666,7 +43684,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 300\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 300,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -43692,12 +43710,14 @@
                   "if (pm.response.code >= 400) { return; }",
                   "var content = '';",
                   "var finished = false;",
+                  "var lastRawRequest;",
                   "pm.response.text().split('\\n').forEach(function (line) {",
                   "  if (line.indexOf('data:') !== 0) { return; }",
                   "  var payload = line.slice(5).trim();",
                   "  if (!payload || payload === '[DONE]') { return; }",
                   "  var chunk;",
                   "  try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "  if (chunk.extra_fields && chunk.extra_fields.raw_request) { lastRawRequest = chunk.extra_fields.raw_request; }",
                   "  var choice = chunk.choices && chunk.choices[0];",
                   "  if (!choice) { return; }",
                   "  if (choice.finish_reason) { finished = true; }",
@@ -43708,6 +43728,23 @@
                   "});",
                   "pm.test('deepseek anthropic-compatible streaming: content accumulated', function () {",
                   "  pm.expect(content.length, 'no content in any delta: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "// #7610: the assertions above pass on either DeepSeek wire. Only the outbound payload proves",
+                  "// the alias-carried use_anthropic_endpoints routed this call through /anthropic/v1/messages:",
+                  "// Anthropic takes max_tokens + content blocks, the OpenAI-compatible wire takes",
+                  "// max_completion_tokens + a plain string.",
+                  "var rr = lastRawRequest;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('deepseek anthropic-compatible streaming: outbound wire is Anthropic-shaped (#7610)', function () {",
+                  "  pm.expect(rr, 'raw_request missing - send_back_raw_request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.max_tokens, 'max_tokens absent - request went out on the OpenAI-compatible wire: ' + wire).to.be.a('number');",
+                  "  pm.expect(rr.max_completion_tokens, 'max_completion_tokens present - request went out on the OpenAI-compatible wire: ' + wire).to.be.undefined;",
+                  "  pm.expect(rr.messages, 'messages missing on the wire: ' + wire).to.be.an('array');",
+                  "  pm.expect(rr.messages[0].content, 'user content is a plain string - OpenAI-compatible wire: ' + wire).to.be.an('array');",
+                  "});",
+                  "pm.test('deepseek anthropic-compatible streaming: reasoning.effort none reached the wire as thinking disabled (#7610)', function () {",
+                  "  pm.expect(rr && rr.thinking && rr.thinking.type, 'thinking not disabled on the wire - a reasoning-on turn spends max_tokens on reasoning before any content or tool call: ' + wire).to.eql('disabled');",
                   "});"
                 ]
               }
@@ -43715,7 +43752,7 @@
           ]
         },
         {
-          "name": "deepseek/deepseek-v4-flash multiple tool calls in one turn",
+          "name": "deepseek/deepseek-v4-flash-anthropic multiple tool calls in one turn (anthropic-compatible) - #7610",
           "request": {
             "method": "POST",
             "header": [
@@ -43726,7 +43763,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"I need to know the weather in London and also calculate 15 * 23. Can you help with both in a single request?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather in a given location\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\",\n              \"description\": \"The city, e.g. London\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"calculate\",\n        \"description\": \"Perform basic mathematical calculations\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"expression\": {\n              \"type\": \"string\",\n              \"description\": \"The mathematical expression to evaluate, e.g. '2 + 3'\"\n            }\n          },\n          \"required\": [\n            \"expression\"\n          ]\n        }\n      }\n    }\n  ],\n  \"max_tokens\": 512\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"I need to know the weather in London and also calculate 15 * 23. Can you help with both in a single request?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather in a given location\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\",\n              \"description\": \"The city, e.g. London\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"calculate\",\n        \"description\": \"Perform basic mathematical calculations\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"expression\": {\n              \"type\": \"string\",\n              \"description\": \"The mathematical expression to evaluate, e.g. '2 + 3'\"\n            }\n          },\n          \"required\": [\n            \"expression\"\n          ]\n        }\n      }\n    }\n  ],\n  \"max_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -43750,13 +43787,31 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
                   "if (pm.response.code >= 400) { return; }",
-                  "var msg = pm.response.json().choices[0].message;",
+                  "var j = pm.response.json();",
+                  "var msg = j.choices[0].message;",
                   "pm.test('deepseek multiple tool calls: both tools called in a single turn', function () {",
                   "  pm.expect(msg.tool_calls, 'no tool_calls: ' + pm.response.text()).to.be.an('array');",
                   "  pm.expect(msg.tool_calls.length, 'expected at least 2 tool calls: ' + pm.response.text()).to.be.at.least(2);",
                   "  var names = msg.tool_calls.map(function (tc) { return tc.function.name; });",
                   "  pm.expect(names).to.include('get_weather');",
                   "  pm.expect(names).to.include('calculate');",
+                  "});",
+                  "// #7610: the assertions above pass on either DeepSeek wire. Only the outbound payload proves",
+                  "// the alias-carried use_anthropic_endpoints routed this call through /anthropic/v1/messages:",
+                  "// Anthropic takes max_tokens + content blocks, the OpenAI-compatible wire takes",
+                  "// max_completion_tokens + a plain string.",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('deepseek multiple tool calls: outbound wire is Anthropic-shaped (#7610)', function () {",
+                  "  pm.expect(rr, 'raw_request missing - send_back_raw_request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.max_tokens, 'max_tokens absent - request went out on the OpenAI-compatible wire: ' + wire).to.be.a('number');",
+                  "  pm.expect(rr.max_completion_tokens, 'max_completion_tokens present - request went out on the OpenAI-compatible wire: ' + wire).to.be.undefined;",
+                  "  pm.expect(rr.messages, 'messages missing on the wire: ' + wire).to.be.an('array');",
+                  "  pm.expect(rr.messages[0].content, 'user content is a plain string - OpenAI-compatible wire: ' + wire).to.be.an('array');",
+                  "});",
+                  "pm.test('deepseek multiple tool calls: reasoning.effort none reached the wire as thinking disabled (#7610)', function () {",
+                  "  pm.expect(rr && rr.thinking && rr.thinking.type, 'thinking not disabled on the wire - a reasoning-on turn spends max_tokens on reasoning before any content or tool call: ' + wire).to.eql('disabled');",
                   "});"
                 ]
               }
@@ -43764,7 +43819,7 @@
           ]
         },
         {
-          "name": "deepseek/deepseek-v4-flash native Responses API (non-streaming)",
+          "name": "deepseek/deepseek-v4-flash-anthropic native Responses API (non-streaming, anthropic-compatible) - #7610",
           "request": {
             "method": "POST",
             "header": [
@@ -43775,7 +43830,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Say hello in exactly one word.\",\n  \"max_output_tokens\": 1000\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"input\": \"Say hello in exactly one word.\",\n  \"max_output_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -43805,6 +43860,23 @@
                   "  pm.expect(msg, 'no message output item: ' + pm.response.text()).to.exist;",
                   "  var hasText = (msg.content || []).some(function (c) { return c.type === 'output_text' && c.text && c.text.length > 0; });",
                   "  pm.expect(hasText, 'message should contain non-empty output_text: ' + pm.response.text()).to.be.true;",
+                  "});",
+                  "// #7610: the assertions above pass on either DeepSeek wire. Only the outbound payload proves",
+                  "// the alias-carried use_anthropic_endpoints routed this call through /anthropic/v1/messages:",
+                  "// Anthropic takes max_tokens + content blocks, the OpenAI-compatible wire takes",
+                  "// max_completion_tokens + a plain string.",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('deepseek native responses: outbound wire is Anthropic-shaped (#7610)', function () {",
+                  "  pm.expect(rr, 'raw_request missing - send_back_raw_request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.max_tokens, 'max_tokens absent - request went out on the OpenAI-compatible wire: ' + wire).to.be.a('number');",
+                  "  pm.expect(rr.max_completion_tokens, 'max_completion_tokens present - request went out on the OpenAI-compatible wire: ' + wire).to.be.undefined;",
+                  "  pm.expect(rr.messages, 'messages missing on the wire: ' + wire).to.be.an('array');",
+                  "  pm.expect(rr.messages[0].content, 'user content is a plain string - OpenAI-compatible wire: ' + wire).to.be.an('array');",
+                  "});",
+                  "pm.test('deepseek native responses: reasoning.effort none reached the wire as thinking disabled (#7610)', function () {",
+                  "  pm.expect(rr && rr.thinking && rr.thinking.type, 'thinking not disabled on the wire - a reasoning-on turn spends max_tokens on reasoning and yields no message item: ' + wire).to.eql('disabled');",
                   "});"
                 ]
               }
