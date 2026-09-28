@@ -190,18 +190,22 @@ type warpBackfillStatus struct {
 	// struct, never "empty" to the encoder - so the idle and pending responses
 	// shipped 0001-01-01 for timestamps they simply do not have. These are
 	// optional properties in the schema, and a year-1 date reads as real.
-	StartTime   *time.Time `json:"start_time,omitempty"`
-	EndTime     *time.Time `json:"end_time,omitempty"`
-	Total       int64      `json:"total"`
-	Scanned     int        `json:"scanned"`
-	Indexed     int        `json:"indexed"`
-	Skipped     int        `json:"skipped"`
-	Failed      int        `json:"failed"`
-	LastError   string     `json:"last_error,omitempty"`
-	Message     string     `json:"message,omitempty"`
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	StartTime *time.Time `json:"start_time,omitempty"`
+	EndTime   *time.Time `json:"end_time,omitempty"`
+	Total     int64      `json:"total"`
+	Scanned   int        `json:"scanned"`
+	Indexed   int        `json:"indexed"`
+	Skipped   int        `json:"skipped"`
+	Failed    int        `json:"failed"`
+	// EmbeddingTokens/EmbeddingCost are what the job's embedding calls have
+	// consumed so far. Cost is omitted when the deployment cannot price it.
+	EmbeddingTokens int64      `json:"embedding_tokens,omitempty"`
+	EmbeddingCost   *float64   `json:"embedding_cost,omitempty"`
+	LastError       string     `json:"last_error,omitempty"`
+	Message         string     `json:"message,omitempty"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
@@ -490,6 +494,7 @@ func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {
 		status.StartTime, status.EndTime, status.Total = &meta.StartTime, &meta.EndTime, meta.Total
 		status.Scanned, status.Indexed, status.Skipped, status.Failed = meta.Scanned, meta.Indexed, meta.Skipped, meta.Failed
 		status.Message = meta.Message
+		status.EmbeddingTokens, status.EmbeddingCost = meta.EmbeddingTokens, meta.EmbeddingCost
 		if status.LastError == "" {
 			status.LastError = meta.LastError
 		}

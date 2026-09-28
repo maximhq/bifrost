@@ -54,8 +54,16 @@ type BackfillJobMeta struct {
 	Indexed         int        `json:"indexed"`
 	Skipped         int        `json:"skipped"`
 	Failed          int        `json:"failed"`
-	LastError       string     `json:"last_error,omitempty"`
-	Message         string     `json:"message,omitempty"`
+	// EmbeddingTokens and EmbeddingCost total what the job's embedding calls
+	// consumed, across every resume of this checkpoint. They are spend, not
+	// progress: a page rolled back out of the counters above was still billed,
+	// so it stays in here. EmbeddingCost is nil when any call could not be
+	// priced (no model catalog, or no pricing row) - absent reads as "unknown",
+	// where a partial sum or 0 would understate it.
+	EmbeddingTokens int64    `json:"embedding_tokens,omitempty"`
+	EmbeddingCost   *float64 `json:"embedding_cost,omitempty"`
+	LastError       string   `json:"last_error,omitempty"`
+	Message         string   `json:"message,omitempty"`
 }
 
 // embeddingConfigSignature identifies the embedding space a backfill was frozen
@@ -214,7 +222,14 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 			break
 		}
 
-		outcomes, pageErr := s.indexBackfillPage(ctx, config, result.Logs)
+		outcomes, spend, pageErr := s.indexBackfillPage(ctx, config, result.Logs)
+		// Recorded before anything below can return: a page that is cut short or
+		// rolled back is retried on resume, but the calls it already made were
+		// billed and are not refunded by the retry. spend also covers logs cut
+		// off by cancellation, which are left out of outcomes.
+		for _, usage := range spend {
+			s.recordBackfillSpend(&meta, config, usage)
+		}
 		if pageErr != nil {
 			// The page was cut short - by external cancellation, or a fetch that
 			// failed before any log in it was even attempted: nothing in it is
@@ -299,6 +314,8 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 type backfillPageOutcome struct {
 	outcome IndexOutcome
 	err     error
+	// usage is the embedding call's consumption, set whenever a call was made.
+	usage *schemas.BifrostLLMUsage
 	// vanished marks a log Search listed but the page fetch no longer found.
 	// Recorded as failed, but kept out of the consecutive-failure streak.
 	vanished bool
@@ -311,7 +328,9 @@ type backfillPageOutcome struct {
 // rather than one round trip per row.
 //
 // The returned outcomes cover only the logs that finished, in their original
-// page order; gaps from a log the run raced ahead of are simply omitted. A
+// page order; gaps from a log the run raced ahead of are simply omitted. The
+// returned spend is every call's usage, including calls whose log was cut off
+// by cancellation and so is missing from outcomes. A
 // non-nil error means the page was cut short - either the fetch that seeds it
 // never ran, or ctx was cancelled before the rest of it could - and the
 // caller must not count anything from this page or advance the cursor past
@@ -342,9 +361,9 @@ func (s *Service) fetchBackfillLogsIndividually(ctx context.Context, ids []strin
 	return entries, nil
 }
 
-func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpConfig, logs []logstore.Log) ([]backfillPageOutcome, error) {
+func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpConfig, logs []logstore.Log) ([]backfillPageOutcome, []*schemas.BifrostLLMUsage, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ids := make([]string, len(logs))
 	for index := range logs {
@@ -368,7 +387,7 @@ func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpCon
 		// even fetched, so nothing about it should be counted as scanned or
 		// failed, and the caller must retry the whole page rather than treat it
 		// as resolved.
-		return nil, fmt.Errorf("fetch logs for Warp backfill: %w", err)
+		return nil, nil, fmt.Errorf("fetch logs for Warp backfill: %w", err)
 	}
 	entryByID := make(map[string]*logstore.Log, len(entries))
 	for index := range entries {
@@ -393,7 +412,7 @@ func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpCon
 			// The config verified for this job, not a fresh read: a save landing
 			// between the check in RunBackfillJob and this write would otherwise
 			// index into a different embedding space than the job froze.
-			outcome, indexErr := s.indexer.IndexWithConfig(groupCtx, config, entry)
+			outcome, usage, indexErr := s.indexer.IndexWithConfig(groupCtx, config, entry)
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				// ctx was cancelled while this log was mid-flight. Checked
 				// regardless of whether indexing reported an error: a cancellation
@@ -404,9 +423,12 @@ func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpCon
 				// out of results entirely (done stays false) so it is omitted from
 				// outcomes below rather than counted, and the cancellation is
 				// propagated so RunBackfillJob knows the page was cut short.
+				// Its usage is still kept: a call that returned was billed whether
+				// or not the log counts, so the spend must reach the checkpoint.
+				results[index] = backfillPageOutcome{usage: usage}
 				return cancelErr
 			}
-			results[index] = backfillPageOutcome{outcome: outcome, err: indexErr}
+			results[index] = backfillPageOutcome{outcome: outcome, err: indexErr, usage: usage}
 			done[index] = true
 			return nil
 		})
@@ -414,12 +436,55 @@ func (s *Service) indexBackfillPage(ctx context.Context, config *schemas.WarpCon
 	waitErr := group.Wait()
 
 	outcomes := make([]backfillPageOutcome, 0, len(logs))
+	spend := make([]*schemas.BifrostLLMUsage, 0, len(logs))
 	for index := range logs {
+		if results[index].usage != nil {
+			spend = append(spend, results[index].usage)
+		}
 		if done[index] {
 			outcomes = append(outcomes, results[index])
 		}
 	}
-	return outcomes, waitErr
+	return outcomes, spend, waitErr
+}
+
+// recordBackfillSpend adds one embedding call's usage to the job's running
+// spend. Priced the way the call was routed - a provider-qualified embedding
+// model runs on its own prefix's provider, so it is priced off that rate card.
+func (s *Service) recordBackfillSpend(meta *BackfillJobMeta, config *schemas.WarpConfig, usage *schemas.BifrostLLMUsage) {
+	if usage == nil {
+		return
+	}
+	tokens := usage.TotalTokens
+	if tokens == 0 {
+		tokens = usage.PromptTokens
+	}
+	priorTokens := meta.EmbeddingTokens
+	meta.EmbeddingTokens += int64(tokens)
+	// One unpriced call makes the total unknown, not smaller: a checkpoint's
+	// earlier cost left in place would be reported as the whole spend. Cleared
+	// here, and kept cleared below.
+	if s.catalog == nil {
+		meta.EmbeddingCost = nil
+		return
+	}
+	provider, model := schemas.ParseModelString(config.EmbeddingModel, config.EmbeddingProvider)
+	// The breakdown, not the bare total: it is nil when no pricing row resolves,
+	// where the total is a plain 0 that would render an unpriced model as free.
+	cost := s.catalog.CalculateCostBreakdownForUsage(usage, provider, model, schemas.EmbeddingRequest, nil)
+	if cost == nil {
+		meta.EmbeddingCost = nil
+		return
+	}
+	if meta.EmbeddingCost == nil {
+		// Tokens already recorded with no cost means an earlier call went
+		// unpriced; starting a sum now would report only the calls after it.
+		if priorTokens > 0 {
+			return
+		}
+		meta.EmbeddingCost = new(float64)
+	}
+	*meta.EmbeddingCost += cost.TotalCost
 }
 
 func backfillFilters(start, end time.Time) logstore.SearchFilters {
