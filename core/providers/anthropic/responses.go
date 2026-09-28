@@ -2854,8 +2854,16 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 		}
 
+		// A truncated or refused turn terminates with response.incomplete, not response.completed.
+		terminalType := schemas.ResponsesStreamResponseTypeCompleted
+		response.Status, response.IncompleteDetails = anthropicResponsesStatus(response.StopReason)
+		if response.Status != nil && *response.Status == schemas.ResponsesResponseStatusIncomplete {
+			terminalType = schemas.ResponsesStreamResponseTypeIncomplete
+			schemas.MarkTruncatedOutputItem(response.Output)
+		}
+
 		return []*schemas.BifrostResponsesStreamResponse{{
-			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			Type:           terminalType,
 			SequenceNumber: sequenceNumber,
 			Response:       response,
 		}}, nil, true // Indicate stream is complete
@@ -4992,6 +5000,12 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 			}
 		}
 		bifrostResp.StopReason = &mapped
+	}
+	// Surface truncation/refusal per the Responses contract; without Status a
+	// max_tokens turn is indistinguishable from a complete one.
+	bifrostResp.Status, bifrostResp.IncompleteDetails = anthropicResponsesStatus(bifrostResp.StopReason)
+	if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
+		schemas.MarkTruncatedOutputItem(bifrostResp.Output)
 	}
 	bifrostResp.StopDetails = stopDetailsToBifrost(response.StopDetails)
 
