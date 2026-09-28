@@ -27,9 +27,11 @@ export const useGetMyVKCreationPolicyQuery = (
 	isLoading: boolean;
 	isError: boolean;
 	error: null;
+	refetch: () => void;
 } => ({
 	data: undefined,
 	isLoading: false,
 	isError: false,
 	error: null,
+	refetch: () => {},
 });
