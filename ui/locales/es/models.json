@@ -613,7 +613,7 @@
 			"modelNameRequired": "Nombre del modelo (requerido)",
 			"vllmModelHelp": "Nombre de modelo exacto servido en este caso v LLM",
 			"workspaceUrlRequired": "URL del espacio de trabajo (Required)",
-			"databricksWorkspaceHelp": "Su URL del espacio de trabajo de Databricks (por ejemplo,https://dbc-1234abcd-5678.cloud.databricks.como env.DATABRICKS_WORKSPACE_ URL)",
+			"databricksWorkspaceHelp": "Su URL del espacio de trabajo de Databricks (por ejemplo, https://dbc-1234abcd-5678.cloud.databricks.com o env.DATABRICKS_WORKSPACE_URL)",
 			"inferenceSurface": "Superficie de la inferencia",
 			"inferenceSurfaceHelp": "Elijas automáticas por nombre modelo: un nombre puntado como el sistema.ai.claude-sonnet-4-5 va a la puerta de entrada Unity AI, cualquier otra cosa a la función de modelo.",
 			"autoByModelName": "Auto (por nombre de modelo)",
