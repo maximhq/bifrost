@@ -4690,6 +4690,67 @@ func chatFileBlockDocument(t *testing.T, file *schemas.ChatInputFile) *bedrock.B
 	return result.Messages[0].Content[1].Document
 }
 
+// A file content block carrying cache_control must be followed by a standalone
+// cachePoint block, exactly as text and image blocks already are (#7613). Without it
+// the document is billed as fresh input on every request and the client's cache
+// breakpoint is silently lost on the wire.
+func TestDocumentBlockCacheControlEmitsCachePoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		ttl         *string
+		expectedTTL *string
+	}{
+		{"DefaultTTL", nil, nil},
+		{"OneHourTTL", schemas.Ptr("1h"), schemas.Ptr("1h")},
+		{"UnsupportedTTLDropsToDefault", schemas.Ptr("1m"), nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarise the attached document.")},
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{
+										Filename: schemas.Ptr("a.pdf"),
+										FileData: schemas.Ptr("data:application/pdf;base64,JVBERi0xLjQK"),
+									},
+									CacheControl: &schemas.CacheControl{
+										Type: schemas.CacheControlTypeEphemeral,
+										TTL:  tt.ttl,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.Len(t, result.Messages, 1)
+
+			content := result.Messages[0].Content
+			require.Len(t, content, 3, "expected text, document, cachePoint; got %+v", content)
+			require.NotNil(t, content[0].Text)
+			require.NotNil(t, content[1].Document)
+			require.NotNil(t, content[2].CachePoint, "cache_control on a file block must emit a trailing cachePoint block")
+			assert.Equal(t, bedrock.BedrockCachePointTypeDefault, content[2].CachePoint.Type)
+			assert.Equal(t, tt.expectedTTL, content[2].CachePoint.TTL)
+		})
+	}
+}
+
 // The standard OpenAI chat `type:"file"` part carries the document's MIME type only
 // inside the file_data data URL - file_type is a Bifrost extension normal clients
 // don't send. Without reading it, every non-PDF document was labeled format "pdf"

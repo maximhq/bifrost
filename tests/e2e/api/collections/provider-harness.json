@@ -173090,6 +173090,146 @@
           }
         }
       ]
+    },
+    {
+      "name": "120. Bedrock Converse cachePoint after document block (#7613)",
+      "description": "Regression for #7613. On /v1/chat/completions routed to Bedrock Converse, a type:\"file\" content block carrying cache_control produced a document block with no trailing cachePoint: core/providers/bedrock/utils.go convertContentBlock's file branch returned only {document} and never read block.CacheControl, while the text and image branches already appended the standalone {cachePoint} block Converse requires. The document was therefore billed as fresh input on every request. Both cases send x-bf-send-back-raw-request and assert on extra_fields.raw_request, because the defect is in request construction and a cache-hit assertion would depend on the model's 4096-token (Haiku 4.5) minimum. Case 1 pins the default breakpoint on Haiku 4.5; case 2 pins that ttl \"1h\" is forwarded onto the cachePoint on Sonnet 4.6. Red before the fix (content ends at the document), green after.",
+      "item": [
+        {
+          "name": "Bedrock via /v1: cache_control on a file block emits cachePoint after document (Haiku 4.5) - #7613",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// #7613: convertContentBlock's file branch returned only the document block and never",
+                  "// read block.CacheControl, so the client's breakpoint vanished on the wire and the",
+                  "// document was billed as fresh input on every request. Text and image blocks already",
+                  "// emitted the standalone cachePoint; this pins the document branch doing the same.",
+                  "pm.test('Bedrock via /v1: cache_control on a file block emits cachePoint after document (Haiku 4.5) - #7613: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock via /v1: cache_control on a file block emits cachePoint after document (Haiku 4.5) - #7613: document block is followed by a cachePoint block', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = ((rr.messages || [])[0] || {}).content || [];",
+                  "  var docIdx = -1;",
+                  "  for (var i = 0; i < content.length; i++) { if (content[i].document) { docIdx = i; break; } }",
+                  "  pm.expect(docIdx, 'no document block reached Converse: ' + wire.slice(0, 400)).to.be.at.least(0);",
+                  "  var next = content[docIdx + 1] || {};",
+                  "  pm.expect(next.cachePoint, 'cache_control on the file block was dropped - no cachePoint after the document: ' + JSON.stringify(content).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(next.cachePoint.type, 'cachePoint.type altered: ' + JSON.stringify(next.cachePoint)).to.eql('default');",
+                  "  pm.expect(next.cachePoint.ttl, 'no ttl was sent, none must be emitted: ' + JSON.stringify(next.cachePoint)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.pdf\",\n            \"file_type\": \"application/pdf\",\n            \"file_data\": \"data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NiA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDQwIDcwMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzcwNy4pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU3IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI3CiUlRU9GCg==\"\n          },\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock via /v1: cache_control ttl 1h on a file block emits cachePoint with ttl (Sonnet 4.6) - #7613",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// #7613: convertContentBlock's file branch returned only the document block and never",
+                  "// read block.CacheControl, so the client's breakpoint vanished on the wire and the",
+                  "// document was billed as fresh input on every request. Text and image blocks already",
+                  "// emitted the standalone cachePoint; this pins the document branch doing the same.",
+                  "pm.test('Bedrock via /v1: cache_control ttl 1h on a file block emits cachePoint with ttl (Sonnet 4.6) - #7613: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock via /v1: cache_control ttl 1h on a file block emits cachePoint with ttl (Sonnet 4.6) - #7613: document block is followed by a cachePoint block', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = ((rr.messages || [])[0] || {}).content || [];",
+                  "  var docIdx = -1;",
+                  "  for (var i = 0; i < content.length; i++) { if (content[i].document) { docIdx = i; break; } }",
+                  "  pm.expect(docIdx, 'no document block reached Converse: ' + wire.slice(0, 400)).to.be.at.least(0);",
+                  "  var next = content[docIdx + 1] || {};",
+                  "  pm.expect(next.cachePoint, 'cache_control on the file block was dropped - no cachePoint after the document: ' + JSON.stringify(content).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(next.cachePoint.type, 'cachePoint.type altered: ' + JSON.stringify(next.cachePoint)).to.eql('default');",
+                  "  pm.expect(next.cachePoint.ttl, 'cachePoint.ttl not forwarded: ' + JSON.stringify(next.cachePoint)).to.eql('1h');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.pdf\",\n            \"file_type\": \"application/pdf\",\n            \"file_data\": \"data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NiA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDQwIDcwMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzcwNy4pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU3IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI3CiUlRU9GCg==\"\n          },\n          \"cache_control\": {\n            \"type\": \"ephemeral\",\n            \"ttl\": \"1h\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
