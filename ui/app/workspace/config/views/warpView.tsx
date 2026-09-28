@@ -43,6 +43,7 @@ import {
 	type WarpEmbeddingFields,
 	type WarpModelRow,
 } from "./warpConfig.utils";
+import WarpTopicsSection from "./warpTopicsSection";
 import {
 	isFiniteNumber,
 	retainedWarpBackfillForSpace,
@@ -1117,6 +1118,13 @@ export default function WarpView() {
 									</p>
 								)}
 							</div>
+
+							<WarpTopicsSection
+								hasSettingsUpdateAccess={hasWarpUpdateAccess}
+								configured={!!config?.configured}
+								vectorStoreConnected={!!config?.vector_store_connected}
+								hasChanges={hasChanges}
+							/>
 						</WarpSection>
 					</div>
 				)}

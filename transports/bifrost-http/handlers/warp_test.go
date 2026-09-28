@@ -259,6 +259,61 @@ func TestWarpLogIndexStatusSummarisesState(t *testing.T) {
 	require.Contains(t, body, `"total":100`)
 }
 
+// Topic clustering rides on the same job endpoints as the backfill: start
+// over a window, read status by id or latest, cancel.
+func TestWarpTopicsJobEndpoints(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	startCtx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startTopics(startCtx)
+	require.Equal(t, fasthttp.StatusAccepted, startCtx.Response.StatusCode(), string(startCtx.Response.Body()))
+	require.Equal(t, 1, jobs.createdCount())
+	var started struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, sonic.Unmarshal(startCtx.Response.Body(), &started))
+	require.NotEmpty(t, started.ID)
+	created := jobs.jobs[started.ID]
+	require.Equal(t, warp.TopicsJobKind, created.Kind)
+
+	jobs.inFlight = created
+	statusCtx := adminCtx("")
+	handler.topicsStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"`+started.ID+`"`)
+
+	cancelCtx := adminCtx(`{"id":"` + started.ID + `"}`)
+	handler.cancelTopics(cancelCtx)
+	require.Equal(t, fasthttp.StatusOK, cancelCtx.Response.StatusCode())
+
+	// The two job kinds do not see each other's runs.
+	backfillCtx := adminCtx("")
+	handler.backfillStatus(backfillCtx)
+	require.Contains(t, string(backfillCtx.Response.Body()), `"status":"idle"`)
+	require.NotContains(t, string(backfillCtx.Response.Body()), `merge_threshold`, "a backfill has no clustering to report")
+
+	// A finished run reports how it clustered, not only how much it read.
+	threshold := 0.87
+	finished, err := sonic.Marshal(warp.BackfillJobMeta{
+		Scanned: 12, Indexed: 2, Merged: 3, MergeThreshold: &threshold, Clustered: 8, Assigned: 3, Unassigned: 1,
+		Topics: []warp.TopicSummary{{Label: "Refund requests", Size: 9, Cohesion: 0.91}, {Label: "Password resets", Size: 3, Cohesion: 0.84}},
+	})
+	require.NoError(t, err)
+	jobs.inFlight = nil
+	jobs.latest = &tables.TableSidekiqJob{ID: "job-done", Kind: warp.TopicsJobKind, Status: tables.SidekiqStatusCompleted, Metadata: string(finished)}
+	doneCtx := adminCtx("")
+	handler.topicsStatus(doneCtx)
+	require.Equal(t, fasthttp.StatusOK, doneCtx.Response.StatusCode())
+	body := string(doneCtx.Response.Body())
+	require.Contains(t, body, `"merged":3`)
+	require.Contains(t, body, `"clustered":8`)
+	require.Contains(t, body, `"assigned":3`)
+	require.Contains(t, body, `"unassigned":1`)
+	require.Contains(t, body, `"merge_threshold":0.87`)
+	require.Contains(t, body, `"topics":[{"label":"Refund requests","size":9,"cohesion":0.91},{"label":"Password resets","size":3,"cohesion":0.84}]`)
+}
+
 // A page reload has no job id in memory and asks for "whatever is current".
 // Once a job finishes, nothing is in flight, so without a fallback the last
 // outcome, including a failure and its cause, vanishes from the settings page.

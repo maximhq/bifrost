@@ -2181,3 +2181,46 @@ func TestBuildRedisQueryCondition_FilterableTagUsesHex(t *testing.T) {
 		})
 	}
 }
+
+// A search stops at MAXSEARCHRESULTS, 10,000 by default, and a read that
+// pages past it gets an empty page back - the same thing the end of the
+// namespace looks like. A caller reading a namespace out with its vectors was
+// handed 10,000 of 10,450 entries and no error. That read walks the keys now,
+// which has no such ceiling.
+func TestRedisStore_VectorReadGoesPastTheSearchLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+
+	const dimension, entries = 8, RedisMaxSearchResults + 450
+	namespace := "deep_read_" + generateUUID()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, dimension, map[string]VectorStoreProperties{
+		"seq": {DataType: VectorStorePropertyTypeInteger, Description: "sequence"},
+	}))
+	defer func() { _ = setup.Store.DeleteNamespace(context.Background(), namespace) }()
+
+	for index := 0; index < entries; index++ {
+		vector := make([]float32, dimension)
+		vector[index%dimension] = 1
+		require.NoError(t, setup.Store.Add(setup.ctx, namespace, fmt.Sprintf("entry-%06d", index), vector, map[string]interface{}{"seq": int64(index)}))
+	}
+
+	seen := map[string]struct{}{}
+	var cursor *string
+	for pages := 0; ; pages++ {
+		require.Less(t, pages, entries, "paging did not end")
+		results, next, err := setup.Store.GetAll(WithIncludeVectors(setup.ctx), namespace, nil, []string{"seq"}, cursor, 200)
+		require.NoError(t, err)
+		for _, result := range results {
+			require.Len(t, result.Vector, dimension)
+			seen[result.ID] = struct{}{}
+		}
+		if next == nil {
+			break
+		}
+		cursor = next
+	}
+	require.Len(t, seen, entries)
+}

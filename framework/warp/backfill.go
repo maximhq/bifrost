@@ -64,6 +64,24 @@ type BackfillJobMeta struct {
 	EmbeddingCost   *float64 `json:"embedding_cost,omitempty"`
 	LastError       string   `json:"last_error,omitempty"`
 	Message         string   `json:"message,omitempty"`
+	// Merged, MergeThreshold and Topics are set by topic clustering only:
+	// how many clusters were folded into another, the similarity the run
+	// derived for doing so, and each topic it wrote with how tight it came
+	// out. MergeThreshold is nil when the run had nothing to derive one from.
+	Merged int `json:"merged,omitempty"`
+	// Clustered, Assigned and Unassigned split what a topics run read: the
+	// requests that were clustered, the ones given to the nearest topic after
+	// clustering stopped, and the ones that ended in no topic at all.
+	Clustered  int `json:"clustered,omitempty"`
+	Assigned   int `json:"assigned,omitempty"`
+	Unassigned int `json:"unassigned,omitempty"`
+	// Capped is set when the window held more requests than one run takes in.
+	Capped bool `json:"capped,omitempty"`
+	// MergedByName counts clusters joined after naming because they were
+	// given the same name as another.
+	MergedByName   int            `json:"merged_by_name,omitempty"`
+	MergeThreshold *float64       `json:"merge_threshold,omitempty"`
+	Topics         []TopicSummary `json:"topics,omitempty"`
 }
 
 // embeddingConfigSignature identifies the embedding space a backfill was frozen
@@ -88,13 +106,15 @@ func embeddingConfigSignature(config *schemas.WarpConfig) string {
 	return builder.String()
 }
 
-// RegisterBackfill binds Warp's handler to the shared Sidekiq runner.
+// RegisterBackfill binds Warp's background jobs to the shared Sidekiq runner:
+// the embedding backfill and the topic clustering that reads what it wrote.
 func (s *Service) RegisterBackfill(runner *sidekiq.Runner) {
 	if runner == nil || s.indexer == nil || s.logs == nil {
 		return
 	}
 	runner.Register(BackfillJobKind, s.RunBackfillJob)
 	runner.RegisterSummarizer(BackfillJobKind, SummarizeBackfillMeta)
+	s.RegisterTopics(runner)
 }
 
 // SummarizeBackfillMeta reports a backfill job's scan progress for generic job views.

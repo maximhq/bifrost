@@ -152,7 +152,7 @@ type Agent struct {
 // sanitizeUTCOffsetMinutes and sanitizeTimezone); this constructor trusts them
 // rather than re-validating, since Turn is the one place a raw client value
 // exists.
-func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, semantic ...*SemanticSearcher) *Agent {
+func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, topics TopicLister, semantic ...*SemanticSearcher) *Agent {
 	var searcher *SemanticSearcher
 	if len(semantic) > 0 {
 		searcher = semantic[0]
@@ -161,7 +161,7 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance Governanc
 		chat:             chat,
 		cost:             cost,
 		tools:            buildToolsFor(searcher, false),
-		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry()},
+		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry(), topics: topics},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,

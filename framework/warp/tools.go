@@ -103,6 +103,9 @@ type ToolDeps struct {
 	// charts holds what render_chart drew this turn, so the answer's chart
 	// blocks can be expanded from it. Built per turn with the rest of deps.
 	charts *chartRegistry
+	// topics answers list_topics from the computed clusters. Nil when there
+	// is no vector store.
+	topics TopicLister
 	// clock is the turn's one reading of the time, in the asker's zone.
 	clock time.Time
 }
@@ -1178,6 +1181,7 @@ func buildToolsFor(searcher *SemanticSearcher, userLimits bool) []Tool {
 		renderChartTool(),
 		describeFilterSpaceTool(),
 		describeVirtualKeyTool(),
+		listTopicsTool(),
 	)
 	if userLimits {
 		tools = append(tools, describeUserLimitsTool())

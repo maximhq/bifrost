@@ -5,6 +5,7 @@ import (
 	"maps"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -134,6 +135,26 @@ func NewGrantFromContext(ctx context.Context) schemas.Grant {
 	return settle()
 }
 
+type backgroundWorkKey struct{}
+
+// withBackgroundWork marks a context as Warp's own work, done from a job with
+// no dashboard caller behind it.
+//
+// Such a call has nobody to settle a grant for, and governance refuses a
+// request without one. It is not a user's request to govern: it is the
+// gateway naming its own clusters, the same standing the embedding calls of
+// indexing have. So it skips the plugin pipeline as they do, which also keeps
+// it out of the logs it would otherwise be indexed from and clustered with.
+func withBackgroundWork(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundWorkKey{}, true)
+}
+
+// isBackgroundWork reports whether the context was marked by withBackgroundWork.
+func isBackgroundWork(ctx context.Context) bool {
+	marked, _ := ctx.Value(backgroundWorkKey{}).(bool)
+	return marked
+}
+
 // NewChat binds the gateway client to one turn's config and conversation.
 //
 // The request context is the turn's own, so the query scope and caller identity
@@ -172,6 +193,10 @@ func warpInferenceContext(ctx context.Context, config *schemas.WarpConfig, conve
 		timeout = time.Duration(config.EffectiveRequestTimeoutSeconds()) * time.Second
 	}
 	bifrostCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, timeout)
+	// Before the values below, because it clears the pinned key among them.
+	if isBackgroundWork(ctx) {
+		bifrost.PrepareContextForInternalRequest(bifrostCtx)
+	}
 	// See WithGrant: without it governance refuses the call outright.
 	if g := NewGrantFromContext(ctx); g != nil {
 		bifrostCtx.SetGrant(g)
