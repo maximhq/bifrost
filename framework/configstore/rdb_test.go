@@ -1514,6 +1514,34 @@ func TestUpdateVirtualKey(t *testing.T) {
 	assert.Nil(t, result.DisableContentLogging, "clearing the override must write NULL, back to inherit")
 }
 
+// TestUpdateVirtualKey_PersistsBusinessUnitOwner verifies an update writes business_unit_id, so
+// assigning an existing key to a business unit sticks and moving it elsewhere clears it.
+func TestUpdateVirtualKey_PersistsBusinessUnitOwner(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-bu-owner",
+		Name:     "BU Owner",
+		Value:    *schemas.NewSecretVar("vk-bu-owner-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	vk.BusinessUnitID = schemas.Ptr("bu-1")
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err := store.GetVirtualKey(ctx, "vk-bu-owner")
+	require.NoError(t, err)
+	require.NotNil(t, result.BusinessUnitID, "assigning a business unit must persist")
+	assert.Equal(t, "bu-1", *result.BusinessUnitID)
+
+	vk.BusinessUnitID = nil
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-bu-owner")
+	require.NoError(t, err)
+	assert.Nil(t, result.BusinessUnitID, "clearing the business unit must write NULL")
+}
+
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
