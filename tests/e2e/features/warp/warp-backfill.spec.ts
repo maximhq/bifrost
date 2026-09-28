@@ -156,7 +156,7 @@ test.describe('Warp backfill status after the embedding space is saved over', ()
     await page.goto('/workspace/config/warp')
 
     const status = page.getByTestId('warp-backfill-status')
-    await expect(status).toContainText('Running')
+    await expect(status).toContainText(/running/i)
     await expect(page.getByTestId('warp-backfill-cancel-btn')).toBeVisible()
 
     await page.getByTestId('warp-embedding-dimension-input').fill(String(newSpace.embedding_dimension))

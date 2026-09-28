@@ -15,12 +15,10 @@ export interface ConfigToggleState {
  */
 export function createClientSettingsData(overrides: Partial<{
   dropExcessRequests: boolean
-  enableLiteLLMFallbacks: boolean
   disableDBPings: boolean
 }> = {}) {
   return {
     dropExcessRequests: false,
-    enableLiteLLMFallbacks: true,
     disableDBPings: false,
     ...overrides
   }

@@ -1,15 +1,22 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 
 test.describe('Placeholder and Enterprise Pages', () => {
-  test('should load prompt-repo coming soon page', async ({ page }) => {
+  // Stub the external docs site so the "Read more" popups don't depend on live network access.
+  test.beforeEach(async ({ page }) => {
+    await page.context().route('https://docs.getbifrost.ai/**', (route) =>
+      route.fulfill({ status: 200, contentType: 'text/html', body: '<html></html>' }),
+    )
+  })
+
+  test('should load prompt-repo page', async ({ page }) => {
     await page.goto('/workspace/prompt-repo')
-    await expect(page.getByText(/Prompt repository is coming soon/i)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText(/Build, test, and version your prompts/i)).toBeVisible({ timeout: 10000 })
   })
 
   test('should load alerting page', async ({ page }) => {
     await page.goto('/workspace/alerting')
     await page.waitForLoadState('networkidle')
-    await expect(page.getByTestId('alert-rules-title')).toBeVisible()
+    await expect(page.getByText(/Unlock alerting rules/i)).toBeVisible()
     const readMore = page.getByTestId('alert-rules-read-more')
     await expect(readMore).toBeVisible()
     const [popup] = await Promise.all([page.waitForEvent('popup'), readMore.click()])
