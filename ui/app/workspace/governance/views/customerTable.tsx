@@ -249,7 +249,7 @@ export default function CustomersTable({
 									data-testid="customers-search-input"
 								/>
 							</div>
-							<Button className="ml-auto" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
+							<Button className="ml-auto h-9" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
 								<Plus className="h-4 w-4" />
 								Add Customer
 							</Button>
