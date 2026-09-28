@@ -119,13 +119,14 @@ export interface VirtualKey {
 	disable_content_logging?: boolean | null;
 	created_at: string;
 	updated_at: string;
-	// The third owner a key can have, alongside a team and a customer. Carried as an id only:
-	// business units are an enterprise table this model does not preload, so there is no
-	// `business_unit` relation to read a name from.
+	// The third owner a key can have, alongside a team and a customer. Business units are an
+	// enterprise table this model does not preload, so its name arrives on `business_unit` below.
 	business_unit_id?: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
+	// Owning business unit, named by the enterprise build; absent in OSS and when unresolved.
+	business_unit?: { id: string; name: string };
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	// Read-only, server-computed: true when the VK is governed by an access profile.
