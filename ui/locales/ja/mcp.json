@@ -532,6 +532,7 @@
 		},
 		"gridView": "グリッドビュー",
 		"tableView": "テーブルビュー",
+		"tableLabel": "テーブル",
 		"viewModeAria": "ライブラリ表示モード",
 		"auth": {
 			"userHeaders": "ユーザーヘッダー",

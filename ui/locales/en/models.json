@@ -56,6 +56,9 @@
 		"tokenLimit": "Token Limit",
 		"requestLimit": "Request Limit",
 		"apiStructure": "API Structure",
+		"networkTab": "Network",
+		"betaHeadersTab": "Beta Headers",
+		"debuggingTab": "Debugging",
 		"performance": "Performance",
 		"governance": "Governance",
 		"betaHeaders": {

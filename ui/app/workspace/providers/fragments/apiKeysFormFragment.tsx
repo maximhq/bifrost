@@ -84,7 +84,7 @@ const BEDROCK_VPC_ENDPOINT_SERVICES = [
 		description: "Serves batch file I/O. Requires the bucket-prefixed endpoint name. A Gateway endpoint needs no value here.",
 		placeholder: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com",
 	},
-];
+] as const;
 
 // VPC endpoint host overrides for AWS PrivateLink. Collapsed by default: most deployments reach
 // Bedrock over the public regional endpoints and never set these.
@@ -95,7 +95,7 @@ function VPCEndpointsFormField({
 }: {
 	control: Control<any>;
 	configKey: string;
-	services: typeof BEDROCK_VPC_ENDPOINT_SERVICES;
+	services: ReadonlyArray<(typeof BEDROCK_VPC_ENDPOINT_SERVICES)[number]>;
 }) {
 	const { t } = useTranslation("models");
 	return (

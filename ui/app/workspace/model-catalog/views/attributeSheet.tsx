@@ -32,6 +32,8 @@ const DEFAULT_PRICING_SOURCE_URL = "https://getbifrost.ai/datasheet";
 // Scopes whose overrides can't be resolved from the model catalog alone — they
 // only apply to requests carrying the matching virtual key, user, or provider
 // key, so they are listed here but never change the displayed price.
+type ScopeCaveatKind = Exclude<PricingOverrideScopeKind, "global" | "provider">;
+
 const SCOPE_CAVEAT_KINDS = new Set<PricingOverrideScopeKind>([
 	"provider_key",
 	"virtual_key",
@@ -41,6 +43,10 @@ const SCOPE_CAVEAT_KINDS = new Set<PricingOverrideScopeKind>([
 	"user_provider",
 	"user_provider_key",
 ]);
+
+function isScopeCaveatKind(kind: PricingOverrideScopeKind): kind is ScopeCaveatKind {
+	return SCOPE_CAVEAT_KINDS.has(kind);
+}
 
 interface AttributeSheetProps {
 	model: ModelDetails;
@@ -101,7 +107,7 @@ function formatPeakHours(value: PeakHoursSchedule): string {
 			if (!w || typeof w !== "object") return null;
 			const days = (Array.isArray(w.days) ? w.days : [])
 				.filter((d) => typeof d === "number" && d >= 0 && d <= 6)
-				.map((d) => i18n.t(`modelCatalog.weekday.${d}`, { ns: "models" }))
+				.map((d) => i18n.t(`modelCatalog.weekday.${d as 0 | 1 | 2 | 3 | 4 | 5 | 6}`, { ns: "models" }))
 				.join(",");
 			const start = typeof w.start === "string" ? w.start : "?";
 			const end = typeof w.end === "string" ? w.end : "?";
@@ -345,7 +351,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 										</Link>
 									</div>
 									{matchingOverrides.map((override) => {
-										const caveat = SCOPE_CAVEAT_KINDS.has(override.scope_kind)
+										const caveat = isScopeCaveatKind(override.scope_kind)
 											? t(`modelCatalog.scopeCaveat.${override.scope_kind}`)
 											: undefined;
 										const patchEntries = Object.entries(override.patch).filter(([, value]) => value !== undefined && value !== null);

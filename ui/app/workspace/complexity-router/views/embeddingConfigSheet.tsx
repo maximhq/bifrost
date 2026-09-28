@@ -103,7 +103,7 @@ export default function EmbeddingConfigSheet({
 	const isLLMProvider = useCallback((provider: ModelProvider) => llmProviders.some((p) => p.name === provider.name), [llmProviders]);
 	const { t } = useTranslation("models");
 	const { t: tCommon } = useTranslation("common");
-	const tcpx = (key: string, opts?: Record<string, unknown>) => t(`routing.complexityUi.${key}`, opts);
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 
 	const noProviders = !providersLoading && providers.length === 0;
 	const isConfigured = Boolean(semantic?.provider && semantic?.embedding_model);

@@ -63,7 +63,7 @@ const getPlaceholder = (providerType: BaseProvider | undefined, requestKey: Requ
 	return ProviderEndpoints["openai"]?.[requestKey] ?? "";
 };
 
-const RequestTypes: Array<{ key: RequestType }> = [
+const RequestTypes = [
 	{ key: "list_models" },
 	{ key: "text_completion" },
 	{ key: "text_completion_stream" },
@@ -86,7 +86,7 @@ const RequestTypes: Array<{ key: RequestType }> = [
 	{ key: "image_edit_stream" },
 	{ key: "image_variation" },
 	{ key: "count_tokens" },
-];
+] as const satisfies ReadonlyArray<{ key: RequestType }>;
 
 // Path overrides replace the default path verbatim; these request paths embed the
 // response ID, so an override can never produce a valid URL for them.
@@ -119,7 +119,7 @@ export function AllowedRequestsFields({
 
 	const isPathOverrideDisabled = useMemo(() => providerType === "gemini" || providerType === "bedrock", [providerType]);
 
-	const renderRequestField = (requestType: { key: RequestType }) => {
+	const renderRequestField = (requestType: (typeof RequestTypes)[number]) => {
 		const isDisabled = isRequestTypeDisabled(providerType, requestType.key);
 		const placeholder = getPlaceholder(providerType, requestType.key);
 

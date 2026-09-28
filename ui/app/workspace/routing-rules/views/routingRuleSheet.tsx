@@ -39,6 +39,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Plus, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import type { ParseKeys, TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
@@ -90,14 +91,14 @@ const CELRuleBuilder = (props: React.ComponentProps<typeof CELRuleBuilderLazy>) 
 	);
 };
 
-function scopeNoun(scope: string, t: (key: string) => string) {
+function scopeNoun(scope: string, t: TFunction<"models">) {
 	if (scope === "team") return t("routing.team");
 	if (scope === "customer") return t("routing.customer");
 	if (scope === "user") return t("routing.user");
 	return t("routing.scopeVirtualKey");
 }
 
-const SCOPE_OPTION_KEYS: Record<string, string> = {
+const SCOPE_OPTION_KEYS: Partial<Record<string, ParseKeys<"models">>> = {
 	global: "routing.scopeGlobal",
 	team: "routing.scopeTeam",
 	customer: "routing.scopeCustomer",
@@ -449,11 +450,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										<SelectValue placeholder={t("routing.selectScope")} />
 									</SelectTrigger>
 									<SelectContent>
-										{ROUTING_RULE_SCOPES.map((scopeOption) => (
-											<SelectItem key={scopeOption.value} value={scopeOption.value}>
-												{t(SCOPE_OPTION_KEYS[scopeOption.value] ?? scopeOption.label)}
-											</SelectItem>
-										))}
+										{ROUTING_RULE_SCOPES.map((scopeOption) => {
+											const labelKey = SCOPE_OPTION_KEYS[scopeOption.value];
+											return (
+												<SelectItem key={scopeOption.value} value={scopeOption.value}>
+													{labelKey ? t(labelKey) : scopeOption.label}
+												</SelectItem>
+											);
+										})}
 										{(UserPicker || scope === "user") && <SelectItem value="user">{t("routing.user")}</SelectItem>}
 									</SelectContent>
 								</Select>

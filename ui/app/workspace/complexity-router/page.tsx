@@ -107,7 +107,7 @@ function testIdPart(value: string) {
 export default function ComplexityRouterPage() {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
-	const tcpx = (key: string, opts?: Record<string, unknown>) => t(`routing.complexityUi.${key}`, opts);
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery();
 	const [updateConfig, { isLoading: isSaving }] = useUpdateComplexityAnalyzerConfigMutation();

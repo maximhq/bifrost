@@ -5,6 +5,7 @@ import { SemanticStatusInfo } from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import type { VariantProps } from "class-variance-authority";
+import type { ParseKeys } from "i18next";
 import { ArrowRight, CircleAlert, CircleCheck, CircleDashed, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -14,7 +15,7 @@ import { semanticWarmupFailureMessage, semanticWarmupImpactMessage } from "./cla
 // gateway: nothing is embedded yet, so /semantic-status has nothing to say.
 type ClassifierState = SemanticStatusInfo["state"] | "not-configured" | "not-saved" | "loading" | "unavailable";
 
-const LABEL_KEYS: Record<ClassifierState, string> = {
+const LABEL_KEYS: Record<ClassifierState, ParseKeys<"models", {}, "routing.complexityUi">> = {
 	ready: "classifierReady",
 	warming: "classifierWarming",
 	failed: "classifierFailed",
@@ -91,8 +92,7 @@ export function ClassifierStatusBadge({
 	onRetryStatus: () => void;
 	onRetryWarmup: () => void;
 }) {
-	const { t } = useTranslation("models");
-	const tcpx = (key: string, opts?: Record<string, unknown>) => t(`routing.complexityUi.${key}`, opts);
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 
 	const state: ClassifierState = isNotConfigured
 		? "not-configured"

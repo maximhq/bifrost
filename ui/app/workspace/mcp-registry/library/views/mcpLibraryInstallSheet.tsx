@@ -12,6 +12,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
 	authScopeOf,
@@ -80,7 +81,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 	};
 }
 
-function authHelpText(authType: MCPAuthType | string | undefined, t: (key: string) => string): string {
+function authHelpText(authType: MCPAuthType | string | undefined, t: TFunction<"mcp">): string {
 	switch (authType) {
 		case "headers":
 			return t("library.install.helpHeaders");

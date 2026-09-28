@@ -56,6 +56,9 @@
 		"tokenLimit": "トークン制限",
 		"requestLimit": "リクエスト制限",
 		"apiStructure": "API 構造",
+		"networkTab": "ネットワーク",
+		"betaHeadersTab": "ベータヘッダー",
+		"debuggingTab": "デバッグ",
 		"performance": "パフォーマンス",
 		"governance": "ガバナンス",
 		"betaHeaders": {

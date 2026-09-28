@@ -532,6 +532,7 @@
 		},
 		"gridView": "网格视图",
 		"tableView": "表格视图",
+		"tableLabel": "表格",
 		"viewModeAria": "库视图模式",
 		"auth": {
 			"userHeaders": "用户请求头",

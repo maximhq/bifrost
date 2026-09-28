@@ -56,6 +56,9 @@
 		"tokenLimit": "Limite de jetons",
 		"requestLimit": "Limite de requêtes",
 		"apiStructure": "Structure de l’API",
+		"networkTab": "Réseau",
+		"betaHeadersTab": "En-têtes bêta",
+		"debuggingTab": "Débogage",
 		"performance": "Performances",
 		"governance": "Gouvernance",
 		"betaHeaders": {

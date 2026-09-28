@@ -56,6 +56,9 @@
 		"tokenLimit": "Límite de token",
 		"requestLimit": "Límite de solicitud",
 		"apiStructure": "Estructura de API",
+		"networkTab": "Red",
+		"betaHeadersTab": "Encabezados beta",
+		"debuggingTab": "Depuración",
 		"performance": "Ejecución",
 		"governance": "Gobernanza",
 		"betaHeaders": {

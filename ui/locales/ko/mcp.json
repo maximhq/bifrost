@@ -532,6 +532,7 @@
 		},
 		"gridView": "그리드 보기",
 		"tableView": "테이블 보기",
+		"tableLabel": "테이블",
 		"viewModeAria": "라이브러리 보기 모드",
 		"auth": {
 			"userHeaders": "사용자 헤더",

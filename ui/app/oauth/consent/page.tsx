@@ -8,6 +8,7 @@ import { getActiveTempToken, setActiveTempToken, setSuppressGlobal401 } from "@/
 import { Fingerprint, KeyRound, Loader2, LogIn, ShieldCheck, UserRound } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 
 export default function OAuth2ConsentPage() {
@@ -299,7 +300,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 	);
 }
 
-function formatExpiry(iso: string, t: (key: string, options?: { count?: number }) => string): string {
+function formatExpiry(iso: string, t: TFunction<"login">): string {
 	const ts = new Date(iso).getTime();
 	if (Number.isNaN(ts)) return t("consent.soon");
 	try {

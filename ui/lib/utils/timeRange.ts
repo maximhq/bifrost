@@ -1,4 +1,5 @@
-export const TIME_PERIODS = [
+import type { ParseKeys } from "i18next";
+export const TIME_PERIODS: { label: string; value: string; labelKey: ParseKeys<"common"> }[] = [
 	{ label: "Last hour", value: "1h", labelKey: "timePeriods.1h" },
 	{ label: "Last 6 hours", value: "6h", labelKey: "timePeriods.6h" },
 	{ label: "Last 24 hours", value: "24h", labelKey: "timePeriods.24h" },

@@ -11,6 +11,7 @@ import { WEBHOOK_EVENTS, WEBHOOK_TUNING_DEFAULTS, WebhookEndpoint, WebhookEndpoi
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import type { ParseKeys } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -18,8 +19,8 @@ import { WebhookSecretReveal } from "../dialogs/webhookSecretDialog";
 
 const TUNING_FIELDS: {
 	key: keyof typeof WEBHOOK_TUNING_DEFAULTS;
-	labelKey: string;
-	helpKey: string;
+	labelKey: ParseKeys<"governance">;
+	helpKey: ParseKeys<"governance">;
 }[] = [
 	{ key: "max_retries", labelKey: "webhooks.tuning.maxRetries", helpKey: "webhooks.tuning.maxRetriesHelp" },
 	{

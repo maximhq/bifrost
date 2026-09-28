@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { COMPACT_NUMBER_FORMAT, formatCurrencyNumber } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
 import { useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Line, LineChart, XAxis, YAxis } from "recharts";
 import {
@@ -185,7 +186,7 @@ function Sparkline({ points, className, bucketSizeSeconds, rows }: SparklineProp
 }
 
 /** Marks a value the sparkline averaged, so it is not read as an exact total. */
-function averaged(point: SparkPoint, text: string, translate: (key: string, options: { value: string }) => string): string {
+function averaged(point: SparkPoint, text: string, translate: TFunction<"observability">): string {
 	return point.buckets > 1 ? translate("logs.stats.averaged", { value: text }) : text;
 }
 

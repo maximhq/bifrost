@@ -56,6 +56,9 @@
 		"tokenLimit": "Token 限額",
 		"requestLimit": "請求限額",
 		"apiStructure": "API 結構",
+		"networkTab": "網路",
+		"betaHeadersTab": "Beta 標頭",
+		"debuggingTab": "偵錯",
 		"performance": "效能",
 		"governance": "治理",
 		"betaHeaders": {

@@ -17,9 +17,7 @@ import {
 } from "@/lib/types/complexityRouter";
 import { z } from "zod";
 
-function complexityT(key: string, opts?: Record<string, unknown>) {
-	return i18n.t(`routing.complexityUi.${key}`, { ns: "models", ...opts });
-}
+const complexityT = i18n.getFixedT(null, "models", "routing.complexityUi");
 
 function tierLabel(key: KeywordListKey) {
 	if (key === "simple_keywords") return complexityT("tierSimple");

@@ -1,11 +1,11 @@
+import type { ParseKeys } from "i18next";
+
 import i18n from "@/lib/i18n";
 import type { SemanticStatusInfo } from "@/lib/types/complexityRouter";
 
-function complexityT(key: string) {
-	return i18n.t(`routing.complexityUi.${key}`, { ns: "models" });
-}
+const complexityT = i18n.getFixedT(null, "models", "routing.complexityUi");
 
-const FAILURE_KEYS: Partial<Record<NonNullable<SemanticStatusInfo["failure_reason"]>, string>> = {
+const FAILURE_KEYS: Partial<Record<NonNullable<SemanticStatusInfo["failure_reason"]>, ParseKeys<"models", {}, "routing.complexityUi">>> = {
 	authentication: "failureAuthentication",
 	model_unavailable: "failureModelUnavailable",
 	rate_limited: "failureRateLimited",
