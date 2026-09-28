@@ -7300,11 +7300,15 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 		}
 
 		// Set is_error if there's an error message or the status indicates an error
-		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
+		if toolError := msg.ResponsesToolMessage.Error; toolError.IsError() {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
+				errText := toolError.Text()
+				if errText == "" {
+					errText = "tool call returned an error"
+				}
 				toolResultBlock.Content = &AnthropicContent{
-					ContentStr: msg.ResponsesToolMessage.Error,
+					ContentStr: &errText,
 				}
 			}
 		} else if msg.Status != nil && *msg.Status == "incomplete" {
@@ -7356,11 +7360,15 @@ func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 		}
 
 		// Set is_error if there's an error message or the status indicates an error
-		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
+		if toolError := msg.ResponsesToolMessage.Error; toolError.IsError() {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
+				errText := toolError.Text()
+				if errText == "" {
+					errText = "tool call returned an error"
+				}
 				toolResultBlock.Content = &AnthropicContent{
-					ContentStr: msg.ResponsesToolMessage.Error,
+					ContentStr: &errText,
 				}
 			}
 		} else if msg.Status != nil && *msg.Status == "incomplete" {
@@ -7387,11 +7395,15 @@ func convertBifrostMCPCallOutputToAnthropicToolResultBlock(msg *schemas.Response
 		}
 
 		// Set is_error if there's an error message or the status indicates an error
-		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
+		if toolError := msg.ResponsesToolMessage.Error; toolError.IsError() {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
+				errText := toolError.Text()
+				if errText == "" {
+					errText = "tool call returned an error"
+				}
 				toolResultBlock.Content = &AnthropicContent{
-					ContentStr: msg.ResponsesToolMessage.Error,
+					ContentStr: &errText,
 				}
 			}
 		} else if msg.Status != nil && *msg.Status == "incomplete" {

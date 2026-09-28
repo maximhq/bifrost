@@ -84,6 +84,8 @@ export interface EntitySelectorCommonProps {
 	 * Single mode only.
 	 */
 	triggerClassName?: string;
+	/** Icon shown before the label in the default combobox trigger. Single mode only. */
+	triggerIcon?: ReactNode;
 	/**
 	 * Overrides the popover width, which otherwise matches the trigger. For a
 	 * narrow trigger whose options need more room than it has. Single/add only.
@@ -195,6 +197,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		fallbackOptions,
 		noPortal = true,
 		triggerClassName,
+		triggerIcon,
 		contentClassName,
 		excludeIds,
 		trigger,
@@ -396,8 +399,19 @@ export function EntitySelector(props: EntitySelectorProps) {
 					triggerClassName,
 				)}
 			>
-				<span className="truncate">{triggerLabel || resolvedPlaceholder}</span>
-				<ChevronDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
+				{triggerIcon ? (
+					<span className="flex min-w-0 items-center gap-2">
+						{triggerIcon}
+						<span data-slot="entity-selector-label" className="truncate">
+							{triggerLabel || resolvedPlaceholder}
+						</span>
+					</span>
+				) : (
+					<span data-slot="entity-selector-label" className="truncate">
+						{triggerLabel || resolvedPlaceholder}
+					</span>
+				)}
+				<ChevronDownIcon data-slot="entity-selector-chevron" className="ml-2 size-4 shrink-0 opacity-50" />
 			</Button>
 		);
 

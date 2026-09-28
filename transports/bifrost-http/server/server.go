@@ -276,6 +276,9 @@ type BifrostHTTPServer struct {
 	// per page. Optional; wired at server init when available, otherwise left nil
 	// so the VK read paths report no assignee (OSS has no user directory).
 	VirtualKeyAssigneeResolver handlers.VirtualKeyAssigneeResolver
+	// VirtualKeyBusinessUnitResolver names each VK's owning business unit on the
+	// governance read paths. Nil on OSS builds; set by the enterprise wrapper.
+	VirtualKeyBusinessUnitResolver handlers.VirtualKeyBusinessUnitResolver
 
 	SidekiqRunner         *sidekiq.Runner
 	SidekiqDispatcherStop func()
@@ -2436,7 +2439,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver, s.VirtualKeyAssigneeResolver)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver, s.VirtualKeyAssigneeResolver, s.VirtualKeyBusinessUnitResolver)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
@@ -2796,9 +2799,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// exist early, but RegisterRoutes is only ever called once, later, on
 	// whichever handler is current then - so a handler built here never
 	// serves a request or gets its routes registered before being replaced.
-	// It still cost a full warp.NewService (its own dedicated Bifrost
-	// instance and worker pool) that was immediately shut down again a few
-	// lines into RegisterAPIRoutes, on every boot.
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
@@ -3215,7 +3215,8 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			// Warp first. Its indexer workers call s.Client.EmbeddingRequest, and
+			// Warp first. Its indexer workers call s.Client.EmbeddingRequest (and its
+			// chat turns s.Client.ResponsesRequest), and
 			// LogIndexer.Close waits for them - so shutting the client down first
 			// cancelled its context underneath work that was still being waited on,
 			// and pending indexing failed during an orderly shutdown.

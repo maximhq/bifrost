@@ -313,6 +313,90 @@ func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
 	require.Equal(t, "u-1", snapshot.Value(schemas.BifrostContextKeyUserID))
 }
 
+// Warp's model calls go through the gateway client in-process, so no HTTP
+// transport settles who they are - and governance refuses a request that
+// carries no grant. The snapshot must carry a grant settled from the dashboard
+// request, attributed to the user who asked, or every chat fails with "request
+// carries no grant".
+func TestWarpSnapshotCarriesSettledGrant(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserEmail, "u1@example.com")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	g := warp.NewGrantFromContext(snapshot)
+	require.NotNil(t, g, "a turn without a grant is refused by governance on its first model call")
+	require.NotNil(t, g.Identity(), "the grant's identity must be settled, not left open")
+	require.NotNil(t, g.Identity().User())
+	require.Equal(t, "u-1", g.Identity().User().ID)
+
+	// A deployment with no auth still settles an identity - "nobody" - which is
+	// distinct from never having been settled.
+	anonymous, cancelAnonymous, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second)
+	require.NoError(t, err)
+	defer cancelAnonymous()
+	require.NotNil(t, warp.NewGrantFromContext(anonymous))
+	require.NotNil(t, warp.NewGrantFromContext(anonymous).Identity())
+}
+
+// Governance stamps the caller's name, teams and customer only while resolving
+// a grant, once per grant. Each of Warp's model calls must therefore settle its
+// own grant, still attributed to the user who asked, even after fasthttp has
+// recycled the request the values came from.
+func TestWarpSnapshotSettlesAFreshGrantPerCall(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserName, "Suresh")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	ctx.ResetUserValues()
+
+	first, second := warp.NewGrantFromContext(snapshot), warp.NewGrantFromContext(snapshot)
+	require.NotSame(t, first, second, "a shared grant is resolved on the first call only")
+	for _, g := range []schemas.Grant{first, second} {
+		require.Equal(t, "u-1", g.Identity().User().ID)
+		require.Equal(t, "Suresh", g.Identity().User().Name)
+	}
+}
+
+// A virtual key arrives as a request header, never as a user value, so the
+// grant must read it from the headers the way lib.ConvertToBifrostContext does
+// - otherwise a dashboard request that presents a key settles as the session
+// alone and governance never sees the key.
+func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
+	for name, set := range map[string]func(*fasthttp.RequestHeader){
+		"x-bf-vk":              func(h *fasthttp.RequestHeader) { h.Set("x-bf-vk", "sk-bf-abc") },
+		"authorization bearer": func(h *fasthttp.RequestHeader) { h.Set("Authorization", "Bearer sk-bf-abc") },
+		"x-api-key":            func(h *fasthttp.RequestHeader) { h.Set("x-api-key", "sk-bf-abc") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			set(&ctx.Request.Header)
+			ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+
+			snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+			require.NoError(t, err)
+			defer cancel()
+			identity := warp.NewGrantFromContext(snapshot).Identity()
+			require.NotNil(t, identity)
+			require.Equal(t, "sk-bf-abc", identity.Credential().Value)
+			require.Equal(t, "u-1", identity.User().ID, "the session's user is kept alongside the key")
+		})
+	}
+
+	// A bearer that is not a virtual key (a dashboard session token) is not one.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Authorization", "Bearer session-token")
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	require.Empty(t, warp.NewGrantFromContext(snapshot).Identity().Credential().Value)
+}
+
 // A scope that was set on the request but cannot be carried over is the
 // dangerous case: queryscope.FromContext reads a missing scope as "no
 // restriction", so the agent would run unscoped over every tenant's prompts and
@@ -514,6 +598,30 @@ func TestWarpBackfillStatusKeepsRealTimestamps(t *testing.T) {
 	}
 }
 
+// The job's embedding spend travels from its checkpoint to the status payload
+// the backfill panel renders; a cost the deployment cannot price stays absent
+// rather than arriving as 0, which would read as free.
+func TestWarpBackfillStatusCarriesEmbeddingSpend(t *testing.T) {
+	priced := warpBackfillStatusFromRow(&tables.TableSidekiqJob{
+		ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"total":10,"scanned":4,"embedding_tokens":1200,"embedding_cost":0.000024}`,
+	})
+	require.Equal(t, int64(1200), priced.EmbeddingTokens)
+	require.NotNil(t, priced.EmbeddingCost)
+	require.InDelta(t, 0.000024, *priced.EmbeddingCost, 1e-12)
+
+	unpriced := warpBackfillStatusFromRow(&tables.TableSidekiqJob{
+		ID: "job-2", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"total":10,"scanned":4,"embedding_tokens":1200}`,
+	})
+	encoded, err := sonic.Marshal(unpriced)
+	require.NoError(t, err)
+	var shape map[string]any
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+	require.Equal(t, float64(1200), shape["embedding_tokens"])
+	require.NotContains(t, shape, "embedding_cost")
+}
+
 // A malformed time range is a bad request whether or not a job is running.
 //
 // startBackfill checked for an active job before BuildBackfillJobMeta, which is
@@ -572,6 +680,80 @@ func TestWarpLogIndexStatusHidesProviderErrorFromNonAdmins(t *testing.T) {
 	adminRequest := adminCtx("")
 	handler.logIndexStatus(adminRequest)
 	require.Contains(t, string(adminRequest.Response.Body()), "connection refused")
+}
+
+// rbacAdminCtx builds a request context the way enterprise's RBAC middleware
+// leaves it for an SSO caller it authorized: a user and role ID, and no
+// local-admin marker.
+func rbacAdminCtx(body string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "sso-admin")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, uint(1))
+	ctx.Request.SetBodyString(body)
+	return ctx
+}
+
+// An SSO admin never carries the local-admin marker, because enterprise turns the
+// password login off once SSO is on. Enterprise RBAC has already checked the
+// Warp permission by the time these handlers run, so its role ID has to be
+// enough, or no SSO user can ever configure Warp or run a backfill.
+func TestWarpAdminRoutesAdmitRBACAuthorizedCaller(t *testing.T) {
+	store := &recordingWarpStore{}
+	putCtx := rbacAdminCtx(validWarpConfigJSON)
+	(&WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}).putConfig(putCtx)
+	require.NotEqual(t, fasthttp.StatusForbidden, putCtx.Response.StatusCode(), string(putCtx.Response.Body()))
+
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	startCtx := rbacAdminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startBackfill(startCtx)
+	require.Equal(t, fasthttp.StatusAccepted, startCtx.Response.StatusCode(), string(startCtx.Response.Body()))
+	require.Equal(t, 1, jobs.createdCount())
+
+	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	jobs.jobs[job.ID] = job
+	jobs.inFlight = job
+
+	statusCtx := rbacAdminCtx("")
+	statusCtx.QueryArgs().Set("id", job.ID)
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode(), string(statusCtx.Response.Body()))
+
+	cancelCtx := rbacAdminCtx(`{"id":"job-1"}`)
+	handler.cancelBackfill(cancelCtx)
+	require.Equal(t, fasthttp.StatusOK, cancelCtx.Response.StatusCode(), string(cancelCtx.Response.Body()))
+}
+
+// A zero role ID is what an unhydrated context carries. It must not count as
+// authorization.
+func TestWarpAdminRoutesRejectZeroRoleID(t *testing.T) {
+	handler, _, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	calls := []func(*fasthttp.RequestCtx){handler.startBackfill, handler.backfillStatus, handler.cancelBackfill, newTestWarpHandler(&recordingWarpStore{}).putConfig}
+	for _, call := range calls {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "someone")
+		ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, uint(0))
+		call(ctx)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	}
+}
+
+// The index summary only needs Warp View in enterprise, so a role ID on its
+// context says nothing about admin. The provider's error text stays local-admin
+// only there.
+func TestWarpLogIndexStatusHidesProviderErrorFromRBACCaller(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed,
+		LastError: "dial tcp 10.0.3.7:6333: connect: connection refused",
+		Metadata:  `{"scanned":100,"failed":100,"total":5000}`,
+	}
+	ctx := rbacAdminCtx("")
+	handler.logIndexStatus(ctx)
+	require.NotContains(t, string(ctx.Response.Body()), "connection refused")
 }
 
 func TestWarpJobMatchesNamespace(t *testing.T) {

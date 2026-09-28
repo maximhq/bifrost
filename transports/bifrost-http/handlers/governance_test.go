@@ -352,6 +352,119 @@ func TestVirtualKeyBudgetOverrideRejectsDirectMirrorBudget(t *testing.T) {
 	}
 }
 
+// The content-logging decision is tri-state on the wire: an omitted field keeps whatever the key
+// says today, null clears it back to inheriting the client setting, and true/false set it. Each of
+// the three must be distinguishable, which is why the update request carries OptionalJSON.
+func TestApplyVirtualKeyContentLoggingUpdate(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		initial *bool
+		want    *bool
+	}{
+		{name: "omitted keeps off", body: `{"name":"renamed"}`, initial: new(true), want: new(true)},
+		{name: "omitted keeps inherit", body: `{"name":"renamed"}`, initial: nil, want: nil},
+		{name: "true forces off", body: `{"disable_content_logging":true}`, initial: nil, want: new(true)},
+		{name: "false forces on", body: `{"disable_content_logging":false}`, initial: new(true), want: new(false)},
+		{name: "null clears to inherit", body: `{"disable_content_logging":null}`, initial: new(true), want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vk := &configstoreTables.TableVirtualKey{ID: "vk-1", DisableContentLogging: tt.initial}
+			var req UpdateVirtualKeyRequest
+			if err := json.Unmarshal([]byte(tt.body), &req); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			applyVirtualKeyContentLoggingUpdate(vk, &req)
+			if tt.want == nil {
+				if vk.DisableContentLogging != nil {
+					t.Fatalf("want inherit (nil), got %v", *vk.DisableContentLogging)
+				}
+				return
+			}
+			if vk.DisableContentLogging == nil || *vk.DisableContentLogging != *tt.want {
+				t.Fatalf("want %v, got %#v", *tt.want, vk.DisableContentLogging)
+			}
+		})
+	}
+}
+
+// TestVirtualKeyContentLoggingRoundTrip drives the handlers end to end: a key created with the
+// decision persists it, an update can flip it, and a null update clears it to inherit. This is
+// what the UI's three-way control and a config-sync client both rely on.
+func TestVirtualKeyContentLoggingRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	createCtx := newTestRequestCtx(`{"name":"vk-content-off","disable_content_logging":true}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID                    string `json:"id"`
+			DisableContentLogging *bool  `json:"disable_content_logging"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	require.NotEmpty(t, created.VirtualKey.ID)
+	require.NotNil(t, created.VirtualKey.DisableContentLogging, "create response must echo the decision")
+	assert.True(t, *created.VirtualKey.DisableContentLogging)
+
+	stored, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.DisableContentLogging, "create must persist the decision")
+	assert.True(t, *stored.DisableContentLogging)
+
+	putVK := func(t *testing.T, body string) {
+		t.Helper()
+		putCtx := newTestRequestCtx(body)
+		putCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(putCtx)
+		require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+	}
+
+	putVK(t, `{"description":"touched"}`)
+	stored, err = store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.DisableContentLogging, "an update that omits the field must not clear it")
+	assert.True(t, *stored.DisableContentLogging)
+
+	putVK(t, `{"disable_content_logging":false}`)
+	stored, err = store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.DisableContentLogging)
+	assert.False(t, *stored.DisableContentLogging, "false is a decision to force content on, not an absence")
+
+	putVK(t, `{"disable_content_logging":null}`)
+	stored, err = store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Nil(t, stored.DisableContentLogging, "null clears the decision back to inherit")
+}
+
+// TestCreateVirtualKeyWithNullContentLoggingInherits pins the create contract the OpenAPI schema
+// documents: an explicit null is accepted and means the same as omitting the field, inherit.
+func TestCreateVirtualKeyWithNullContentLoggingInherits(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	createCtx := newTestRequestCtx(`{"name":"vk-content-null","disable_content_logging":null}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	stored, err := store.GetVirtualKey(context.Background(), created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Nil(t, stored.DisableContentLogging, "null on create must store inherit, like omitting the field")
+}
+
 func TestApplyVirtualKeyOwnershipUpdatePreservesOmittedAssociation(t *testing.T) {
 	teamID := "team-1"
 	customerID := "customer-1"
@@ -4368,6 +4481,62 @@ func TestBudgetLastResetUsesBudgetQuarterStart(t *testing.T) {
 	// A nil budget must not panic; callers reach this on the non-aligned path.
 	assert.False(t, budgetLastReset(false, nil).IsZero())
 	assert.False(t, budgetLastReset(true, nil).IsZero())
+}
+
+// TestApplyBusinessUnits covers the hook that names each virtual key's owning business unit on
+// the read responses, the counterpart of the preloaded Team and Customer relations.
+func TestApplyBusinessUnits(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	newVKs := func() []*configstoreTables.TableVirtualKey {
+		return []*configstoreTables.TableVirtualKey{
+			{ID: "vk-1", BusinessUnitID: new("bu-1")},
+			{ID: "vk-2", BusinessUnitID: new("bu-1")},
+			{ID: "vk-3", BusinessUnitID: new("bu-2")},
+			{ID: "vk-4"},
+		}
+	}
+
+	t.Run("names owners in one call over the distinct business units", func(t *testing.T) {
+		var gotIDs [][]string
+		h := &GovernanceHandler{
+			virtualKeyBusinessUnitResolver: func(_ context.Context, ids []string) (map[string]*configstoreTables.VirtualKeyBusinessUnit, error) {
+				gotIDs = append(gotIDs, ids)
+				return map[string]*configstoreTables.VirtualKeyBusinessUnit{"bu-1": {ID: "bu-1", Name: "Payments"}}, nil
+			},
+		}
+		vks := newVKs()
+		h.applyBusinessUnits(context.Background(), vks)
+
+		if len(gotIDs) != 1 || len(gotIDs[0]) != 2 || gotIDs[0][0] != "bu-1" || gotIDs[0][1] != "bu-2" {
+			t.Fatalf("expected one call with the distinct business units, got %#v", gotIDs)
+		}
+		for _, vk := range vks[:2] {
+			if vk.BusinessUnit == nil || vk.BusinessUnit.Name != "Payments" {
+				t.Fatalf("expected %s to name its business unit, got %#v", vk.ID, vk.BusinessUnit)
+			}
+		}
+		if vks[2].BusinessUnit != nil || vks[3].BusinessUnit != nil {
+			t.Fatalf("expected unknown and unowned keys to carry no business unit, got %#v / %#v", vks[2].BusinessUnit, vks[3].BusinessUnit)
+		}
+	})
+
+	t.Run("no-ops without a resolver or when the resolver fails", func(t *testing.T) {
+		failing := &GovernanceHandler{
+			virtualKeyBusinessUnitResolver: func(_ context.Context, _ []string) (map[string]*configstoreTables.VirtualKeyBusinessUnit, error) {
+				return nil, errors.New("boom")
+			},
+		}
+		for _, h := range []*GovernanceHandler{{}, failing} {
+			vks := newVKs()
+			h.applyBusinessUnits(context.Background(), vks)
+			for _, vk := range vks {
+				if vk.BusinessUnit != nil {
+					t.Fatalf("expected no business unit, got %#v", vk.BusinessUnit)
+				}
+			}
+		}
+	})
 }
 
 // TestApplyAssignees covers the hook that puts each virtual key's assigned user on

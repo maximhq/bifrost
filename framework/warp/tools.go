@@ -94,6 +94,9 @@ type ToolDeps struct {
 	// and reports itself unavailable rather than the caller getting a nil-
 	// pointer panic.
 	governance GovernanceReader
+	// charts holds what render_chart drew this turn, so the answer's chart
+	// blocks can be expanded from it. Built per turn with the rest of deps.
+	charts *chartRegistry
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -168,7 +171,7 @@ const FilterSchema = `{
     "parent_request_id": {"type": "string", "minLength": 1, "description": "Requests spawned by this request, e.g. the fallback attempts of one call."},
     "missing_cost_only": {"type": "boolean", "description": "Only successful requests whose cost could not be computed."},
     "error_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's error classification on failed requests, e.g. invalid_request_error, overloaded_error - the ids a query_usage_by error_type ranking returns. This is how to fetch the rows behind one row of that ranking."},
-    "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values."},
+    "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values. overloaded_error and rate_limit_error are error types - put them in error_types, never here."},
     "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
@@ -1034,6 +1037,7 @@ func buildToolsFor(searcher *SemanticSearcher) []Tool {
 		queryMetricsTool(),
 		queryUsageByTool(),
 		queryModelsTool(),
+		renderChartTool(),
 		describeFilterSpaceTool(),
 		describeVirtualKeyTool(),
 		askUserToolDef(),

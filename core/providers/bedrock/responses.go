@@ -2279,7 +2279,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				if typeStr, ok := schemas.SafeExtractString(reasoningConfigMap["type"]); ok {
 					if typeStr == "enabled" || typeStr == "adaptive" {
 						var summary *string
-						if summaryValue, ok := schemas.SafeExtractStringPointer(request.ExtraParams["reasoning_summary"]); ok {
+						if summaryValue, ok := extraParamStringPointer(request.ExtraParams["reasoning_summary"]); ok {
 							summary = summaryValue
 						}
 						// Converse has no reasoning-summary field, so an OpenAI reasoning
@@ -2371,7 +2371,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		}
 	}
 
-	if include, ok := schemas.SafeExtractStringSlice(request.ExtraParams["include"]); ok {
+	if include, ok := extraParamStringSlice(request.ExtraParams["include"]); ok {
 		bifrostReq.Params.Include = include
 	}
 
@@ -4632,8 +4632,10 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				})
 			} else if block.ReasoningContent.RedactedContent != nil {
 				// Opaque blob: carried on the reasoning message rather than as a
-				// content block, since there is no prose for one to hold.
-				reasoningRedactedContent = block.ReasoningContent.RedactedContent
+				// content block, since there is no prose for one to hold. A blob
+				// Bifrost wrapped for a Converse client unwraps to the upstream's
+				// own token; native Bedrock blobs pass through.
+				reasoningRedactedContent = new(decodeRedactedContentFromConverse(*block.ReasoningContent.RedactedContent))
 			}
 		} else if block.ToolUse != nil {
 			// Tool use content
@@ -5045,6 +5047,22 @@ func isConverseResponseRendering(ctx context.Context) bool {
 // exposed text becomes reasoningText (signed when a signature exists), while an
 // encrypted-only block stays redactedContent.
 func convertBifrostReasoningToConverseResponseReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
+	return encodeConverseRedactedBlocks(renderConverseResponseReasoning(msg))
+}
+
+// encodeConverseRedactedBlocks makes every redactedContent a valid Converse blob.
+// Only the client-facing render does this: replays to Bedrock carry Bedrock's own
+// blob, which is already one.
+func encodeConverseRedactedBlocks(blocks []BedrockContentBlock) []BedrockContentBlock {
+	for i := range blocks {
+		if rc := blocks[i].ReasoningContent; rc != nil && rc.RedactedContent != nil {
+			rc.RedactedContent = new(encodeRedactedContentForConverse(*rc.RedactedContent))
+		}
+	}
+	return blocks
+}
+
+func renderConverseResponseReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
 	if msg == nil {
 		return nil
 	}

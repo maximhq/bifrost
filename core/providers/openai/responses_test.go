@@ -577,6 +577,54 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
+			name:     "maps none to low for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-6-sol",
+			model:    "gpt-6-sol",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "preserves none for gpt-6-luna",
+			model:    "gpt-6-luna",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "maps none to minimal for gpt-5",
+			model:    "gpt-5",
+			effort:   "none",
+			expected: "minimal",
+		},
+		{
+			name:     "maps none to low for gpt-5-pro",
+			model:    "gpt-5-pro",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "maps none to low for o3",
+			model:    "o3",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-5.1",
+			model:    "gpt-5.1",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "preserves none for gpt-5.6",
+			model:    "gpt-5.6",
+			effort:   "none",
+			expected: "none",
+		},
+		{
 			// DeepSeek V4 is routed via a custom OpenAI-compatible provider, so the
 			// OpenAI-only reasoning-stripping doesn't apply and "max" passes through.
 			name:     "preserves max for deepseek-v4-pro",
@@ -2896,36 +2944,60 @@ func TestBifrostResponsesRetrieveRequest_IsStreamingRequested(t *testing.T) {
 	}
 }
 
-// TestTopPGateReadsDatasheet covers the datasheet side of the top_p strip.
-// top_p is the field the schema deliberately leaves untyped because its verdict
-// can be conditional, so both unsupported_fields and
-// conditionally_unsupported_fields have to drive it.
-func TestTopPGateReadsDatasheet(t *testing.T) {
+// TestSamplingParamGateReadsDatasheet covers the datasheet side of the sampling
+// strip. Their verdict can be conditional on reasoning effort, so both
+// unsupported_fields and conditionally_unsupported_fields have to drive it.
+func TestSamplingParamGateReadsDatasheet(t *testing.T) {
 	t.Run("name_fallback_strips_for_reasoning_model", func(t *testing.T) {
 		caps := schemas.ResolveModelCaps(schemas.OpenAI, "o3")
-		require.True(t, topPUnsupported(caps, "o3", "high"))
-		require.False(t, topPUnsupported(caps, "gpt-4o", ""))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTopP, "o3", "high"))
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-4o", ""))
 	})
 
 	t.Run("name_fallback_keeps_gpt5x_while_effort_none", func(t *testing.T) {
 		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-5.4")
-		require.False(t, topPUnsupported(caps, "gpt-5.4", ""))
-		require.True(t, topPUnsupported(caps, "gpt-5.4", "high"))
-		require.True(t, topPUnsupported(caps, "gpt-5.4-pro", ""), "-pro always reasons")
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4", ""))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4", "high"))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4-pro", ""), "-pro always reasons")
+	})
+
+	t.Run("omitted_effort_reasons_from_gpt55", func(t *testing.T) {
+		for _, model := range []string{"gpt-5.5", "gpt-5.6-sol"} {
+			caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+			require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, ""), "%s defaults to medium", model)
+			require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, "none"), model)
+		}
+	})
+
+	t.Run("codex_follows_its_version_default", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-5.3-codex")
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, "gpt-5.3-codex", ""), "gpt-5.3-codex defaults to none")
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, "gpt-5.3-codex", "low"))
+	})
+
+	t.Run("gpt6_rejects_whatever_the_effort", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-6-astra")
+		for _, field := range []string{schemas.FieldTopP, schemas.FieldTemperature, schemas.FieldTopLogprobs, schemas.FieldLogprobs} {
+			require.True(t, samplingParamUnsupported(caps, field, "gpt-6-astra", ""), field)
+			require.True(t, samplingParamUnsupported(caps, field, "gpt-6-astra", "low"), field)
+		}
 	})
 
 	t.Run("conditional_label_drives_both_directions", func(t *testing.T) {
 		const model = "some-conditional-reasoner"
 		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
 			ConditionallyUnsupportedFields: map[string]string{
-				schemas.FieldTopP: schemas.ConditionWhenEffortNone,
+				schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
 			},
 		})
 
 		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
-		require.False(t, topPUnsupported(caps, model, ""), "allowed while reasoning is off")
-		require.False(t, topPUnsupported(caps, model, "none"))
-		require.True(t, topPUnsupported(caps, model, "low"), "rejected once reasoning is on")
+		for _, field := range []string{schemas.FieldTopP, schemas.FieldTemperature} {
+			require.False(t, samplingParamUnsupported(caps, field, model, ""), "allowed while reasoning is off")
+			require.False(t, samplingParamUnsupported(caps, field, model, "none"))
+			require.True(t, samplingParamUnsupported(caps, field, model, "low"), "rejected once reasoning is on")
+		}
 	})
 
 	t.Run("outright_entry_beats_name_fallback", func(t *testing.T) {
@@ -2933,8 +3005,90 @@ func TestTopPGateReadsDatasheet(t *testing.T) {
 		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
 			UnsupportedFields: map[string]bool{schemas.FieldTopP: false},
 		})
-		require.False(t, topPUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, model), model, "high"),
+		require.False(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, model), schemas.FieldTopP, model, "high"),
 			"an explicit false must beat the reasoning-model name check")
+	})
+}
+
+// TestToOpenAIResponsesRequest_AlwaysReasoningModels pins the request shaping for
+// models that cannot turn reasoning off: "none" maps to the lowest level the model
+// accepts, and sampling fields OpenAI rejects are dropped without mutating the
+// caller's params.
+func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
+	convert := func(provider schemas.ModelProvider, model string, params *schemas.ResponsesParameters) *OpenAIResponsesRequest {
+		return ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: params,
+		})
+	}
+
+	t.Run("budget_zero_maps_to_lowest_level", func(t *testing.T) {
+		req := convert(schemas.OpenAI, "gpt-6-astra", &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(0)},
+		})
+		require.Equal(t, "low", *req.Reasoning.Effort)
+	})
+
+	t.Run("datasheet_disable_flag_beats_name_fallback", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-6-astra", &schemas.ModelCapabilities{SupportsReasoningDisable: new(true)})
+		req := convert(schemas.OpenAI, "gpt-6-astra", &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")},
+		})
+		require.Equal(t, "none", *req.Reasoning.Effort)
+	})
+
+	t.Run("datasheet_ladder_sets_lowest_level", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-5.1", &schemas.ModelCapabilities{
+			SupportsReasoningDisable: new(false),
+			ReasoningEffortLevels:    []string{"medium", "high"},
+		})
+		req := convert(schemas.OpenAI, "gpt-5.1", &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")},
+		})
+		require.Equal(t, "medium", *req.Reasoning.Effort)
+	})
+
+	t.Run("strips_sampling_fields_for_gpt6", func(t *testing.T) {
+		include := []string{"message.output_text.logprobs", "reasoning.encrypted_content"}
+		params := &schemas.ResponsesParameters{
+			Temperature: schemas.Ptr(0.2),
+			TopP:        schemas.Ptr(0.9),
+			TopLogProbs: schemas.Ptr(3),
+			Include:     include,
+		}
+		for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure} {
+			req := convert(provider, "gpt-6-astra", params)
+			require.Nil(t, req.Temperature, provider)
+			require.Nil(t, req.TopP, provider)
+			require.Nil(t, req.TopLogProbs, provider)
+			require.Equal(t, []string{"reasoning.encrypted_content"}, req.Include, provider)
+		}
+		require.Equal(t, []string{"message.output_text.logprobs", "reasoning.encrypted_content"}, params.Include,
+			"caller's include must not be mutated")
+	})
+
+	t.Run("keeps_sampling_fields_while_effort_none", func(t *testing.T) {
+		req := convert(schemas.OpenAI, "gpt-5.6", &schemas.ResponsesParameters{
+			Temperature: schemas.Ptr(0.2),
+			Reasoning:   &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")},
+		})
+		require.NotNil(t, req.Temperature)
+
+		req = convert(schemas.OpenAI, "gpt-5.4", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
+		require.NotNil(t, req.Temperature, "gpt-5.4 defaults to none")
+
+		req = convert(schemas.OpenAI, "gpt-5.5", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
+		require.Nil(t, req.Temperature, "gpt-5.5 defaults to medium")
+	})
+
+	t.Run("third_party_gpt_oss_keeps_temperature", func(t *testing.T) {
+		req := convert(schemas.Groq, "openai/gpt-oss-120b", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
+		require.NotNil(t, req.Temperature)
 	})
 }
 

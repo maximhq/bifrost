@@ -1318,6 +1318,7 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	recordVirtualKeyIdentity(ctx, virtualKey)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, virtualKey.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, virtualKey.Name)
+	stampVirtualKeyContentLogging(ctx, virtualKey)
 	if virtualKey.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, virtualKey.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
@@ -1331,6 +1332,25 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	if virtualKey.Customer != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, virtualKey.Customer.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
+	}
+}
+
+// stampVirtualKeyContentLogging publishes the key's own content-logging decision for the logging
+// plugin, which runs before governance in the plugin chain and so cannot look the key up itself.
+// Only a decision is stamped: a key that inherits leaves the context alone, so the plugin falls
+// through to the client setting instead of reading a false it would have to treat as a choice.
+//
+// A key that turns content off is also marked on the request's root span. Observability
+// connectors are handed the finished trace without the request context, so the span is the only
+// place they can read the decision from. The mark is one-directional: a key that keeps content on
+// says nothing to a connector, whose own disable_content_logging stays in charge.
+func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
+	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *virtualKey.DisableContentLogging)
+	if *virtualKey.DisableContentLogging {
+		ctx.SetTraceAttribute(schemas.AttrBifrostContentLoggingDisabled, true)
 	}
 }
 
@@ -3194,6 +3214,36 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	// Load providers
 	providers := config.Providers
 
+	// Populate teams with their relationships
+	for i := range teams {
+		team := &teams[i]
+
+		budgetIndexes := make(map[string]int, len(team.Budgets))
+		for j := range team.Budgets {
+			budgetIndexes[team.Budgets[j].ID] = j
+		}
+		for j := range budgets {
+			if budgets[j].TeamID == nil || *budgets[j].TeamID != team.ID {
+				continue
+			}
+			if index, exists := budgetIndexes[budgets[j].ID]; exists {
+				team.Budgets[index] = budgets[j]
+				continue
+			}
+			team.Budgets = append(team.Budgets, budgets[j])
+			budgetIndexes[budgets[j].ID] = len(team.Budgets) - 1
+		}
+
+		if team.RateLimitID != nil {
+			for j := range rateLimits {
+				if rateLimits[j].ID == *team.RateLimitID {
+					team.RateLimit = &rateLimits[j]
+					break
+				}
+			}
+		}
+	}
+
 	// Populate model configs with their relationships (Budgets and RateLimit)
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
@@ -3345,6 +3395,21 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 		gs.storeVirtualKey(vk.Value.GetValue(), vk)
+	}
+
+	// Stamp team-owned budget and rate-limit entries in the flat caches so
+	// calendar-aligned resets survive restarts and reloads. GORM runs AfterFind
+	// before attaching preloaded relationships, so TableTeam cannot reliably do
+	// this itself.
+	for i := range teams {
+		team := &teams[i]
+		configstoreTables.StampCalendarAlignment(team.CalendarAligned, team.Budgets, team.RateLimit)
+		for j := range team.Budgets {
+			gs.storeBudget(team.Budgets[j].ID, &team.Budgets[j])
+		}
+		if team.RateLimit != nil {
+			gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
+		}
 	}
 
 	// Build model configs map.

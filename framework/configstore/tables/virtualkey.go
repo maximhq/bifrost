@@ -266,6 +266,13 @@ type TableVirtualKey struct {
 
 	AllowAllProviders bool `gorm:"default:false" json:"allow_all_providers"`
 
+	// DisableContentLogging is the key's own say on whether request and response content is
+	// persisted for its traffic. Tri-state on purpose: nil inherits client.disable_content_logging,
+	// true forces content off for every sink, false forces content on for the log store only (each
+	// observability connector keeps its own flag). No gorm default: a default tag would make GORM
+	// write the default for a nil pointer on insert and collapse "inherit" into "false".
+	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -294,6 +301,11 @@ type TableVirtualKey struct {
 	// MarshalJSON drops the field so callers refetch instead of reading nil as
 	// "unassigned". Never persisted; set by the governance read paths.
 	AssigneeResolved bool `gorm:"-" json:"-"`
+
+	// BusinessUnit names the business unit that owns this key, the counterpart of the Team and
+	// Customer relations. Business units are an enterprise table, so it cannot be preloaded: the
+	// governance read paths fill it from a downstream resolver, and it stays nil in OSS.
+	BusinessUnit *VirtualKeyBusinessUnit `gorm:"-" json:"business_unit,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -327,6 +339,13 @@ type AssignedUser struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
+}
+
+// VirtualKeyBusinessUnit is the minimal projection of a key's owning business unit carried on
+// read responses, so the UI can name it the way it names a team or customer.
+type VirtualKeyBusinessUnit struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // TableName sets the table name for each model

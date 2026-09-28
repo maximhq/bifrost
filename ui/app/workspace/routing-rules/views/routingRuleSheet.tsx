@@ -32,9 +32,9 @@ import {
 	RoutingRuleFormData,
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
-import { denormalizeFallback, normalizeFallback } from "@/lib/utils/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
+import { denormalizeFallback, normalizeFallback } from "@/lib/utils/routingRules";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Plus, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
@@ -317,9 +317,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		const submitPromise =
 			isEditing && editingRule
 				? updateRoutingRule({
-						id: editingRule.id,
-						data: payload,
-					}).unwrap()
+					id: editingRule.id,
+					data: payload,
+				}).unwrap()
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
@@ -723,6 +723,7 @@ function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUp
 						onChange={(value) => onUpdate(index, { model: value })}
 						placeholder="Incoming (optional)"
 						allowCustomModel
+						unfiltered={true}
 						disabled={!provider}
 						className="!h-9 !min-h-9 w-full"
 					/>

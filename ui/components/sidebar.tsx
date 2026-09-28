@@ -21,6 +21,7 @@ import {
 	Globe,
 	Hexagon,
 	History,
+	House,
 	KeyRound,
 	Landmark,
 	LaptopMinimalCheck,
@@ -586,6 +587,7 @@ export default function AppSidebar() {
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
 	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
+	const hasWarpAccess = useRbac(RbacResource.Warp, RbacOperation.View);
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
@@ -635,6 +637,17 @@ export default function AppSidebar() {
 
 	const items = useMemo(
 		() => [
+			...(IS_ENTERPRISE
+				? [
+						{
+							title: "Home",
+							url: "/workspace/home",
+							icon: House,
+							description: "Your usage, keys, budgets and access",
+							hasAccess: true,
+						},
+					]
+				: []),
 			{
 				title: "Observability",
 				url: "/workspace/logs",
@@ -1025,7 +1038,7 @@ export default function AppSidebar() {
 				url: "/workspace/config",
 				icon: Settings2Icon,
 				description: "Bifrost settings",
-				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
+				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess || (hasWarpAccess && isWarpEnabled),
 				subItems: [
 					{
 						title: "Client Settings",
@@ -1060,7 +1073,7 @@ export default function AppSidebar() {
 						url: "/workspace/config/warp",
 						icon: WarpNavIcon,
 						description: "Warp agent configuration",
-						hasAccess: hasSettingsAccess && isWarpEnabled,
+						hasAccess: hasWarpAccess && isWarpEnabled,
 					},
 					...(IS_ENTERPRISE
 						? [
@@ -1149,6 +1162,7 @@ export default function AppSidebar() {
 			hasProjectsAccess,
 			hasFeatureFlagsAccess,
 			isWarpEnabled,
+			hasWarpAccess,
 			hasDevicesAccess,
 			hasInventoryAccess,
 			hasEdgeConfigAccess,

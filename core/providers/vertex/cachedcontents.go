@@ -12,6 +12,7 @@ import (
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -565,14 +566,21 @@ func (provider *VertexProvider) CachedContentDelete(ctx *schemas.BifrostContext,
 	return nil, lastErr
 }
 
-// parseVertexCachedContentError parses a Vertex API error response into a BifrostError.
+// parseVertexCachedContentError parses a Vertex API error response into a BifrostError, with
+// the retry hint from a google.rpc.RetryInfo error detail or the response headers.
 func parseVertexCachedContentError(resp *fasthttp.Response) *schemas.BifrostError {
 	respBody := resp.Body()
 	statusCode := resp.StatusCode()
 
+	// Fallback to the raw body, replaced below when the body carries a message.
+	message := string(respBody)
 	var errorResp VertexError
 	if err := sonic.Unmarshal(respBody, &errorResp); err == nil && errorResp.Error.Message != "" {
-		return providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil)
+		message = errorResp.Error.Message
 	}
-	return providerUtils.NewProviderAPIError(string(respBody), nil, statusCode, nil, nil)
+
+	bifrostErr := providerUtils.NewProviderAPIError(message, nil, statusCode, nil, nil)
+	gemini.ApplyRetryInfo(bifrostErr, errorResp.Error.Details)
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
 }

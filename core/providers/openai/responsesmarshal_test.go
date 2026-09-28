@@ -830,6 +830,73 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	}
 }
 
+// TestToOpenAIResponsesRequest_KeepsDeferLoadingForToolSearchModels pins that
+// defer_loading reaches the wire for models that support tool search. OpenAI
+// documents defer_loading on top-level functions and MCP tools for gpt-5.4 and
+// later (https://developers.openai.com/api/docs/guides/tools-tool-search).
+// Stripping it loads every tool eagerly, so the model never emits
+// tool_search_call. Older models and non-OpenAI wires still get the strip.
+func TestToOpenAIResponsesRequest_KeepsDeferLoadingForToolSearchModels(t *testing.T) {
+	newReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("find the weather tool")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{
+					{
+						Type:                    schemas.ResponsesToolTypeToolSearch,
+						ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: new("client")},
+					},
+					{
+						Type:                  schemas.ResponsesToolTypeFunction,
+						Name:                  new("get_weather"),
+						Description:           new("Get the weather"),
+						DeferLoading:          new(true),
+						ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		keep     bool
+	}{
+		{"openai gpt-6-sol", schemas.OpenAI, "gpt-6-sol", true},
+		{"openai gpt-5.6-sol", schemas.OpenAI, "gpt-5.6-sol", true},
+		{"openai gpt-5.4", schemas.OpenAI, "gpt-5.4", true},
+		{"azure gpt-6-sol", schemas.Azure, "gpt-6-sol-2026-09-22", true},
+		{"bedrock mantle gpt-6-sol", schemas.BedrockMantle, "openai.gpt-6-sol", true},
+		{"bedrock gpt-6-sol on mantle", schemas.Bedrock, "openai.gpt-6-sol", true},
+		{"openai gpt-4o predates tool search", schemas.OpenAI, "gpt-4o", false},
+		{"openai gpt-5.2 predates tool search", schemas.OpenAI, "gpt-5.2", false},
+		{"groq has no tool search", schemas.Groq, "openai/gpt-oss-120b", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := ToOpenAIResponsesRequest(nil, newReq(tt.provider, tt.model))
+			if req == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			jsonBytes, err := req.MarshalJSON()
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			raw := string(jsonBytes)
+			if got := strings.Contains(raw, `"defer_loading":true`); got != tt.keep {
+				t.Errorf("defer_loading on wire = %v, want %v; raw=%s", got, tt.keep, raw)
+			}
+		})
+	}
+}
+
 // TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes verifies
 // that Anthropic-only tool types (web_fetch, memory) are dropped entirely when
 // serializing for OpenAI Responses. Per OpenAI's OpenAPI spec the Responses
@@ -1686,6 +1753,9 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 		{"openai", schemas.OpenAI, "gpt-5.6-sol"},
 		{"azure", schemas.Azure, "eu/gpt-5.6-sol"},
 		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra"},
+		{"openai gpt-6", schemas.OpenAI, "gpt-6-astra"},
+		{"azure gpt-6", schemas.Azure, "gpt-6-astra"},
+		{"bedrock mantle gpt-6", schemas.BedrockMantle, "openai.gpt-6-astra"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, raw := marshalResponses(t, gpt56CacheReq(tc.provider, tc.model))
@@ -1738,6 +1808,33 @@ func TestToOpenAIResponsesRequest_PreGPT56Unaffected(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestToOpenAIResponsesRequest_CacheBreakpointGateReadsDatasheet pins that the
+// datasheet's supports_prompt_cache_breakpoint beats the model-name fallback in both
+// directions.
+func TestToOpenAIResponsesRequest_CacheBreakpointGateReadsDatasheet(t *testing.T) {
+	t.Run("false_disables_a_named_family", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-5.6-sol", &schemas.ModelCapabilities{SupportsPromptCacheBreakpoint: new(false)})
+		m, raw := marshalResponses(t, gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol"))
+		if _, present := firstBlock(t, m, 0, raw)["prompt_cache_breakpoint"]; present {
+			t.Errorf("datasheet false must suppress the breakpoint; raw=%s", raw)
+		}
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("datasheet false must suppress prompt_cache_options; raw=%s", raw)
+		}
+	})
+
+	t.Run("true_enables_an_unnamed_model", func(t *testing.T) {
+		installCapabilityRecord(t, "future-openai-model", &schemas.ModelCapabilities{SupportsPromptCacheBreakpoint: new(true)})
+		m, raw := marshalResponses(t, gpt56CacheReq(schemas.OpenAI, "future-openai-model"))
+		if _, present := firstBlock(t, m, 0, raw)["prompt_cache_breakpoint"]; !present {
+			t.Errorf("datasheet true must enable the breakpoint; raw=%s", raw)
+		}
+		if _, present := m["prompt_cache_options"]; !present {
+			t.Errorf("datasheet true must enable prompt_cache_options; raw=%s", raw)
+		}
+	})
 }
 
 // TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions verifies Bifrost does
@@ -2014,5 +2111,160 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsMediaResolution(t *testing.T) 
 	// The source request is shared across retries and fallbacks, so sanitizing must copy.
 	if input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].MediaResolution == nil {
 		t.Error("sanitization must not mutate the caller's request")
+	}
+}
+
+// TestToOpenAIResponsesRequest_ForwardsOpenAIToolFields pins that async,
+// output_schema and tunnel_id reach the OpenAI wire unchanged.
+func TestToOpenAIResponsesRequest_ForwardsOpenAIToolFields(t *testing.T) {
+	var tools []schemas.ResponsesTool
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"function","name":"get_weather","async":true,"parameters":{"type":"object","properties":{}},"strict":true,"output_schema":{"type":"string"}},
+		{"type":"custom","name":"run_job","async":true},
+		{"type":"mcp","server_label":"internal","tunnel_id":"tunnel_0123456789abcdef0123456789abcdef"}
+	]`), &tools); err != nil {
+		t.Fatalf("unmarshal tools: %v", err)
+	}
+	m, raw := marshalResponses(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-astra",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: tools},
+	})
+	wireTools, _ := m["tools"].([]any)
+	if len(wireTools) != 3 {
+		t.Fatalf("expected 3 tools; raw=%s", raw)
+	}
+	fn, _ := wireTools[0].(map[string]any)
+	if fn["async"] != true {
+		t.Errorf("function async lost; raw=%s", raw)
+	}
+	if schema, _ := fn["output_schema"].(map[string]any); schema["type"] != "string" {
+		t.Errorf("function output_schema lost; raw=%s", raw)
+	}
+	if custom, _ := wireTools[1].(map[string]any); custom["async"] != true {
+		t.Errorf("custom async lost; raw=%s", raw)
+	}
+	if mcp, _ := wireTools[2].(map[string]any); mcp["tunnel_id"] != "tunnel_0123456789abcdef0123456789abcdef" {
+		t.Errorf("mcp tunnel_id lost; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_ForwardsAsyncOnReplayedCalls pins that a replayed
+// pending async call keeps async on the OpenAI wire; without it OpenAI rejects the
+// request with "No tool output found for function call" (live-verified on gpt-6-astra).
+func TestToOpenAIResponsesRequest_ForwardsAsyncOnReplayedCalls(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"role":"user","content":"Check the weather in Paris."},
+		{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Paris\"}","async":true},
+		{"role":"user","content":"Thanks. Also, what is 2+2?"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+	m, raw := marshalResponses(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-astra",
+		Input:    input,
+	})
+	items, _ := m["input"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("expected 3 input items; raw=%s", raw)
+	}
+	if call, _ := items[1].(map[string]any); call["async"] != true {
+		t.Errorf("async dropped from replayed function_call; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsAsyncForUnsupportedModels pins the async gate:
+// models without async tool calling 400 on async in tool definitions and in replayed
+// call items (live-verified on gpt-5.6), so it is stripped there and kept on gpt-6.
+// The datasheet wins over the name fallback, and the caller's request is not mutated.
+func TestToOpenAIResponsesRequest_StripsAsyncForUnsupportedModels(t *testing.T) {
+	newReq := func(t *testing.T, model string) *schemas.BifrostResponsesRequest {
+		t.Helper()
+		var tools []schemas.ResponsesTool
+		if err := sonic.Unmarshal([]byte(`[
+			{"type":"function","name":"get_weather","async":true,"parameters":{"type":"object","properties":{}},"strict":true},
+			{"type":"custom","name":"run_job","async":true},
+			{"type":"namespace","name":"jobs","description":"Jobs","tools":[{"type":"function","name":"start","async":true,"parameters":{"type":"object","properties":{}},"strict":true}]}
+		]`), &tools); err != nil {
+			t.Fatalf("unmarshal tools: %v", err)
+		}
+		var input []schemas.ResponsesMessage
+		if err := sonic.Unmarshal([]byte(`[
+			{"role":"user","content":"Check the weather in Paris."},
+			{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{}","async":true},
+			{"type":"function_call_output","call_id":"call_1","output":"{\"t\":20}"}
+		]`), &input); err != nil {
+			t.Fatalf("unmarshal input: %v", err)
+		}
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    model,
+			Input:    input,
+			Params:   &schemas.ResponsesParameters{Tools: tools},
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		model  string
+		record *schemas.ModelCapabilities
+		keep   bool
+	}{
+		{name: "gpt-5.6 strips by name", model: "gpt-5.6"},
+		{name: "gpt-6-astra keeps by name", model: "gpt-6-astra", keep: true},
+		{name: "datasheet true keeps", model: "gpt-5.6", record: &schemas.ModelCapabilities{SupportsAsyncTools: new(true)}, keep: true},
+		{name: "datasheet false strips", model: "gpt-6-astra", record: &schemas.ModelCapabilities{SupportsAsyncTools: new(false)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.record != nil {
+				installCapabilityRecord(t, tc.model, tc.record)
+			}
+			req := newReq(t, tc.model)
+			_, raw := marshalResponses(t, req)
+			if got := strings.Count(raw, `"async":true`); tc.keep && got != 4 || !tc.keep && got != 0 {
+				t.Fatalf("async occurrences = %d, keep=%v; raw=%s", got, tc.keep, raw)
+			}
+
+			tools := req.Params.Tools
+			if !*tools[0].Async || !*tools[1].Async || !*tools[2].ResponsesToolNamespace.Tools[0].Async || !*req.Input[1].ResponsesToolMessage.Async {
+				t.Fatal("caller's request was mutated")
+			}
+		})
+	}
+}
+
+func TestToOpenAIResponsesRequest_StripsAsyncFromUnsupportedToolKinds(t *testing.T) {
+	var tools []schemas.ResponsesTool
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"function","name":"run_job","async":true,"parameters":{"type":"object"}},
+		{"type":"web_search","async":true}
+	]`), &tools); err != nil {
+		t.Fatalf("unmarshal tools: %v", err)
+	}
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"function_call","call_id":"call_1","name":"run_job","arguments":"{}","async":true},
+		{"type":"function_call_output","call_id":"call_1","output":"done","async":true}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	_, raw := marshalResponses(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-astra",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{Tools: tools},
+	})
+	if got := strings.Count(raw, `"async":true`); got != 2 {
+		t.Fatalf("async occurrences = %d, want 2 on function declaration/call only; raw=%s", got, raw)
+	}
+	if tools[1].Async == nil || input[1].ResponsesToolMessage.Async == nil {
+		t.Fatal("caller's request was mutated")
 	}
 }

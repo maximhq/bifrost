@@ -159,6 +159,13 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 		return false
 	}
 
+	// Bedrock runtime's OpenAI-compatible Responses endpoint uses validation_error
+	// for model/account-bound reasoning replay. Match its specific refusal rather
+	// than treating unrelated reasoning validation errors as recoverable.
+	if strings.Contains(message, "encrypted reasoning was created for a different account or model") {
+		return true
+	}
+
 	if !namesEncryptedReasoningField(message) {
 		return false
 	}

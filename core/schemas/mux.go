@@ -859,7 +859,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					// result collapse to the chat surface's single bool. Mirrors
 					// the same pair the Anthropic Responses converter treats as
 					// is_error (providers/anthropic/responses.go).
-					if (rm.ResponsesToolMessage.Error != nil && *rm.ResponsesToolMessage.Error != "") ||
+					if rm.ResponsesToolMessage.Error.IsError() ||
 						(rm.Status != nil && *rm.Status == "incomplete") {
 						cm.ChatToolMessage.IsError = Ptr(true)
 					}

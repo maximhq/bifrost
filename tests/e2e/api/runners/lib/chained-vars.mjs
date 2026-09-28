@@ -7,6 +7,10 @@
 // or in its URL (the Responses lifecycle rows, whose create captures a resp_ id that the
 // retrieve/stream-retrieve/delete rows carry in the path; those are GET/DELETE with no body
 // at all, so a body-only scan sees no dependency and leaves the chain unguarded and splittable).
+// A header is a third place (the session-affinity rows: a bind request computes an x-bf-session-id
+// value that its follow-up sends in that header, and a virtual key value rides in x-bf-vk), and it
+// matters most under sharding, where a consumer cut off from its producer runs with the template
+// unsubstituted and answers a question nobody asked.
 //
 // Postman has no notion of that link, and an unset variable is not an error. In a body the
 // literal "{{var}}" stays put and the provider answers 400 "Invalid JSON" in ~1ms; in a URL it
@@ -57,9 +61,23 @@ export function rawBodyOf(item) {
 // caller keys a Map) is cheaper than deciding which one to trust.
 export function templateSourcesOf(item) {
   const url = item.request?.url;
-  if (typeof url === "string") return [rawBodyOf(item), url];
+  // Postman resolves templates in header names and values too. A session id or a credential a
+  // producer computed travels there (x-bf-session-id, x-bf-vk), and a consumer that names it only
+  // in a header used to be invisible here: no producer pulled into its shard, no guard. A disabled
+  // header is never sent, so a template in one is not a dependency: counting it would pull a
+  // producer the request does not need and let the guard skip an independent request. The
+  // collection format also allows the whole header block as one raw string, like the URL: that
+  // string is a single source, scanned as it is.
+  const header = item.request?.header;
+  const headers =
+    typeof header === "string"
+      ? [header]
+      : (Array.isArray(header) ? header : [])
+          .filter((h) => h && h.disabled !== true)
+          .flatMap((h) => [h.key, h.value]);
+  if (typeof url === "string") return [rawBodyOf(item), url, ...headers].filter((s) => typeof s === "string");
   const query = (url?.query || []).flatMap((q) => [q?.key, q?.value]);
-  return [rawBodyOf(item), url?.raw, ...(url?.host || []), ...(url?.path || []), ...query].filter(
+  return [rawBodyOf(item), url?.raw, ...(url?.host || []), ...(url?.path || []), ...query, ...headers].filter(
     (s) => typeof s === "string"
   );
 }

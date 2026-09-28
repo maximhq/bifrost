@@ -6,9 +6,9 @@ require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.10.1
-	github.com/maximhq/bifrost/framework v1.7.3
-	github.com/maximhq/bifrost/plugins/mocker v1.6.5
+	github.com/maximhq/bifrost/core v1.10.2
+	github.com/maximhq/bifrost/framework v1.7.4
+	github.com/maximhq/bifrost/plugins/mocker v1.6.6
 )
 
 require (

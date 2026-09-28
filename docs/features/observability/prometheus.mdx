@@ -242,8 +242,8 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token (streaming) |
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency (streaming) |
 | `bifrost_active_requests` | Gauge | LLM requests currently in-flight (labeled by `method` only) |
-| `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt. Labels: `provider`, `key_id`, `key_name`. |
-| `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — see below <sup>v1.5.0-prerelease4+</sup> |
+| `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt, except a failure that says nothing about the key's health (`model_access`, `model_gone`, `region_blocked`), which leaves it unchanged. Labels: `provider`, `key_id`, `key_name`. |
+| `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures (rate limit, rejected credential, exhausted quota, model this key cannot reach, retired model, region block), see below <sup>v1.5.0-prerelease4+</sup> |
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
 | `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing. Labels: `provider`, `model` (the embedding provider/model, not the request's), `phase` (`request` classification vs `warmup` exemplar embedding). |
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic routing embeddings (same labels as above). Recorded regardless of whether embedding usage counts toward budgets. |
@@ -432,17 +432,19 @@ Enable them with the telemetry plugin's `user_labels_enabled` config field, or t
 
 ### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>
 
-`bifrost_key_rotation_events_total` is incremented once per **actual key rotation** — i.e. when a per-key failure causes the next retry to switch to a different key. Rotation-triggering failures are bound to the specific key/account rather than the request:
+`bifrost_key_rotation_events_total` is incremented once per **actual key rotation**, i.e. when a per-key failure causes the next attempt to switch to a different key. Rotation-triggering failures are bound to the specific key/account rather than the request (see [how failures are classified](/features/retries-and-fallbacks#how-failures-are-classified)):
 
-- `429 Too Many Requests` — this key is rate-limited; another may have capacity.
-- `401 Unauthorized` / `403 Forbidden` — bad / revoked key, or key lacks permission.
-- `402 Payment Required` — billing issue on this key's account.
+- `rate_limit`: this key is rate-limited; another may have capacity.
+- `credential`: bad / revoked key, or key lacks permission.
+- `quota`: the account behind the key is out of credit or over a spend cap.
+- `model_access` / `model_gone`: this key cannot reach the model, or the model was retired; another key may still serve it.
+- `region_blocked`: the provider refuses the request's location. Gemini refuses a free-tier project where a billed project is served from the same address, and Bedrock checks the account's billing address as well as the caller's, so another key may serve. When the block is the gateway's own address (OpenAI checks only that), the walk ends with the provider's error after one refused call per key.
 
-It is **not** incremented for:
+Permanent per-key failures rotate even at `max_retries = 0`, so the counter moves for them regardless of the retry budget. It is **not** incremented for:
 
-- terminal failures (no retry happens, including `max_retries = 0` or every key permanently dead),
+- terminal failures (no key left to move to),
 - same-key retries on transient 5xx / network errors,
-- non-retryable request-bound 4xx (400/404/422/...).
+- non-retryable request-bound 4xx.
 
 Labels are attributed to the key that failed and triggered the rotation:
 
@@ -452,7 +454,7 @@ Labels are attributed to the key that failed and triggered the rotation:
 | `requested_model` | e.g. `gpt-4o` | Model as requested (before any alias resolution) |
 | `key_id` | UUID | The provider API key that failed and was rotated away from |
 | `key_name` | string | Human-readable name of the provider API key |
-| `fail_reason` | error type string | Reason the rotation fired: `rate_limit_error` (429), `authentication_error` (401/403), `billing_error` (402), or a provider-supplied error type for non-status-coded rate-limit messages |
+| `fail_reason` | error type string | Reason the rotation fired: `rate_limit_error`, `authentication_error`, `billing_error`, `model_access_error` or `model_retired_error` |
 
 To inspect every attempted key on a failed request (including terminal failures that did not rotate), read the `attempt_trail` field on the corresponding log entry instead.
 

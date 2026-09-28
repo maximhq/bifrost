@@ -591,6 +591,87 @@ func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestGovernanceStore_TeamCalendarAlignmentSurvivesColdLoad(t *testing.T) {
+	logger := NewMockLogger()
+	now := time.Now().UTC()
+	lastReset := configstoreTables.GetCalendarPeriodStart("1w", now, configstoreTables.QuarterStartNotApplicable)
+	createdAt := now.Add(-time.Minute)
+	teamID := "team-calendar-aligned"
+	weeklyBudget := configstoreTables.TableBudget{
+		ID:            "team-weekly-calendar-aligned",
+		TeamID:        &teamID,
+		MaxLimit:      100,
+		CurrentUsage:  42,
+		ResetDuration: "1w",
+		LastReset:     lastReset,
+		CreatedAt:     createdAt,
+	}
+	dailyBudget := configstoreTables.TableBudget{
+		ID:                "team-daily-calendar-aligned",
+		TeamID:            &teamID,
+		MaxLimit:          25,
+		ResetDuration:     "1d",
+		LastReset:         configstoreTables.GetCalendarPeriodStart("1d", now, configstoreTables.QuarterStartNotApplicable),
+		CreatedAt:         createdAt,
+		IsCalendarAligned: true,
+	}
+	rateLimit := buildRateLimit("team-calendar-aligned-rate-limit", 100, 100)
+	staleRateLimit := *rateLimit
+	staleRateLimit.TokenCurrentUsage = 1
+	staleRateLimit.RequestCurrentUsage = 1
+	staleRateLimit.TokenLastReset = rateLimit.TokenLastReset.Add(-24 * time.Hour)
+	staleRateLimit.RequestLastReset = rateLimit.RequestLastReset.Add(-24 * time.Hour)
+	staleDailyReset := dailyBudget.LastReset.Add(-24 * time.Hour)
+	staleDailyBudget := dailyBudget
+	staleDailyBudget.CurrentUsage = 1
+	staleDailyBudget.LastReset = staleDailyReset
+	team := configstoreTables.TableTeam{
+		ID:              teamID,
+		Name:            "Calendar aligned team",
+		CalendarAligned: true,
+		Budgets:         []configstoreTables.TableBudget{staleDailyBudget},
+		RateLimitID:     &rateLimit.ID,
+		RateLimit:       &staleRateLimit,
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Teams:      []configstoreTables.TableTeam{team},
+		Budgets:    []configstoreTables.TableBudget{dailyBudget, weeklyBudget},
+		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	for _, budget := range []configstoreTables.TableBudget{dailyBudget, weeklyBudget} {
+		loadedBudget := store.LoadBudget(context.Background(), budget.ID)
+		require.NotNil(t, loadedBudget)
+		assert.True(t, loadedBudget.IsCalendarAligned)
+	}
+
+	loadedDailyBudget := store.LoadBudget(context.Background(), dailyBudget.ID)
+	require.NotNil(t, loadedDailyBudget)
+	assert.Equal(t, dailyBudget.CurrentUsage, loadedDailyBudget.CurrentUsage)
+	assert.Equal(t, dailyBudget.LastReset, loadedDailyBudget.LastReset)
+
+	loadedWeeklyBudget := store.LoadBudget(context.Background(), weeklyBudget.ID)
+	assert.Equal(t, 42.0, loadedWeeklyBudget.CurrentUsage)
+	assert.Equal(t, lastReset, loadedWeeklyBudget.LastReset)
+	assert.Empty(t, store.ResetExpiredBudgetsInMemory(context.Background(), false, weeklyBudget.ID),
+		"cold-loaded calendar budget must not reset on its creation-time rolling window")
+
+	collectedBudgets := store.CollectTeamBudgets(context.Background(), teamID)
+	require.Len(t, collectedBudgets, 2)
+	collectedIDs := []string{collectedBudgets[0].ID, collectedBudgets[1].ID}
+	assert.ElementsMatch(t, []string{dailyBudget.ID, weeklyBudget.ID}, collectedIDs)
+
+	loadedRateLimit := store.LoadRateLimit(context.Background(), rateLimit.ID)
+	require.NotNil(t, loadedRateLimit)
+	assert.True(t, loadedRateLimit.IsCalendarAligned)
+	assert.Equal(t, rateLimit.TokenCurrentUsage, loadedRateLimit.TokenCurrentUsage)
+	assert.Equal(t, rateLimit.RequestCurrentUsage, loadedRateLimit.RequestCurrentUsage)
+	assert.Equal(t, rateLimit.TokenLastReset, loadedRateLimit.TokenLastReset)
+	assert.Equal(t, rateLimit.RequestLastReset, loadedRateLimit.RequestLastReset)
+}
+
 // TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete tests CreateVirtualKeyInMemory and DeleteVirtualKeyInMemory
 // properly store and clean up multi-budget entries
 func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {

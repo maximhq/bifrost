@@ -177,6 +177,11 @@ type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables
 // do over the /virtual-keys/{id}/users endpoint.
 type VirtualKeyAssigneeResolver func(ctx context.Context, vkIDs []string) (map[string]*configstoreTables.AssignedUser, error)
 
+// VirtualKeyBusinessUnitResolver returns the business units with the given IDs, keyed by ID.
+// Unknown IDs are simply absent. Batched over the distinct owners of a page, like
+// VirtualKeyAssigneeResolver.
+type VirtualKeyBusinessUnitResolver func(ctx context.Context, businessUnitIDs []string) (map[string]*configstoreTables.VirtualKeyBusinessUnit, error)
+
 // SourcedBudget pairs a budget with what governs it (e.g. an access profile), for
 // quota responses that can be composed from more than one source. The embedded
 // SourceRef is the same one model configs carry, so both APIs describe an origin
@@ -232,6 +237,9 @@ type GovernanceHandler struct {
 	// assigned to (enterprise: the enterprise_virtual_key_users link). Injected at
 	// construction; nil on OSS builds, which have no user directory.
 	virtualKeyAssigneeResolver VirtualKeyAssigneeResolver
+	// virtualKeyBusinessUnitResolver, when non-nil, names each VK's owning business unit.
+	// Injected at construction; nil on OSS builds, which have no business unit table.
+	virtualKeyBusinessUnitResolver VirtualKeyBusinessUnitResolver
 }
 
 // GovernanceRouteRegistrar registers one replaceable governance route family.
@@ -260,10 +268,12 @@ type GovernanceRouteOverrides struct {
 // is tracked outside their own budget rows.
 // virtualKeyAssigneeResolver is optional (may be nil); when supplied the virtual
 // key read paths use it to fill in each key's assigned user.
+// virtualKeyBusinessUnitResolver is optional (may be nil); when supplied the same
+// read paths use it to name each key's owning business unit.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver, virtualKeyAssigneeResolver VirtualKeyAssigneeResolver) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver, virtualKeyAssigneeResolver VirtualKeyAssigneeResolver, virtualKeyBusinessUnitResolver VirtualKeyBusinessUnitResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -283,6 +293,8 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 		logManager:                  logManager,
 		externalQuotaBudgetResolver: externalQuotaBudgetResolver,
 		virtualKeyAssigneeResolver:  virtualKeyAssigneeResolver,
+
+		virtualKeyBusinessUnitResolver: virtualKeyBusinessUnitResolver,
 	}, nil
 }
 
@@ -315,6 +327,10 @@ type CreateVirtualKeyRequest struct {
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
 	ExpiresAt         *time.Time              `json:"expires_at,omitempty"`          // Optional expiry; nil means never expires
+	// DisableContentLogging is the key's own content-logging decision. Omit to inherit
+	// client.disable_content_logging; true forces content off for this key's traffic, false forces
+	// it on for the log store.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -363,6 +379,9 @@ type UpdateVirtualKeyRequest struct {
 	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
 	ResetBudgetUsage  *bool                        `json:"reset_budget_usage,omitempty"`
 	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
+	// clears it back to inheriting client.disable_content_logging, true/false set it.
+	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -400,6 +419,21 @@ func namedVirtualKeyOwners(req *UpdateVirtualKeyRequest) int {
 
 // applyVirtualKeyOwnershipUpdate applies presence-aware team/customer/business-unit ownership
 // changes. Naming one owner clears the other two, because a key belongs to at most one.
+// applyVirtualKeyContentLoggingUpdate applies the tri-state disable_content_logging field of an
+// update: omitted leaves the key's decision as it is, null clears it back to inheriting the client
+// setting, true or false set it. Kept apart from the field-by-field block in updateVirtualKey
+// because "omitted" and "null" must not collapse into one.
+func applyVirtualKeyContentLoggingUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) {
+	if !req.DisableContentLogging.Set {
+		return
+	}
+	if req.DisableContentLogging.Null {
+		vk.DisableContentLogging = nil
+		return
+	}
+	vk.DisableContentLogging = new(req.DisableContentLogging.Value)
+}
+
 func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
 	if namedVirtualKeyOwners(req) > 1 {
 		return errVirtualKeyDualAssociation
@@ -1480,6 +1514,39 @@ func (h *GovernanceHandler) applyAssignees(ctx context.Context, vks []*configsto
 	}
 }
 
+// applyBusinessUnits names the owning business unit of each virtual key from the injected
+// resolver, in one batched call over the distinct owners. Like applyAssignees, a resolver error
+// logs and leaves BusinessUnit nil (the UI falls back to "Business unit"), and OSS is a no-op.
+func (h *GovernanceHandler) applyBusinessUnits(ctx context.Context, vks []*configstoreTables.TableVirtualKey) {
+	if h.virtualKeyBusinessUnitResolver == nil || len(vks) == 0 {
+		return
+	}
+	seen := make(map[string]struct{})
+	buIDs := make([]string, 0)
+	for _, vk := range vks {
+		if vk == nil || vk.BusinessUnitID == nil || *vk.BusinessUnitID == "" {
+			continue
+		}
+		if _, ok := seen[*vk.BusinessUnitID]; !ok {
+			seen[*vk.BusinessUnitID] = struct{}{}
+			buIDs = append(buIDs, *vk.BusinessUnitID)
+		}
+	}
+	if len(buIDs) == 0 {
+		return
+	}
+	units, err := h.virtualKeyBusinessUnitResolver(ctx, buIDs)
+	if err != nil {
+		logger.Error("failed to resolve business units for %d virtual keys: %v", len(vks), err)
+		return
+	}
+	for _, vk := range vks {
+		if vk != nil && vk.BusinessUnitID != nil {
+			vk.BusinessUnit = units[*vk.BusinessUnitID]
+		}
+	}
+}
+
 // virtualKeyPtrs adapts a slice of virtual keys to the pointer slice applyAssignees
 // writes through, so the store's value slices are updated in place.
 func virtualKeyPtrs(vks []configstoreTables.TableVirtualKey) []*configstoreTables.TableVirtualKey {
@@ -1716,6 +1783,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		// cache: the cache holds no assignments, and emitting an unresolved
 		// assigned_user would read as "assigned to nobody" rather than "unknown".
 		h.applyAssignees(ctx, hydratedVKs)
+		h.applyBusinessUnits(ctx, hydratedVKs)
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": hydratedVKs,
 			"count":        len(hydratedVKs),
@@ -1797,6 +1865,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			h.applyExternalBudgets(ctx, &virtualKeys[i])
 		}
 		h.applyAssignees(ctx, virtualKeyPtrs(virtualKeys))
+		h.applyBusinessUnits(ctx, virtualKeyPtrs(virtualKeys))
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
@@ -1819,6 +1888,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		h.applyExternalBudgets(ctx, &virtualKeys[i])
 	}
 	h.applyAssignees(ctx, virtualKeyPtrs(virtualKeys))
+	h.applyBusinessUnits(ctx, virtualKeyPtrs(virtualKeys))
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
@@ -1907,6 +1977,8 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			CalendarAligned:   req.CalendarAligned,
 			AllowAllProviders: req.AllowAllProviders,
 			ExpiresAt:         req.ExpiresAt,
+			// Stored as given: nil is inherit, so no defaulting here.
+			DisableContentLogging: req.DisableContentLogging,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -2075,6 +2147,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 				applyVKGovernanceFromModelConfigs(&clone, byKey, perModelByKey)
 				h.applyExternalBudgets(ctx, &clone)
 				h.applyAssignees(ctx, []*configstoreTables.TableVirtualKey{&clone})
+				h.applyBusinessUnits(ctx, []*configstoreTables.TableVirtualKey{&clone})
 				SendJSON(ctx, map[string]interface{}{
 					"virtual_key": &clone,
 				})
@@ -2099,6 +2172,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	// untracked rows so the admin detail panel matches the self-service quota view.
 	h.applyExternalBudgets(ctx, vk)
 	h.applyAssignees(ctx, []*configstoreTables.TableVirtualKey{vk})
+	h.applyBusinessUnits(ctx, []*configstoreTables.TableVirtualKey{vk})
 
 	// The Virtual MCPs this key is assigned to, so the detail view can show and edit them.
 	vmcpIDs, err := h.configStore.GetVirtualMCPIDsForVirtualKey(ctx, vkID)
@@ -2306,6 +2380,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.AllowAllProviders != nil {
 			vk.AllowAllProviders = *req.AllowAllProviders
 		}
+		applyVirtualKeyContentLoggingUpdate(vk, &req)
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
 		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
 		// below. Per-provider desired state is accumulated while reconciling provider config rows.

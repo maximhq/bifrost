@@ -1032,6 +1032,7 @@ export default function LogsPage() {
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 						onFilterByParentRequestId={handleFilterByParentRequestId}
 						onFilterBySessionId={handleFilterBySessionId}
+						onOpenLog={(logId) => setUrlState({ selected_log: logId })}
 						onViewSession={(sessionId, logId) => {
 							setUrlState({ selected_log: "" }, { history: "replace" });
 							setSessionHighlightedLogId(logId);
