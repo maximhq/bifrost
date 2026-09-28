@@ -9,38 +9,19 @@ import { useState } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 
 interface WarpComposerProps {
-	/** Runs a slash command. Returns true when the input should be cleared. */
 	onCommand?: (command: WarpCommand) => void;
 	isStreaming: boolean;
 	disabled?: boolean;
-	/**
-	 * Set when a question card is showing above. It only drops this control's own
-	 * top padding, since the card already supplies the gap - the two stay
-	 * separate cards rather than merging into one.
-	 */
+	/** A question card is showing above and already supplies the top gap. */
 	attached?: boolean;
-	/** Shown with the provider's mark on the control row, so it is obvious what is answering. */
 	provider?: string;
 	model?: string;
 	onSend: (question: string) => void;
-	/**
-	 * Holds a message typed while an answer is still streaming, to be sent once
-	 * it finishes. Without it a submit mid-answer is silently dropped, which
-	 * reads as the panel ignoring you.
-	 */
+	/** Holds a message submitted mid-answer until it finishes; without it the submit is dropped. */
 	onQueue?: (question: string) => void;
 	onStop: () => void;
 }
 
-/**
- * The question input at the foot of the dock.
- *
- * Two rows: the textarea owns the full width, and the controls sit on their own
- * line beneath it. A single row has to reserve horizontal space for the send
- * button, which crowds the text at the panel's narrow width and leaves the
- * button pressed against the rounded border. Stacking also gives the control row
- * somewhere to name the model that is answering.
- */
 export default function WarpComposer({
 	isStreaming,
 	disabled,
@@ -53,8 +34,6 @@ export default function WarpComposer({
 	onStop,
 }: WarpComposerProps) {
 	const [value, setValue] = useState("");
-	// Which command the arrow keys have landed on. Reset whenever the list
-	// changes, so a shrinking list cannot leave the highlight past its end.
 	const [highlighted, setHighlighted] = useState(0);
 
 	const commands = onCommand ? matchWarpCommands(value) : [];
@@ -70,18 +49,13 @@ export default function WarpComposer({
 		const text = value.trim();
 		if (!text || disabled) return;
 
-		// A command is resolved before anything is sent, so "/clear" never reaches
-		// the model as a question - but only where there is a handler to run it.
-		// Without one, runCommand cleared the input and did nothing, so the
-		// message vanished with no answer and no error. The command menu is
-		// already gated the same way.
+		// Only with a handler: otherwise the input would clear and nothing would run.
 		const command = onCommand ? resolveWarpCommand(text) : undefined;
 		if (command) {
 			runCommand(command);
 			return;
 		}
 		if (isStreaming) {
-			// The answer in flight is not interrupted; the message waits for it.
 			if (!onQueue) return;
 			onQueue(text);
 			setValue("");
@@ -99,8 +73,6 @@ export default function WarpComposer({
 						<button
 							key={command.id}
 							type="button"
-							// Mouse and keyboard share one highlight, so moving the pointer
-							// does not leave two things looking selected.
 							onMouseEnter={() => setHighlighted(index)}
 							onClick={() => runCommand(command)}
 							data-testid={`warp-command-${command.id}`}
@@ -119,18 +91,9 @@ export default function WarpComposer({
 				<TextareaAutosize
 					value={value}
 					onChange={(event) => setValue(event.target.value)}
-					// Enter sends, Shift+Enter breaks the line. Questions here are usually
-					// one line, so making the common case require a modifier would be the
-					// wrong default.
 					onKeyDown={(event) => {
-						// An IME commits its candidate with Enter, so acting on that
-						// keypress sends a half-composed question and swallows the commit.
-						// This sits ahead of the menu keys too: a commit must not drive
-						// the command list either. nativeEvent.isComposing is the reliable
-						// signal; keyCode 229 is the older equivalent some browsers report.
+						// IME commits with Enter; keyCode 229 covers browsers without isComposing.
 						if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-						// The menu owns the arrow keys and Enter only while it is open, so
-						// normal typing is untouched the rest of the time.
 						if (menuOpen) {
 							if (event.key === "ArrowDown") {
 								event.preventDefault();
@@ -168,17 +131,6 @@ export default function WarpComposer({
 					className="placeholder:text-muted-foreground max-h-48 w-full resize-none bg-transparent px-1 text-sm outline-none disabled:opacity-50"
 				/>
 				<div className="flex items-center justify-between gap-2">
-					{/* Which model is answering. Warp runs on a model chosen separately
-					    from the traffic Bifrost serves, so naming it here is the
-					    difference between an answer you can weigh and one that arrived
-					    from nowhere.
-
-					    min-w-0 + truncate so a long model name shortens rather than
-					    pushing the send button out of the row. */}
-					{/* The model label is also the way into its settings. Someone reading
-					    "which model is this?" is one step from "and how do I change it?".
-					    The gear is always visible rather than appearing on hover - an
-					    affordance you have to discover by accident is not one. */}
 					<Link
 						to="/workspace/config/warp"
 						className="text-muted-foreground hover:text-foreground hover:bg-accent flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-xs transition-colors"

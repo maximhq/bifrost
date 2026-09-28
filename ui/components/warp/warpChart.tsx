@@ -3,14 +3,7 @@ import type { ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatWarpChartValue, formatWarpChartX, type WarpChartSpec } from "./warpStream.utils";
 
-/**
- * A chart from Warp's render_chart tool.
- *
- * The spec is data a tool read - the server swaps it in for the id the model
- * pasted - so this only draws: line for a metric over time, bar for a metric
- * across a group, largest first. `renderLink` is the message's own link
- * renderer, so "Open in Logs" follows the router like every other Warp link.
- */
+/** Chart from Warp's render_chart tool; `renderLink` keeps "Open in Logs" on the router. */
 export default function WarpChart({
 	spec,
 	renderLink,

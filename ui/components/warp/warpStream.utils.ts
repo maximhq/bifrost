@@ -1,9 +1,6 @@
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import type { WarpLogIndexStatus, WarpStoredMessage } from "@/lib/types/warp";
-/**
- * SSE frame parsing for Warp, kept separate from the React hook so it can be
- * tested without a DOM or a network.
- */
+/** SSE frame parsing for Warp, kept out of the hook so it is testable without a DOM or network. */
 
 export type WarpEventType = "start" | "delta" | "tool_call_start" | "tool_call_end" | "question" | "error" | "done";
 
@@ -12,11 +9,9 @@ export interface WarpQuestion {
 	question: string;
 	kind?: "time_range" | "scope" | "other";
 	options: WarpQuestionOption[];
-	/** Whether typing a different answer makes sense. */
 	allow_other?: boolean;
 }
 
-/** Tokens and spend for one exchange. */
 export interface WarpUsage {
 	prompt_tokens?: number;
 	completion_tokens?: number;
@@ -43,7 +38,7 @@ export interface WarpEvent {
 	code?: string;
 	message?: string;
 	question?: WarpQuestion;
-	/** The thread this turn was filed under. Echoed on done, including for a thread the server just created. */
+	/** Echoed on done, including for a thread the server just created. */
 	conversation_id?: string;
 	finish_reason?: string;
 	usage?: WarpUsage;
@@ -52,33 +47,13 @@ export interface WarpEvent {
 	provider?: string;
 }
 
-/**
- * Splits a byte-stream buffer into complete SSE frames.
- *
- * Returns the frames it could complete plus whatever is left over, because a
- * chunk boundary can land mid-frame. Feeding the remainder back in on the next
- * read is what stops a delta from being silently dropped when the network splits
- * a message in an inconvenient place.
- */
+/** Splits a buffer into complete SSE frames; `rest` must be fed back in, since a chunk can end mid-frame. */
 export function splitWarpFrames(buffer: string): { frames: string[]; rest: string } {
-	// Normalise line endings first. The SSE spec allows CRLF and lone CR, and a
-	// proxy that rewrites them is entirely legal - but splitting on "\n\n" alone
-	// then finds no frame boundary at all, so the whole answer is silently
-	// dropped and the chat completes empty with nothing to explain it.
-	//
-	// A CR at the very end is held back rather than normalised, because only the
-	// next read says what it is: converting it eagerly turns the LF that follows
-	// into a second newline, and a frame whose data spans two lines is torn in
-	// half - each piece unparseable, so the delta vanishes with no error.
+	// SSE allows CRLF and lone CR; without normalising, "\n\n" never matches and the answer is silently lost.
 	let pending = buffer;
 	let carry = "";
 	if (pending.endsWith("\r")) {
-		// Only ambiguous when it could still be the first half of a CRLF. After
-		// another line ending it is the second half of a delimiter that is already
-		// complete - "\r\r" and "\n\r" both end a frame - and holding it back left
-		// that finished frame sitting in `rest`, waiting for a chunk that may never
-		// come. A buffer that is nothing but "\r" has no preceding character, so it
-		// stays ambiguous and is held.
+		// A trailing CR may be half of a CRLF, so hold it back, unless it already completes a delimiter.
 		const previous = pending.at(-2);
 		if (previous !== "\r" && previous !== "\n") {
 			pending = pending.slice(0, -1);
@@ -86,41 +61,18 @@ export function splitWarpFrames(buffer: string): { frames: string[]; rest: strin
 		}
 	}
 	const parts = pending.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n\n");
-	// The final part has no terminator yet, so it may be incomplete. The held-back
-	// CR rides along with it so the next read sees the pair intact.
 	const rest = (parts.pop() ?? "") + carry;
 	return { frames: parts.filter((part) => part.trim() !== ""), rest };
 }
 
-/**
- * The turns worth replaying to the server.
- *
- * A turn that ended in an error is stored with empty content so the transcript
- * can render the failure, but the wire format carries only role and content -
- * the error does not survive serialization. Replaying it sent
- * `{role: "assistant", content: ""}`, which reads as a normal empty answer:
- * the model is told it once replied with nothing, and Anthropic rejects an
- * empty text block outright, so one failed turn could poison the whole thread.
- */
+/** Drops empty (errored) turns: replayed as empty assistant content they poison the thread, and Anthropic rejects them. */
 export function historyForRequest<T extends { content: string }>(history: T[]): T[] {
 	return history.filter((turn) => turn.content.trim() !== "");
 }
 
-/**
- * Parses one SSE frame into an event.
- *
- * The `event:` line is ignored in favour of the `type` field inside the JSON.
- * They always agree, and trusting the payload means one source of truth rather
- * than two that can drift.
- *
- * Returns null for anything unparseable - heartbeat comments, blank frames, a
- * truncated write - so the caller can skip rather than tear down a stream that
- * is otherwise healthy.
- */
+/** Parses one SSE frame, or null for heartbeats and junk so the caller can skip it without tearing down the stream. */
 export function parseWarpFrame(frame: string): WarpEvent | null {
-	// The space after `data:` is optional in the SSE spec, so both forms have to
-	// be accepted; only one leading space is consumed, because any further
-	// whitespace is part of the value.
+	// The space after `data:` is optional in SSE; strip at most one, since further whitespace is part of the value.
 	const dataLines = frame
 		.replace(/\r\n/g, "\n")
 		.replace(/\r/g, "\n")
@@ -143,23 +95,9 @@ export function parseWarpFrame(frame: string): WarpEvent | null {
 	}
 }
 
-/**
- * Whether a parsed frame carries the fields its own branch will read.
- *
- * A truthy `type` was the only check, so a `tool_call_start` with
- * `tool_name: {}` reached applyEvent, was stored as `call.name`, and then
- * rendered as a React child - which throws, because objects are not valid
- * children, and takes the whole panel down over one malformed frame.
- *
- * Dropping the frame rather than repairing it: the stream is otherwise healthy
- * and the caller already skips nulls, so a bad frame costs one event instead of
- * the conversation.
- */
+/** Rejects frames with mistyped fields, e.g. a non-string tool_name would crash the panel when rendered. */
 export function isUsableWarpEvent(event: WarpEvent | null | undefined): event is WarpEvent {
 	if (!event) return false;
-	// The input is JSON.parse output wearing a WarpEvent cast, so every field is
-	// checked as unknown - typing the checks against WarpEvent itself would let
-	// the compiler assume exactly what this function exists to establish.
 	const raw = event as unknown as Record<string, unknown>;
 	if (typeof raw.type !== "string" || raw.type === "") return false;
 	const optionalString = (value: unknown) => value === undefined || typeof value === "string";
@@ -170,7 +108,6 @@ export function isUsableWarpEvent(event: WarpEvent | null | undefined): event is
 	if (!optionalNumber(raw.duration_ms) || !optionalNumber(raw.iteration)) return false;
 	switch (raw.type) {
 		case "tool_call_start":
-			// The one field that is rendered directly, so it must be a string.
 			return typeof raw.tool_name === "string" && raw.tool_name !== "";
 		case "tool_call_end":
 			return typeof raw.tool_id === "string" && (raw.failed === undefined || typeof raw.failed === "boolean");
@@ -181,42 +118,19 @@ export function isUsableWarpEvent(event: WarpEvent | null | undefined): event is
 	}
 }
 
-/**
- * Human-readable label for a tool, used on the collapsed row in the transcript.
- *
- * Falling back to the raw name keeps a newly added server-side tool legible
- * instead of rendering as blank until the UI catches up.
- */
 export function warpToolLabel(name: string, isRunning = false): string {
 	const label = WARP_TOOL_LABELS[name];
-	// An unknown tool falls back to its raw name rather than something invented.
-	// A wrong-but-friendly label for a step nobody recognises is worse than a
-	// technical one, because it hides that the tool set has moved on.
+	// Unknown tools show their raw name, so a new server-side tool stays legible instead of mislabelled.
 	if (!label) return name;
 	return isRunning ? label.running : label.done;
 }
 
-/**
- * The status a tool-call row communicates, as text.
- *
- * Rendered visually hidden beside the status icon: the icons alone carry the
- * running/failed/completed state only through shape and color, which a screen
- * reader cannot see.
- */
+/** Screen-reader text for a tool row's status, which the icons convey only by shape and color. */
 export function warpToolStatusLabel(call: { durationMs?: number; failed?: boolean }): string {
 	if (call.durationMs === undefined) return "In progress";
 	return call.failed ? "Failed" : "Completed";
 }
 
-/**
- * What each tool is called in the transcript, in both tenses.
- *
- * Two forms because a row is read in two states: shimmering while it runs, and
- * ticked once it is done. One tense has to be wrong in one of them - "Queried
- * metrics" beside a spinner reads as already finished, "Checking log volume"
- * beside a tick reads as still going - and these rows are the only thing making
- * a multi-second research pause legible, so it is worth the extra string.
- */
 const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	semantic_search_logs: { running: "Performing vector search", done: "Performed vector search" },
 	count_logs: { running: "Checking log volume", done: "Checked log volume" },
@@ -232,28 +146,15 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	ask_user: { running: "Asking a question", done: "Asked a question" },
 };
 
-/**
- * Whether a link in an answer points inside the dashboard.
- *
- * Warp's tools hand the model root-relative paths into the Logs view. Those are
- * followed with the router so the tray stays open beside the page they open.
- * A protocol-relative "//host" is not internal, whatever it looks like.
- */
+/** Whether a link in an answer is a root-relative dashboard path to follow with the router. */
 export function isInternalWarpLink(href: string | undefined): boolean {
 	if (!href || !href.startsWith("/")) return false;
-	// The second character decides. WHATWG URL parsing folds a backslash into a
-	// forward slash for special schemes, so "/\\host" resolves exactly as
-	// "//host" does - and handing that to the router navigates the current tab
-	// to another origin.
+	// URL parsing treats "/\host" like "//host", so both would navigate to another origin.
 	const second = href[1];
 	return second !== "/" && second !== "\\";
 }
 
-/**
- * Rebuilds transcript turns from a stored thread, so a reopened conversation
- * looks the way it did live: same tool rows, same error card, same partial
- * note, same cost line.
- */
+/** Rebuilds transcript turns from a stored thread so a reopened conversation looks as it did live. */
 export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn[] {
 	return messages.map((message, index) => {
 		if (message.role === "user") {
@@ -262,8 +163,6 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 		const turn: WarpTurn = { role: "assistant", content: message.content };
 		if (message.tool_calls && message.tool_calls.length > 0) {
 			turn.toolCalls = message.tool_calls.map((call, callIndex) => ({
-				// Stored calls have no id; a stable synthetic one keeps React keys
-				// and the row lookup honest.
 				id: `stored-${index}-${callIndex}`,
 				name: call.name,
 				durationMs: call.duration_ms,
@@ -273,16 +172,8 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 		}
 		if (message.error) turn.error = message.error;
 		if (isPartialAnswer(message.finish_reason)) turn.partial = true;
-		// A stored assistant turn that asked rather than answered has to come back
-		// marked. send() serialises turn.question as `question: true`, which is how
-		// the server knows not to count the reply as a fresh question - without it
-		// a reopened thread replays a clarification as an answer and the repeated
-		// question limit stops applying.
+		// Must be marked as a question, or the server counts the reply as a fresh question on replay.
 		if (isWarpQuestionFinish(message.finish_reason)) {
-			// The stored structured question restores the same selectable card the
-			// live turn showed, hints included. A row without one (or a blob that
-			// failed to decode server-side) still comes back as a question, so the
-			// reply is not misfiled as a fresh answer - just without shortcuts.
 			if (message.question) {
 				turn.question = {
 					question: message.question.question || message.content,
@@ -301,37 +192,15 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 	});
 }
 
-/**
- * One stretch of a turn: prose, or the tool calls that ran at that point.
- * `final` marks the text nothing followed - the answer, as opposed to narration
- * written on the way to it.
- */
+/** One stretch of a turn; `final` marks the trailing text, the answer as opposed to narration. */
 export type WarpTimelineItem = { kind: "text"; text: string; final: boolean } | { kind: "tools"; calls: WarpTurnToolCall[] };
 
-/**
- * Length in Unicode code points, the unit tool-call offsets are counted in.
- * The server counts the same way, which string.length (UTF-16 units) and a byte
- * count would not once an answer holds a dash or an arrow.
- */
+/** Length in code points, matching how the server counts tool-call offsets (not UTF-16 units). */
 export function warpTextLength(text: string): number {
 	return Array.from(text).length;
 }
 
-/**
- * A turn in the order it happened.
- *
- * A turn is narration, lookups, more narration, more lookups, then the answer.
- * It used to be kept as one list of calls and one string of text, and shown
- * that way - every call stacked above all of the prose - which reads as a stuck
- * state: a dozen finished rows, a wall of text, and nothing to say which lookups
- * followed which thought. The answer stays one string, because that is what is
- * saved and replayed to the model; each call records how much of it came first,
- * and the split happens here.
- *
- * Offsets are clamped rather than trusted: never before an earlier call's, never
- * past the end. A call with none - a row filed before they existed - lands ahead
- * of the text, which is how those rows always rendered.
- */
+/** Interleaves a turn's text and tool calls by each call's text offset, clamped to stay monotonic and in range. */
 export function warpTimeline(content: string, toolCalls: WarpTurnToolCall[] | undefined): WarpTimelineItem[] {
 	const chars = Array.from(content);
 	const items: WarpTimelineItem[] = [];
@@ -344,8 +213,6 @@ export function warpTimeline(content: string, toolCalls: WarpTurnToolCall[] | un
 	for (const call of toolCalls ?? []) {
 		pushTextUpTo(Math.min(chars.length, Math.max(cursor, call.textOffset ?? 0)));
 		const last = items[items.length - 1];
-		// Calls with only whitespace between them are one group: one list, not
-		// two lists with a gap.
 		if (last?.kind === "tools") last.calls.push(call);
 		else items.push({ kind: "tools", calls: [call] });
 	}
@@ -355,40 +222,22 @@ export function warpTimeline(content: string, toolCalls: WarpTurnToolCall[] | un
 	return items;
 }
 
-/**
- * The question a thread is still waiting on, if any.
- *
- * turnsFromStoredMessages rebuilds turn.question for a reopened thread, but the
- * card is driven by the panel's pending question, not by the transcript - so a
- * thread that ended on a question came back as plain text with nothing to
- * click. Only the last turn counts: once anything follows it, it was answered.
- * A question with no options (a row saved before they were stored) is left as
- * text, since a card with nothing to pick is worse than the composer alone.
- */
+/** The question the thread still awaits: only the last turn counts, and only if it has options to pick. */
 export function pendingWarpQuestion(turns: WarpTurn[]): WarpQuestion | null {
 	const last = turns[turns.length - 1];
 	if (!last || last.role !== "assistant" || !last.question || last.question.options.length === 0) return null;
 	return last.question;
 }
 
-/** What the tray's index chip says, and how loudly. */
 export interface IndexStatusLabel {
 	label: string;
-	/** Shorter label for small screens, when the full one is too wide. */
 	shortLabel?: string;
 	tone: "ok" | "busy" | "error" | "muted";
-	/** A cause worth showing on hover, such as the last backfill error. */
 	detail?: string;
 }
 
-/**
- * Folds the index status into one chip. Progress is shown while a backfill is
- * running because that is the one moment the number changes; every other state
- * is a word.
- */
 export function indexStatusLabel(status: WarpLogIndexStatus): IndexStatusLabel {
-	// The idle response is an id-less zeroed body. Narrowing it away here is what
-	// stops "0 / 0 scanned" being read as a job and rendered as 0% progress.
+	// The idle response is a zeroed body; treating it as a job would render 0% progress.
 	const backfill = status.backfill?.status === "idle" ? undefined : status.backfill;
 	switch (status.state) {
 		case "unavailable":
@@ -412,60 +261,20 @@ export function indexStatusLabel(status: WarpLogIndexStatus): IndexStatusLabel {
 	}
 }
 
-/**
- * Whether a keystroke aimed at this element is someone typing.
- *
- * The question card binds its shortcuts on the document because the composer
- * holds focus when the card appears. An empty composer is not typing, so the
- * letters, arrows and Enter still pick an option there. The moment it holds
- * text the person has chosen to write their own answer and every key is theirs.
- * Any other input is always typing: the card should never eat a keystroke
- * meant for a search box elsewhere on the page.
- */
+/** Whether a key event is typing; an empty Warp composer is not, so question shortcuts still apply there. */
 export function isTypingInto(
 	target: { tagName: string; value?: string; isContentEditable?: boolean; dataset?: { testid?: string } } | null | undefined,
 ): boolean {
 	if (!target) return false;
-	// contenteditable is typing too. It was covered by the inline tagName check
-	// this helper replaced, and dropping it meant a rich-text field anywhere on
-	// the page lost keystrokes to the question shortcuts - the same loss the
-	// TEXTAREA and INPUT cases exist to prevent, in the one place it is hardest
-	// to notice because the element is a DIV.
 	if (target.isContentEditable) return true;
 	if (target.tagName !== "TEXTAREA") return target.tagName === "INPUT";
-	// Only Warp's own composer is treated as "empty means the shortcuts apply".
-	// Any other textarea on the page is someone else's, and eating a keystroke
-	// there because it happens to match an option letter loses a character they
-	// were typing into something unrelated.
 	if (target.dataset?.testid !== WARP_COMPOSER_TESTID) return true;
 	return (target.value ?? "").trim() !== "";
 }
 
-/** data-testid of Warp's composer, the one textarea the question shortcuts own. */
 export const WARP_COMPOSER_TESTID = "warp-composer-input";
 
-/**
- * Whether the next queued message should be sent now.
- *
- * Exactly one message goes out per finished turn: on the transition from
- * streaming to idle. Checking the transition rather than the idle state is
- * what stops two queued messages from being sent back to back - after the
- * first is dequeued the panel is still idle for a render, and an idle check
- * would fire again before the request had a chance to start streaming.
- *
- * questionPending holds it back too. A question ends streaming like any other
- * terminal frame, so without the gate the next queued follow-up was sent as
- * the answer to a clarification it has nothing to do with - Warp asks "which
- * provider?" and receives "what did this cost last week".
- *
- * lastTurnFailed holds it back. A queued follow-up was written expecting the
- * turn ahead of it to have actually answered - auto-firing it onto a
- * conversation whose last turn just errored sends it against a thread that
- * never got the context it was a follow-up to, and shows a bare "Thinking"
- * directly under an error card with nothing explaining why Warp is trying
- * again. The message stays visible in the queued list either way, so nothing
- * is lost - it just is not sent until the person looks at it.
- */
+/** Fires on the streaming-to-idle edge only, so one message goes per turn; held while a question or error is showing. */
 export function shouldDrainQueue(
 	wasStreaming: boolean,
 	isStreaming: boolean,
@@ -473,29 +282,18 @@ export function shouldDrainQueue(
 	questionPending = false,
 	lastTurnFailed = false,
 ): boolean {
-	// A question also ends streaming. Draining into it made the next queued
-	// follow-up the answer to a clarification it has nothing to do with - Warp
-	// asks "which provider?" and receives "what did this cost last week".
 	if (questionPending) return false;
 	if (lastTurnFailed) return false;
 	return wasStreaming && !isStreaming && queued > 0;
 }
 
-/** The finish reason the server sends when Warp asked instead of answering. */
 export const WARP_FINISH_QUESTION = "question";
 
-/** Whether a stored turn ended by posing a question. */
 export function isWarpQuestionFinish(finishReason: string | undefined): boolean {
 	return finishReason === WARP_FINISH_QUESTION;
 }
 
-/**
- * Whether a click should be handled by the router instead of the browser.
- *
- * Intercepting every click took Command-click, Ctrl-click, Shift-click and
- * middle-click with it, so an answer's link could not be opened in a new tab or
- * window at all - the one thing someone reading a cited figure most wants to do.
- */
+/** Modifier and middle clicks go to the browser so links can open in a new tab. */
 export function isPlainLeftClick(event: {
 	button?: number;
 	metaKey?: boolean;
@@ -506,51 +304,24 @@ export function isPlainLeftClick(event: {
 	return (event.button ?? 0) === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 }
 
-/** The finish reason the server sends when Warp answered on its last research step. */
+/** Sent when Warp ran out of research steps and answered from what it had. */
 export const WARP_FINISH_PARTIAL = "partial";
 
-/**
- * Whether a done frame's finish reason marks the answer as partial.
- *
- * Partial means the model was cut off: it had used every research step and was
- * told to answer from what it had. The text is still worth reading, but the
- * transcript has to say so, or a half-checked figure reads as a settled one.
- */
 export function isPartialAnswer(finishReason: string | undefined): boolean {
 	return finishReason === WARP_FINISH_PARTIAL;
 }
 
-/**
- * Message shown for a terminal error code.
- *
- * `max_iterations` and `timeout` are phrased as something the user can act on,
- * because they usually mean the question was too broad rather than that
- * anything is broken.
- */
 export function errorMessage(code: string | undefined, message: string | undefined): string {
 	return warpErrorDetail(code, message).summary;
 }
 
-/** A failure explained: what happened, and what to do about it. */
 export interface WarpErrorDetail {
-	/** One line, always shown. */
 	summary: string;
-	/** What actually went wrong, shown when the card is expanded. */
 	cause: string;
-	/** Concrete next steps, in the order worth trying. */
 	suggestions: string[];
-	/** The raw server message, when it says more than the summary does. */
 	raw?: string;
 }
 
-/**
- * Turns a terminal error into something actionable.
- *
- * A bare "Warp could not settle on an answer" tells someone that it failed but
- * not what to do, so the only move left is to retype the same question and hope.
- * Each case below names the likely cause and the specific things that change the
- * outcome.
- */
 export function warpErrorDetail(code: string | undefined, message: string | undefined): WarpErrorDetail {
 	const raw = message && message.trim() !== "" ? message : undefined;
 
@@ -615,30 +386,14 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 			};
 	}
 }
-/**
- * Encodes a turn's terminal error as the `code:message` pair the transcript
- * decodes.
- *
- * The leading colon on a code-less error is load-bearing. Without it the
- * decoder reads the entire message as a code, finds no match, and falls through
- * to the generic "Something went wrong." - throwing away the status line or
- * network error that was the only useful part.
- */
+/** Encodes as `code:message`; the leading colon on a code-less error stops the decoder reading it as a code. */
 export function encodeTurnError(code: string | undefined, message: string): string {
 	return `${code ?? ""}:${message}`;
 }
 
-/** The terminal error codes the agent emits, and the only valid code prefixes. */
 const WARP_ERROR_CODES = new Set(["not_configured", "upstream_error", "tool_error", "max_iterations", "timeout", "cancelled"]);
 
-/**
- * Whether a string already carries the `code:message` encoding.
- *
- * Checked against the known codes rather than "does it contain a colon":
- * plenty of real error messages do ("connect: connection refused",
- * "TypeError: Failed to fetch"), and treating their first word as a code drops
- * it from what the reader sees.
- */
+/** Checks against known codes, since plain messages often contain colons ("TypeError: Failed to fetch"). */
 export function isEncodedTurnError(error: string): boolean {
 	const separator = error.indexOf(":");
 	if (separator === -1) return false;
@@ -646,44 +401,21 @@ export function isEncodedTurnError(error: string): boolean {
 	return code === "" || WARP_ERROR_CODES.has(code);
 }
 
-/**
- * Splits an encoded turn error back into its parts.
- *
- * Splits on the first colon only, so a message that contains colons of its own
- * ("connect: connection refused") survives intact. A string with no colon is
- * treated as a bare message rather than a code, which keeps errors produced
- * before this encoding existed readable.
- */
+/** Splits on the first colon only; a string with no colon is a bare message, not a code. */
 export function decodeTurnError(error: string): { code: string; message: string } {
 	const separator = error.indexOf(":");
 	if (separator === -1) return { code: "", message: error.trim() };
 	return { code: error.slice(0, separator).trim(), message: error.slice(separator + 1).trim() };
 }
 
-/**
- * The fenced block Warp ends a data answer with, naming what the numbers cover.
- *
- * A fence rather than a heuristic on the prose: guessing which trailing lines
- * are provenance would occasionally eat a sentence of the actual answer, and
- * getting that wrong silently is worse than showing the block inline.
- */
+// An explicit fence, because guessing which trailing prose is provenance could eat part of the answer.
 const WARP_PROVENANCE_FENCE = /\n?```warp-scope\n([\s\S]*?)```\s*$/;
 
 export interface WarpAnswerParts {
-	/** The answer itself, with the provenance block removed. */
 	answer: string;
-	/** What the numbers cover, or undefined when Warp did not say. */
 	provenance?: string;
 }
 
-/**
- * Splits an answer from its provenance block.
- *
- * The window, scope and filters matter - they are what make a number checkable -
- * but they are reference material, not the answer. Left inline they push the
- * next question off the screen and are re-read every time someone scrolls past.
- * Lifted out, they are one click away when someone doubts a figure.
- */
 export function splitWarpAnswer(content: string): WarpAnswerParts {
 	const match = content.match(WARP_PROVENANCE_FENCE);
 	if (!match) return { answer: content };
@@ -693,14 +425,7 @@ export function splitWarpAnswer(content: string): WarpAnswerParts {
 	return { answer: content.slice(0, match.index).trimEnd(), provenance };
 }
 
-/**
- * Formats a turn's usage for the transcript.
- *
- * Warp runs on a model chosen separately from the traffic Bifrost serves, and
- * its own calls do not appear in the logs it reads - so this line is the only
- * place its cost is visible. Returns null when there is nothing to report, since
- * a "0 tokens" label is worse than none.
- */
+/** Formats a turn's token and cost usage, or null when there is nothing to report. */
 export function formatWarpUsage(usage: WarpUsage | undefined): string | null {
 	if (!usage) return null;
 
@@ -710,10 +435,7 @@ export function formatWarpUsage(usage: WarpUsage | undefined): string | null {
 
 	const cost = usage.cost?.total_cost;
 	if (typeof cost === "number" && cost > 0) {
-		// Sub-cent answers are the common case, so a plain 2dp would render as
-		// "$0.00" and read as free. Four places keeps it honest - and below what
-		// four places can express, say so rather than rounding a real charge down
-		// to "$0.0000", which reads as free just the same.
+		// Sub-cent costs are common; never round a real charge down to something that reads as free.
 		if (cost < 0.0001) {
 			parts.push("<$0.0001");
 		} else {
@@ -723,7 +445,6 @@ export function formatWarpUsage(usage: WarpUsage | undefined): string | null {
 
 	return parts.length > 0 ? parts.join(" · ") : null;
 }
-/** One mark on a Warp chart: a time bucket on a line, a category on a bar. */
 export interface WarpChartPoint {
 	x: string;
 	/** Display name when x is an id (a team or key id). */
@@ -731,18 +452,13 @@ export interface WarpChartPoint {
 	y: number;
 }
 
-/**
- * A chart Warp drew with its render_chart tool. The server replaces the id the
- * model pasted with this spec before the answer streams, so every point is data
- * a tool read - never numbers the model typed.
- */
+/** A chart from render_chart; the server fills in the spec, so every point is tool-read data, never model-typed. */
 export interface WarpChartSpec {
 	id: string;
 	kind: "line" | "bar";
 	title: string;
 	metric: string;
 	unit: "count" | "usd" | "tokens" | "ms" | "percent";
-	/** Set for a series over time - a line, or bars in time order. */
 	interval?: "hour" | "day" | "week";
 	group?: string;
 	points: WarpChartPoint[];
@@ -753,24 +469,15 @@ export interface WarpChartSpec {
 export type WarpAnswerSegment =
 	| { kind: "text"; text: string }
 	| { kind: "chart"; spec: WarpChartSpec }
-	/** A chart block that has started streaming but not closed yet. */
 	| { kind: "chart-pending" }
-	/** A closed chart block whose content is not a spec this view can draw. */
 	| { kind: "chart-invalid" };
 
-// The closing fence must start its own line: the spec is JSON on one line, and
-// a title can hold triple backticks that would otherwise end the block early.
+// The closing fence must start its own line, since a title can contain triple backticks.
 const WARP_CHART_FENCE = /```warp-chart[ \t]*\n([\s\S]*?)^```/gm;
 const WARP_CHART_OPEN = "```warp-chart";
 const WARP_CHART_UNITS = new Set(["count", "usd", "tokens", "ms", "percent"]);
 
-/**
- * Parses a chart block's content, or null when it is not a drawable spec.
- *
- * Checked field by field rather than cast: the block is text in an answer, and a
- * malformed one - an older shape, a truncated stream - must fall back to "chart
- * unavailable" instead of taking the whole message down in the renderer.
- */
+/** Validates field by field, so a malformed block renders "chart unavailable" instead of crashing the message. */
 export function parseWarpChartSpec(raw: string): WarpChartSpec | null {
 	let value: unknown;
 	try {
@@ -805,14 +512,7 @@ export function parseWarpChartSpec(raw: string): WarpChartSpec | null {
 	};
 }
 
-/**
- * Splits answer text around its chart blocks, in order.
- *
- * The chart JSON would otherwise render as a code block. An unclosed block at the
- * end of text still streaming is a chart on its way: it becomes a placeholder
- * rather than a flash of raw JSON. In finished text it will never close, so it
- * is invalid - but only its fence line is dropped, not the text after it.
- */
+/** Splits answer text around chart blocks; an unclosed block is pending while streaming, invalid once finished. */
 export function splitWarpCharts(text: string, isStreaming: boolean): WarpAnswerSegment[] {
 	const segments: WarpAnswerSegment[] = [];
 	const pushText = (value: string) => {
@@ -835,15 +535,13 @@ export function splitWarpCharts(text: string, isStreaming: boolean): WarpAnswerS
 	} else {
 		pushText(rest.slice(0, open));
 		segments.push({ kind: "chart-invalid" });
-		// Only the fence line is dropped: whatever follows it is still the
-		// answer, and swallowing it would hide prose after a stray opener.
+		// Drop only the stray fence line so any prose after it still shows.
 		const lineEnd = rest.indexOf("\n", open);
 		if (lineEnd !== -1) pushText(rest.slice(lineEnd + 1));
 	}
 	return segments;
 }
 
-/** A chart value in its unit, short enough for an axis tick or a tooltip. */
 export function formatWarpChartValue(unit: WarpChartSpec["unit"], value: number): string {
 	switch (unit) {
 		case "usd":
@@ -860,13 +558,8 @@ export function formatWarpChartValue(unit: WarpChartSpec["unit"], value: number)
 	}
 }
 
-/**
- * A point's x label. Line charts carry UTC bucket starts, shown in UTC because
- * that is what the buckets are - a local-time label would put an hour's traffic
- * under the wrong hour. Bars show the display name when there is one.
- */
+/** Time buckets are UTC, so they are labelled in UTC; a local label would file traffic under the wrong hour. */
 export function formatWarpChartX(spec: Pick<WarpChartSpec, "kind" | "interval">, point: WarpChartPoint): string {
-	// Bars over time carry an interval and timestamps; bars across a group do not.
 	if (!spec.interval) return point.label || point.x;
 	const date = new Date(point.x);
 	if (Number.isNaN(date.getTime())) return point.x;

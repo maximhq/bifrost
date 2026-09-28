@@ -21,31 +21,13 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 interface WarpHistoryProps {
-	/** The thread currently open in the transcript, if any, so it can be marked. */
 	activeConversationId?: string;
-	/** Called with the thread to reopen. The parent loads it and swaps the transcript. */
 	onOpen: (conversation: WarpConversation) => Promise<void> | void;
-	/**
-	 * Called when a thread is deleted, so the panel can drop a transcript that
-	 * now points at nothing. Without it the next message is filed under the
-	 * deleted id, the server recreates the thread, and the conversation someone
-	 * asked to remove reappears.
-	 */
+	/** Lets the panel drop a deleted transcript, or the next message recreates the thread. */
 	onDeleted?: (id: string) => void;
 }
 
-/**
- * Saved threads, most recent first.
- *
- * Whose threads depends on the deployment: with authentication each person sees
- * their own, without it there is no identity to scope by and the history is
- * common to everyone. That decision is made server-side from the caller's
- * identity, so this list simply shows whatever the API returns.
- *
- * The list is refetched every time it mounts. Threads are created by the chat
- * stream, which RTK never sees, so a cached list would be missing the
- * conversation that was just had.
- */
+/** Refetched on mount: threads are created by the chat stream, which RTK never sees. */
 export default function WarpHistory({ activeConversationId, onOpen, onDeleted }: WarpHistoryProps) {
 	const { data: conversations, isLoading, isError } = useListWarpConversationsQuery({ limit: 50 }, { refetchOnMountOrArgChange: true });
 	const [deleteConversation] = useDeleteWarpConversationMutation();
@@ -64,9 +46,7 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 		}
 	};
 
-	// Deleting cascades the transcript and there is no restore endpoint, while
-	// the control sits next to the one that opens the thread - so a misclick is
-	// permanent. The confirm step is the only thing standing between the two.
+	// Delete is permanent (no restore endpoint), so it goes through a confirm step.
 	const [pendingDelete, setPendingDelete] = useState<WarpConversation | null>(null);
 
 	const remove = async (conversation: WarpConversation) => {
@@ -118,9 +98,7 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 							<button
 								type="button"
 								onClick={() => void open(conversation)}
-								// Either operation blocks both. A delete that lands while an
-								// open is still in flight let the delayed detail response put
-								// the deleted transcript and its id straight back on screen.
+								// Either operation blocks both, or a late open response restores a just-deleted thread.
 								disabled={openingId !== null || deletingId !== null}
 								data-testid={`warp-history-item-${conversation.id}`}
 								className={cn(
@@ -129,9 +107,6 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 								)}
 							>
 								<p className="truncate text-sm">{conversation.title || "Untitled"}</p>
-								{/* Cost sits beside the time so the spend of a thread is visible
-								    without opening it. It is the only place a whole conversation's
-								    cost is summed anywhere in the dashboard. */}
 								<p className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-[11px] tabular-nums">
 									<span className="whitespace-nowrap">
 										{formatDistanceToNow(new Date(conversation.updated_at), {
@@ -160,9 +135,7 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 									data-testid={`warp-history-delete-${conversation.id}`}
 									disabled={deletingId !== null || openingId !== null}
 									onClick={() => setPendingDelete(conversation)}
-									// Visible by default, revealed on hover only where hover exists.
-									// opacity-0 with group-hover made the control undiscoverable on
-									// touch, where there is no hover state to enter.
+									// Hidden until hover only on hover-capable devices, so it stays reachable on touch.
 									className="text-muted-foreground hover:text-destructive absolute top-1/2 right-1 size-7 -translate-y-1/2 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
 								>
 									{deletingId === conversation.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
