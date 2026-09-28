@@ -276,6 +276,9 @@ type BifrostHTTPServer struct {
 	// per page. Optional; wired at server init when available, otherwise left nil
 	// so the VK read paths report no assignee (OSS has no user directory).
 	VirtualKeyAssigneeResolver handlers.VirtualKeyAssigneeResolver
+	// VirtualKeyBusinessUnitResolver names each VK's owning business unit on the
+	// governance read paths. Nil on OSS builds; set by the enterprise wrapper.
+	VirtualKeyBusinessUnitResolver handlers.VirtualKeyBusinessUnitResolver
 
 	SidekiqRunner         *sidekiq.Runner
 	SidekiqDispatcherStop func()
@@ -2436,7 +2439,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver, s.VirtualKeyAssigneeResolver)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver, s.VirtualKeyAssigneeResolver, s.VirtualKeyBusinessUnitResolver)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}

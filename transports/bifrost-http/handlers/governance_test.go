@@ -4483,6 +4483,62 @@ func TestBudgetLastResetUsesBudgetQuarterStart(t *testing.T) {
 	assert.False(t, budgetLastReset(true, nil).IsZero())
 }
 
+// TestApplyBusinessUnits covers the hook that names each virtual key's owning business unit on
+// the read responses, the counterpart of the preloaded Team and Customer relations.
+func TestApplyBusinessUnits(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	newVKs := func() []*configstoreTables.TableVirtualKey {
+		return []*configstoreTables.TableVirtualKey{
+			{ID: "vk-1", BusinessUnitID: new("bu-1")},
+			{ID: "vk-2", BusinessUnitID: new("bu-1")},
+			{ID: "vk-3", BusinessUnitID: new("bu-2")},
+			{ID: "vk-4"},
+		}
+	}
+
+	t.Run("names owners in one call over the distinct business units", func(t *testing.T) {
+		var gotIDs [][]string
+		h := &GovernanceHandler{
+			virtualKeyBusinessUnitResolver: func(_ context.Context, ids []string) (map[string]*configstoreTables.VirtualKeyBusinessUnit, error) {
+				gotIDs = append(gotIDs, ids)
+				return map[string]*configstoreTables.VirtualKeyBusinessUnit{"bu-1": {ID: "bu-1", Name: "Payments"}}, nil
+			},
+		}
+		vks := newVKs()
+		h.applyBusinessUnits(context.Background(), vks)
+
+		if len(gotIDs) != 1 || len(gotIDs[0]) != 2 || gotIDs[0][0] != "bu-1" || gotIDs[0][1] != "bu-2" {
+			t.Fatalf("expected one call with the distinct business units, got %#v", gotIDs)
+		}
+		for _, vk := range vks[:2] {
+			if vk.BusinessUnit == nil || vk.BusinessUnit.Name != "Payments" {
+				t.Fatalf("expected %s to name its business unit, got %#v", vk.ID, vk.BusinessUnit)
+			}
+		}
+		if vks[2].BusinessUnit != nil || vks[3].BusinessUnit != nil {
+			t.Fatalf("expected unknown and unowned keys to carry no business unit, got %#v / %#v", vks[2].BusinessUnit, vks[3].BusinessUnit)
+		}
+	})
+
+	t.Run("no-ops without a resolver or when the resolver fails", func(t *testing.T) {
+		failing := &GovernanceHandler{
+			virtualKeyBusinessUnitResolver: func(_ context.Context, _ []string) (map[string]*configstoreTables.VirtualKeyBusinessUnit, error) {
+				return nil, errors.New("boom")
+			},
+		}
+		for _, h := range []*GovernanceHandler{{}, failing} {
+			vks := newVKs()
+			h.applyBusinessUnits(context.Background(), vks)
+			for _, vk := range vks {
+				if vk.BusinessUnit != nil {
+					t.Fatalf("expected no business unit, got %#v", vk.BusinessUnit)
+				}
+			}
+		}
+	})
+}
+
 // TestApplyAssignees covers the hook that puts each virtual key's assigned user on
 // the read responses. Before it existed the assignee was only reachable through a
 // per-key endpoint, so the CSV export - which cannot issue one request per row -
