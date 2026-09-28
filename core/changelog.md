@@ -1,3 +1,4 @@
+- [fix]: preserve Bedrock document cache control [@axelray-dev](https://github.com/axelray-dev)
 - [feat]: OpenRouter provider - native decisions for TypeSafe jev models [@hcavarsan](https://github.com/hcavarsan)
 - [fix]: preserve opted-in Anthropic extra params through Responses conversion [@wangrat](https://github.com/wangrat)
 - feat: pinned provider keys on routing fallbacks via key_id on each fallback (#7470)

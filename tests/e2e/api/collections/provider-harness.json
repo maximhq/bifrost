@@ -148429,7 +148429,7 @@
     },
     {
       "name": "77. Bedrock text-format document source (#7072 / PR #5663)",
-      "description": "Bedrock Converse rejects a DocumentSource that carries only `text` (\"must set one of the following keys: bytes, s3Location\") unless the document block enables citations - `text` and `content` are the citations-oriented members. PR #5663 centralized document conversion into materializeBedrockDocument and, reading the AWS docs' \"only one member\" union rule, made text-format documents ship `source.text` alone, which 400s for every txt/md/csv/html document (#7072). The fix ships every document as `source.bytes`, base64-encoding literal text. These rows pin that across all three materializeBedrockDocument call sites (chat, responses, tool result) and every ingress that can reach them. Each row asserts the marker is echoed, not merely a 200: a double-encoded document returns HTTP 200 with EMPTY content, so status-only assertions cannot see this class of bug. 77.07 is the reverse guard - binary documents must keep passing base64 through untouched. bedrock_mantle is deliberately absent: it routes through the OpenAI-compat path (mantle.go -> openai.HandleOpenAIChatCompletionRequest) and never reaches this converter.",
+      "description": "Bedrock Converse rejects a DocumentSource that carries only `text` (\"must set one of the following keys: bytes, s3Location\") unless the document block enables citations - `text` and `content` are the citations-oriented members. PR #5663 centralized document conversion into materializeBedrockDocument and, reading the AWS docs' \"only one member\" union rule, made text-format documents ship `source.text` alone, which 400s for every txt/md/csv/html document (#7072). The fix ships every document as `source.bytes`, base64-encoding literal text. These rows pin that across all three materializeBedrockDocument call sites (chat, responses, tool result) and every ingress that can reach them. Each row asserts the marker is echoed, not merely a 200: a double-encoded document returns HTTP 200 with EMPTY content, so status-only assertions cannot see this class of bug. 77.07 is the reverse guard - binary documents must keep passing base64 through untouched. 77.19 pins cache_control on an OpenAI-shape file block to a trailing Converse cachePoint (#7613). bedrock_mantle is deliberately absent: it routes through the OpenAI-compat path (mantle.go -> openai.HandleOpenAIChatCompletionRequest) and never reaches this converter.",
       "item": [
         {
           "name": "77.01 bedrock/claude-haiku /v1/chat/completions file_data raw text/plain - #7072",
@@ -148811,6 +148811,53 @@
                   "pm.test('document content reached the model', function () {",
                   "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7707');",
                   "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.19 bedrock/claude-haiku /v1/chat/completions file cache_control emits cachePoint - #7613",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Reply with only the document marker.\"},{\"type\":\"file\",\"file\":{\"filename\":\"note.txt\",\"file_type\":\"text/plain\",\"file_data\":\"The document marker is cobalt-7613.\"},\"cache_control\":{\"type\":\"ephemeral\"}}]}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var response = {}; try { response = pm.response.json() || {}; } catch (e) {}",
+                  "pm.test('77.19: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400); });",
+                  "var ef = response.extra_fields || {}; var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('77.19: outbound raw request is captured', function () { pm.expect(rr, 'extra_fields.raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+                  "var content = rr && rr.messages && rr.messages[0] && rr.messages[0].content || []; var docIndex = -1; content.forEach(function (block, i) { if (block && block.document) { docIndex = i; } });",
+                  "pm.test('77.19: file cache_control becomes a trailing cachePoint', function () { if (docIndex < 0) { pm.expect.fail('document block missing from outbound request: ' + JSON.stringify(content).slice(0, 500)); return; } var next = content[docIndex + 1] || {}; pm.expect(next.cachePoint, 'cachePoint must follow document: ' + JSON.stringify(content).slice(0, 500)).to.be.an('object'); pm.expect(next.cachePoint.type).to.eql('default'); });"
                 ]
               }
             }
