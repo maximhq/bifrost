@@ -85,7 +85,20 @@ type Service struct {
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
 	semantic     *SemanticSearcher
+	topics       *TopicReader
 	backfillJobs BackfillJobStore
+	// topicLimits bounds a topics run. Zero means the defaults; tests shrink
+	// them so a run crosses its thresholds on a handful of requests.
+	topicLimits topicLimits
+}
+
+// topicLister returns the topic reader as the tool interface, or a nil
+// interface when there is none - a typed nil would pass the tool's nil check.
+func (s *Service) topicLister() TopicLister {
+	if s.topics == nil {
+		return nil
+	}
+	return s.topics
 }
 
 // Option configures a Service.
@@ -195,6 +208,9 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	}
 	for _, opt := range opts {
 		opt(service)
+	}
+	if service.store != nil && service.vectorStore != nil {
+		service.topics = NewTopicReader(service.store, service.vectorStore)
 	}
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)

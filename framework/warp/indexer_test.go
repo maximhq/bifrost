@@ -3,6 +3,8 @@ package warp
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,11 +17,13 @@ import (
 )
 
 type fakeWarpVectorStore struct {
-	mu         sync.Mutex
-	namespace  string
-	dimension  int
-	adds       map[string]map[string]interface{}
-	embeddings map[string][]float32
+	mu        sync.Mutex
+	namespace string
+	dimension int
+	// adds and embeddings are keyed by namespace and id together, as the real
+	// stores key them: the same id in two namespaces is two entries.
+	adds       map[fakeVectorKey]map[string]interface{}
+	embeddings map[fakeVectorKey][]float32
 	// existing seeds namespaces the store already had, so a test can tell a
 	// namespace this save created from one it must not touch.
 	existing  []string
@@ -43,10 +47,44 @@ type fakeWarpVectorStore struct {
 	// respondVector, when set, answers from the query vector as well, for tests
 	// where each phrasing of a search reaches different rows.
 	respondVector func(vector []float32, queries []vectorstore.Query) []vectorstore.SearchResult
+	// failNamespace/failAfter/failErr make writes into one namespace fail once
+	// failAfter of them have succeeded, so a test can stop a run partway
+	// through writing.
+	failNamespace string
+	failAfter     int
+	failErr       error
+	// created is every namespace CreateNamespace was called for. With strict
+	// set, a paging read of any other namespace fails, which is how the
+	// embedded and Pinecone backends behave after a restart: they keep each
+	// namespace's dimension in memory and cannot enumerate without it.
+	created map[string]bool
+	strict  bool
+	// omitVectors makes paging reads leave the vectors out even when asked,
+	// as a backend that does not support returning them does.
+	omitVectors bool
+	// filtersOnServer makes the store one that applies a read's filter itself
+	// and says so. reads records the filter of every paging read.
+	filtersOnServer bool
+	reads           [][]vectorstore.Query
 }
 
 func newFakeWarpVectorStore() *fakeWarpVectorStore {
-	return &fakeWarpVectorStore{adds: map[string]map[string]interface{}{}, embeddings: map[string][]float32{}}
+	return &fakeWarpVectorStore{adds: map[fakeVectorKey]map[string]interface{}{}, embeddings: map[fakeVectorKey][]float32{}}
+}
+
+type fakeVectorKey struct{ namespace, id string }
+
+// metadata and embedding read one stored entry.
+func (f *fakeWarpVectorStore) metadata(namespace, id string) map[string]interface{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.adds[fakeVectorKey{namespace, id}]
+}
+
+func (f *fakeWarpVectorStore) embedding(namespace, id string) []float32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.embeddings[fakeVectorKey{namespace, id}]
 }
 
 func (f *fakeWarpVectorStore) Ping(context.Context) error { return nil }
@@ -56,6 +94,10 @@ func (f *fakeWarpVectorStore) CreateNamespace(_ context.Context, namespace strin
 	f.namespace = namespace
 	f.dimension = dimension
 	f.createCalls++
+	if f.created == nil {
+		f.created = map[string]bool{}
+	}
+	f.created[namespace] = true
 	return nil
 }
 func (f *fakeWarpVectorStore) DeleteNamespace(_ context.Context, namespace string) error {
@@ -78,8 +120,53 @@ func (f *fakeWarpVectorStore) GetChunk(context.Context, string, string) (vectors
 func (f *fakeWarpVectorStore) GetChunks(context.Context, string, []string) ([]vectorstore.SearchResult, error) {
 	return nil, nil
 }
-func (f *fakeWarpVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
-	return nil, nil, nil
+
+// GetAll lists a namespace's entries in id order, one page, carrying vectors
+// only when the read asked for them - the same contract as the real store.
+func (f *fakeWarpVectorStore) FiltersVectorReadsOnServer() bool { return f.filtersOnServer }
+
+func (f *fakeWarpVectorStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, _ []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.strict && !f.created[namespace] {
+		return nil, nil, fmt.Errorf("dimension not set for namespace %s: call CreateNamespace first", namespace)
+	}
+	if cursor == nil {
+		f.reads = append(f.reads, queries)
+	}
+	ids := make([]string, 0, len(f.adds))
+	for key, metadata := range f.adds {
+		if key.namespace == namespace && (!f.filtersOnServer || fakeMatchesAll(metadata, queries)) {
+			ids = append(ids, key.id)
+		}
+	}
+	sort.Strings(ids)
+	if cursor != nil {
+		for index, id := range ids {
+			if id == *cursor {
+				ids = ids[index+1:]
+				break
+			}
+		}
+	}
+	results := make([]vectorstore.SearchResult, 0, len(ids))
+	var next *string
+	for _, id := range ids {
+		if limit > 0 && int64(len(results)) == limit {
+			break
+		}
+		key := fakeVectorKey{namespace, id}
+		result := vectorstore.SearchResult{ID: id, Properties: f.adds[key]}
+		if vectorstore.IncludeVectorsRequested(ctx) && !f.omitVectors {
+			result.Vector = f.embeddings[key]
+		}
+		results = append(results, result)
+		next = new(id)
+	}
+	if limit > 0 && int64(len(results)) < limit {
+		next = nil
+	}
+	return results, next, nil
 }
 func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, vector []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	f.mu.Lock()
@@ -111,23 +198,121 @@ func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, vector []f
 	return f.nearest, nil
 }
 func (f *fakeWarpVectorStore) RequiresVectors() bool { return true }
-func (f *fakeWarpVectorStore) Add(_ context.Context, _ string, id string, embedding []float32, metadata map[string]interface{}) error {
+func (f *fakeWarpVectorStore) failAddAfter(namespace string, succeeded int, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.failNamespace, f.failAfter, f.failErr = namespace, succeeded, err
+}
+
+func (f *fakeWarpVectorStore) Add(_ context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil && namespace == f.failNamespace {
+		if f.failAfter == 0 {
+			return f.failErr
+		}
+		f.failAfter--
+	}
 	if f.addErr != nil {
 		err := f.addErr
 		f.addErr = nil
 		return err
 	}
-	f.adds[id] = metadata
-	f.embeddings[id] = embedding
+	f.adds[fakeVectorKey{namespace, id}] = metadata
+	f.embeddings[fakeVectorKey{namespace, id}] = embedding
 	return nil
 }
-func (f *fakeWarpVectorStore) Delete(context.Context, string, string) error { return nil }
-func (f *fakeWarpVectorStore) DeleteAll(context.Context, string, []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
-	return nil, nil
+func (f *fakeWarpVectorStore) Delete(_ context.Context, namespace string, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.adds, fakeVectorKey{namespace, id})
+	delete(f.embeddings, fakeVectorKey{namespace, id})
+	return nil
+}
+func (f *fakeWarpVectorStore) DeleteAll(_ context.Context, namespace string, queries []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var deleted []vectorstore.DeleteResult
+	for key, metadata := range f.adds {
+		if key.namespace != namespace || !fakeMatchesAll(metadata, queries) {
+			continue
+		}
+		delete(f.adds, key)
+		delete(f.embeddings, key)
+		deleted = append(deleted, vectorstore.DeleteResult{ID: key.id})
+	}
+	return deleted, nil
+}
+
+// fakeMatchesAll applies a delete's filter the way the real stores do: every
+// condition has to hold, and a condition on a property the entry does not
+// have does not hold.
+func fakeMatchesAll(metadata map[string]interface{}, queries []vectorstore.Query) bool {
+	for _, query := range queries {
+		value, present := metadata[query.Field]
+		if !present {
+			return false
+		}
+		switch query.Operator {
+		case vectorstore.QueryOperatorEqual:
+			if fmt.Sprint(value) != fmt.Sprint(query.Value) {
+				return false
+			}
+		case vectorstore.QueryOperatorNotEqual:
+			if fmt.Sprint(value) == fmt.Sprint(query.Value) {
+				return false
+			}
+		case vectorstore.QueryOperatorLessThan:
+			if propertyInt(value) >= propertyInt(query.Value) {
+				return false
+			}
+		case vectorstore.QueryOperatorGreaterThanOrEqual:
+			if propertyInt(value) < propertyInt(query.Value) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// idsIn lists the ids stored under a namespace, sorted.
+func (f *fakeWarpVectorStore) idsIn(namespace string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := []string{}
+	for key := range f.adds {
+		if key.namespace == namespace {
+			ids = append(ids, key.id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 func (f *fakeWarpVectorStore) Close(context.Context, string) error { return nil }
+
+// The fake keys entries by namespace and id, as the real stores do. Keyed by
+// id alone, a topic written under a log's id overwrote the log's vector, and
+// a read of one namespace came back with the other's entry.
+func TestFakeWarpVectorStoreKeepsNamespacesApart(t *testing.T) {
+	ctx := vectorstore.WithIncludeVectors(context.Background())
+	vectors := newFakeWarpVectorStore()
+	require.NoError(t, vectors.Add(ctx, "logs", "same", []float32{1, 0}, map[string]interface{}{"kind": "log"}))
+	require.NoError(t, vectors.Add(ctx, "topics", "same", []float32{0, 1}, map[string]interface{}{"kind": "topic"}))
+
+	for namespace, kind := range map[string]string{"logs": "log", "topics": "topic"} {
+		results, _, err := vectors.GetAll(ctx, namespace, nil, nil, nil, 10)
+		require.NoError(t, err)
+		require.Len(t, results, 1, namespace)
+		require.Equal(t, kind, results[0].Properties["kind"], namespace)
+	}
+	require.Equal(t, []float32{1, 0}, vectors.embedding("logs", "same"))
+
+	require.NoError(t, vectors.Delete(ctx, "topics", "same"))
+	require.Equal(t, []string{"same"}, vectors.idsIn("logs"), "deleting from one namespace leaves the other")
+	require.Empty(t, vectors.idsIn("topics"))
+}
 
 // embeddingRequestText returns the single text part the indexer embeds, or "" for any other shape.
 func embeddingRequestText(request *schemas.BifrostEmbeddingRequest) string {
@@ -165,14 +350,14 @@ func TestWarpIndexerEmbedsAndStoresVisibleConversation(t *testing.T) {
 	require.Equal(t, "user: find payment failures\nassistant: The card was declined", embedded)
 	require.Equal(t, schemas.WarpDefaultLogVectorStoreNamespace, vectors.namespace)
 	require.Equal(t, 1536, vectors.dimension)
-	require.Equal(t, "log-1", vectors.adds["log-1"]["log_id"])
-	require.Equal(t, "success", vectors.adds["log-1"]["status"])
-	require.Equal(t, int64(433), vectors.adds["log-1"]["latency_ms"])
-	require.Equal(t, int64(1234), vectors.adds["log-1"]["cost_micro_usd"])
-	require.Equal(t, 12, vectors.adds["log-1"]["prompt_tokens"])
-	require.Equal(t, 8, vectors.adds["log-1"]["completion_tokens"])
-	require.Equal(t, 20, vectors.adds["log-1"]["total_tokens"])
-	require.NotContains(t, vectors.adds["log-1"], "content")
+	require.Equal(t, "log-1", vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["log_id"])
+	require.Equal(t, "success", vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["status"])
+	require.Equal(t, int64(433), vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["latency_ms"])
+	require.Equal(t, int64(1234), vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["cost_micro_usd"])
+	require.Equal(t, 12, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["prompt_tokens"])
+	require.Equal(t, 8, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["completion_tokens"])
+	require.Equal(t, 20, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["total_tokens"])
+	require.NotContains(t, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1"), "content")
 }
 
 func TestWarpIndexerSkipsPrivateProcessingAndSelfTraffic(t *testing.T) {
@@ -416,4 +601,141 @@ func TestWarpIndexerProvisionsNamespaceOncePerConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, IndexOutcomeIndexed, outcome)
 	require.Equal(t, 2, vectors.createCalls, "a failed write must invalidate the provisioning cache")
+}
+
+func responsesTurn(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &text}}
+}
+
+func chatTurn(role schemas.ChatMessageRole, text string) schemas.ChatMessage {
+	return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: &text}}
+}
+
+// A conversation is about what it opened with. Its last user message is often
+// a reply to a question - "all", "yes", "-7d" - and a vector made from that
+// alone files the conversation under the reply: every "all" lands together,
+// whatever was being asked. So the opening question is embedded with the last
+// exchange, for both request shapes.
+func TestWarpIndexTextCarriesTheOpeningQuestion(t *testing.T) {
+	opening, reply := "Which model responds fastest on average this week?", "all"
+	responses, ok := buildLogIndexItem(&logstore.Log{
+		ID: "log-responses", Object: string(schemas.ResponsesRequest), Status: "success",
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			responsesTurn(schemas.ResponsesInputMessageRoleSystem, "You are a helpful analyst."),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, opening),
+			responsesTurn(schemas.ResponsesInputMessageRoleAssistant, "Whose traffic should I compare?"),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, reply),
+		},
+	})
+	require.True(t, ok)
+	require.Equal(t, "user: "+opening+"\nuser: "+reply, responses.text)
+
+	answer := "gpt-4o-mini, at 412 ms."
+	chat, ok := buildLogIndexItem(&logstore.Log{
+		ID: "log-chat", Object: string(schemas.ChatCompletionRequest), Status: "success",
+		InputHistoryParsed: []schemas.ChatMessage{
+			chatTurn(schemas.ChatMessageRoleSystem, "You are a helpful analyst."),
+			chatTurn(schemas.ChatMessageRoleUser, opening),
+			chatTurn(schemas.ChatMessageRoleAssistant, "Whose traffic should I compare?"),
+			chatTurn(schemas.ChatMessageRoleUser, reply),
+		},
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+	})
+	require.True(t, ok)
+	require.Equal(t, "user: "+opening+"\nuser: "+reply+"\nassistant: "+answer, chat.text)
+
+	// One user turn is not repeated as its own opening.
+	single, ok := buildLogIndexItem(&logstore.Log{
+		ID: "log-single", Object: string(schemas.ChatCompletionRequest), Status: "success",
+		InputHistoryParsed: []schemas.ChatMessage{chatTurn(schemas.ChatMessageRoleUser, opening)},
+	})
+	require.True(t, ok)
+	require.Equal(t, "user: "+opening, single.text)
+}
+
+// An opening message can be a pasted file. It gets at most half of what is
+// embedded, so it cannot push out the exchange the request is actually about.
+func TestWarpIndexTextBoundsTheOpeningQuestion(t *testing.T) {
+	opening := strings.Repeat("x", warpMaxEmbeddingBytes*2)
+	answer := "Done."
+	item, ok := buildLogIndexItem(&logstore.Log{
+		ID: "log-long", Object: string(schemas.ChatCompletionRequest), Status: "success",
+		InputHistoryParsed: []schemas.ChatMessage{
+			chatTurn(schemas.ChatMessageRoleUser, opening),
+			chatTurn(schemas.ChatMessageRoleAssistant, "Which file?"),
+			chatTurn(schemas.ChatMessageRoleUser, "the second one"),
+		},
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+	})
+	require.True(t, ok)
+	require.LessOrEqual(t, len(item.text), warpMaxEmbeddingBytes)
+	require.True(t, strings.HasSuffix(item.text, "\nuser: the second one\nassistant: Done."), "the last exchange survives a long opening")
+}
+
+// Warp's own conversations are not what people ask the models. They are told
+// apart by app and user agent, but those come from headers, and a caller that
+// reaches the model another way arrives without them - 629 such requests in
+// one morning were indexed and clustered as user traffic. The instructions
+// Warp sends are its own, whatever the request was labelled.
+func TestWarpIndexerSkipsWarpTrafficByItsInstructions(t *testing.T) {
+	instructions := SystemPrompt + "\n\nCosts are in EUR."
+	api, agent := "API", "fasthttp"
+	question := "Which model responds fastest on average this week?"
+	for name, entry := range map[string]*logstore.Log{
+		"typed parameters": {
+			ID: "typed", Object: string(schemas.ResponsesRequest), Status: "success", App: &api, UserAgent: &agent, ContentSummary: question,
+			ParamsParsed: &schemas.ResponsesParameters{Instructions: &instructions},
+		},
+		"parameters read back from the log store": {
+			ID: "stored", Object: string(schemas.ResponsesRequest), Status: "success", App: &api, UserAgent: &agent, ContentSummary: question,
+			ParamsParsed: map[string]interface{}{"instructions": instructions},
+		},
+		"a system message": {
+			ID: "system", Object: string(schemas.ChatCompletionRequest), Status: "success", App: &api, UserAgent: &agent,
+			InputHistoryParsed: []schemas.ChatMessage{chatTurn(schemas.ChatMessageRoleSystem, instructions), chatTurn(schemas.ChatMessageRoleUser, question)},
+		},
+	} {
+		_, ok := buildLogIndexItem(entry)
+		require.False(t, ok, name)
+	}
+
+	// Somebody else's assistant is user traffic like any other.
+	other := "You are a support assistant for Acme."
+	_, ok := buildLogIndexItem(&logstore.Log{
+		ID: "other", Object: string(schemas.ResponsesRequest), Status: "success", App: &api, ContentSummary: question,
+		ParamsParsed: &schemas.ResponsesParameters{Instructions: &other},
+	})
+	require.True(t, ok)
+}
+
+// A request that does not qualify for the index must not stay in it. One can
+// stop qualifying after it was indexed - its content is hidden, or it turns
+// out to be Warp's own - and a backfill that only skipped it left the old
+// vector where search and clustering still found it. The backfill is how an
+// index is repaired, so it takes out what it would not put in.
+func TestWarpBackfillRemovesVectorsThatNoLongerQualify(t *testing.T) {
+	row := validWarpConfigRow()
+	vectors := newFakeWarpVectorStore()
+	namespace := schemas.WarpDefaultLogVectorStoreNamespace
+	for _, id := range []string{"now-hidden", "warp-own", "still-fine"} {
+		require.NoError(t, vectors.Add(context.Background(), namespace, id, []float32{1, 0, 0}, map[string]interface{}{"log_id": id, "warp_log": true}))
+	}
+	indexer := NewLogIndexer(&recordingStore{row: row}, vectors, backfillEmbeddingExecutor, nil)
+	defer indexer.Close()
+	config := configFromRow(row)
+
+	instructions := SystemPrompt
+	for id, entry := range map[string]*logstore.Log{
+		"now-hidden": {ID: "now-hidden", Object: string(schemas.ChatCompletionRequest), Status: "success", ContentHidden: true, ContentSummary: "secret"},
+		"warp-own": {ID: "warp-own", Object: string(schemas.ResponsesRequest), Status: "success", ContentSummary: "Which model is fastest?",
+			ParamsParsed: &schemas.ResponsesParameters{Instructions: &instructions}},
+	} {
+		outcome, _, err := indexer.IndexWithConfig(context.Background(), config, entry)
+		require.NoError(t, err, id)
+		require.Equal(t, IndexOutcomeSkipped, outcome, id)
+	}
+	outcome, _, err := indexer.IndexWithConfig(context.Background(), config, &logstore.Log{ID: "still-fine", Object: string(schemas.ChatCompletionRequest), Status: "success", ContentSummary: "how do I get a refund"})
+	require.NoError(t, err)
+	require.Equal(t, IndexOutcomeIndexed, outcome)
+	require.Equal(t, []string{"still-fine"}, vectors.idsIn(namespace))
 }

@@ -143,6 +143,7 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	render_chart: { running: "Drawing a chart", done: "Drew a chart" },
 	describe_filter_space: { running: "Checking available values", done: "Checked available values" },
 	describe_virtual_key: { running: "Checking virtual key limits", done: "Checked virtual key limits" },
+	list_topics: { running: "Listing topics", done: "Listed topics" },
 	ask_user: { running: "Asking a question", done: "Asked a question" },
 };
 

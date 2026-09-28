@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -148,6 +149,7 @@ func (i *LogIndexer) Index(ctx context.Context, entry *logstore.Log) (IndexOutco
 func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) (IndexOutcome, *schemas.BifrostLLMUsage, error) {
 	item, ok := buildLogIndexItem(entry)
 	if !ok {
+		i.forget(ctx, config, entry)
 		return IndexOutcomeSkipped, nil, nil
 	}
 	indexed, usage, err := i.indexItemWithConfig(ctx, config, item)
@@ -161,6 +163,19 @@ func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpCo
 		return IndexOutcomeSkipped, usage, nil
 	}
 	return IndexOutcomeIndexed, usage, nil
+}
+
+// forget removes whatever vector an entry left behind when it was indexed
+// under rules it no longer passes: its content has since been hidden, or it
+// is recognised as Warp's own. Best effort - the entry is skipped either way,
+// and a store that cannot delete must not fail the page it is part of.
+func (i *LogIndexer) forget(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) {
+	if entry == nil || entry.ID == "" || config == nil || !config.IsConfigured() {
+		return
+	}
+	if err := i.vectors.Delete(ctx, config.EffectiveLogVectorStoreNamespace(), entry.ID); err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
+		i.warnf("failed to remove the stale vector of Warp log %s: %v", entry.ID, err)
+	}
 }
 
 func (i *LogIndexer) worker() {
@@ -441,12 +456,14 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	if entry.UserAgent != nil && strings.Contains(strings.ToLower(*entry.UserAgent), "bifrost-warp") {
 		return logIndexItem{}, false
 	}
-	user := strings.Join(strings.Fields(entry.BuildInputContentSummary()), " ")
-	if user == "" {
-		user = strings.Join(strings.Fields(entry.ContentSummary), " ")
+	// App and user agent come from headers, so a caller that reaches the model
+	// without them is not labelled as Warp. What it sent still is.
+	if strings.HasPrefix(strings.TrimSpace(logInstructions(entry)), warpPromptSignature) {
+		return logIndexItem{}, false
 	}
+	opening, user := conversationUserTexts(entry)
 	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
-	text := boundedConversationText(user, assistant, warpMaxEmbeddingBytes)
+	text := boundedConversationText(opening, user, assistant, warpMaxEmbeddingBytes)
 	if text == "" {
 		return logIndexItem{}, false
 	}
@@ -490,6 +507,78 @@ func conversationalWarpObject(object string) bool {
 	default:
 		return object == "chat.completion" || object == "chat.completion.chunk" || object == "response"
 	}
+}
+
+// warpPromptSignature is how Warp's own instructions begin.
+var warpPromptSignature = SystemPrompt[:strings.Index(SystemPrompt, ".")+1]
+
+// logInstructions is the system instruction a request was sent with: the
+// Responses instructions, else the first system message. Parameters are typed
+// on a live entry and a decoded map on one read back from the log store.
+func logInstructions(entry *logstore.Log) string {
+	switch params := entry.ParamsParsed.(type) {
+	case *schemas.ResponsesParameters:
+		if params != nil && params.Instructions != nil {
+			return *params.Instructions
+		}
+	case schemas.ResponsesParameters:
+		if params.Instructions != nil {
+			return *params.Instructions
+		}
+	case map[string]interface{}:
+		if instructions, ok := params["instructions"].(string); ok && instructions != "" {
+			return instructions
+		}
+	}
+	for index := range entry.InputHistoryParsed {
+		if entry.InputHistoryParsed[index].Role == schemas.ChatMessageRoleSystem {
+			return chatContentText(entry.InputHistoryParsed[index].Content)
+		}
+	}
+	for index := range entry.ResponsesInputHistoryParsed {
+		message := entry.ResponsesInputHistoryParsed[index]
+		if message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleSystem {
+			return responsesContentText(message.Content)
+		}
+	}
+	return ""
+}
+
+// conversationUserTexts returns what a conversation opened with and the
+// user's last message, each on one line.
+//
+// The last message alone is what the request answers, but it is often a reply
+// to a question - "all", "yes", "-7d" - and says nothing about the subject.
+// The opening is empty when the conversation has one user turn, or when the
+// history was not kept and only the last message is known.
+func conversationUserTexts(entry *logstore.Log) (opening, last string) {
+	last = strings.Join(strings.Fields(entry.BuildInputContentSummary()), " ")
+	if last == "" {
+		last = strings.Join(strings.Fields(entry.ContentSummary), " ")
+	}
+	for index := range entry.InputHistoryParsed {
+		if entry.InputHistoryParsed[index].Role != schemas.ChatMessageRoleUser {
+			continue
+		}
+		if opening = strings.Join(strings.Fields(chatContentText(entry.InputHistoryParsed[index].Content)), " "); opening != "" {
+			break
+		}
+	}
+	if opening == "" {
+		for index := range entry.ResponsesInputHistoryParsed {
+			message := entry.ResponsesInputHistoryParsed[index]
+			if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
+				continue
+			}
+			if opening = strings.Join(strings.Fields(responsesContentText(message.Content)), " "); opening != "" {
+				break
+			}
+		}
+	}
+	if opening == last {
+		opening = ""
+	}
+	return opening, last
 }
 
 func logAssistantText(entry *logstore.Log) string {
@@ -539,9 +628,13 @@ func responsesContentText(content *schemas.ResponsesMessageContent) string {
 	return strings.Join(parts, " ")
 }
 
-func boundedConversationText(user, assistant string, limit int) string {
+// boundedConversationText lays a conversation out for embedding: what it
+// opened with, the user's last message, and the answer, within limit bytes.
+// The opening gets at most half, so a pasted file cannot push out the
+// exchange the request is about.
+func boundedConversationText(opening, user, assistant string, limit int) string {
 	var builder strings.Builder
-	appendBounded := func(label, value string) {
+	appendBounded := func(label, value string, limit int) {
 		if value == "" || builder.Len() >= limit {
 			return
 		}
@@ -564,8 +657,9 @@ func boundedConversationText(user, assistant string, limit int) string {
 			remaining -= size
 		}
 	}
-	appendBounded("user", user)
-	appendBounded("assistant", assistant)
+	appendBounded("user", opening, limit/2)
+	appendBounded("user", user, limit)
+	appendBounded("assistant", assistant, limit)
 	return strings.TrimSpace(builder.String())
 }
 

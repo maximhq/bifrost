@@ -27,17 +27,10 @@ type upsertBackend struct {
 	setup     func(t *testing.T) (VectorStore, context.Context, string)
 }
 
-// TestVectorStoreAddReplacesExistingID pins Add's upsert semantics as an
-// interface-wide contract rather than a per-backend accident.
-//
-// Callers derive record ids from content — the complexity router derives one
-// per exemplar from its configuration fingerprint — so the same id is written
-// again by an ordinary retry, by a resumed warmup, and by two nodes racing to
-// warm the same generation into a shared store. Weaviate was the one backend
-// that refused those writes (Creator() is a POST, rejected with 422), which
-// turned a benign duplicate into a failed warmup on every node but one.
-func TestVectorStoreAddReplacesExistingID(t *testing.T) {
-	backends := []upsertBackend{
+// vectorStoreTestBackends is every backend, for contracts that hold across the
+// interface. Backends that need a server skip themselves; chromem always runs.
+func vectorStoreTestBackends() []upsertBackend {
+	return []upsertBackend{
 		{
 			name:      "chromem",
 			dimension: ChromemTestDimension,
@@ -96,6 +89,19 @@ func TestVectorStoreAddReplacesExistingID(t *testing.T) {
 			},
 		},
 	}
+}
+
+// TestVectorStoreAddReplacesExistingID pins Add's upsert semantics as an
+// interface-wide contract rather than a per-backend accident.
+//
+// Callers derive record ids from content — the complexity router derives one
+// per exemplar from its configuration fingerprint — so the same id is written
+// again by an ordinary retry, by a resumed warmup, and by two nodes racing to
+// warm the same generation into a shared store. Weaviate was the one backend
+// that refused those writes (Creator() is a POST, rejected with 422), which
+// turned a benign duplicate into a failed warmup on every node but one.
+func TestVectorStoreAddReplacesExistingID(t *testing.T) {
+	backends := vectorStoreTestBackends()
 
 	for _, backend := range backends {
 		t.Run(backend.name, func(t *testing.T) {
