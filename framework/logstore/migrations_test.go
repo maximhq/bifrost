@@ -729,3 +729,81 @@ func TestWarpRollbackLocksTablesInWriterOrder(t *testing.T) {
 	require.Less(t, conversationsLock, messagesLock,
 		"locks must follow writer order (conversation first), or a concurrent append can deadlock the rollback")
 }
+
+// toolUsageBackfillRows seeds legacy token_usage payloads covering every branch of the backfill filter.
+var toolUsageBackfillRows = map[string]string{
+	"legacy":    `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3}}`,
+	"current":   `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3},"tool_usage":{"web_search":{"num_requests":1}}}`,
+	"zero":      `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":0}}`,
+	"none":      `{"total_tokens":15}`,
+	"offload":   ``,
+	"malformed": `not json "num_search_queries"`,
+}
+
+func assertToolUsageBackfilled(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	usageOf := func(id string) string {
+		var usage string
+		require.NoError(t, db.Raw("SELECT COALESCE(token_usage, '') FROM logs WHERE id = ?", id).Scan(&usage).Error)
+		return usage
+	}
+	assert.JSONEq(t, `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3},"tool_usage":{"web_search":{"num_requests":3}}}`, usageOf("legacy"))
+	for _, id := range []string{"current", "zero", "none", "offload", "malformed"} {
+		assert.Equal(t, toolUsageBackfillRows[id], usageOf(id), "row %s must be left untouched", id)
+	}
+}
+
+func seedToolUsageBackfillLogs(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS logs").Error)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id VARCHAR(64) PRIMARY KEY, token_usage TEXT)").Error)
+	for id, usage := range toolUsageBackfillRows {
+		require.NoError(t, db.Exec("INSERT INTO logs (id, token_usage) VALUES (?, ?)", id, usage).Error)
+	}
+}
+
+func TestMigrationBackfillToolUsageWebSearch_SQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "logs.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	seedToolUsageBackfillLogs(t, db)
+
+	require.NoError(t, migrationBackfillToolUsageWebSearch(context.Background(), db, testLogger{}))
+	assertToolUsageBackfilled(t, db)
+}
+
+func TestEnsureToolUsageWebSearchBackfill_Postgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available")
+	}
+	dropAllManagedMatViews(db)
+	seedToolUsageBackfillLogs(t, db)
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations WHERE id LIKE 'logs_backfill_tool_usage_web_search%'")
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS logs") })
+
+	// The boot-time migration is a no-op on Postgres; the post-startup pass does the work.
+	require.NoError(t, migrationBackfillToolUsageWebSearch(context.Background(), db, testLogger{}))
+	var usage string
+	require.NoError(t, db.Raw("SELECT token_usage FROM logs WHERE id = 'legacy'").Scan(&usage).Error)
+	assert.Equal(t, toolUsageBackfillRows["legacy"], usage)
+
+	require.NoError(t, ensureToolUsageWebSearchBackfill(context.Background(), db))
+	assertToolUsageBackfilled(t, db)
+
+	// Recorded once done, so a restart does not rescan logs.
+	var done int64
+	require.NoError(t, db.Raw("SELECT COUNT(*) FROM migrations WHERE id = 'logs_backfill_tool_usage_web_search_postgres'").Scan(&done).Error)
+	assert.Equal(t, int64(1), done)
+}
+
+func TestToolUsageFromNumSearchQueries(t *testing.T) {
+	out, ok := toolUsageFromNumSearchQueries(toolUsageBackfillRows["legacy"])
+	require.True(t, ok)
+	// sjson appends the key, so the rest of the payload stays byte-identical.
+	assert.Equal(t, `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3},"tool_usage":{"web_search":{"num_requests":3}}}`, out)
+	for _, id := range []string{"current", "zero", "none", "offload", "malformed"} {
+		_, ok := toolUsageFromNumSearchQueries(toolUsageBackfillRows[id])
+		assert.False(t, ok, id)
+	}
+}

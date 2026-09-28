@@ -125,7 +125,7 @@ func TestOffPeak_DiscountsCacheReads(t *testing.T) {
 func TestOffPeak_FlatFeesAreNotDiscounted(t *testing.T) {
 	pricing := deepSeekPricing()
 	pricing.CostPerRequest = bifrost.Ptr(0.01)
-	pricing.SearchContextCostPerQuery = bifrost.Ptr(0.005)
+	pricing.WebSearchCostPerRequest = bifrost.Ptr(0.005)
 
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("deepseek-v4-flash", "deepseek", "chat"): pricing,

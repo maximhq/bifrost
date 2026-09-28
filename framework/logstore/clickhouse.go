@@ -226,8 +226,18 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 	logger.Info("logstore: clickhouse schema migrations complete")
 
 	constructed = true
-	return &ClickHouseLogStore{
+	store := &ClickHouseLogStore{
 		RDBLogStore: &RDBLogStore{db: db, logger: logger},
 		cluster:     config.Cluster,
-	}, nil
+	}
+
+	go func() {
+		if err := store.backfillToolUsageWebSearch(context.Background()); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: clickhouse tool_usage web search backfill failed: %s (old logs keep num_search_queries only)", err))
+			return
+		}
+		logger.Info("logstore: clickhouse tool_usage web search backfill completed")
+	}()
+
+	return store, nil
 }

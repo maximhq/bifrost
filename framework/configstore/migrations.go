@@ -18,6 +18,8 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -503,6 +505,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
 	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
 	{IDs: []string{"add_virtual_key_disable_content_logging_column"}, run: migrationAddVirtualKeyDisableContentLoggingColumn},
+	{IDs: []string{"add_web_search_cost_per_request_column"}, run: migrationAddWebSearchCostPerRequestColumn},
+	{IDs: []string{"move_pricing_override_search_context_to_web_search"}, run: migrationMovePricingOverrideSearchContextToWebSearch},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14089,6 +14093,90 @@ func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebSearchCostPerRequestColumn adds web_search_cost_per_request, seeded from search_context_cost_per_query.
+func migrationAddWebSearchCostPerRequestColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_web_search_cost_per_request_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "web_search_cost_per_request"); err != nil {
+				return fmt.Errorf("failed to add column web_search_cost_per_request: %w", err)
+			}
+			// Existing rows would bill web search at $0 until the next datasheet sync.
+			if err := tx.Model(&tables.TableModelPricing{}).
+				Where("web_search_cost_per_request IS NULL AND search_context_cost_per_query IS NOT NULL").
+				Update("web_search_cost_per_request", gorm.Expr("search_context_cost_per_query")).Error; err != nil {
+				return fmt.Errorf("failed to backfill web_search_cost_per_request: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "web_search_cost_per_request"); err != nil {
+				return fmt.Errorf("failed to drop column web_search_cost_per_request: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationMovePricingOverrideSearchContextToWebSearch renames search_context_cost_per_query to web_search_cost_per_request in override patches.
+func migrationMovePricingOverrideSearchContextToWebSearch(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "move_pricing_override_search_context_to_web_search"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var rows []struct {
+				ID               string
+				PricingPatchJSON string
+			}
+			if err := tx.Table(tables.TablePricingOverride{}.TableName()).
+				Select("id, pricing_patch_json").
+				Where("pricing_patch_json LIKE ?", "%search_context_cost_per_query%").
+				Scan(&rows).Error; err != nil {
+				return fmt.Errorf("failed to load pricing overrides: %w", err)
+			}
+			for _, row := range rows {
+				legacy := gjson.Get(row.PricingPatchJSON, "search_context_cost_per_query")
+				if !legacy.Exists() {
+					continue
+				}
+				patch := row.PricingPatchJSON
+				var err error
+				// An explicit web_search_cost_per_request wins over the legacy rate.
+				if !gjson.Get(patch, "web_search_cost_per_request").Exists() {
+					if patch, err = sjson.SetRaw(patch, "web_search_cost_per_request", legacy.Raw); err != nil {
+						return fmt.Errorf("failed to set web_search_cost_per_request on override %s: %w", row.ID, err)
+					}
+				}
+				if patch, err = sjson.Delete(patch, "search_context_cost_per_query"); err != nil {
+					return fmt.Errorf("failed to drop search_context_cost_per_query on override %s: %w", row.ID, err)
+				}
+				if err := tx.Table(tables.TablePricingOverride{}.TableName()).
+					Where("id = ?", row.ID).
+					UpdateColumn("pricing_patch_json", patch).Error; err != nil {
+					return fmt.Errorf("failed to update override %s: %w", row.ID, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

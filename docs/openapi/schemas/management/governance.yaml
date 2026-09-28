@@ -2210,9 +2210,12 @@ PricingPatch:
         generated video's size; falls back to output_cost_per_video_per_second
         when unset.
     # Costs - Other
-    search_context_cost_per_query:
+    web_search_cost_per_request:
       type: number
       minimum: 0
+      description: >
+        Cost per server-side web search call, billed from
+        usage.tool_usage.web_search.num_requests.
     input_cost_per_query:
       type: number
       minimum: 0

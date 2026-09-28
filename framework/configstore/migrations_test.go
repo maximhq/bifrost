@@ -736,6 +736,54 @@ func setupVKTestDBWithoutRotationColumns(t *testing.T) *gorm.DB {
 	return db
 }
 
+func TestMigrationMovePricingOverrideSearchContextToWebSearch(t *testing.T) {
+	db := setupRDBTestStore(t).DB()
+	ctx := context.Background()
+	table := tables.TablePricingOverride{}.TableName()
+	now := time.Now()
+	for id, patch := range map[string]string{
+		"legacy":   `{"input_cost_per_token":0.001,"search_context_cost_per_query":0.02}`,
+		"explicit": `{"search_context_cost_per_query":0.02,"web_search_cost_per_request":0.05}`,
+		"none":     `{"input_cost_per_token":0.001}`,
+	} {
+		require.NoError(t, db.Table(table).Create(map[string]any{
+			"id": id, "name": id, "scope_kind": "global", "match_type": "exact", "pattern": "gpt-4o",
+			"request_types_json": "[]", "pricing_patch_json": patch, "created_at": now, "updated_at": now,
+		}).Error)
+	}
+
+	require.NoError(t, migrationMovePricingOverrideSearchContextToWebSearch(ctx, db, testMigrationLogger))
+
+	patchOf := func(id string) string {
+		var patch string
+		require.NoError(t, db.Table(table).Select("pricing_patch_json").Where("id = ?", id).Scan(&patch).Error)
+		return patch
+	}
+	assert.JSONEq(t, `{"input_cost_per_token":0.001,"web_search_cost_per_request":0.02}`, patchOf("legacy"))
+	assert.JSONEq(t, `{"web_search_cost_per_request":0.05}`, patchOf("explicit"))
+	assert.JSONEq(t, `{"input_cost_per_token":0.001}`, patchOf("none"))
+}
+
+func TestMigrationAddWebSearchCostPerRequestColumn_BackfillsFromSearchContext(t *testing.T) {
+	db := setupRDBTestStore(t).DB()
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableModelPricing{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableModelPricing{}, "web_search_cost_per_request"))
+
+	table := tables.TableModelPricing{}.TableName()
+	require.NoError(t, db.Table(table).Create(map[string]any{"model": "claude-haiku-4-5", "provider": "anthropic", "mode": "chat", "search_context_cost_per_query": 0.01}).Error)
+	require.NoError(t, db.Table(table).Create(map[string]any{"model": "gpt-4o", "provider": "openai", "mode": "chat"}).Error)
+
+	require.NoError(t, migrationAddWebSearchCostPerRequestColumn(ctx, db, testMigrationLogger))
+
+	var got []tables.TableModelPricing
+	require.NoError(t, db.Order("model").Find(&got).Error)
+	require.Len(t, got, 2)
+	require.NotNil(t, got[0].WebSearchCostPerRequest)
+	assert.InDelta(t, 0.01, *got[0].WebSearchCostPerRequest, 1e-12)
+	assert.Nil(t, got[1].WebSearchCostPerRequest)
+}
+
 func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

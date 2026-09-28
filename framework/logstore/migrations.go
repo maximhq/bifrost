@@ -9,6 +9,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 )
 
@@ -326,6 +328,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"logs_add_warp_conversations_updated_at_index"}, run: migrationAddWarpConversationsUpdatedAtIndex},
 	{IDs: []string{"logs_add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+	{IDs: []string{"logs_backfill_tool_usage_web_search"}, run: migrationBackfillToolUsageWebSearch},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -5206,4 +5209,92 @@ func migrationAddWarpConversationsUpdatedAtIndex(ctx context.Context, db *gorm.D
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// toolUsageFromNumSearchQueries copies completion_tokens_details.num_search_queries into
+// tool_usage.web_search.num_requests; ok is false when the payload needs no change.
+func toolUsageFromNumSearchQueries(tokenUsage string) (string, bool) {
+	if !gjson.Valid(tokenUsage) || gjson.Get(tokenUsage, "tool_usage").Exists() {
+		return "", false
+	}
+	n := gjson.Get(tokenUsage, "completion_tokens_details.num_search_queries").Int()
+	if n <= 0 {
+		return "", false
+	}
+	out, err := sjson.Set(tokenUsage, "tool_usage.web_search.num_requests", n)
+	if err != nil {
+		return "", false
+	}
+	return out, true
+}
+
+// migrationBackfillToolUsageWebSearch backfills tool_usage on SQLite at boot; Postgres runs
+// ensureToolUsageWebSearchBackfill post-startup so a large logs table does not block boot.
+func migrationBackfillToolUsageWebSearch(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_backfill_tool_usage_web_search"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() != "sqlite" {
+				return nil
+			}
+			return backfillToolUsageWebSearch(ctx, tx)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// ensureToolUsageWebSearchBackfill runs the Postgres backfill post-startup, once; an interrupted run resumes next boot.
+func ensureToolUsageWebSearchBackfill(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_backfill_tool_usage_web_search_postgres",
+		Migrate: func(tx *gorm.DB) error {
+			return backfillToolUsageWebSearch(ctx, tx)
+		},
+	}})
+	return m.Migrate()
+}
+
+// backfillToolUsageWebSearch rewrites legacy token_usage rows in id-keyset batches.
+func backfillToolUsageWebSearch(ctx context.Context, db *gorm.DB) error {
+	after := ""
+	for {
+		var rows []struct {
+			ID         string
+			TokenUsage string
+		}
+		if err := db.WithContext(ctx).Table("logs").Select("id, token_usage").
+			Where(`id > ? AND token_usage LIKE '%"num_search_queries"%' AND token_usage NOT LIKE '%"tool_usage"%'`, after).
+			Order("id").Limit(1000).Scan(&rows).Error; err != nil {
+			return fmt.Errorf("failed to read tool_usage backfill batch: %w", err)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		after = rows[len(rows)-1].ID
+		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			for _, row := range rows {
+				out, ok := toolUsageFromNumSearchQueries(row.TokenUsage)
+				if !ok {
+					continue
+				}
+				// Compare-and-swap: a row rewritten since the read keeps the newer payload.
+				if err := tx.Exec("UPDATE logs SET token_usage = ? WHERE id = ? AND token_usage = ?", out, row.ID, row.TokenUsage).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("failed to write tool_usage backfill batch: %w", err)
+		}
+	}
 }

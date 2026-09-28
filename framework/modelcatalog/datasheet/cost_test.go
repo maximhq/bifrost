@@ -779,7 +779,7 @@ func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
 	p := chatPricing(0.00001, 0.00005)
 	p.CacheReadInputTokenCost = bifrost.Ptr(0.000001)
 	p.CacheCreationInputTokenCost = bifrost.Ptr(0.0000125)
-	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01)
 	p.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
 
 	usage := &schemas.BifrostLLMUsage{
@@ -1191,7 +1191,7 @@ func TestComputeTextCost_272kTierWithCacheRead(t *testing.T) {
 
 func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.SearchContextCostPerQuery = bifrost.Ptr(0.01) // $0.01 per search query
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01) // $0.01 per web search request
 
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{
@@ -1207,9 +1207,40 @@ func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 	assert.InDelta(t, 0.0405, cost, 1e-12)
 }
 
-func TestComputeTextCost_DeprecatedNumSearchQueriesNotPriced(t *testing.T) {
+func TestComputeTextCost_LegacySearchContextRateNotPriced(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
 	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 3}},
+	}
+
+	// Only web_search_cost_per_request prices web search; the legacy rate is folded in at unmarshal.
+	assert.InDelta(t, 0.0105, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+}
+
+func TestEntryUnmarshal_WebSearchCostPerRequestFallsBackToSearchContext(t *testing.T) {
+	var legacy Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"search_context_cost_per_query":{"search_context_size_low":0.01,"search_context_size_medium":0.01,"search_context_size_high":0.01}}`), &legacy))
+	require.NotNil(t, legacy.WebSearchCostPerRequest)
+	assert.InDelta(t, 0.01, *legacy.WebSearchCostPerRequest, 1e-12)
+
+	var explicit Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"web_search_cost_per_request":0.02,"search_context_cost_per_query":{"search_context_size_medium":0.01}}`), &explicit))
+	require.NotNil(t, explicit.WebSearchCostPerRequest)
+	assert.InDelta(t, 0.02, *explicit.WebSearchCostPerRequest, 1e-12)
+
+	var none Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"input_cost_per_token":0.001}`), &none))
+	assert.Nil(t, none.WebSearchCostPerRequest)
+}
+
+func TestComputeTextCost_DeprecatedNumSearchQueriesNotPriced(t *testing.T) {
+	p := chatPricing(0.000003, 0.000015)
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01)
 
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{
@@ -1324,9 +1355,9 @@ func TestComputeRerankCost_TotalAbove200kButInputBelow200kUsesBaseRate(t *testin
 
 func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:         bifrost.Ptr(0.0),
-		OutputCostPerToken:        bifrost.Ptr(0.0),
-		SearchContextCostPerQuery: bifrost.Ptr(0.001),
+		InputCostPerToken:       bifrost.Ptr(0.0),
+		OutputCostPerToken:      bifrost.Ptr(0.0),
+		WebSearchCostPerRequest: bifrost.Ptr(0.001),
 	}
 	numQueries := 5
 	usage := &schemas.BifrostLLMUsage{
@@ -1341,9 +1372,9 @@ func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 // folding it into a bare OutputCost total.
 func TestComputeRerankCost_BreakdownDetails(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:         bifrost.Ptr(0.001),
-		OutputCostPerToken:        bifrost.Ptr(0.002),
-		SearchContextCostPerQuery: bifrost.Ptr(0.001),
+		InputCostPerToken:       bifrost.Ptr(0.001),
+		OutputCostPerToken:      bifrost.Ptr(0.002),
+		WebSearchCostPerRequest: bifrost.Ptr(0.001),
 	}
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{

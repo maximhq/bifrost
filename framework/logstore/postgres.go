@@ -268,6 +268,13 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		} else {
 			logger.Info("logstore: performance indexes are ready")
 		}
+
+		// Last: it can run long on a large logs table and must not delay the index builds above.
+		if err := ensureToolUsageWebSearchBackfill(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: tool_usage web search backfill failed: %s (old logs keep num_search_queries only)", err))
+		} else {
+			logger.Info("logstore: tool_usage web search backfill completed")
+		}
 	}()
 
 	// Create materialized views and start periodic refresh for dashboard queries.

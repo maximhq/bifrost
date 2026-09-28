@@ -486,6 +486,61 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 	return nil
 }
 
+// backfillToolUsageWebSearch rewrites legacy token_usage rows by re-inserting them, walking the
+// (timestamp, id) primary key so each batch prunes granules instead of scanning the table.
+func (s *ClickHouseLogStore) backfillToolUsageWebSearch(ctx context.Context) error {
+	afterTS := time.UnixMilli(0)
+	afterID := ""
+	for {
+		var keys []struct {
+			ID        string
+			Timestamp time.Time
+		}
+		// FINAL is off here: it disables read-in-order, so every batch would scan the whole table. Stale
+		// unmerged versions only yield candidates that the FINAL re-read below then skips.
+		if err := s.db.WithContext(ctx).Raw(`
+			SELECT id, timestamp FROM logs
+			WHERE token_usage LIKE '%"num_search_queries"%' AND token_usage NOT LIKE '%"tool_usage"%'
+			  AND timestamp >= fromUnixTimestamp64Milli(?) AND (timestamp, id) > (fromUnixTimestamp64Milli(?), ?)
+			ORDER BY timestamp, id LIMIT 1000
+			SETTINGS final = 0`, afterTS.UnixMilli(), afterTS.UnixMilli(), afterID).Scan(&keys).Error; err != nil {
+			return fmt.Errorf("failed to read tool_usage backfill batch: %w", err)
+		}
+		if len(keys) == 0 {
+			return nil
+		}
+		afterTS, afterID = keys[len(keys)-1].Timestamp, keys[len(keys)-1].ID
+		ids := make([]string, len(keys))
+		for i, k := range keys {
+			ids[i] = k.ID
+		}
+		minTS, maxTS := keys[0].Timestamp, afterTS
+		if err := forEachRMWChunk(ids, func(chunk []string) error {
+			defer s.lockRMWBatch("logs", chunk)()
+			// Re-read under the locks so a concurrent Update's payload is the one patched.
+			var rows []*Log
+			if err := s.db.WithContext(ctx).Session(&gorm.Session{SkipHooks: true}).
+				Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?) AND id IN ?", minTS.UnixMilli(), maxTS.UnixMilli(), chunk).
+				Find(&rows).Error; err != nil {
+				return err
+			}
+			patched := rows[:0]
+			for _, row := range rows {
+				if out, ok := toolUsageFromNumSearchQueries(row.TokenUsage); ok {
+					row.TokenUsage = out
+					patched = append(patched, row)
+				}
+			}
+			if len(patched) == 0 {
+				return nil
+			}
+			return s.chReinsert(ctx, &patched)
+		}); err != nil {
+			return fmt.Errorf("failed to write tool_usage backfill batch: %w", err)
+		}
+	}
+}
+
 // UpdateMCPToolLog applies an update to an MCP tool log row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
 	st, err := chParseSchema(s.db, &MCPToolLog{})

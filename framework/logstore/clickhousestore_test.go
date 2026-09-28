@@ -398,6 +398,29 @@ func TestChApplyStructUpdateSkipsDedupKeys(t *testing.T) {
 
 // --- Integration tests (require docker-compose clickhouse) ---
 
+func TestClickHouseBackfillToolUsageWebSearch(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	i := 0
+	for id, usage := range toolUsageBackfillRows {
+		entry := chTestLog(id, ts.Add(time.Duration(i)*time.Second))
+		entry.TokenUsage = usage
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+		i++
+	}
+
+	require.NoError(t, store.backfillToolUsageWebSearch(ctx))
+	assertToolUsageBackfilled(t, store.db)
+
+	// Idempotent: the re-inserted row no longer matches the prefilter.
+	require.NoError(t, store.backfillToolUsageWebSearch(ctx))
+	assertToolUsageBackfilled(t, store.db)
+	var versions int64
+	require.NoError(t, store.db.Raw("SELECT count() FROM logs FINAL WHERE id = 'legacy'").Scan(&versions).Error)
+	assert.Equal(t, int64(1), versions)
+}
+
 func TestClickHouseCreateAndFind(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
