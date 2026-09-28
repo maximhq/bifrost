@@ -372,12 +372,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Checking the MCP library sync interval
-	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
-		logger.Warn("MCP library sync interval must be greater than 0")
-		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
+	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval < 0 {
+		logger.Warn("MCP library sync interval cannot be negative")
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval cannot be negative (use 0 to disable background sync)")
 		return
 	}
-	// Checking the live models sync interval. Unlike the intervals above, 0 is
+	// Checking the live models sync interval. Unlike the pricing interval, 0 is
 	// accepted: it is the documented way to turn the background refresher off.
 	if payload.FrameworkConfig.LiveModelsSyncInterval != nil {
 		interval := *payload.FrameworkConfig.LiveModelsSyncInterval
