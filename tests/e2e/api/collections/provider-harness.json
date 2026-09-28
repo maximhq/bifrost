@@ -172540,6 +172540,235 @@
           }
         }
       ]
+    },
+    {
+      "name": "119. OpenRouter Anthropic Messages tool cache (#6290 follow-up) (openrouter-tool-cache)",
+      "description": "Pins the remaining tool-block cache gap after #6290 / PR #6692. Anthropic Messages ingress for OpenRouter Claude previously used /v1/responses and lost tool_use/tool_result cache_control. Native /v1/messages preserves those boundaries and TTL. Two unary cases inspect the outgoing wire; a streaming write/read pair proves reuse at a tool-result-only breakpoint. cachePrefix and pcNonce isolate a sufficiently long prefix, and a dependency variable keeps the write when filtering. Native Responses and non-Claude route isolation are covered by mock HTTP Go tests. Raw-wire cases require allow_per_request_raw_override.",
+      "item": [
+        {
+          "name": "OpenRouter Claude Sonnet 4.6 Messages: tool_use cache marker on wire - openrouter-tool-cache - #6290",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openrouter-tool-cache: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var response = pm.response.json() || {};",
+                  "var wire = (response.extra_fields || {}).raw_request;",
+                  "if (typeof wire === 'string') { try { wire = JSON.parse(wire); } catch (e) { wire = null; } }",
+                  "pm.test('openrouter-tool-cache: native Messages wire is captured', function () { pm.expect(wire, 'raw_request missing: ' + pm.response.text()).to.be.an('object'); });",
+                  "wire = wire || {};",
+                  "pm.test('openrouter-tool-cache: tool marker and 1h TTL survive', function () {",
+                  "  var blocks = ((wire.messages || [])[1] || {}).content || [];",
+                  "  var block = blocks.filter(function (b) { return b.type === 'tool_use'; })[0] || {};",
+                  "  pm.expect((block.cache_control || {}).type, 'wire: ' + JSON.stringify(wire)).to.equal('ephemeral');",
+                  "  pm.expect((block.cache_control || {}).ttl, 'wire: ' + JSON.stringify(wire)).to.equal('1h');",
+                  "  pm.expect(wire.model).to.equal('anthropic/claude-sonnet-4.6');",
+                  "});",
+                  "pm.test('openrouter-tool-cache: tool-definition cache marker survives', function () { pm.expect((((wire.tools || [])[0] || {}).cache_control || {}).ttl, JSON.stringify(wire.tools)).to.equal('1h'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4.6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with OK after reading the weather.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_cache_regression\",\n          \"name\": \"weather\",\n          \"input\": {\n            \"city\": \"Paris\"\n          },\n          \"cache_control\": {\n            \"type\": \"ephemeral\",\n            \"ttl\": \"1h\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_cache_regression\",\n          \"content\": \"Sunny\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"weather\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        }\n      },\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"ttl\": \"1h\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Sonnet 4.6 Messages: tool_result cache marker on wire - openrouter-tool-cache - #6290",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openrouter-tool-cache: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var response = pm.response.json() || {};",
+                  "var wire = (response.extra_fields || {}).raw_request;",
+                  "if (typeof wire === 'string') { try { wire = JSON.parse(wire); } catch (e) { wire = null; } }",
+                  "pm.test('openrouter-tool-cache: native Messages wire is captured', function () { pm.expect(wire, 'raw_request missing: ' + pm.response.text()).to.be.an('object'); });",
+                  "wire = wire || {};",
+                  "pm.test('openrouter-tool-cache: tool marker and 1h TTL survive', function () {",
+                  "  var blocks = ((wire.messages || [])[2] || {}).content || [];",
+                  "  var block = blocks.filter(function (b) { return b.type === 'tool_result'; })[0] || {};",
+                  "  pm.expect((block.cache_control || {}).type, 'wire: ' + JSON.stringify(wire)).to.equal('ephemeral');",
+                  "  pm.expect((block.cache_control || {}).ttl, 'wire: ' + JSON.stringify(wire)).to.equal('1h');",
+                  "  pm.expect(wire.model).to.equal('anthropic/claude-sonnet-4.6');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4.6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with OK after reading the weather.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_cache_regression\",\n          \"name\": \"weather\",\n          \"input\": {\n            \"city\": \"Paris\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_cache_regression\",\n          \"content\": \"Sunny\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\",\n            \"ttl\": \"1h\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"weather\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Sonnet 4.6 Messages: tool-result prompt caching streaming [write] - openrouter-tool-cache - #6290",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openrouter-tool-cache: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openrouter-tool-cache: native stream terminates', function () { pm.expect(text.indexOf('message_stop'), text.slice(-800)).to.be.at.least(0); });",
+                  "var created = 0;",
+                  "text.split(String.fromCharCode(10)).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  try {",
+                  "    var frame = JSON.parse(line.slice(5).trim());",
+                  "    created = Math.max(created, (frame.usage || {}).cache_creation_input_tokens || 0, ((frame.message || {}).usage || {}).cache_creation_input_tokens || 0);",
+                  "  } catch (e) {}",
+                  "});",
+                  "pm.test('openrouter-tool-cache: tool-result-only breakpoint writes cache', function () { pm.expect(created, 'stream: ' + text.slice(-2000)).to.be.above(0); });",
+                  "pm.collectionVariables.set('cacheChain_openrouter_anthropic_tool_cache', 'sent');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4.6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [openrouter-tool-cache {{pcNonce}} stream] Reply with OK.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_cache_regression\",\n          \"name\": \"weather\",\n          \"input\": {\n            \"city\": \"Paris\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_cache_regression\",\n          \"content\": \"Sunny\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\",\n            \"ttl\": \"1h\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"weather\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Sonnet 4.6 Messages: tool-result prompt caching streaming [read] - openrouter-tool-cache - #6290",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function () {}, 2000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openrouter-tool-cache: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openrouter-tool-cache: native stream terminates', function () { pm.expect(text.indexOf('message_stop'), text.slice(-800)).to.be.at.least(0); });",
+                  "var cached = 0;",
+                  "text.split(String.fromCharCode(10)).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  try {",
+                  "    var frame = JSON.parse(line.slice(5).trim());",
+                  "    cached = Math.max(cached, (frame.usage || {}).cache_read_input_tokens || 0, ((frame.message || {}).usage || {}).cache_read_input_tokens || 0);",
+                  "  } catch (e) {}",
+                  "});",
+                  "pm.test('openrouter-tool-cache: repeated tool-result-only breakpoint reads cache', function () { pm.expect(cached, 'stream: ' + text.slice(-2000)).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4.6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [openrouter-tool-cache {{pcNonce}} stream] Reply with OK.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_cache_regression\",\n          \"name\": \"weather\",\n          \"input\": {\n            \"city\": \"Paris\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_cache_regression\",\n          \"content\": \"Sunny\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\",\n            \"ttl\": \"1h\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"weather\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages?_chain={{cacheChain_openrouter_anthropic_tool_cache}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{cacheChain_openrouter_anthropic_tool_cache}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
