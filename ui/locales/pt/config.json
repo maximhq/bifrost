@@ -23,7 +23,8 @@
 		"brandingDescription": "Substitua o logótipo do Bifrost pelo seu em todo o painel e no ecrã de início de sessão. Esta funcionalidade faz parte da licença Enterprise do Bifrost. Gostaríamos de saber mais sobre o seu caso de uso e como podemos ajudar.",
 		"licenseTitle": "Desbloquear a gestão de licenças",
 		"apiKeysTitle": "Chaves API baseadas em âmbitos",
-		"apiKeysDescription": "Precisa de controlo de acesso granular com chaves API baseadas em âmbitos? Os clientes Enterprise podem criar várias chaves API com permissões específicas para diferentes serviços, equipas ou ambientes."
+		"apiKeysDescription": "Precisa de controlo de acesso granular com chaves API baseadas em âmbitos? Os clientes Enterprise podem criar várias chaves API com permissões específicas para diferentes serviços, equipas ou ambientes.",
+		"unknownOs": "SO desconhecido"
 	},
 	"clientSettings": {
 		"title": "Definições do cliente",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>Lista de bloqueio:</span0> Os cabeçalhos na lista de bloqueio são sempre impedidos de ser reencaminhados",
 		"wildcardRules": "<span0>Wildcards:</span0> Utilize  <code1>*</code1> no fim de um padrão para corresponder a prefixos (ex.: <code2>anthropic-*</code2> corresponde a todos os cabeçalhos que começam com <code3>anthropic-</code3>). Utilize  <code4>*</code4> sozinho para corresponder a todos os cabeçalhos.",
 		"headerNames": "As entradas da lista de permissões/bloqueio devem ser o nome do cabeçalho <span0>sem</span0> o prefixo  <code1>x-bf-eh-</code1>",
-		"allowlistExample": "Exemplo: para permitir <code0>x-bf-eh-custom-id</code0> ou o direto  <code1>custom-id</code1>, adicione  <code2>custom-id</code2> à lista de permissões"
+		"allowlistExample": "Exemplo: para permitir <code0>x-bf-eh-custom-id</code0> ou o direto  <code1>custom-id</code1>, adicione  <code2>custom-id</code2> à lista de permissões",
+		"extraFieldsPlacement": "Localização dos campos extra",
+		"extraFieldsPlacementHelp": "Onde as respostas de inferência transportam os metadados <b>extra_fields</b> do Bifrost. <b>Corpo</b> mantém o objeto extra_fields na resposta JSON. <b>Cabeçalhos</b> remove-o do corpo e de cada chunk de streaming, e envia os seus campos escalares como cabeçalhos de resposta <b>x-bifrost-*</b>.",
+		"extraFieldsPlacementDroppedNote": "No modo Cabeçalhos, estes campos são descartados e não são enviados para lado nenhum: pedido em bruto, resposta em bruto, metadados de encaminhamento, depuração de guardrails, erros de análise e, nos erros, estados das chaves, utilização faturada e detalhes de autenticação MCP. As respostas em streaming só transportam o que é conhecido antes do primeiro chunk (encaminhamento, fallback, consulta de cache), pelo que a latência por chunk, o índice do chunk e os totais finais também são descartados.",
+		"extraFieldsBody": "Corpo",
+		"extraFieldsHeaders": "Cabeçalhos",
+		"removeSecurityHeader_one": "Remover cabeçalho de segurança: {{headers}}",
+		"removeSecurityHeader_other": "Remover cabeçalhos de segurança: {{headers}}"
 	},
 	"caching": {
 		"title": "Cache local",
@@ -231,7 +239,11 @@
 		"deleteExpiredVirtualKeysHelp": "Quando ativado, uma tarefa de limpeza diária elimina todas as chaves virtuais cuja validade já passou e publica uma notificação com a lista das chaves removidas. Cada chave pode substituir isto através do seu interruptor <b0>Eliminar após expirar</b0>: uma chave definida como desativada é mantida e uma definida como ativada é eliminada mesmo com esta opção desativada.",
 		"enforceVkObjectOwnership": "Restringir objetos do fornecedor à chave virtual criadora",
 		"enforceVkObjectOwnershipHelp": "Quando ativado, os ficheiros, lotes, vídeos, contentores, conteúdos em cache e sessões em direto criados com uma chave virtual só podem ser lidos, listados ou eliminados com essa mesma chave. As outras chaves virtuais recebem um erro de não encontrado e não os veem nas listas. Os pedidos sem chave virtual não são afetados. A chave criadora é registada mesmo com esta opção desativada, pelo que voltar a ativá-la também abrange os objetos criados entretanto, exceto aqueles cuja chave criadora não pôde ser registada.",
-		"proofRequired": "Introduza a palavra-passe de administrador atual para confirmar esta alteração. A proteção do dashboard está desativada, pelo que esta sessão não tem sessão iniciada. Se não souber a palavra-passe, use antes o token de configuração."
+		"proofRequired": "Introduza a palavra-passe de administrador atual para confirmar esta alteração. A proteção do dashboard está desativada, pelo que esta sessão não tem sessão iniciada. Se não souber a palavra-passe, use antes o token de configuração.",
+		"skipAccessProfileKeyCreation": "Não criar chaves virtuais de usuário para perfis de acesso",
+		"skipAccessProfileKeyCreationHelp": "Quando ativado, o primeiro perfil de acesso de um usuário não cria uma chave virtual para ele. As chaves que o usuário já possui, ou que você adicionar para ele, continuam sendo governadas pelo perfil enquanto ele tiver um.",
+		"skipAccessProfileKeyDeletion": "Não excluir chaves virtuais de usuário ao remover perfis de acesso",
+		"skipAccessProfileKeyDeletionHelp": "Quando ativado, remover o último perfil de acesso de um usuário mantém as chaves virtuais como chaves comuns, sem os provedores nem o acesso do perfil. Excluir o usuário ainda exclui as chaves dele."
 	},
 	"logging": {
 		"title": "Definições de registos",
@@ -296,7 +308,11 @@
 		"convertUnsupportedParamsHelp": "Converte valores de parâmetros do modelo que não são suportados pelo modelo.",
 		"azureDeepseek": "Usar APIs de Chat Completion para modelos Azure Deepseek",
 		"azureDeepseekHelp": "Usar APIs de Chat Completion para Claude Code, Codex, etc. em modelos Azure Deepseek.",
-		"toastSaved": "Definições de compatibilidade atualizadas com sucesso."
+		"toastSaved": "Definições de compatibilidade atualizadas com sucesso.",
+		"forceReasoningOnlyToResponses": "Usar a API Responses para modelos OpenAI apenas de raciocínio",
+		"forceReasoningOnlyToResponsesHelp": "Encaminha os pedidos de chat completion para a API Responses nos modelos que não conseguem raciocinar com chamadas de ferramentas em chat completions, em vez de desativar o raciocínio.",
+		"convertDecisionToResponses": "Emular a Decisions API em modelos sem suporte nativo a decisões",
+		"convertDecisionToResponsesHelp": "Responde a pedidos de decisão em modelos sem endpoint nativo de decisões, invocando o modelo através da API Responses com uma ferramenta de função forçada. Quando desativado, esses pedidos falham por não serem suportados."
 	},
 	"featureFlags": {
 		"title": "Sinalizadores de funcionalidades",
@@ -387,7 +403,26 @@
 		"allowedRedirectUrisHelp": "URIs de callback exatos que os clientes MCP remotos podem usar, p. ex., <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Adicione <code1>*</code1> para permitir qualquer callback https; os carateres universais parciais não são suportados. Os callbacks loopback e <code2>cursor://anysphere.cursor-mcp</code2> são sempre permitidos. Alterar esta lista requer autenticação do dashboard.",
 		"allowedRedirectUrisPlaceholder": "Adicionar URI de callback (Enter)",
 		"anyCallbackAllowed": "Qualquer callback é permitido",
-		"anyCallbackAllowedHelp": "Qualquer cliente MCP pode registar-se com um callback em qualquer host, pelo que a página de consentimento é a única verificação contra um cliente que envie códigos de autorização a um atacante. Prefira listar URIs de callback exatos."
+		"anyCallbackAllowedHelp": "Qualquer cliente MCP pode registar-se com um callback em qualquer host, pelo que a página de consentimento é a única verificação contra um cliente que envie códigos de autorização a um atacante. Prefira listar URIs de callback exatos.",
+		"limitMaxSourceBytes": "Tamanho máximo do código-fonte (bytes)",
+		"limitMaxSourceBytesDesc": "O maior código que uma única execução pode submeter.",
+		"limitMaxSteps": "Máximo de passos de computação",
+		"limitMaxStepsDesc": "Passos do interpretador por execução, incluindo o trabalho dentro das funções incorporadas.",
+		"limitMaxMemoryBytes": "Memória máxima (bytes)",
+		"limitMaxMemoryBytesDesc": "Orçamento estimado de alocação por execução. Cada execução em simultâneo tem o seu próprio orçamento.",
+		"limitMaxLogBytes": "Saída máxima de logs (bytes)",
+		"limitMaxLogBytesDesc": "Saída de print e de logs de ferramentas por execução, incluindo quebras de linha.",
+		"limitMaxToolCalls": "Máximo de chamadas de ferramentas",
+		"limitMaxToolCallsDesc": "Chamadas de ferramentas MCP aninhadas por execução.",
+		"limitMaxValueBytes": "Tamanho máximo de valor (bytes)",
+		"limitMaxValueBytesDesc": "Orçamento de tamanho para cada payload de ferramenta e resultado convertido. Tem de ser pelo menos {{min}}.",
+		"limitMaxNestingDepth": "Profundidade máxima de aninhamento",
+		"limitMaxNestingDepthDesc": "Profundidade de aninhamento dos valores que atravessam a fronteira da ferramenta. No máximo {{max}}.",
+		"limitNegative": "{{label}} não pode ser negativo.",
+		"limitValueBytesMin": "O tamanho máximo de valor tem de ser pelo menos {{min}} bytes.",
+		"limitNestingMax": "A profundidade máxima de aninhamento tem de ser no máximo {{max}}.",
+		"codeModeLimitsTitle": "Limites do Code Mode",
+		"codeModeLimitsDescription": "Limites de cada execução de código. Deixe um campo vazio para usar o respetivo valor predefinido. Não há limite para o número de execuções em simultâneo."
 	},
 	"modelSettings": {
 		"title": "Definições de modelos",
@@ -733,7 +768,11 @@
 		"intoPath": " para {{path}}/",
 		"intoRoot": " para a raiz",
 		"previewAfterSaving": "Pré-visualização disponível após guardar.",
-		"externalUrlRequired": "Defina o URL externo do cliente em <settingsLink>Definições de competências</settingsLink> para ativar o registo no marketplace."
+		"externalUrlRequired": "Defina o URL externo do cliente em <settingsLink>Definições de competências</settingsLink> para ativar o registo no marketplace.",
+		"showLess": "Mostrar menos",
+		"showMore": "Mostrar mais",
+		"skillNotFound": "Competência não encontrada",
+		"backToList": "Voltar à lista"
 	},
 	"promptRepo": {
 		"loadFailed": "Falha ao carregar o repositório de prompts",
@@ -933,7 +972,19 @@
 		"governancePlugin": "Plugin de governação",
 		"governancePluginDesc": "Guia completo de controlo de acesso, orçamentos e limitação de taxa",
 		"governancePluginContent": "Domine chaves virtuais, orçamentos hierárquicos, limitação de taxa e acompanhamento de utilização para uma infraestrutura de IA segura.",
-		"viewGovernanceGuide": "Ver guia de governação"
+		"viewGovernanceGuide": "Ver guia de governação",
+		"heading": "Potencie a sua stack Bifrost",
+		"viewFullDocumentation": "Ver documentação completa",
+		"quickStartGuide": "Guia de início rápido",
+		"readMore": "Ler mais",
+		"items": {
+			"quickStart": ["Configuração do transporte HTTP", "Utilização do pacote Go", "Guia do Docker"],
+			"architecture": ["Visão geral do sistema", "Fluxo de pedidos", "Modelo de concorrência", "Decisões de design"],
+			"usageGuides": ["Configuração de fornecedores", "Gestão de chaves", "Tratamento de erros", "Memória e rede"],
+			"contributing": ["Guia de contribuição", "Adicionar fornecedores", "Desenvolvimento de plugins", "Convenções de código"],
+			"integrationExamples": ["Integração com OpenAI", "Integração com Anthropic", "Integração com GenAI", "Guias de migração"],
+			"benchmarks": ["Resultados do teste de 5K RPS", "Métricas de desempenho", "Ajuste de configuração", "Comparações de hardware"]
+		}
 	},
 	"warp": {
 		"saved": "Configuração do Warp guardada.",
@@ -1036,7 +1087,10 @@
 			"searchLimit": "O limite de pesquisa deve estar entre 1 e 25.",
 			"retentionRequired": "É necessário um valor",
 			"retentionWhole": "Deve ser um número inteiro de dias",
-			"retentionMin": "Deve ser 0 ou mais dias (0 mantém o valor predefinido)"
+			"retentionMin": "Deve ser 0 ou mais dias (0 mantém o valor predefinido)",
+			"modelRequired": "Escolha um fornecedor e um modelo para ativar o Warp.",
+			"modelOrRemove": "Escolha um fornecedor e um modelo ou remova este modelo.",
+			"modelDuplicate": "Este fornecedor e modelo já constam da lista."
 		},
 		"models": "Modelos",
 		"modelsHelp": "Os modelos com que o Warp raciocina e escreve as respostas. O modelo predefinido responde, a menos que alguém escolha outro no painel do Warp. Aqui, um modelo capaz compensa.",
@@ -1046,6 +1100,67 @@
 		"defaultModel": "Modelo predefinido",
 		"modelNumber": "Modelo {{number}}",
 		"makeDefault": "Tornar predefinido",
-		"removeModel": "Remover modelo {{number}}"
+		"removeModel": "Remover modelo {{number}}",
+		"topics": {
+			"badRange": "Escolha um intervalo de tempo válido para os tópicos.",
+			"started": "Criação dos tópicos iniciada.",
+			"cancelRequested": "Solicitação de cancelamento do agrupamento de tópicos enviada.",
+			"title": "Grupos de tópicos",
+			"infoLabel": "Como os tópicos funcionam",
+			"infoIntro": "Os tópicos agrupam solicitações pelo assunto, para que o Warp possa responder sobre o que as pessoas perguntam.",
+			"infoSeed": "<b0>1. Inicialize uma vez.</b0> Uma execução única agrupa as solicitações indexadas em um intervalo e dá um nome a cada grupo. A inicialização ocorre uma vez por modelo de embedding.",
+			"infoFiled": "<b0>2. Classificados à medida que chegam.</b0> Cada solicitação indexada a partir daí é classificada no tópico mais próximo.",
+			"infoFound": "<b0>3. Novos tópicos identificados.</b0> Solicitações que não correspondem a nenhum tópico ficam aguardando. Quando o limite para novos tópicos é atingido, uma tarefa horária as agrupa em novos tópicos ou as incorpora aos existentes.",
+			"infoTidy": "<b0>4. Organização contínua.</b0> A mesma tarefa arquiva tópicos sem solicitações há 30 dias e combina tópicos que passam a ter o mesmo significado.",
+			"infoReseed": "A troca do modelo de embedding reinicia o processo: os tópicos são inicializados novamente.",
+			"description": "Inicialize os tópicos uma vez com solicitações indexadas de um intervalo. Depois, eles se mantêm atualizados conforme novas solicitações são indexadas, sem outras execuções.",
+			"seeded": "Os tópicos são criados para este modelo de embedding e se mantêm atualizados: novas solicitações são classificadas à medida que são indexadas, e novas categorias são identificadas entre as que não correspondem a nenhum tópico.",
+			"cancel": "Cancelar agrupamento",
+			"seed": "Inicializar tópicos",
+			"saveBeforeSeed": "Salve as alterações de configuração antes de inicializar os tópicos.",
+			"needsBackfill": "Ainda não há nada indexado para este modelo de embedding. Primeiro, preencha um intervalo acima e depois inicialize os tópicos usando o mesmo intervalo.",
+			"activeTopics_one": "{{count}} tópico ativo",
+			"activeTopics_other": "{{count}} tópicos ativos",
+			"inThemes_one": "em {{count}} tema",
+			"inThemes_other": "em {{count}} temas",
+			"pooled_one": "{{count}} solicitação aguardando um tópico",
+			"pooled_other": "{{count}} solicitações aguardando um tópico",
+			"unmatchedLastDay_one": "{{percent}}% das {{count}} solicitações do último dia não corresponderam a nenhum tópico",
+			"unmatchedLastDay_other": "{{percent}}% das {{count}} solicitações do último dia não corresponderam a nenhum tópico",
+			"nothingFiled": "nada classificado no último dia",
+			"requestsRead_one": "{{count}} solicitação lida",
+			"requestsRead_other": "{{count}} solicitações lidas",
+			"topicsWritten_one": "{{count}} tópico criado",
+			"topicsWritten_other": "{{count}} tópicos criados",
+			"themesCount_one": "{{count}} tema",
+			"themesCount_other": "{{count}} temas",
+			"labelsFellBack_one": "{{count}} rótulo voltou ao padrão",
+			"labelsFellBack_other": "{{count}} rótulos voltaram ao padrão",
+			"statusFailed": "Não foi possível ler o status do agrupamento de tópicos; uma tarefa em andamento pode não aparecer.",
+			"thresholdLabel": "Limite para novos tópicos",
+			"thresholdHint": "Quantas solicitações sem correspondência com um tópico precisam aguardar antes de o Warp agrupá-las em novos tópicos. A verificação ocorre a cada hora. Um valor menor identifica novos assuntos mais cedo, com menos exemplos; um valor maior aguarda padrões mais claros. De {{min}} a {{max}}.",
+			"thresholdError": "Deve ser um número inteiro entre {{min}} e {{max}}"
+		}
+	},
+	"agentGateway": {
+		"title": "Definições do Agent Gateway",
+		"description": "Configure as definições do Agent Gateway (A2A).",
+		"toastSaved": "Definições do Agent Gateway atualizadas com sucesso.",
+		"loadFailed": "Falha ao carregar as definições do Agent Gateway.",
+		"externalClientUrl": "URL externo do cliente",
+		"externalClientUrlHelp": "URL base público do Bifrost, usado nos cartões de agente servidos e nos URLs de callback de notificações push. Se ficar em branco, todos os endpoints do protocolo de agentes ficam desativados. A gestão de agentes continua disponível. Suporta a sintaxe de variáveis de ambiente (p. ex., <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"privateAllowlist": "Lista de permissões de rede privada",
+		"privateAllowlistHelp": "Anfitriões, endereços IP ou intervalos CIDR, sem esquema nem porta, que a deteção, o OAuth e os pedidos de execução do Agent Gateway podem alcançar quando resolvem para um endereço privado ou de loopback. Os endereços link-local e de metadados da cloud estão sempre bloqueados.",
+		"privateAllowlistPlaceholder": "Adicione um anfitrião, IP ou CIDR (Enter ou vírgula)",
+		"captureRaw": "Capturar pedido e resposta em bruto",
+		"captureRawHelp": "Guarda os payloads em bruto do pedido e da resposta nos registos. A captura em bruto está desativada para gRPC porque usa mensagens protobuf binárias; uma captura com limite de tamanho pode cortar uma mensagem a meio e não pode ser descodificada nem inspecionada de forma fiável."
+	},
+	"skillsSettings": {
+		"description": "Configure a disponibilização do marketplace do repositório de competências.",
+		"toastSaved": "Definições de competências atualizadas com sucesso.",
+		"loadFailed": "Falha ao carregar as definições de competências.",
+		"retry": "Tentar novamente",
+		"externalClientUrl": "URL externo do cliente",
+		"externalClientUrlHelp": "URL base público do Bifrost para os marketplaces do Claude Code e do Codex. Deixe em branco para desativar a disponibilização e o registo do marketplace. A gestão e as transferências de competências continuam disponíveis. Suporta variáveis de ambiente e referências a vault."
 	}
 }

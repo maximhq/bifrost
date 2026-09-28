@@ -9,6 +9,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { buildProviderUpdatePayload } from "../views/utils";
 
@@ -17,6 +18,7 @@ interface PricingFormFragmentProps {
 }
 
 export function PricingFormFragment({ provider }: PricingFormFragmentProps) {
+	const { t } = useTranslation("models");
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -47,11 +49,11 @@ export function PricingFormFragment({ provider }: PricingFormFragmentProps) {
 		updateProvider(updatedProvider)
 			.unwrap()
 			.then(() => {
-				toast.success("Pricing configuration updated successfully");
+				toast.success(t("providers.pricing.updated"));
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update pricing configuration", {
+				toast.error(t("providers.pricing.updateFailed"), {
 					description: getErrorMessage(err),
 				});
 			});
@@ -68,12 +70,8 @@ export function PricingFormFragment({ provider }: PricingFormFragmentProps) {
 							<FormItem>
 								<div className="flex items-center justify-between space-x-2">
 									<div className="space-y-0.5">
-										<FormLabel>Ignore Provider-Reported Cost</FormLabel>
-										<p className="text-muted-foreground text-xs">
-											Discard the cost the provider returns in its usage object and calculate it in Bifrost from model pricing and pricing
-											overrides. Use this when a provider reports cost in its own units, such as credits or a non-USD currency. Models
-											without pricing or an override are logged at $0.
-										</p>
+										<FormLabel>{t("providers.pricing.ignoreProviderCost")}</FormLabel>
+										<p className="text-muted-foreground text-xs">{t("providers.pricing.ignoreProviderCostHelp")}</p>
 									</div>
 									<FormControl>
 										<Switch
@@ -100,7 +98,7 @@ export function PricingFormFragment({ provider }: PricingFormFragmentProps) {
 						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
-						Save Pricing Configuration
+						{t("providers.pricing.save")}
 					</Button>
 				</div>
 			</form>

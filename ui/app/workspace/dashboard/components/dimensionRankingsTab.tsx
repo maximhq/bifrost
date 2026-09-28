@@ -243,7 +243,9 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix,
 				</Card>
 			) : (
 				<Card className="rounded-sm p-2 shadow-none" data-testid={`${testIdPrefix}-table`}>
-					<span className="text-primary pl-2 text-sm font-medium">{dimensionLabel} Rankings</span>
+					<span className="text-primary pl-2 text-sm font-medium">
+						{t("dashboard.rankings.dimensionRankings", { dimension: dimensionLabel })}
+					</span>
 					<Table>
 						<TableHeader>
 							<TableRow>

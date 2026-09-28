@@ -51,7 +51,15 @@
 			"updateAction": "Atualizar cliente",
 			"createAction": "Criar cliente",
 			"calendarAlignHelp": "Ativar o alinhamento ao calendário redefine a utilização do orçamento para <bold0>$0.00</bold0> e os contadores de limite de taxa de tokens/pedidos para <bold1>0</bold1> para este cliente, e depois ajusta cada data de reinício ao início do respetivo período atual (ex.: início do dia, da semana, do mês ou do ano). A reposição da utilização não pode ser anulada, mas o alinhamento ao calendário pode ser desativado mais tarde. Isto entra em vigor quando guardar."
-		}
+		},
+		"detail": {
+			"title": "Detalhes do cliente",
+			"description": "Detalhes de utilização deste cliente.",
+			"info": "Informações",
+			"name": "Nome",
+			"noBudgets": "Nenhum orçamento configurado"
+		},
+		"actionsAria": "Ações do cliente {{name}}"
 	},
 	"teams": {
 		"title": "Equipas",
@@ -98,10 +106,13 @@
 			"updateAction": "Atualizar equipa",
 			"createAction": "Criar equipa",
 			"calendarAlignHelp": "Ativar o alinhamento ao calendário redefine a utilização do orçamento para <bold0>$0.00</bold0> e os contadores de limite de taxa de tokens/pedidos para <bold1>0</bold1> para esta equipa, e depois ajusta cada data de reinício ao início do respetivo período atual (ex.: início do dia, da semana, do mês ou do ano). A reposição da utilização não pode ser anulada, mas o alinhamento ao calendário pode ser desativado mais tarde. Isto entra em vigor quando guardar."
-		}
+		},
+		"actionsAria": "Ações da equipa {{name}}"
 	},
 	"virtualKeys": {
-		"loadFailed": "Falha ao carregar chaves virtuais: {{message}}"
+		"loadFailed": "Falha ao carregar chaves virtuais: {{message}}",
+		"metadataFilterInvalid": "A chave do filtro de metadados nesta ligação não é válida, pelo que não foi aplicada. As chaves usam 1 a 256 letras, dígitos, \".\", \"_\" ou \"-\".",
+		"clearFilter": "Limpar filtro"
 	},
 	"plugins": {
 		"title": "Plug-ins",
@@ -353,7 +364,26 @@
 			"filterEvent": "Evento",
 			"filterResponseStatus": "Estado da resposta",
 			"filterWebhooks": "Webhooks",
-			"searchWebhooks": "Pesquisar webhooks..."
+			"searchWebhooks": "Pesquisar webhooks...",
+			"table": {
+				"waiting": "À espera de novas entregas...",
+				"empty": "Nenhuma entrega encontrada. Experimente ajustar os filtros e/ou o intervalo de tempo.",
+				"range": "{{from}}-{{to}} de {{total}} entregas"
+			},
+			"header": {
+				"searchByDeliveryId": "Pesquisar por ID de entrega",
+				"switchLookup": "Alternar entre pesquisa por ID do pedido e por ID de entrega"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "ID de entrega",
+				"actions": "Ações",
+				"collapseSends": "Recolher envios",
+				"expandSends": "Expandir envios",
+				"noPermission": "Não tem permissão para voltar a entregar",
+				"openInLogs": "{{id}} — abrir nos registos"
+			},
+			"copyRequestId": "Copiar ID do pedido {{id}}"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "Desbloquear classificações de utilizadores para melhor visibilidade"
 	},
 	"promptDeployments": {
-		"unlockTitle": "Desbloquear implementações de prompts para melhor versionamento e testes A/B."
+		"unlockTitle": "Desbloquear implementações de prompts para melhor versionamento e testes A/B.",
+		"accordionTitle": "Implementações"
 	},
 	"connectorsUnlock": {
 		"splunk": "Desbloquear ingestão nativa de dados Splunk para melhor observabilidade",
@@ -389,7 +420,8 @@
 		"datadog": "Desbloquear ingestão nativa de dados Datadog para melhor observabilidade",
 		"bigquery": "Desbloquear ingestão nativa de dados BigQuery para análise",
 		"kafka": "Desbloquear streaming nativo de registos Kafka para observabilidade em tempo real",
-		"kafkaDescription": "Esta funcionalidade faz parte da licença Enterprise do Bifrost. Transmita traces de pedidos concluídos como JSON para um tópico Kafka para análise em tempo real, alertas e processamento a jusante."
+		"kafkaDescription": "Esta funcionalidade faz parte da licença Enterprise do Bifrost. Transmita traces de pedidos concluídos como JSON para um tópico Kafka para análise em tempo real, alertas e processamento a jusante.",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "Desbloquear perfis de acesso para melhor desempenho",
@@ -439,7 +471,9 @@
 		"reset": "Repor",
 		"addBudgetButton": "Adicionar orçamento",
 		"maximumSpend": "Despesa máxima (USD)",
-		"noBudgetLimits": "Não há limites de orçamento configurados."
+		"noBudgetLimits": "Não há limites de orçamento configurados.",
+		"removeBudgetAria": "Remover orçamento {{number}}",
+		"duplicateResetPeriod": "Período de reposição duplicado; cada linha de orçamento tem de usar um intervalo diferente."
 	},
 	"filters": {
 		"filters": "Filtros",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} padrões",
 		"removeAria": "Remover {{name}}",
 		"noneLeftClick": "Não restam fornecedores para configurar. Clique para adicionar"
+	},
+	"orgChart": {
+		"unlockTitle": "Desbloqueie o organigrama",
+		"unlockDescription": "Veja orçamentos, despesas, modelos e ferramentas de unidades de negócio, equipas e utilizadores numa única árvore. Esta funcionalidade faz parte da licença Enterprise do Bifrost."
+	},
+	"usage": {
+		"budgetAria": "Utilização do orçamento",
+		"tokenAria": "Utilização de tokens",
+		"requestAria": "Utilização de pedidos",
+		"resets": "Repõe {{period}}",
+		"tokens": "{{value}} tokens",
+		"req": "{{value}} ped.",
+		"tokenTooltip": "{{used}} / {{max}} tokens",
+		"requestTooltip": "{{used}} / {{max}} pedidos",
+		"keyCount_one": "{{count}} chave",
+		"keyCount_other": "{{count}} chaves"
+	},
+	"budgetOverride": {
+		"updated": "Substituição de orçamento atualizada",
+		"added": "Substituição de orçamento adicionada",
+		"removed": "Substituição de orçamento removida",
+		"invalidInput": "Entrada inválida",
+		"editOverride": "Editar substituição",
+		"addOverride": "Adicionar substituição",
+		"editTitle": "Editar substituição de orçamento",
+		"addTitle": "Adicionar substituição de orçamento",
+		"description": "Adicione temporariamente capacidade de despesa sem alterar o orçamento base de {{budget}}.",
+		"additionalBudget": "Orçamento adicional",
+		"duration": "Duração",
+		"modeCycles": "Durante um número de ciclos de reposição",
+		"modeForever": "Até ser removida",
+		"resetCycles": "Ciclos de reposição",
+		"cycleHint": "O ciclo de reposição atual conta como o primeiro ciclo.",
+		"validUntil": "Válida até <b0>{{date}}</b0>",
+		"currentEffectiveLimit": "Limite efetivo atual: <b0>{{limit}}</b0>",
+		"removeOverride": "Remover substituição",
+		"updateOverride": "Atualizar substituição",
+		"managerDescription": "Adicione temporariamente capacidade de despesa a um orçamento sem alterar o seu limite base.",
+		"rowActive": "+{{amount}} de substituição · efetivo {{effective}}",
+		"rowBase": "Base {{amount}}",
+		"edit": "Editar",
+		"remove": "Remover",
+		"update": "Atualizar",
+		"add": "Adicionar"
 	}
 }

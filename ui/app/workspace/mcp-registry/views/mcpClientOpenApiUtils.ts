@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type {
 	MCPOpenAPIConfig,
 	MCPOpenAPICredential,
@@ -157,21 +158,36 @@ export function securitySchemeToInputs(scheme: MCPOpenAPISecurityScheme): OpenAP
 		const where = scheme.in ?? "header";
 		return {
 			scheme,
-			label: `${scheme.name} · ${scheme.param_name ?? "API key"} (${where})`,
-			fields: [{ field: "value", label: "API key", placeholder: `Value or env.${toEnvName(scheme.name)}` }],
+			label: i18n.t("openapi.credentials.apiKeyLabel", {
+				ns: "mcp",
+				name: scheme.name,
+				param: scheme.param_name ?? i18n.t("openapi.credentials.apiKey", { ns: "mcp" }),
+				where,
+			}),
+			fields: [
+				{
+					field: "value",
+					label: i18n.t("openapi.credentials.apiKey", { ns: "mcp" }),
+					placeholder: i18n.t("openapi.credentials.valuePlaceholder", { ns: "mcp", env: toEnvName(scheme.name) }),
+				},
+			],
 			helper: scheme.description,
 		};
 	}
 	if (scheme.type === "http" && scheme.scheme === "basic") {
 		return {
 			scheme,
-			label: `${scheme.name} · Basic authentication`,
+			label: i18n.t("openapi.credentials.basicLabel", { ns: "mcp", name: scheme.name }),
 			fields: [
-				{ field: "username", label: "Username", placeholder: "Username" },
+				{
+					field: "username",
+					label: i18n.t("openapi.credentials.username", { ns: "mcp" }),
+					placeholder: i18n.t("openapi.credentials.username", { ns: "mcp" }),
+				},
 				{
 					field: "password",
-					label: "Password",
-					placeholder: `Password or env.${toEnvName(scheme.name)}_PASSWORD`,
+					label: i18n.t("openapi.credentials.password", { ns: "mcp" }),
+					placeholder: i18n.t("openapi.credentials.passwordPlaceholder", { ns: "mcp", env: toEnvName(scheme.name) }),
 				},
 			],
 			helper: scheme.description,
@@ -179,12 +195,12 @@ export function securitySchemeToInputs(scheme: MCPOpenAPISecurityScheme): OpenAP
 	}
 	return {
 		scheme,
-		label: `${scheme.name} · Bearer token`,
+		label: i18n.t("openapi.credentials.bearerLabel", { ns: "mcp", name: scheme.name }),
 		fields: [
 			{
 				field: "value",
-				label: "Bearer token",
-				placeholder: `Token or env.${toEnvName(scheme.name)}`,
+				label: i18n.t("openapi.credentials.bearerToken", { ns: "mcp" }),
+				placeholder: i18n.t("openapi.credentials.tokenPlaceholder", { ns: "mcp", env: toEnvName(scheme.name) }),
 			},
 		],
 		helper: scheme.description,
@@ -308,9 +324,9 @@ export function summarizeSpecSource(cfg: MCPOpenAPIConfig | undefined): string {
 			? `OpenAPI ${cfg.openapi_version}`
 			: "";
 	if (title) parts.push(title);
-	parts.push(cfg.spec_url ? cfg.spec_url : "inline spec");
+	parts.push(cfg.spec_url ? cfg.spec_url : i18n.t("openapi.summary.inlineSpec", { ns: "mcp" }));
 	if (cfg.spec_size) parts.push(formatBytes(cfg.spec_size));
-	if (cfg.operation_count !== undefined) parts.push(`${cfg.operation_count} operation${cfg.operation_count === 1 ? "" : "s"}`);
+	if (cfg.operation_count !== undefined) parts.push(i18n.t("openapi.summary.operationCount", { ns: "mcp", count: cfg.operation_count }));
 	return parts.join(" · ");
 }
 /** The form values a parse response is applied to. */
@@ -394,7 +410,7 @@ export async function readUploadedSpec(file: {
 	if (isSpecTooLarge(file.size)) {
 		return {
 			text: "",
-			error: `The file exceeds the ${formatBytes(OPENAPI_MAX_SPEC_BYTES)} limit for OpenAPI documents.`,
+			error: i18n.t("openapi.source.fileTooLarge", { ns: "mcp", size: formatBytes(OPENAPI_MAX_SPEC_BYTES) }),
 		};
 	}
 	let text: string;
@@ -403,10 +419,10 @@ export async function readUploadedSpec(file: {
 	} catch (error) {
 		return {
 			text: "",
-			error: `The file could not be read: ${error instanceof Error ? error.message : String(error)}`,
+			error: i18n.t("openapi.source.fileReadFailed", { ns: "mcp", message: error instanceof Error ? error.message : String(error) }),
 		};
 	}
-	return { text, error: text.trim() ? null : "The file is empty." };
+	return { text, error: text.trim() ? null : i18n.t("openapi.source.fileEmpty", { ns: "mcp" }) };
 }
 /**
  * The header a security scheme travels in, suggested as the per-user header
@@ -478,13 +494,18 @@ export function openAPIParseControls(state: {
 	isParsing: boolean;
 }): { autoParse: boolean; showButton: boolean; showPending: boolean; buttonLabel: string } {
 	if (state.mode === "url") {
-		return { autoParse: false, showButton: !state.isCurrent || state.hasError, showPending: false, buttonLabel: "Fetch" };
+		return {
+			autoParse: false,
+			showButton: !state.isCurrent || state.hasError,
+			showPending: false,
+			buttonLabel: i18n.t("openapi.source.fetchSpec", { ns: "mcp" }),
+		};
 	}
 	return {
 		autoParse: true,
 		showButton: state.hasError && !state.isParsing,
 		showPending: state.isParsing || (state.canParse && !state.isCurrent && !state.hasError),
-		buttonLabel: "Parse again",
+		buttonLabel: i18n.t("openapi.source.parseAgain", { ns: "mcp" }),
 	};
 }
 
@@ -661,14 +682,14 @@ export function openAPIBaseUrlError(
 	value: string,
 ): string | undefined {
 	const trimmed = value.trim();
-	if (!trimmed) return openAPIBaseUrlRequired(choice, preview) ? "Base URL is required" : undefined;
+	if (!trimmed) return openAPIBaseUrlRequired(choice, preview) ? i18n.t("registry.form.baseUrlRequired", { ns: "mcp" }) : undefined;
 	try {
 		const url = new URL(trimmed);
 		if ((url.protocol === "http:" || url.protocol === "https:") && url.host) return undefined;
 	} catch {
 		// fall through
 	}
-	return "Base URL must be an absolute http:// or https:// URL";
+	return i18n.t("openapi.preview.baseUrlInvalid", { ns: "mcp" });
 }
 
 /**

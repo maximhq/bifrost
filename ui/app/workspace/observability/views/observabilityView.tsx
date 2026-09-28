@@ -46,27 +46,27 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 	},
 	{
 		id: "prometheus",
-		name: "Prometheus",
+		name: "Prometheus", // i18n-ignore: brand name
 		icon: <img alt="Prometheus" src="/images/prometheus-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "maxim",
-		name: "Maxim",
+		name: "Maxim", // i18n-ignore: brand name
 		icon: <img alt="Maxim" src={`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.webp`} width={19} height={19} />,
 	},
 	{
 		id: "datadog",
-		name: "Datadog",
+		name: "Datadog", // i18n-ignore: brand name
 		icon: <img alt="Datadog" src="/images/datadog-logo.webp" width={32} height={32} className="-ml-0.5" />,
 	},
 	{
 		id: "bigquery",
-		name: "BigQuery",
+		name: "BigQuery", // i18n-ignore: brand name
 		icon: <img alt="BigQuery" src="/images/bigquery-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "kafka",
-		name: "Kafka",
+		name: "Kafka", // i18n-ignore: brand name
 		icon: <img alt="Kafka" src="/images/kafka-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
@@ -78,7 +78,7 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 		id: "splunk",
 		name: "Splunk",
 		icon: (
-			<img
+			<img // i18n-ignore: brand name
 				alt="Splunk"
 				src={`/images/splunk-${resolvedTheme === "dark" ? "white" : "black"}.png`}
 				width={21}

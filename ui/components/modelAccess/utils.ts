@@ -128,7 +128,7 @@ export function summarizeGrantModelAccess(
 	if (isWildcardList(blocked)) return summarizeModelAccess(blocked, "block");
 	const allowSummary = summarizeModelAccess(allowed, "allow");
 	if ((allowed ?? []).length === 0 || (blocked ?? []).length === 0) return allowSummary;
-	return `${allowSummary} · ${summarizeModelAccess(blocked, "block")} blocked`;
+	return i18n.t("modelAccess.grantSummaryBlocked", { allowed: allowSummary, blocked: summarizeModelAccess(blocked, "block") });
 }
 
 /** Placeholder for the picker control, mirroring the wording each surface used before. */

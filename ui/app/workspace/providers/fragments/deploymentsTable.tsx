@@ -235,11 +235,7 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 	const endpointInvalid = !!endpoint && !/^[A-Za-z0-9_-]+$/.test(endpoint.endpoint_id);
 	return (
 		<div className="space-y-4">
-			<FieldRow
-				htmlFor={servingId}
-				label="Serving mode"
-				hint="Use a custom endpoint when your deployed container accepts OpenAI chat completions."
-			>
+			<FieldRow htmlFor={servingId} label={t("providers.deployments.servingMode")} hint={t("providers.deployments.servingModeHint")}>
 				<Select
 					value={endpoint ? (endpoint.method ?? "raw_predict") : "standard"}
 					onValueChange={(value) =>
@@ -260,17 +256,17 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="standard">Standard Vertex</SelectItem>
-						<SelectItem value="raw_predict">OpenAI-compatible — Raw prediction</SelectItem>
-						<SelectItem value="chat_completions">OpenAI-compatible — Chat completions</SelectItem>
+						<SelectItem value="standard">{t("providers.deployments.servingStandard")}</SelectItem>
+						<SelectItem value="raw_predict">{t("providers.deployments.servingRawPredict")}</SelectItem>
+						<SelectItem value="chat_completions">{t("providers.deployments.servingChatCompletions")}</SelectItem>
 					</SelectContent>
 				</Select>
 			</FieldRow>
 			{endpoint && (
 				<FieldRow
 					htmlFor={endpointId}
-					label="Vertex endpoint ID or URL"
-					hint="The Model ID above is the served model name sent in the body. Uses Google credentials from this key. Supports chat and Responses-to-chat conversion."
+					label={t("providers.deployments.vertexEndpoint")}
+					hint={t("providers.deployments.vertexEndpointHint")}
 				>
 					<Input
 						id={endpointId}
@@ -290,13 +286,13 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 								onChange({ vertex_endpoint: { ...endpoint, endpoint_id: value } });
 							}
 						}}
-						placeholder="2222222222 or https://us-west1-aiplatform.googleapis.com/v1/projects/…"
+						placeholder={t("providers.deployments.vertexEndpointPlaceholder")}
 						disabled={disabled}
 						data-testid="deployment-vertex-endpoint"
 					/>
 					{endpointInvalid && (
 						<p id={`${endpointId}-error`} className="text-destructive text-xs" data-testid="deployment-vertex-endpoint-error">
-							Enter a Vertex endpoint ID or paste a supported endpoint URL.
+							{t("providers.deployments.vertexEndpointInvalid")}
 						</p>
 					)}
 				</FieldRow>

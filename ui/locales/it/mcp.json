@@ -173,7 +173,7 @@
 			"headerKeysRequiredDesc": "Dichiara almeno un nome header che gli utenti devono fornire.",
 			"headerMustHaveValue": "L'header \"{{key}}\" deve avere un valore",
 			"dockerNotice": "Avviso Docker",
-			"dockerNoticeBody": "Se non usi l'immagine Docker ufficiale di Bifrost, le connessioni STDIO potrebbero non funzionare se i comandi richiesti (npx, python, ecc.) non sono installati. Puoi ignorarlo in sicurezza se lavori in locale o usi un'immagine personalizzata con le dipendenze necessarie.",
+			"dockerNoticeBody": "Se usi l'immagine Docker ufficiale di Bifrost, le connessioni STDIO potrebbero non funzionare perché non sono installati comandi comuni come npx, python ecc. Puoi ignorare questo avviso se esegui Bifrost in locale o usi un'immagine personalizzata con le dipendenze necessarie.",
 			"serverBehavior": "Comportamento server",
 			"serverBehaviorDesc": "Controlla come questo server partecipa a code mode e health check.",
 			"codeModeServer": "Server Code Mode",
@@ -401,7 +401,8 @@
 			"cancelReplace": "Annulla sostituzione",
 			"maxInstructionLength": "Lunghezza massima istruzioni (byte)",
 			"maxInstructionLengthTooltip": "Limite alle istruzioni inoltrate da questo server. Lascia vuoto o imposta 0 per usare l'impostazione globale. Il totale complessivo su tutti i server resta comunque limitato dal totale globale.",
-			"toolsReplacementNote": "Nella scheda Generale è aperto un documento sostitutivo, e il suo elenco di operazioni decide quali strumenti vengono salvati. Salva o annulla la sostituzione per modificare qui gli strumenti."
+			"toolsReplacementNote": "Nella scheda Generale è aperto un documento sostitutivo, e il suo elenco di operazioni decide quali strumenti vengono salvati. Salva o annulla la sostituzione per modificare qui gli strumenti.",
+			"replaceLoadStoredFailed": "Impossibile caricare il documento salvato: {{message}}"
 		},
 		"tls": {
 			"skipVerify": "Salta verifica TLS",
@@ -831,7 +832,9 @@
 			"users": "Utenti",
 			"searchVirtualKeys": "Cerca chiavi virtuali",
 			"searchUsers": "Cerca per nome o email"
-		}
+		},
+		"grantActions": "Concedi azioni",
+		"viewAuthSessions": "Visualizza sessioni di autenticazione"
 	},
 	"toolGroups": {
 		"title": "Gruppi di strumenti MCP",
@@ -939,7 +942,17 @@
 			"assign": "Assegna chiave virtuale",
 			"loading": "Caricamento delle chiavi virtuali…",
 			"empty": "Nessuna chiave virtuale ancora assegnata. Assegnane una in modo che i chiamanti possano raggiungere questo Virtual MCP.",
-			"unassignAria": "Rimuovi assegnazione chiave virtuale"
+			"unassignAria": "Rimuovi assegnazione chiave virtuale",
+			"ownerLookupFailed": "Impossibile verificare chi possiede «{{name}}», quindi non è stato assegnato. Riprova.",
+			"assignOwnedTitle": "Assegnare la chiave virtuale?",
+			"assignOwnedDescription": "<strong>{{name}}</strong> appartiene a {{kind}} <strong>{{owner}}</strong>. Assegnandola, la chiave di {{kind}} potrà raggiungere questo MCP virtuale.",
+			"assignOwnedConfirm": "Assegna",
+			"ownerKind": {
+				"team": "team",
+				"businessUnit": "unità aziendale",
+				"customer": "cliente",
+				"user": "utente"
+			}
 		},
 		"add": "Aggiungi MCP virtuale"
 	},
@@ -978,5 +991,100 @@
 		"scopeUser": "User",
 		"scopeGlobal": "Globale",
 		"scopeWorkspace": "Workspace"
+	},
+	"selectors": {
+		"searchTools": "Cerca e seleziona strumenti...",
+		"searchServers": "Cerca e seleziona server MCP...",
+		"tool": "Strumento",
+		"server": "Server",
+		"noToolsSelected": "Nessuno strumento selezionato. Usa la ricerca qui sopra per aggiungerne.",
+		"noResults": "Nessun risultato trovato",
+		"noServersSelected": "Nessun server selezionato. Usa la ricerca qui sopra per aggiungere server MCP.",
+		"noServersFound": "Nessun server MCP trovato",
+		"openServerDetails": "Apri i dettagli del server in una nuova scheda"
+	},
+	"openapi": {
+		"credentials": {
+			"apiKey": "Chiave API",
+			"apiKeyLabel": "{{name}} · {{param}} ({{where}})",
+			"valuePlaceholder": "Valore o env.{{env}}",
+			"basicLabel": "{{name}} · autenticazione Basic",
+			"username": "Nome utente",
+			"password": "Password",
+			"passwordPlaceholder": "Password o env.{{env}}_PASSWORD",
+			"bearerLabel": "{{name}} · token Bearer",
+			"bearerToken": "Token Bearer",
+			"tokenPlaceholder": "Token o env.{{env}}"
+		},
+		"summary": {
+			"inlineSpec": "specifica incorporata",
+			"operationCount_one": "{{count}} operazione",
+			"operationCount_other": "{{count}} operazioni"
+		},
+		"source": {
+			"fileTooLarge": "Il file supera il limite di {{size}} per i documenti OpenAPI.",
+			"fileReadFailed": "Impossibile leggere il file: {{message}}",
+			"fileEmpty": "Il file è vuoto.",
+			"fetchSpec": "Recupera specifica",
+			"parseAgain": "Analizza di nuovo",
+			"tabPaste": "Incolla",
+			"tabUpload": "Carica",
+			"pasteHelp": "Incolla il documento OpenAPI o Swagger in formato JSON o YAML (sono supportate le versioni 2.0, 3.0, 3.1 e 3.2).",
+			"specUrl": "URL della specifica",
+			"urlHelp": "Bifrost recupera il documento una volta e lo archivia con il server; l'URL viene conservato come origine.",
+			"chooseFile": "Scegli file",
+			"uploadHelp": "JSON o YAML, fino a {{size}}. Il file viene letto nel browser e archiviato con il server.",
+			"parsing": "Analisi del documento…",
+			"staleNotice": "L'URL o il nome del server è cambiato dopo il recupero del documento. Recuperalo di nuovo per aggiornare le operazioni qui sotto."
+		},
+		"preview": {
+			"baseUrlInvalid": "L'URL di base deve essere un URL http:// o https:// assoluto",
+			"untitled": "API senza titolo",
+			"toolCount_one": "{{count}} strumento",
+			"toolCount_other": "{{count}} strumenti",
+			"baseUrl": "URL di base",
+			"selectServer": "Seleziona il server upstream",
+			"custom": "Personalizzato…",
+			"operationServersNote": "Ogni operazione dichiara il proprio server, che verrà usato per le chiamate. Imposta un URL di base solo per sovrascriverli tutti.",
+			"noServerNote": "Il documento non dichiara alcun URL di server assoluto, quindi devi specificare qui il server upstream.",
+			"authTitle": "Autenticazione API",
+			"authDescPerUser": "Ogni chiamante fornisce questi valori tramite l'header per utente denominato per ciascuno schema; vengono inoltrati all'API così come sono. Gli schemi inviati nella query o in un cookie mantengono un valore salvato.",
+			"authDescStored": "Credenziali per gli schemi di sicurezza dichiarati nel documento. Sono archiviate in forma crittografata e applicate a ogni chiamata; sono supportati i riferimenti env.VAR.",
+			"noSecuritySchemes": "Questo documento non dichiara schemi di sicurezza. Se l'API richiede comunque una credenziale, aggiungi qui sotto degli header statici.",
+			"unsupportedBadge": "non supportato",
+			"perUserHeaderAria": "Header per utente {{name}}",
+			"perUserHeaderHelpHttp": "Header fornito da ogni chiamante e inoltrato così com'è; il valore è la credenziale completa, ad es. \"{{example}}\". Viene aggiunto agli header obbligatori.",
+			"perUserHeaderHelp": "Header fornito da ogni chiamante e inoltrato così com'è. Viene aggiunto agli header obbligatori.",
+			"credentialAria": "{{scheme}} {{field}}",
+			"operationsTitle": "Operazioni ({{supported}} di {{total}} supportate)",
+			"operationsDesc": "Le operazioni selezionate diventano strumenti di questo server. Quelle non supportate sono elencate con il motivo.",
+			"selectedCount": "{{selected}} di {{total}} selezionate",
+			"selectAllAria": "Seleziona tutte le operazioni",
+			"searchPlaceholder": "Cerca operazioni…",
+			"noMatch": "Nessuna operazione corrisponde alla ricerca.",
+			"includeAria": "Includi {{name}}",
+			"unsupportedAria": "{{name}} non supportata",
+			"deprecatedBadge": "deprecata"
+		}
+	},
+	"oauthCallback": {
+		"successTitle": "Autorizzazione completata",
+		"failedTitle": "Autorizzazione non riuscita",
+		"successDescription": "Il server MCP è connesso. Puoi chiudere questa scheda e tornare al catalogo MCP.",
+		"failedDescription": "Non è stato possibile autorizzare il server MCP. Torna al catalogo MCP e riprova.",
+		"backToRegistry": "Torna al catalogo MCP",
+		"closeTab": "Puoi chiudere questa scheda.",
+		"closeWindow": "Puoi chiudere questa finestra."
+	},
+	"headersForm": {
+		"staticAdminHeaders": "Header statici dell'amministratore",
+		"staticAdminHeadersHelp": "Questi header sono impostati dall'amministratore sul client MCP e accompagnano ogni richiesta insieme ai valori che invii. Non puoi modificarli qui.",
+		"noKeys": "Su questo client MCP non sono state dichiarate chiavi header.",
+		"previouslySubmitted": "Inviato in precedenza",
+		"overwritePlaceholder": "•••••• (inserisci un nuovo valore per sovrascrivere)",
+		"valuePlaceholder": "Valore per {{key}}",
+		"hideValue": "Nascondi valore",
+		"showValue": "Mostra valore",
+		"test": "Test"
 	}
 }

@@ -22,7 +22,7 @@ import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { normalizeDeliveriesPagination } from "./deliveries.page.utils";
-import { createColumns, WEBHOOK_DELIVERY_COLUMN_LABELS } from "./views/columns";
+import { createColumns, getWebhookDeliveryColumnLabels } from "./views/columns";
 import { DeliveriesTable, type DeliveriesPagination } from "./views/deliveriesTable";
 import { DeliveriesHeaderView } from "./views/deliveriesHeaderView";
 
@@ -223,6 +223,7 @@ export default function WebhookDeliveriesPage() {
 	const columns = useMemo(
 		() =>
 			createColumns({
+				t,
 				endpointNames,
 				expandedIds,
 				onToggleExpanded: toggleExpanded,
@@ -232,7 +233,7 @@ export default function WebhookDeliveriesPage() {
 				canManage,
 				onOpenRequest: handleOpenRequest,
 			}),
-		[endpointNames, expandedIds, toggleExpanded, handleCopy, handleRedeliver, redeliveringIds, canManage, handleOpenRequest],
+		[t, endpointNames, expandedIds, toggleExpanded, handleCopy, handleRedeliver, redeliveringIds, canManage, handleOpenRequest],
 	);
 
 	const displayError = error ? getErrorMessage(error) : undefined;
@@ -258,7 +259,7 @@ export default function WebhookDeliveriesPage() {
 						onRefresh={refetch}
 						loading={isFetching}
 						columnEntries={columnEntries}
-						columnLabels={WEBHOOK_DELIVERY_COLUMN_LABELS}
+						columnLabels={getWebhookDeliveryColumnLabels(t)}
 						onToggleColumnVisibility={toggleVisibility}
 						onResetColumns={resetColumns}
 					/>

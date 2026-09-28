@@ -23,7 +23,8 @@
 		"brandingDescription": "ダッシュボードとログイン画面の Bifrost ロゴを独自のものに置き換えられます。この機能は Bifrost エンタープライズライセンスの一部です。利用シーンと、どのように支援できるかをぜひ教えてください。",
 		"licenseTitle": "ライセンス管理をアンロック",
 		"apiKeysTitle": "スコープベースの API キー",
-		"apiKeysDescription": "スコープベースの API キーで細かいアクセス制御が必要ですか？エンタープライズ顧客は、サービス・チーム・環境ごとに権限を分けた複数の API キーを作成できます。"
+		"apiKeysDescription": "スコープベースの API キーで細かいアクセス制御が必要ですか？エンタープライズ顧客は、サービス・チーム・環境ごとに権限を分けた複数の API キーを作成できます。",
+		"unknownOs": "不明な OS"
 	},
 	"clientSettings": {
 		"title": "クライアント設定",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>拒否リスト：</span0>拒否リストのヘッダーは常に転送がブロックされます",
 		"wildcardRules": "<span0>ワイルドカード：</span0>パターン末尾の <code1>*</code1> で接頭辞一致（例：<code2>anthropic-*</code2> は <code3>anthropic-</code3> で始まるすべて）。単独の <code4>*</code4> ですべてのヘッダーに一致します。",
 		"headerNames": "許可/拒否リストには <code1>x-bf-eh-</code1> 接頭辞を<span0>付けない</span0>ヘッダー名を入れてください",
-		"allowlistExample": "例：<code0>x-bf-eh-custom-id</code0> または直接の <code1>custom-id</code1> を許可するには、許可リストに <code2>custom-id</code2> を追加します"
+		"allowlistExample": "例：<code0>x-bf-eh-custom-id</code0> または直接の <code1>custom-id</code1> を許可するには、許可リストに <code2>custom-id</code2> を追加します",
+		"extraFieldsPlacement": "Extra Fields の配置",
+		"extraFieldsPlacementHelp": "推論レスポンスで Bifrost の <b>extra_fields</b> メタデータを返す場所です。<b>Body</b> は extra_fields オブジェクトを JSON レスポンスに残します。<b>Headers</b> はボディとすべてのストリーミングチャンクから取り除き、スカラー値のフィールドを <b>x-bifrost-*</b> レスポンスヘッダーとして送信します。",
+		"extraFieldsPlacementDroppedNote": "Headers モードでは、次のフィールドは破棄され、どこにも送信されません。生のリクエスト、生のレスポンス、ルーティングメタデータ、ガードレールのデバッグ情報、解析エラー、およびエラー時のキーのステータス、課金済み使用量、MCP 認証の詳細。ストリーミングレスポンスには最初のチャンクより前に判明している情報（ルーティング、フォールバック、キャッシュ検索）のみが含まれるため、チャンクごとのレイテンシ、チャンクインデックス、最終合計も破棄されます。",
+		"extraFieldsBody": "Body",
+		"extraFieldsHeaders": "Headers",
+		"removeSecurityHeader_one": "セキュリティヘッダーを削除: {{headers}}",
+		"removeSecurityHeader_other": "セキュリティヘッダーを削除: {{headers}}"
 	},
 	"caching": {
 		"title": "ローカルキャッシュ",
@@ -231,7 +239,11 @@
 		"deleteExpiredVirtualKeysHelp": "有効にすると、毎日のクリーンアップジョブが有効期限を過ぎたすべての仮想キーを削除し、削除したキーの一覧を通知します。各キーは <b0>期限後に削除</b0> スイッチでこの設定を上書きできます。オフのキーは保持され、オンのキーはこの設定が無効でも削除されます。",
 		"enforceVkObjectOwnership": "プロバイダーオブジェクトを作成した仮想キーに限定",
 		"enforceVkObjectOwnershipHelp": "有効にすると、仮想キーで作成したファイル、バッチ、動画、コンテナ、キャッシュされたコンテンツ、ライブセッションは、同じキーでのみ読み取り・一覧表示・削除できます。他の仮想キーには not-found エラーが返され、一覧にも表示されません。仮想キーなしのリクエストは影響を受けません。作成したキーはこの設定が無効でも記録されるため、再度有効にすると、その間に作成されたオブジェクトも対象になります（作成キーを記録できなかったものを除く）。",
-		"proofRequired": "この変更を確認するには、現在の管理者パスワードを入力してください。ダッシュボード保護がオフのため、このセッションはサインインしていません。パスワードが分からない場合は、代わりにセットアップトークンを使用してください。"
+		"proofRequired": "この変更を確認するには、現在の管理者パスワードを入力してください。ダッシュボード保護がオフのため、このセッションはサインインしていません。パスワードが分からない場合は、代わりにセットアップトークンを使用してください。",
+		"skipAccessProfileKeyCreation": "アクセスプロファイル用のユーザー仮想キーを作成しない",
+		"skipAccessProfileKeyCreationHelp": "有効にすると、ユーザーに初めてアクセスプロファイルを適用しても仮想キーは作成されません。ユーザーがすでに所有しているキーや、ユーザー用に追加したキーには、プロファイルが適用されている間、引き続きそのプロファイルが適用されます。",
+		"skipAccessProfileKeyDeletion": "アクセスプロファイル削除時にユーザー仮想キーを削除しない",
+		"skipAccessProfileKeyDeletionHelp": "有効にすると、ユーザーの最後のアクセスプロファイルを削除しても仮想キーは通常のキーとして残り、プロファイルのプロバイダーやアクセス権は適用されなくなります。ユーザーを削除すると、そのキーも削除されます。"
 	},
 	"logging": {
 		"title": "ログ設定",
@@ -296,7 +308,11 @@
 		"convertUnsupportedParamsHelp": "モデルがサポートしないパラメータ値を変換します。",
 		"azureDeepseek": "Azure Deepseek モデルに Chat Completion API を使用",
 		"azureDeepseekHelp": "Claude Code、Codex など向けに、Azure Deepseek モデルで Chat Completion API を使います。",
-		"toastSaved": "互換性設定を更新しました。"
+		"toastSaved": "互換性設定を更新しました。",
+		"forceReasoningOnlyToResponses": "推論専用の OpenAI モデルで Responses API を使用",
+		"forceReasoningOnlyToResponsesHelp": "Chat Completions でツール呼び出しと併せて推論できないモデルに対し、推論をオフにする代わりに、チャット補完リクエストを Responses API にルーティングします。",
+		"convertDecisionToResponses": "判断モデルでないモデルで Decisions API をエミュレート",
+		"convertDecisionToResponsesHelp": "ネイティブの decisions エンドポイントを持たないモデルへの判断リクエストに対し、強制された関数ツールを使って Responses API 経由でモデルにプロンプトを送り応答します。オフの場合、これらのリクエストは未対応として失敗します。"
 	},
 	"featureFlags": {
 		"title": "フィーチャーフラグ",
@@ -387,7 +403,26 @@
 		"allowedRedirectUrisHelp": "リモート MCP クライアントが使用できるコールバック URI（完全一致）。例：<code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>。<code1>*</code1> を追加すると任意の https コールバックを許可します。部分的なワイルドカードはサポートされません。ループバックのコールバックと <code2>cursor://anysphere.cursor-mcp</code2> は常に許可されます。このリストの変更にはダッシュボード認証が必要です。",
 		"allowedRedirectUrisPlaceholder": "コールバック URI を追加（Enter）",
 		"anyCallbackAllowed": "任意のコールバックを許可",
-		"anyCallbackAllowedHelp": "任意の MCP クライアントが任意のホストのコールバックで登録できるため、認可コードを攻撃者に送るクライアントに対する唯一のチェックは同意ページになります。コールバック URI は完全一致で列挙することをおすすめします。"
+		"anyCallbackAllowedHelp": "任意の MCP クライアントが任意のホストのコールバックで登録できるため、認可コードを攻撃者に送るクライアントに対する唯一のチェックは同意ページになります。コールバック URI は完全一致で列挙することをおすすめします。",
+		"limitMaxSourceBytes": "最大ソースサイズ（バイト）",
+		"limitMaxSourceBytesDesc": "1 回の実行で送信できるコードの最大サイズです。",
+		"limitMaxSteps": "最大計算ステップ数",
+		"limitMaxStepsDesc": "1 回の実行あたりのインタープリターのステップ数です。組み込み関数内の処理も含みます。",
+		"limitMaxMemoryBytes": "最大メモリ（バイト）",
+		"limitMaxMemoryBytesDesc": "1 回の実行あたりの推定アロケーション予算です。同時実行ごとに個別の予算が割り当てられます。",
+		"limitMaxLogBytes": "最大ログ出力（バイト）",
+		"limitMaxLogBytesDesc": "1 回の実行あたりの print とツールのログ出力量です。改行も含みます。",
+		"limitMaxToolCalls": "最大ツール呼び出し数",
+		"limitMaxToolCallsDesc": "1 回の実行あたりのネストされた MCP ツール呼び出し数です。",
+		"limitMaxValueBytes": "最大値サイズ（バイト）",
+		"limitMaxValueBytesDesc": "各ツールのペイロードと変換後の結果に対するサイズ予算です。{{min}} 以上にする必要があります。",
+		"limitMaxNestingDepth": "最大ネスト深度",
+		"limitMaxNestingDepthDesc": "ツールの境界を越える値のネスト深度です。最大 {{max}} です。",
+		"limitNegative": "{{label}} に負の値は指定できません。",
+		"limitValueBytesMin": "最大値サイズは {{min}} バイト以上にする必要があります。",
+		"limitNestingMax": "最大ネスト深度は {{max}} 以下にする必要があります。",
+		"codeModeLimitsTitle": "コードモードの制限",
+		"codeModeLimitsDescription": "各コード実行に対する制限です。フィールドを空のままにするとデフォルト値が使用されます。同時に実行できる数には制限がありません。"
 	},
 	"modelSettings": {
 		"title": "モデル設定",
@@ -733,7 +768,11 @@
 		"intoPath": " → {{path}}/",
 		"intoRoot": " → root",
 		"previewAfterSaving": "保存後にプレビューできます。",
-		"externalUrlRequired": "マーケットプレイス登録を有効にするには、<settingsLink>スキル設定</settingsLink>で外部クライアント URL を設定してください。"
+		"externalUrlRequired": "マーケットプレイス登録を有効にするには、<settingsLink>スキル設定</settingsLink>で外部クライアント URL を設定してください。",
+		"showLess": "閉じる",
+		"showMore": "もっと見る",
+		"skillNotFound": "スキルが見つかりません",
+		"backToList": "一覧に戻る"
 	},
 	"promptRepo": {
 		"loadFailed": "プロンプトリポジトリの読み込みに失敗しました",
@@ -933,7 +972,19 @@
 		"governancePlugin": "ガバナンスプラグイン",
 		"governancePluginDesc": "アクセス制御、予算、レート制限の完全ガイド",
 		"governancePluginContent": "安全な AI 基盤向けに仮想キー、階層予算、レート制限、利用追跡を習得します。",
-		"viewGovernanceGuide": "ガバナンスガイドを表示"
+		"viewGovernanceGuide": "ガバナンスガイドを表示",
+		"heading": "Bifrost スタックを強化しよう",
+		"viewFullDocumentation": "ドキュメント全体を見る",
+		"quickStartGuide": "クイックスタートガイド",
+		"readMore": "続きを読む",
+		"items": {
+			"quickStart": ["HTTP トランスポートのセットアップ", "Go パッケージの使い方", "Docker ガイド"],
+			"architecture": ["システム概要", "リクエストフロー", "並行処理モデル", "設計上の判断"],
+			"usageGuides": ["プロバイダーのセットアップ", "キー管理", "エラー処理", "メモリとネットワーク"],
+			"contributing": ["コントリビューションガイド", "プロバイダーの追加", "プラグイン開発", "コード規約"],
+			"integrationExamples": ["OpenAI 連携", "Anthropic 連携", "GenAI 連携", "移行ガイド"],
+			"benchmarks": ["5K RPS のテスト結果", "パフォーマンス指標", "構成のチューニング", "ハードウェア比較"]
+		}
 	},
 	"warp": {
 		"saved": "Warp の設定を保存しました。",
@@ -1036,7 +1087,10 @@
 			"searchLimit": "検索上限は 1 から 25 の間である必要があります。",
 			"retentionRequired": "値が必要です",
 			"retentionWhole": "日数は整数である必要があります",
-			"retentionMin": "0 日以上である必要があります（0 はデフォルトを維持）"
+			"retentionMin": "0 日以上である必要があります（0 はデフォルトを維持）",
+			"modelRequired": "Warp を有効にするには、プロバイダーとモデルを選択してください。",
+			"modelOrRemove": "プロバイダーとモデルを選択するか、このモデルを削除してください。",
+			"modelDuplicate": "このプロバイダーとモデルはすでに一覧にあります。"
 		},
 		"models": "モデル",
 		"modelsHelp": "Warp が推論と回答の作成に使うモデルです。Warp パネルで別のモデルが選ばれない限り、デフォルトが回答します。ここでは高性能なモデルが元を取れます。",
@@ -1046,6 +1100,67 @@
 		"defaultModel": "デフォルトモデル",
 		"modelNumber": "モデル {{number}}",
 		"makeDefault": "デフォルトにする",
-		"removeModel": "モデル {{number}} を削除"
+		"removeModel": "モデル {{number}} を削除",
+		"topics": {
+			"badRange": "トピックの有効な期間を選択してください。",
+			"started": "トピックのシード処理を開始しました。",
+			"cancelRequested": "トピックのクラスタリングのキャンセルをリクエストしました。",
+			"title": "トピッククラスター",
+			"infoLabel": "トピックの仕組み",
+			"infoIntro": "トピックはリクエストを質問内容ごとにまとめ、Warpがよく尋ねられることに答えられるようにします。",
+			"infoSeed": "<b0>1. 最初に一度シードします。</b0>指定期間にインデックスされたリクエストを一度だけまとめ、各グループに名前を付けます。シードは埋め込みモデルごとに一度行います。",
+			"infoFiled": "<b0>2. 到着したリクエストを分類します。</b0>その後にインデックスされた各リクエストは、最も近いトピックに分類されます。",
+			"infoFound": "<b0>3. 新しいトピックを検出します。</b0>どのトピックにも一致しないリクエストは保留されます。新しいトピックのしきい値に達すると、毎時の処理で新しいトピックにまとめるか、既存のトピックに統合します。",
+			"infoTidy": "<b0>4. トピックを整理します。</b0>同じ処理で、30日間リクエストがないトピックを終了し、意味が重複してきたトピックを統合します。",
+			"infoReseed": "埋め込みモデルを変更すると最初からやり直し、そのモデル用のトピックが再度シードされます。",
+			"description": "インデックス済みリクエストの期間を指定して、トピックを一度シードします。その後は追加の実行なしで、新しいリクエストのインデックスに合わせて自動的に更新されます。",
+			"seeded": "この埋め込みモデルのトピックが作成され、自動的に更新されます。新しいリクエストはインデックス時に分類され、どのトピックにも一致しないリクエストから新しいトピックが検出されます。",
+			"cancel": "クラスタリングをキャンセル",
+			"seed": "トピックをシード",
+			"saveBeforeSeed": "トピックをシードする前に、設定の変更を保存してください。",
+			"needsBackfill": "この埋め込みモデルではまだ何もインデックスされていません。先に上で期間を指定してバックフィルし、同じ期間からトピックをシードしてください。",
+			"activeTopics_one": "有効なトピック {{count}} 件",
+			"activeTopics_other": "有効なトピック {{count}} 件",
+			"inThemes_one": "テーマ {{count}} 件",
+			"inThemes_other": "テーマ {{count}} 件",
+			"pooled_one": "トピック待ちのリクエスト {{count}} 件",
+			"pooled_other": "トピック待ちのリクエスト {{count}} 件",
+			"unmatchedLastDay_one": "過去1日のリクエスト {{count}} 件のうち {{percent}}% がトピックに一致しませんでした",
+			"unmatchedLastDay_other": "過去1日のリクエスト {{count}} 件のうち {{percent}}% がトピックに一致しませんでした",
+			"nothingFiled": "過去1日に分類されたリクエストはありません",
+			"requestsRead_one": "読み取ったリクエスト {{count}} 件",
+			"requestsRead_other": "読み取ったリクエスト {{count}} 件",
+			"topicsWritten_one": "作成したトピック {{count}} 件",
+			"topicsWritten_other": "作成したトピック {{count}} 件",
+			"themesCount_one": "テーマ {{count}} 件",
+			"themesCount_other": "テーマ {{count}} 件",
+			"labelsFellBack_one": "フォールバックしたラベル {{count}} 件",
+			"labelsFellBack_other": "フォールバックしたラベル {{count}} 件",
+			"statusFailed": "トピックのクラスタリング状態を読み取れなかったため、実行中のジョブが表示されていない可能性があります。",
+			"thresholdLabel": "新しいトピックのしきい値",
+			"thresholdHint": "トピックに一致しなかったリクエストがいくつ保留されると、Warpが新しいトピックにまとめるかを指定します。毎時確認されます。値を小さくすると少ない例から新しい話題を早く検出し、大きくすると明確なパターンが現れるまで待ちます。{{min}}～{{max}}。",
+			"thresholdError": "{{min}}～{{max}}の整数を入力してください"
+		}
+	},
+	"agentGateway": {
+		"title": "Agent Gateway 設定",
+		"description": "Agent Gateway（A2A）の設定を構成します。",
+		"toastSaved": "Agent Gateway の設定を更新しました。",
+		"loadFailed": "Agent Gateway の設定の読み込みに失敗しました。",
+		"externalClientUrl": "外部クライアント URL",
+		"externalClientUrlHelp": "Bifrost の公開ベース URL で、提供されるエージェントカードやプッシュ通知のコールバック URL に使用されます。空のままにすると、すべてのエージェントプロトコルのエンドポイントが無効になります。エージェント管理は引き続き利用できます。環境変数構文に対応しています（例: <code>env.BIFROST_EXTERNAL_URL</code>）。",
+		"privateAllowlist": "プライベートネットワーク許可リスト",
+		"privateAllowlistHelp": "プライベートまたはループバックアドレスに解決される場合に、Agent Gateway のディスカバリー、OAuth、ランタイムリクエストが到達できるホスト、IP アドレス、CIDR 範囲です。スキームやポートは含めません。リンクローカルおよびクラウドメタデータのアドレスは常にブロックされます。",
+		"privateAllowlistPlaceholder": "ホスト、IP、CIDR を追加（Enter またはカンマ）",
+		"captureRaw": "生のリクエストとレスポンスをキャプチャ",
+		"captureRawHelp": "生のリクエストとレスポンスのペイロードをログレコードに保存します。gRPC はバイナリの protobuf メッセージを使用し、サイズ制限付きのキャプチャではメッセージが途中で切れて確実にデコードや確認ができないため、gRPC では生のキャプチャは無効です。"
+	},
+	"skillsSettings": {
+		"description": "Skills Repository のマーケットプレイス配信を構成します。",
+		"toastSaved": "スキル設定を更新しました。",
+		"loadFailed": "スキル設定の読み込みに失敗しました。",
+		"retry": "再試行",
+		"externalClientUrl": "外部クライアント URL",
+		"externalClientUrlHelp": "Claude Code と Codex のマーケットプレイス用の Bifrost の公開ベース URL です。空のままにすると、マーケットプレイスの配信と登録が無効になります。スキル管理とダウンロードは引き続き利用できます。環境変数と vault 参照に対応しています。"
 	}
 }

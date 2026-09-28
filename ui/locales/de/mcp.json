@@ -173,7 +173,7 @@
 			"headerKeysRequiredDesc": "Gib mindestens einen Header-Namen an, den Benutzer bereitstellen müssen.",
 			"headerMustHaveValue": "Header \"{{key}}\" muss einen Wert haben",
 			"dockerNotice": "Docker-Hinweis",
-			"dockerNoticeBody": "Wenn du nicht das offizielle Bifrost-Docker-Image verwendest, funktionieren STDIO-Verbindungen möglicherweise nicht, wenn erforderliche Befehle (npx, python usw.) nicht installiert sind. Du kannst dies ignorieren, wenn du es lokal ausführst oder ein benutzerdefiniertes Image mit den erforderlichen Abhängigkeiten nutzt.",
+			"dockerNoticeBody": "Bei Verwendung des offiziellen Bifrost-Docker-Images funktionieren STDIO-Verbindungen möglicherweise nicht, da gängige Befehle wie npx, python usw. nicht installiert sind. Wenn du lokal oder ein benutzerdefiniertes Image mit den erforderlichen Abhängigkeiten verwendest, kannst du diesen Hinweis ignorieren.",
 			"serverBehavior": "Server-Verhalten",
 			"serverBehaviorDesc": "Steuere, wie dieser Server am Code-Modus und an Health-Checks teilnimmt.",
 			"codeModeServer": "Code-Modus-Server",
@@ -401,7 +401,8 @@
 			"cancelReplace": "Ersetzen abbrechen",
 			"maxInstructionLength": "Maximale Anweisungslänge (Bytes)",
 			"maxInstructionLengthTooltip": "Obergrenze für die von diesem Server weitergeleiteten Anweisungen. Leer lassen oder auf 0 setzen, um die globale Einstellung zu verwenden. Die Gesamtsumme über alle Server bleibt weiterhin durch die globale Gesamtgrenze beschränkt.",
-			"toolsReplacementNote": "Auf dem Tab „Allgemein“ ist ein Ersatzdokument geöffnet, und dessen Operationsliste bestimmt, welche Tools gespeichert werden. Speichere oder verwirf den Ersatz, um hier Tools zu bearbeiten."
+			"toolsReplacementNote": "Auf dem Tab „Allgemein“ ist ein Ersatzdokument geöffnet, und dessen Operationsliste bestimmt, welche Tools gespeichert werden. Speichere oder verwirf den Ersatz, um hier Tools zu bearbeiten.",
+			"replaceLoadStoredFailed": "Das gespeicherte Dokument konnte nicht geladen werden: {{message}}"
 		},
 		"tls": {
 			"skipVerify": "TLS-Verifizierung überspringen",
@@ -831,7 +832,9 @@
 			"users": "Benutzer",
 			"searchVirtualKeys": "Virtuelle Schlüssel suchen",
 			"searchUsers": "Nach Name oder E-Mail suchen"
-		}
+		},
+		"grantActions": "Freigabeaktionen",
+		"viewAuthSessions": "Auth-Sitzungen anzeigen"
 	},
 	"toolGroups": {
 		"title": "MCP-Tool-Gruppen",
@@ -939,7 +942,17 @@
 			"assign": "Virtuellen Schlüssel zuweisen",
 			"loading": "Virtuelle Schlüssel werden geladen…",
 			"empty": "Noch keine virtuellen Schlüssel zugewiesen. Weise einen zu, damit Aufrufer dieses Virtual MCP erreichen können.",
-			"unassignAria": "Virtuellen Schlüssel entfernen"
+			"unassignAria": "Virtuellen Schlüssel entfernen",
+			"ownerLookupFailed": "Der Inhaber von „{{name}}“ konnte nicht ermittelt werden; die Zuweisung wurde daher nicht vorgenommen. Versuche es erneut.",
+			"assignOwnedTitle": "Virtuellen Schlüssel zuweisen?",
+			"assignOwnedDescription": "<strong>{{name}}</strong> gehört zu {{kind}} <strong>{{owner}}</strong>. Durch die Zuweisung kann der Schlüssel von {{kind}} auf dieses virtuelle MCP zugreifen.",
+			"assignOwnedConfirm": "Zuweisen",
+			"ownerKind": {
+				"team": "Team",
+				"businessUnit": "Geschäftsbereich",
+				"customer": "Kunde",
+				"user": "Benutzer"
+			}
 		},
 		"add": "Virtuelles MCP hinzufügen"
 	},
@@ -978,5 +991,100 @@
 		"scopeUser": "Benutzer",
 		"scopeGlobal": "Global",
 		"scopeWorkspace": "Arbeitsbereich"
+	},
+	"selectors": {
+		"searchTools": "Tools suchen und auswählen...",
+		"searchServers": "MCP-Server suchen und auswählen...",
+		"tool": "Tool",
+		"server": "Server",
+		"noToolsSelected": "Keine Tools ausgewählt. Nutze die Suche oben, um Tools hinzuzufügen.",
+		"noResults": "Keine Ergebnisse gefunden",
+		"noServersSelected": "Keine Server ausgewählt. Nutze die Suche oben, um MCP-Server hinzuzufügen.",
+		"noServersFound": "Keine MCP-Server gefunden",
+		"openServerDetails": "Serverdetails in neuem Tab öffnen"
+	},
+	"openapi": {
+		"credentials": {
+			"apiKey": "API-Schlüssel",
+			"apiKeyLabel": "{{name}} · {{param}} ({{where}})",
+			"valuePlaceholder": "Wert oder env.{{env}}",
+			"basicLabel": "{{name}} · Basic-Authentifizierung",
+			"username": "Benutzername",
+			"password": "Passwort",
+			"passwordPlaceholder": "Passwort oder env.{{env}}_PASSWORD",
+			"bearerLabel": "{{name}} · Bearer-Token",
+			"bearerToken": "Bearer-Token",
+			"tokenPlaceholder": "Token oder env.{{env}}"
+		},
+		"summary": {
+			"inlineSpec": "Inline-Spec",
+			"operationCount_one": "{{count}} Operation",
+			"operationCount_other": "{{count}} Operationen"
+		},
+		"source": {
+			"fileTooLarge": "Die Datei überschreitet das Limit von {{size}} für OpenAPI-Dokumente.",
+			"fileReadFailed": "Die Datei konnte nicht gelesen werden: {{message}}",
+			"fileEmpty": "Die Datei ist leer.",
+			"fetchSpec": "Spec abrufen",
+			"parseAgain": "Erneut parsen",
+			"tabPaste": "Einfügen",
+			"tabUpload": "Hochladen",
+			"pasteHelp": "Füge das OpenAPI- oder Swagger-Dokument als JSON oder YAML ein (2.0, 3.0, 3.1 und 3.2 werden unterstützt).",
+			"specUrl": "Spec-URL",
+			"urlHelp": "Bifrost ruft das Dokument einmalig ab und speichert es mit dem Server; die URL wird als Quelle behalten.",
+			"chooseFile": "Datei auswählen",
+			"uploadHelp": "JSON oder YAML, bis zu {{size}}. Die Datei wird in Deinem Browser gelesen und mit dem Server gespeichert.",
+			"parsing": "Dokument wird geparst…",
+			"staleNotice": "Die URL oder der Servername hat sich seit dem Abruf des Dokuments geändert. Rufe es erneut ab, um die Operationen unten zu aktualisieren."
+		},
+		"preview": {
+			"baseUrlInvalid": "Die Basis-URL muss eine absolute http://- oder https://-URL sein",
+			"untitled": "Unbenannte API",
+			"toolCount_one": "{{count}} Tool",
+			"toolCount_other": "{{count}} Tools",
+			"baseUrl": "Basis-URL",
+			"selectServer": "Upstream-Server auswählen",
+			"custom": "Benutzerdefiniert…",
+			"operationServersNote": "Jede Operation deklariert ihren eigenen Server, daher gehen die Aufrufe dorthin. Lege eine Basis-URL nur fest, um alle zu überschreiben.",
+			"noServerNote": "Das Dokument deklariert keine absolute Server-URL, daher muss der Upstream hier angegeben werden.",
+			"authTitle": "API-Authentifizierung",
+			"authDescPerUser": "Jeder Aufrufer übergibt diese Werte über den benutzerspezifischen Header, der für das jeweilige Schema benannt ist; sie werden unverändert an die API weitergeleitet. Schemata, die per Query oder Cookie gesendet werden, behalten einen gespeicherten Wert.",
+			"authDescStored": "Zugangsdaten für die im Dokument deklarierten Sicherheitsschemata. Sie werden verschlüsselt gespeichert und bei jedem Aufruf angewendet; env.VAR-Referenzen werden unterstützt.",
+			"noSecuritySchemes": "Dieses Dokument deklariert keine Sicherheitsschemata. Füge unten statische Header hinzu, falls die API dennoch Zugangsdaten benötigt.",
+			"unsupportedBadge": "nicht unterstützt",
+			"perUserHeaderAria": "Benutzerspezifischer Header für {{name}}",
+			"perUserHeaderHelpHttp": "Header, den jeder Aufrufer angibt und der unverändert weitergeleitet wird; sein Wert sind die vollständigen Zugangsdaten, z. B. „{{example}}“. Er wird zu den erforderlichen Headern hinzugefügt.",
+			"perUserHeaderHelp": "Header, den jeder Aufrufer angibt und der unverändert weitergeleitet wird. Er wird zu den erforderlichen Headern hinzugefügt.",
+			"credentialAria": "{{scheme}} {{field}}",
+			"operationsTitle": "Operationen ({{supported}} von {{total}} unterstützt)",
+			"operationsDesc": "Angehakte Operationen werden zu Tools dieses Servers. Nicht unterstützte werden mit der Begründung aufgelistet.",
+			"selectedCount": "{{selected}} von {{total}} ausgewählt",
+			"selectAllAria": "Alle Operationen auswählen",
+			"searchPlaceholder": "Operationen suchen…",
+			"noMatch": "Keine Operation entspricht der Suche.",
+			"includeAria": "{{name}} einbeziehen",
+			"unsupportedAria": "{{name}} nicht unterstützt",
+			"deprecatedBadge": "veraltet"
+		}
+	},
+	"oauthCallback": {
+		"successTitle": "Autorisierung abgeschlossen",
+		"failedTitle": "Autorisierung fehlgeschlagen",
+		"successDescription": "Der MCP-Server ist verbunden. Du kannst diesen Tab schließen und zur MCP-Registry zurückkehren.",
+		"failedDescription": "Der MCP-Server konnte nicht autorisiert werden. Kehre zur MCP-Registry zurück und versuche es erneut.",
+		"backToRegistry": "Zurück zur MCP-Registry",
+		"closeTab": "Du kannst diesen Tab schließen.",
+		"closeWindow": "Dieses Fenster kann geschlossen werden."
+	},
+	"headersForm": {
+		"staticAdminHeaders": "Statische Admin-Header",
+		"staticAdminHeadersHelp": "Diese Header werden vom Admin am MCP-Client festgelegt und begleiten jede Anfrage zusätzlich zu Deinen übermittelten Werten. Du kannst sie hier nicht bearbeiten.",
+		"noKeys": "Für diesen MCP-Client wurden keine Header-Schlüssel deklariert.",
+		"previouslySubmitted": "Zuvor übermittelt",
+		"overwritePlaceholder": "•••••• (neuen Wert zum Überschreiben eingeben)",
+		"valuePlaceholder": "Wert für {{key}}",
+		"hideValue": "Wert ausblenden",
+		"showValue": "Wert anzeigen",
+		"test": "Testen"
 	}
 }

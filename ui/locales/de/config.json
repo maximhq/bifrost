@@ -23,7 +23,8 @@
 		"brandingDescription": "Replace the Bifrost logo with your own across the dashboard and login screen. Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Wir erfahren gern mehr über deinen Anwendungsfall und wie wir helfen können.",
 		"licenseTitle": "Die Lizenzverwaltung aktivieren",
 		"apiKeysTitle": "Rollenbasierte API-Schlüssel",
-		"apiKeysDescription": "Need granuläre Zugriffssteuerung mit scope-basierten API-Schlüsseln? Enterprise-Kunden können mehrere API-Schlüssel mit spezifischen Berechtigungen für verschiedene Dienstleister, Teams oder Umgebungen erstellen."
+		"apiKeysDescription": "Need granuläre Zugriffssteuerung mit scope-basierten API-Schlüsseln? Enterprise-Kunden können mehrere API-Schlüssel mit spezifischen Berechtigungen für verschiedene Dienstleister, Teams oder Umgebungen erstellen.",
+		"unknownOs": "Unbekanntes Betriebssystem"
 	},
 	"clientSettings": {
 		"title": "Client-Einstellungen",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>Beschränkungslisten:</span0> Alle Headers, die in der Beschränkungsliste enthalten sind, werden von der Weiterleitung abgefangen.",
 		"wildcardRules": "<span0>Vorzeichenwildcards:</span0> Mit  <code1>*</code1> am Ende eines Patterns wird eine Übereinstimmung mit Präfixen (z.B., <code2>anthropic-*</code2> passt zu allen Headers, die mit <code3>anthropic-</code3> beginnen). Ein  <code4>*</code4> alle Headers überspringt.",
 		"headerNames": "Erlaubnisliste/Beschränkungslisten-Einträge sollten ohne den  <code1>x-bf-eh-</code1>-Prefix sein",
-		"allowlistExample": "Beispiel: Um Anforderungen an <code0>x-bf-eh-custom-id</code0> oder direkte Anforderungen an <code1>custom-id</code1> zu erlauben, füge  <code2>custom-id</code2> zur Erlaubnisliste hinzu."
+		"allowlistExample": "Beispiel: Um Anforderungen an <code0>x-bf-eh-custom-id</code0> oder direkte Anforderungen an <code1>custom-id</code1> zu erlauben, füge  <code2>custom-id</code2> zur Erlaubnisliste hinzu.",
+		"extraFieldsPlacement": "Platzierung der Extra-Felder",
+		"extraFieldsPlacementHelp": "Wo Inferenz-Antworten die <b>extra_fields</b>-Metadaten von Bifrost enthalten. <b>Body</b> behält das extra_fields-Objekt in der JSON-Antwort. <b>Headers</b> entfernt es aus dem Body und aus jedem Streaming-Chunk und sendet seine skalaren Felder als <b>x-bifrost-*</b>-Antwort-Header.",
+		"extraFieldsPlacementDroppedNote": "Im Headers-Modus werden diese Felder verworfen und nirgendwo gesendet: rohe Anfrage, rohe Antwort, Routing-Metadaten, Guardrail-Debug, Parse-Fehler sowie bei Fehlern Schlüsselstatus, abgerechnete Nutzung und MCP-Auth-Details. Streaming-Antworten enthalten nur, was vor dem ersten Chunk bekannt ist (Routing, Fallback, Cache-Abfrage); daher werden auch die Latenz pro Chunk, der Chunk-Index und die Endsummen verworfen.",
+		"extraFieldsBody": "Body",
+		"extraFieldsHeaders": "Headers",
+		"removeSecurityHeader_one": "Sicherheits-Header entfernen: {{headers}}",
+		"removeSecurityHeader_other": "Sicherheits-Header entfernen: {{headers}}"
 	},
 	"caching": {
 		"title": "Lokale Cache",
@@ -231,7 +239,11 @@
 		"deleteExpiredVirtualKeysHelp": "Wenn aktiviert, löscht ein täglicher Bereinigungsjob jeden virtuellen Schlüssel, dessen Ablaufdatum überschritten ist, und sendet eine Benachrichtigung mit den entfernten Schlüsseln. Jeder Schlüssel kann dies über seinen Schalter <b0>Nach Ablauf löschen</b0> überschreiben: Ein Schlüssel mit „Aus“ bleibt erhalten, ein Schlüssel mit „Ein“ wird auch dann gelöscht, wenn diese Option deaktiviert ist.",
 		"enforceVkObjectOwnership": "Anbieterobjekte auf den erstellenden virtuellen Schlüssel beschränken",
 		"enforceVkObjectOwnershipHelp": "Wenn aktiviert, können Dateien, Batches, Videos, Container, gecachte Inhalte und Live-Sitzungen, die mit einem virtuellen Schlüssel erstellt wurden, nur mit demselben Schlüssel gelesen, aufgelistet oder gelöscht werden. Andere virtuelle Schlüssel erhalten einen „Nicht gefunden“-Fehler und sehen sie nicht in Listen. Anfragen ohne virtuellen Schlüssel sind nicht betroffen. Der erstellende Schlüssel wird auch bei deaktivierter Option erfasst, sodass ein erneutes Aktivieren auch zwischenzeitlich erstellte Objekte abdeckt, außer solchen, deren erstellender Schlüssel nicht erfasst werden konnte.",
-		"proofRequired": "Gib das aktuelle Administratorpasswort ein, um diese Änderung zu bestätigen. Der Dashboard-Schutz ist ausgeschaltet, daher ist diese Sitzung nicht angemeldet. Wenn du das Passwort nicht kennst, verwende stattdessen das Setup-Token."
+		"proofRequired": "Gib das aktuelle Administratorpasswort ein, um diese Änderung zu bestätigen. Der Dashboard-Schutz ist ausgeschaltet, daher ist diese Sitzung nicht angemeldet. Wenn du das Passwort nicht kennst, verwende stattdessen das Setup-Token.",
+		"skipAccessProfileKeyCreation": "Keine virtuellen Benutzerschlüssel für Zugriffsprofile erstellen",
+		"skipAccessProfileKeyCreationHelp": "Wenn aktiviert, wird für einen Benutzer beim ersten Zugriffsprofil kein virtueller Schlüssel erstellt. Schlüssel, die der Benutzer bereits besitzt oder die du für ihn hinzufügst, werden weiterhin durch das Profil verwaltet, solange es ihm zugewiesen ist.",
+		"skipAccessProfileKeyDeletion": "Virtuelle Benutzerschlüssel beim Entfernen von Zugriffsprofilen nicht löschen",
+		"skipAccessProfileKeyDeletionHelp": "Wenn aktiviert, bleiben die virtuellen Schlüssel eines Benutzers beim Entfernen seines letzten Zugriffsprofils als normale Schlüssel bestehen, ohne die Anbieter oder Zugriffsrechte des Profils. Beim Löschen des Benutzers werden seine Schlüssel weiterhin gelöscht."
 	},
 	"logging": {
 		"title": "Protokolleinstellungen",
@@ -296,7 +308,11 @@
 		"convertUnsupportedParamsHelp": "Konvertiert Modellparameterwerte, die vom Modell nicht unterstützt werden.",
 		"azureDeepseek": "Chat-Completion-APIs für Azure Deepseek-Modelle verwenden",
 		"azureDeepseekHelp": "Verwende Chat-Completion-APIs für Claude Code, Codex usw. für Azure Deepseek-Modelle.",
-		"toastSaved": "Kompatibilitätseinstellungen erfolgreich aktualisiert."
+		"toastSaved": "Kompatibilitätseinstellungen erfolgreich aktualisiert.",
+		"forceReasoningOnlyToResponses": "Responses API für reine Reasoning-Modelle von OpenAI verwenden",
+		"forceReasoningOnlyToResponsesHelp": "Leitet Chat-Completion-Anfragen an die Responses API weiter, wenn Modelle bei Chat Completions nicht mit Tool-Aufrufen schlussfolgern können, statt das Reasoning auszuschalten.",
+		"convertDecisionToResponses": "Decisions API für Nicht-Entscheidungsmodelle emulieren",
+		"convertDecisionToResponsesHelp": "Beantwortet Decision-Anfragen für Modelle ohne nativen Decisions-Endpunkt, indem das Modell über die Responses API mit einem erzwungenen Function-Tool angesprochen wird. Wenn deaktiviert, schlagen diese Anfragen als nicht unterstützt fehl."
 	},
 	"featureFlags": {
 		"title": "Feature-Flags",
@@ -387,7 +403,26 @@
 		"allowedRedirectUrisHelp": "Exakte Callback-URIs, die Remote-MCP-Clients verwenden dürfen, z. B. <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Füge <code1>*</code1> hinzu, um jeden https-Callback zu erlauben; teilweise Platzhalter werden nicht unterstützt. Loopback-Callbacks und <code2>cursor://anysphere.cursor-mcp</code2> sind immer erlaubt. Für Änderungen an dieser Liste ist die Dashboard-Authentifizierung erforderlich.",
 		"allowedRedirectUrisPlaceholder": "Callback-URI hinzufügen (Enter)",
 		"anyCallbackAllowed": "Jeder Callback ist erlaubt",
-		"anyCallbackAllowedHelp": "Jeder MCP-Client kann sich mit einem Callback auf einem beliebigen Host registrieren. Die Zustimmungsseite ist daher die einzige Absicherung gegen einen Client, der Autorisierungscodes an einen Angreifer sendet. Liste besser exakte Callback-URIs auf."
+		"anyCallbackAllowedHelp": "Jeder MCP-Client kann sich mit einem Callback auf einem beliebigen Host registrieren. Die Zustimmungsseite ist daher die einzige Absicherung gegen einen Client, der Autorisierungscodes an einen Angreifer sendet. Liste besser exakte Callback-URIs auf.",
+		"limitMaxSourceBytes": "Max. Quellgröße (Bytes)",
+		"limitMaxSourceBytesDesc": "Größter Code, den eine einzelne Ausführung übermitteln darf.",
+		"limitMaxSteps": "Max. Berechnungsschritte",
+		"limitMaxStepsDesc": "Interpreter-Schritte pro Ausführung, einschließlich der Arbeit innerhalb von Builtins.",
+		"limitMaxMemoryBytes": "Max. Arbeitsspeicher (Bytes)",
+		"limitMaxMemoryBytesDesc": "Geschätztes Allokationsbudget pro Ausführung. Jede parallele Ausführung erhält ihr eigenes Budget.",
+		"limitMaxLogBytes": "Max. Log-Ausgabe (Bytes)",
+		"limitMaxLogBytesDesc": "Print- und Tool-Log-Ausgabe pro Ausführung, einschließlich Zeilenumbrüchen.",
+		"limitMaxToolCalls": "Max. Tool-Aufrufe",
+		"limitMaxToolCallsDesc": "Verschachtelte MCP-Tool-Aufrufe pro Ausführung.",
+		"limitMaxValueBytes": "Max. Wertgröße (Bytes)",
+		"limitMaxValueBytesDesc": "Größenbudget für jede Tool-Payload und jedes konvertierte Ergebnis. Muss mindestens {{min}} betragen.",
+		"limitMaxNestingDepth": "Max. Verschachtelungstiefe",
+		"limitMaxNestingDepthDesc": "Verschachtelungstiefe von Werten, die die Tool-Grenze überschreiten. Höchstens {{max}}.",
+		"limitNegative": "{{label}} darf nicht negativ sein.",
+		"limitValueBytesMin": "Die max. Wertgröße muss mindestens {{min}} Bytes betragen.",
+		"limitNestingMax": "Die max. Verschachtelungstiefe darf höchstens {{max}} betragen.",
+		"codeModeLimitsTitle": "Code-Mode-Limits",
+		"codeModeLimitsDescription": "Limits für jede Code-Ausführung. Lasse ein Feld leer, um den Standardwert zu verwenden. Die Anzahl gleichzeitiger Ausführungen ist nicht begrenzt."
 	},
 	"modelSettings": {
 		"title": "Modelleinstellungen",
@@ -733,7 +768,11 @@
 		"intoPath": " nach {{path}}/",
 		"intoRoot": " ins Stammverzeichnis",
 		"previewAfterSaving": "Vorschau nach dem Speichern verfügbar.",
-		"externalUrlRequired": "Lege die Externe Client-URL in den <settingsLink>Skills-Einstellungen</settingsLink> fest, um die Marketplace-Registrierung zu aktivieren."
+		"externalUrlRequired": "Lege die Externe Client-URL in den <settingsLink>Skills-Einstellungen</settingsLink> fest, um die Marketplace-Registrierung zu aktivieren.",
+		"showLess": "Weniger anzeigen",
+		"showMore": "Mehr anzeigen",
+		"skillNotFound": "Skill nicht gefunden",
+		"backToList": "Zurück zur Liste"
 	},
 	"promptRepo": {
 		"loadFailed": "Prompt-Repository konnte nicht geladen werden",
@@ -933,7 +972,19 @@
 		"governancePlugin": "Governance-Plugin",
 		"governancePluginDesc": "Vollständiger Leitfaden zu Zugriffskontrolle, Budgets und Ratenbegrenzung",
 		"governancePluginContent": "Meistere Virtuelle Schlüssel, hierarchische Budgets, Ratenbegrenzung und Nutzungstracking für eine sichere KI-Infrastruktur.",
-		"viewGovernanceGuide": "Governance-Leitfaden ansehen"
+		"viewGovernanceGuide": "Governance-Leitfaden ansehen",
+		"heading": "Bring deinen Bifrost-Stack auf das nächste Level",
+		"viewFullDocumentation": "Gesamte Dokumentation ansehen",
+		"quickStartGuide": "Schnellstart-Anleitung",
+		"readMore": "Mehr erfahren",
+		"items": {
+			"quickStart": ["Einrichtung des HTTP-Transports", "Nutzung des Go-Pakets", "Docker-Anleitung"],
+			"architecture": ["Systemübersicht", "Anfrageablauf", "Nebenläufigkeitsmodell", "Designentscheidungen"],
+			"usageGuides": ["Einrichtung von Anbietern", "Schlüsselverwaltung", "Fehlerbehandlung", "Speicher & Netzwerk"],
+			"contributing": ["Beitragsleitfaden", "Anbieter hinzufügen", "Plugin-Entwicklung", "Code-Konventionen"],
+			"integrationExamples": ["OpenAI-Integration", "Anthropic-Integration", "GenAI-Integration", "Migrationsleitfäden"],
+			"benchmarks": ["Testergebnisse bei 5K RPS", "Leistungsmetriken", "Konfigurationsoptimierung", "Hardwarevergleiche"]
+		}
 	},
 	"warp": {
 		"saved": "Warp-Konfiguration gespeichert.",
@@ -1036,7 +1087,10 @@
 			"searchLimit": "Suchlimit muss zwischen 1 und 25 liegen.",
 			"retentionRequired": "Wert erforderlich",
 			"retentionWhole": "Muss eine ganze Anzahl von Tagen sein",
-			"retentionMin": "Muss 0 oder mehr Tage sein (0 behält den Standard)"
+			"retentionMin": "Muss 0 oder mehr Tage sein (0 behält den Standard)",
+			"modelRequired": "Wähle einen Anbieter und ein Modell aus, um Warp zu aktivieren.",
+			"modelOrRemove": "Wähle einen Anbieter und ein Modell aus oder entferne dieses Modell.",
+			"modelDuplicate": "Dieser Anbieter und dieses Modell sind bereits aufgeführt."
 		},
 		"models": "Modelle",
 		"modelsHelp": "Die Modelle, mit denen Warp Schlussfolgerungen zieht und Antworten verfasst. Das Standardmodell antwortet, sofern im Warp-Panel niemand ein anderes wählt. Ein leistungsfähiges Modell zahlt sich hier aus.",
@@ -1046,6 +1100,67 @@
 		"defaultModel": "Standardmodell",
 		"modelNumber": "Modell {{number}}",
 		"makeDefault": "Als Standard festlegen",
-		"removeModel": "Modell {{number}} entfernen"
+		"removeModel": "Modell {{number}} entfernen",
+		"topics": {
+			"badRange": "Wähle einen gültigen Zeitraum für Themen aus.",
+			"started": "Themeninitialisierung gestartet.",
+			"cancelRequested": "Abbruch der Themenclusterung angefordert.",
+			"title": "Themencluster",
+			"infoLabel": "So funktionieren Themen",
+			"infoIntro": "Themen gruppieren Anfragen nach ihrem Inhalt, damit Warp beantworten kann, worüber Menschen sprechen.",
+			"infoSeed": "<b0>1. Einmalig initialisieren.</b0> Bei einem einmaligen Durchlauf werden die indexierten Anfragen eines Zeitfensters gruppiert und die Gruppen benannt. Die Initialisierung erfolgt einmal pro Embedding-Modell.",
+			"infoFiled": "<b0>2. Beim Eingang zuordnen.</b0> Jede danach indexierte Anfrage wird dem nächstgelegenen Thema zugeordnet.",
+			"infoFound": "<b0>3. Neue Themen erkennen.</b0> Anfragen ohne passende Themen warten. Sobald der Schwellenwert für neue Themen erreicht ist, gruppiert ein stündlicher Durchlauf sie zu neuen Themen oder ordnet sie bestehenden zu.",
+			"infoTidy": "<b0>4. Aufgeräumt halten.</b0> Derselbe Durchlauf entfernt Themen, zu denen es seit 30 Tagen keine Anfragen gab, und führt Themen zusammen, die inzwischen dasselbe bedeuten.",
+			"infoReseed": "Wird das Embedding-Modell geändert, beginnt der Vorgang von vorn: Die Themen werden erneut initialisiert.",
+			"description": "Initialisiere Themen einmal anhand eines Zeitfensters mit indexierten Anfragen. Danach bleiben sie automatisch aktuell, während neue Anfragen indexiert werden; weitere Durchläufe sind nicht nötig.",
+			"seeded": "Themen für dieses Embedding-Modell sind erstellt und werden automatisch aktuell gehalten: Neue Anfragen werden beim Indexieren zugeordnet, und unter den nicht zugeordneten werden neue Themen erkannt.",
+			"cancel": "Clusterung abbrechen",
+			"seed": "Themen initialisieren",
+			"saveBeforeSeed": "Speichere Konfigurationsänderungen, bevor du Themen initialisierst.",
+			"needsBackfill": "Für dieses Embedding-Modell ist noch nichts indexiert. Fülle zuerst oben ein Zeitfenster nach und initialisiere dann Themen aus demselben Zeitfenster.",
+			"activeTopics_one": "{{count}} aktives Thema",
+			"activeTopics_other": "{{count}} aktive Themen",
+			"inThemes_one": "in {{count}} Thema",
+			"inThemes_other": "in {{count}} Themen",
+			"pooled_one": "{{count}} Anfrage wartet auf ein Thema",
+			"pooled_other": "{{count}} Anfragen warten auf ein Thema",
+			"unmatchedLastDay_one": "{{percent}} % der {{count}} Anfrage vom letzten Tag passte zu keinem Thema",
+			"unmatchedLastDay_other": "{{percent}} % der {{count}} Anfragen vom letzten Tag passten zu keinem Thema",
+			"nothingFiled": "am letzten Tag nichts zugeordnet",
+			"requestsRead_one": "{{count}} Anfrage gelesen",
+			"requestsRead_other": "{{count}} Anfragen gelesen",
+			"topicsWritten_one": "{{count}} Thema erstellt",
+			"topicsWritten_other": "{{count}} Themen erstellt",
+			"themesCount_one": "{{count}} Thema",
+			"themesCount_other": "{{count}} Themen",
+			"labelsFellBack_one": "{{count}} Bezeichnung fiel auf einen Ersatzwert zurück",
+			"labelsFellBack_other": "{{count}} Bezeichnungen fielen auf Ersatzwerte zurück",
+			"statusFailed": "Der Status der Themenclusterung konnte nicht gelesen werden; möglicherweise wird ein laufender Auftrag nicht angezeigt.",
+			"thresholdLabel": "Schwellenwert für neue Themen",
+			"thresholdHint": "Wie viele Anfragen ohne passendes Thema warten müssen, bevor Warp sie stündlich zu neuen Themen gruppiert. Ein niedriger Wert erkennt neue Themen früher anhand weniger Beispiele; ein höherer wartet auf deutlichere Muster. {{min}} bis {{max}}.",
+			"thresholdError": "Muss eine ganze Zahl zwischen {{min}} und {{max}} sein"
+		}
+	},
+	"agentGateway": {
+		"title": "Agent-Gateway-Einstellungen",
+		"description": "Konfiguriere die Einstellungen des Agent Gateway (A2A).",
+		"toastSaved": "Agent-Gateway-Einstellungen erfolgreich aktualisiert.",
+		"loadFailed": "Agent-Gateway-Einstellungen konnten nicht geladen werden.",
+		"externalClientUrl": "Externe Client-URL",
+		"externalClientUrlHelp": "Die öffentliche Basis-URL von Bifrost, die für ausgelieferte Agent Cards und Callback-URLs für Push-Benachrichtigungen verwendet wird. Bleibt sie leer, sind alle Agent-Protokoll-Endpunkte deaktiviert. Die Agent-Verwaltung bleibt verfügbar. Unterstützt die Syntax für Umgebungsvariablen (z. B. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"privateAllowlist": "Allowlist für private Netzwerke",
+		"privateAllowlistHelp": "Hosts, IP-Adressen oder CIDR-Bereiche ohne Schema oder Port, die Discovery-, OAuth- und Laufzeitanfragen des Agent Gateway erreichen dürfen, wenn sie auf eine private oder Loopback-Adresse aufgelöst werden. Link-Local- und Cloud-Metadaten-Adressen werden immer blockiert.",
+		"privateAllowlistPlaceholder": "Host, IP oder CIDR hinzufügen (Enter oder Komma)",
+		"captureRaw": "Rohe Anfrage und Antwort erfassen",
+		"captureRawHelp": "Speichert rohe Anfrage- und Antwort-Payloads in den Log-Einträgen. Für gRPC ist die Rohdatenerfassung deaktiviert, da binäre Protobuf-Nachrichten verwendet werden; eine größenbegrenzte Erfassung kann eine Nachricht mittendrin abschneiden und lässt sich nicht zuverlässig dekodieren oder prüfen."
+	},
+	"skillsSettings": {
+		"description": "Konfiguriere die Bereitstellung des Skills-Repository-Marketplace.",
+		"toastSaved": "Skills-Einstellungen erfolgreich aktualisiert.",
+		"loadFailed": "Skills-Einstellungen konnten nicht geladen werden.",
+		"retry": "Erneut versuchen",
+		"externalClientUrl": "Externe Client-URL",
+		"externalClientUrlHelp": "Die öffentliche Basis-URL von Bifrost für die Marketplaces von Claude Code und Codex. Leer lassen, um die Bereitstellung und Registrierung des Marketplace zu deaktivieren. Skill-Verwaltung und Downloads bleiben verfügbar. Unterstützt Umgebungsvariablen und Vault-Referenzen."
 	}
 }

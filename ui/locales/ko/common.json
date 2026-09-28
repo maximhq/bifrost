@@ -66,7 +66,11 @@
 		"mcpServers": "MCP 서버",
 		"virtualMcp": "가상 MCP",
 		"virtualMcps": "가상 MCP",
-		"video": "동영상"
+		"video": "동영상",
+		"agents": "에이전트",
+		"providers": "프로바이더",
+		"webhookEndpoints": "웹훅 엔드포인트",
+		"modelLimits": "모델 한도"
 	},
 	"aboutField": "{{field}} 정보",
 	"thisField": "이 필드",
@@ -109,7 +113,8 @@
 		"selectModel": "모델 선택",
 		"searching": "검색 중…",
 		"loadingMore": "더 불러오는 중…",
-		"useModel": "<name>{{name}}</name> 사용"
+		"useModel": "<name>{{name}}</name> 사용",
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} 차단됨"
 	},
 	"providerSelect": {
 		"select": "프로바이더 선택",
@@ -118,12 +123,393 @@
 		"couldntLoad": "프로바이더를 불러올 수 없습니다.",
 		"noMatching": "일치하는 프로바이더가 없습니다.",
 		"noneAvailable": "사용 가능한 프로바이더가 없습니다.",
-		"loading": "프로바이더 불러오는 중…"
+		"loading": "프로바이더 불러오는 중…",
+		"customProviders": "맞춤 프로바이더"
 	},
 	"providerList": {
 		"moreProviders_one": "프로바이더 {{count}}개 더",
 		"moreProviders_other": "프로바이더 {{count}}개 더",
 		"moreCount": "+{{count}}개 더"
 	},
-	"failedToLoadMoreEntities": "더 많은 {{entity}}를 로드하지 못했습니다."
+	"failedToLoadMoreEntities": "더 많은 {{entity}}를 로드하지 못했습니다.",
+	"multiSelect": {
+		"placeholder": "옵션 선택",
+		"announce": {
+			"oneSelected": "{{label}}을(를) 선택했어요. 전체 {{total}}개 중 {{selected}}개를 선택했어요.",
+			"manySelected": "옵션 {{count}}개를 선택했어요. 전체 {{total}}개 중 {{selected}}개를 선택했어요.",
+			"removed": "옵션을 제거했어요. 전체 {{total}}개 중 {{selected}}개를 선택했어요.",
+			"opened": "드롭다운을 열었어요. 사용 가능한 옵션이 {{count}}개 있어요. 화살표 키로 이동하세요.",
+			"closed": "드롭다운을 닫았어요.",
+			"found_one": "\"{{query}}\"에 해당하는 옵션 {{count}}개를 찾았어요",
+			"found_other": "\"{{query}}\"에 해당하는 옵션 {{count}}개를 찾았어요"
+		},
+		"dropdownHelp": "다중 선택 드롭다운이에요. 화살표 키로 이동하고, Enter로 선택하고, Escape로 닫으세요.",
+		"noneSelected": "선택한 옵션 없음",
+		"selectedList_one": "옵션 {{count}}개 선택됨: {{labels}}",
+		"selectedList_other": "옵션 {{count}}개 선택됨: {{labels}}",
+		"triggerAria": "다중 선택: 전체 {{total}}개 중 {{selected}}개 선택됨. {{placeholder}}",
+		"removeFromSelection": "선택에서 {{label}} 제거",
+		"clearAllAria_one": "선택한 옵션 지우기",
+		"clearAllAria_other": "선택한 옵션 {{count}}개 모두 지우기",
+		"availableOptions": "사용 가능한 옵션",
+		"searchPlaceholder": "옵션 검색...",
+		"searchAria": "사용 가능한 옵션 검색",
+		"searchHelp": "입력하여 옵션을 필터링하세요. 화살표 키로 결과를 이동할 수 있어요.",
+		"selectAllAria": "옵션 {{count}}개 모두 선택",
+		"selectAll": "(모두 선택)",
+		"selectAllWithCount": "(모두 선택 - 옵션 {{count}}개)",
+		"optionSelectedAria": "{{label}}, 선택됨{{disabled}}",
+		"optionNotSelectedAria": "{{label}}, 선택되지 않음{{disabled}}",
+		"disabledSuffix": ", 비활성화됨",
+		"clear": "지우기"
+	},
+	"quarterStart": {
+		"fiscalYearStarts": "회계연도 시작",
+		"nextReset": "다음 초기화: <date>{{reset}}</date>. 현재 분기는 {{end}}에 끝나요."
+	},
+	"headersTable": {
+		"headerName": "헤더 이름",
+		"headerValue": "헤더 값",
+		"headers": "헤더",
+		"name": "이름",
+		"value": "값",
+		"unsupportedKey": "지원되지 않는 키 이름이에요",
+		"duplicateKey": "중복된 키예요"
+	},
+	"sidebar": {
+		"toggle": "사이드바 전환"
+	},
+	"sheet": {
+		"collapse": "접기",
+		"expand": "펼치기"
+	},
+	"tabs": {
+		"showMore_one": "탭 {{count}}개 더 보기",
+		"showMore_other": "탭 {{count}}개 더 보기"
+	},
+	"promoCard": {
+		"dismiss": "닫기"
+	},
+	"searchSelect": {
+		"failedToLoad": "불러오지 못했어요."
+	},
+	"numberAndSelect": {
+		"resetPeriod": "초기화 주기"
+	},
+	"secretVar": {
+		"resolvedAfterSave": "확인된 값은 저장 후에 표시돼요"
+	},
+	"agentGrants": {
+		"label": "에이전트 액세스",
+		"tooltip": "이 키에 등록된 에이전트에 대한 액세스를 허용해요. 그러면 키로 각 에이전트를 <path0>{{path}}</path0>에서 호출할 수 있어요. 모든 키에 열려 있는 에이전트는 별도 허용이 필요 없어요.",
+		"selectPlaceholder": "추가할 에이전트 선택",
+		"removeAria": "{{name}} 제거"
+	},
+	"calendarAlignment": {
+		"rollingNotice": "{{durations}}은(는) 전체 기간 동안 롤링 윈도우를 사용해요. 달력 정렬은 1d, 1w, 1M, 1Q, 1Y에만 적용돼요."
+	},
+	"formFooter": {
+		"noPermission": "이 작업을 수행할 권한이 없어요",
+		"saving": "저장 중...",
+		"fixValidation": "유효성 검사 오류를 수정하세요",
+		"update": "{{label}} 업데이트",
+		"create": "{{label}} 생성"
+	},
+	"loadError": {
+		"failedToLoad": "{{entity}}을(를) 불러오지 못했어요.",
+		"retry": "다시 시도"
+	},
+	"notAvailableBanner": {
+		"title": "구성 저장소 설정이 없어요.",
+		"description": "UI는 구성 데이터를 저장하기 위해 데이터베이스 연결이 필요하지만 현재 구성된 데이터베이스가 없어요.",
+		"enableHintPrefix": "UI를 사용하려면 config.json에 데이터베이스 설정을 추가하세요(",
+		"documentation": "문서",
+		"enableHintSuffix": " 참조)."
+	},
+	"scopeChips": {
+		"showAll_one": "범위 {{count}}개 보기",
+		"showAll_other": "범위 {{count}}개 모두 보기",
+		"grantedScopes": "허용된 범위"
+	},
+	"theme": {
+		"light": "라이트",
+		"dark": "다크",
+		"system": "시스템",
+		"toggle": "테마 전환"
+	},
+	"trialBanner": {
+		"expired": "Bifrost Enterprise 체험판이 만료되었어요. 도움이 필요하시면 <link0>문의해 주세요</link0>.",
+		"expiresIn_one": "Bifrost Enterprise 체험판이 {{count}}일 후 만료돼요. 도움이 필요하시면 <link0>문의해 주세요</link0>.",
+		"expiresIn_other": "Bifrost Enterprise 체험판이 {{count}}일 후 만료돼요. 도움이 필요하시면 <link0>문의해 주세요</link0>.",
+		"expiredSubject": "만료된 엔터프라이즈 체험판에 대해 도움이 필요해요",
+		"extendSubject": "엔터프라이즈 체험판 연장에 대해 도움이 필요해요"
+	},
+	"calendarAlignedLabel": "{{label}} (달력)",
+	"resetsWhen": "{{when}} 초기화",
+	"budgetDisplay": {
+		"usageAria": "예산 사용량",
+		"override": "재정의",
+		"baseTooltip": "기본 {{base}} + 재정의 {{override}}"
+	},
+	"rateLimit": {
+		"tokens": "토큰",
+		"req": "요청",
+		"tokensUsageAria": "토큰 사용량",
+		"requestUsageAria": "요청 사용량"
+	},
+	"sidekiq": {
+		"sectionAria": "백그라운드 작업",
+		"emptyTitle": "백그라운드 작업 없음",
+		"emptyDescription": "오래 걸리는 작업의 진행 상황이 여기에 표시돼요.",
+		"status": {
+			"pending": "대기 중",
+			"running": "실행 중",
+			"completed": "완료됨",
+			"failed": "실패함",
+			"cancelled": "취소됨"
+		},
+		"dismissAria": "{{label}} 닫기",
+		"progressAria": "{{label}} 진행률",
+		"done": "완료",
+		"started": "{{when}}에 시작됨",
+		"finished": "{{when}}에 완료됨",
+		"stopJob": "작업 중지",
+		"keep": "유지"
+	},
+	"tableColumns": {
+		"configAria": "열 구성",
+		"toggle": "열 표시 전환",
+		"resetToDefault": "기본값으로 재설정",
+		"actionsAria": "열 작업",
+		"hide": "열 숨기기",
+		"unpin": "고정 해제",
+		"pinLeft": "왼쪽에 고정",
+		"pinRight": "오른쪽에 고정"
+	},
+	"configSyncAlert": {
+		"message": "이 구성은 <code0>config.json</code0>에서 동기화돼요. config.json을 이후에 업데이트하면 UI에서 변경한 내용을 덮어써요. config.json을 초기 구성을 부트스트랩하는 용도로만 사용한다면 이 알림은 무시해도 돼요."
+	},
+	"breadcrumb": {
+		"label": "탐색 경로",
+		"more": "더 보기"
+	},
+	"modelParameters": {
+		"keepBetween": "{{label}}은(는) {{min}}에서 {{max}} 사이로 설정하세요.",
+		"addString": "문자열 추가",
+		"select": "선택"
+	},
+	"entityAssociation": {
+		"placeholders": {
+			"virtualKey": "가상 키 이름 추가...",
+			"team": "팀 이름 추가...",
+			"customer": "고객 이름 추가...",
+			"user": "사용자 이름 추가...",
+			"provider": "프로바이더 이름 추가...",
+			"apiKey": "API 키 이름 추가..."
+		},
+		"noOptions": {
+			"virtualKey": "가상 키를 찾지 못했어요",
+			"team": "팀을 찾지 못했어요",
+			"customer": "고객을 찾지 못했어요",
+			"user": "사용자를 찾지 못했어요",
+			"provider": "프로바이더를 찾지 못했어요",
+			"apiKey": "API 키를 찾지 못했어요"
+		},
+		"selected": "선택됨",
+		"createOption": "\"{{value}}\" 추가"
+	},
+	"combobox": {
+		"selectEllipsis3": "선택...",
+		"select": "선택…",
+		"clearSelection": "선택 해제",
+		"clearSearch": "검색어 지우기",
+		"search": "검색...",
+		"typeOrSelect": "입력하거나 선택...",
+		"use": "\"{{value}}\" 사용",
+		"noResults": "검색 결과가 없어요.",
+		"selectedCount": "{{count}}개 선택됨",
+		"removeAria": "{{label}} 제거"
+	},
+	"validation": {
+		"customProviderNameIsRequired": "커스텀 프로바이더 이름은 필수예요",
+		"endpointIsRequired": "엔드포인트는 필수예요",
+		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 인증에는 클라이언트 ID, 클라이언트 시크릿, 테넌트 ID가 모두 필요해요",
+		"tokenLifetimeMustBeAWholeNumberOfSeconds": "토큰 수명은 정수(초)여야 해요",
+		"tokenLifetimeMustBeAtLeast600Seconds": "토큰 수명은 600초 이상이어야 해요",
+		"tokenLifetimeMustBeAtMost43200Seconds": "토큰 수명은 43200초 이하여야 해요",
+		"projectIdIsRequired": "프로젝트 ID는 필수예요",
+		"regionIsRequired": "리전은 필수예요",
+		"authCredentialsIsRequiredForServiceAccountJsonAuthentication": "서비스 계정 JSON 인증에는 인증 자격 증명이 필요해요",
+		"workloadIdentityPoolProviderAudienceIsRequired": "Workload Identity Pool 프로바이더 대상(audience)은 필수예요",
+		"removeTheAuthCredentialsJsonWhenUsingAwsWorkloadIdentity": "AWS workload identity를 사용할 때는 인증 자격 증명 JSON을 제거하세요",
+		"bucketNameIsRequired": "버킷 이름은 필수예요",
+		"bothAccessKeyAndSecretKeyAreRequiredForExplicit": "명시적 자격 증명에는 액세스 키와 시크릿 키가 모두 필요해요",
+		"modelNameIsRequired": "모델 이름은 필수예요",
+		"serverUrlIsRequired": "서버 URL은 필수예요",
+		"chooseAGrantType": "권한 부여 유형을 선택하세요",
+		"tokenUrlIsRequired": "토큰 URL은 필수예요",
+		"tokenUrlMustBeAnHttpsUrl": "토큰 URL은 https URL이어야 해요",
+		"tokenUrlMustNotCarryUserinfoAQueryOrA": "토큰 URL에는 userinfo, 쿼리, 프래그먼트를 포함할 수 없어요. 추가 매개변수는 extra_params로 보내세요",
+		"clientIdIsRequiredForClientCredentials": "클라이언트 자격 증명에는 클라이언트 ID가 필요해요",
+		"clientSecretIsRequiredForClientCredentials": "클라이언트 자격 증명에는 클라이언트 시크릿이 필요해요",
+		"privateKeyIsRequiredForJwtBearer": "JWT bearer에는 프라이빗 키가 필요해요",
+		"privateKeyMustBeAnRsaOrEcPemBlock": "프라이빗 키는 RSA 또는 EC PEM 블록이어야 해요",
+		"issuerIsRequiredForJwtBearer": "JWT bearer에는 발급자(issuer)가 필요해요",
+		"audienceIsRequiredForJwtBearer": "JWT bearer에는 대상(audience)이 필요해요",
+		"assertionLifetimeMustBeBetween1And3600Seconds0": "어설션 수명은 1~3600초여야 해요 (0은 기본값)",
+		"accountIdIsRequired": "계정 ID는 필수예요",
+		"workspaceUrlIsRequired": "워크스페이스 URL은 필수예요",
+		"clientIdAndClientSecretAreBothRequiredForOauth": "OAuth M2M 인증에는 클라이언트 ID와 클라이언트 시크릿이 모두 필요해요",
+		"clientIdAndClientSecretMustBeSetTogether": "클라이언트 ID와 클라이언트 시크릿은 함께 설정해야 해요",
+		"modelIdIsRequired": "모델 ID는 필수예요",
+		"idIsRequired": "ID는 필수예요",
+		"nameIsRequired": "이름은 필수예요",
+		"weightMustBeAValidNumberBetween0And1": "가중치는 0에서 1 사이의 올바른 숫자여야 해요",
+		"weightMustBeEqualToOrGreaterThan0": "가중치는 0 이상이어야 해요",
+		"weightMustBeEqualToOrLessThan1": "가중치는 1 이하여야 해요",
+		"apiKeyIsRequired": "API 키는 필수예요",
+		"timeoutMustBeGreaterThan0Seconds": "타임아웃은 0초보다 커야 해요",
+		"timeoutMustBeLessThan3600Seconds": "타임아웃은 3600초보다 작아야 해요",
+		"maxRetriesMustBeGreaterThan0": "최대 재시도 횟수는 0보다 커야 해요",
+		"maxRetriesMustBeLessThan10": "최대 재시도 횟수는 10보다 작아야 해요",
+		"streamIdleTimeoutMustBeAWholeNumberOfSeconds": "스트림 유휴 시간 초과는 정수(초)여야 해요",
+		"streamIdleTimeoutMustBeAtLeast5Seconds": "스트림 유휴 시간 초과는 5초 이상이어야 해요",
+		"streamIdleTimeoutMustBeAtMost3600SecondsI": "스트림 유휴 시간 초과는 3600초(60분) 이하여야 해요",
+		"keepAliveTimeoutMustBeAWholeNumberOfSeconds": "Keep-alive 타임아웃은 정수(초)여야 해요",
+		"keepAliveTimeoutMustBeAtLeast1Second": "Keep-alive 타임아웃은 1초 이상이어야 해요",
+		"keepAliveTimeoutMustBeAtMost3600SecondsI": "Keep-alive 타임아웃은 3600초(60분) 이하여야 해요",
+		"maxConnectionsMustBeAWholeNumber": "최대 연결 수는 정수여야 해요",
+		"maxConnectionsMustBeAtLeast1": "최대 연결 수는 1 이상이어야 해요",
+		"maxConnectionsMustBeAtMost10000": "최대 연결 수는 10000 이하여야 해요",
+		"http2PingIntervalMustBeAWholeNumberOf": "HTTP/2 ping 간격은 정수(초)여야 해요",
+		"http2PingIntervalMustBeAtLeast0Seconds": "HTTP/2 ping 간격은 0초 이상이어야 해요",
+		"http2PingIntervalMustBeAtMost3600Seconds": "HTTP/2 ping 간격은 3600초(60분) 이하여야 해요",
+		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial은 retry_backoff_max 이하여야 해요",
+		"mustBeAValidHttpOrHttpsUrl": "올바른 HTTP 또는 HTTPS URL이어야 해요",
+		"timeoutMustBeANumber": "타임아웃은 숫자여야 해요",
+		"timeoutMustBeLessThan172800SecondsIE48": "타임아웃은 172800초(48시간)보다 작아야 해요",
+		"maxRetriesMustBeANumber": "최대 재시도 횟수는 숫자여야 해요",
+		"retryBackoffInitialMustBeANumber": "초기 재시도 백오프는 숫자여야 해요",
+		"retryBackoffInitialMustBeAtLeast100ms": "초기 재시도 백오프는 100ms 이상이어야 해요",
+		"retryBackoffInitialMustBeAtMost1000000ms": "초기 재시도 백오프는 1000000ms 이하여야 해요",
+		"retryBackoffMaxMustBeANumber": "최대 재시도 백오프는 숫자여야 해요",
+		"retryBackoffMaxMustBeAtLeast100ms": "최대 재시도 백오프는 100ms 이상이어야 해요",
+		"retryBackoffMaxMustBeAtMost1000000ms": "최대 재시도 백오프는 1000000ms 이하여야 해요",
+		"streamIdleTimeoutMustBeANumber": "스트림 유휴 시간 초과는 숫자여야 해요",
+		"keepAliveTimeoutMustBeANumber": "Keep-alive 타임아웃은 숫자여야 해요",
+		"maxConnectionsMustBeANumber": "최대 연결 수는 숫자여야 해요",
+		"http2PingIntervalMustBeANumber": "HTTP/2 ping 간격은 숫자여야 해요",
+		"initialBackoffMustBeLessThanOrEqualToMax": "초기 백오프는 최대 백오프 이하여야 해요",
+		"concurrencyMustBeGreaterThan0": "동시성은 0보다 커야 해요",
+		"concurrencyMustBeLessThanOrEqualTo100": "동시성은 100 이하여야 해요",
+		"bufferSizeMustBeGreaterThan0": "버퍼 크기는 0보다 커야 해요",
+		"bufferSizeMustBeLessThanOrEqualTo1000": "버퍼 크기는 1000 이하여야 해요",
+		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "HTTP 또는 SOCKS5 프록시를 사용할 때는 프록시 URL이 필요해요",
+		"mustBeAValidUrlEGHttpProxyExample": "올바른 URL이어야 해요 (예: http://proxy.example.com:8080)",
+		"setARoleAnIndexOrBothAPointWith": "역할, 인덱스 또는 둘 다 설정하세요. 둘 다 없는 지점은 아무것과도 일치하지 않아요",
+		"use164LettersDigitsOr": "1~64자의 영문자, 숫자, _ 또는 -를 사용하세요",
+		"pickAnMcpServer": "MCP 서버를 선택하세요",
+		"pickATool": "도구를 선택하세요",
+		"waitingForTheMcpServerToLoad": "MCP 서버를 불러오는 중이에요",
+		"anotherToolAlreadyUsesThisName": "다른 도구가 이미 이 이름을 사용하고 있어요",
+		"thisMcpToolIsAlreadyInjected": "이 MCP 도구는 이미 주입되었어요",
+		"isKeylessIsNotAllowedForBedrock": "Bedrock에서는 키 없음(keyless)을 사용할 수 없어요",
+		"baseProviderTypeIsRequired": "기본 프로바이더 유형은 필수예요",
+		"atLeastOneKeyIsRequired": "키가 하나 이상 필요해요",
+		"providerNameIsRequired": "프로바이더 이름은 필수예요",
+		"embeddingModelIsRequired": "임베딩 모델은 필수예요",
+		"dimensionMustBeGreaterThan1ForProviderBackedSemantic": "프로바이더 기반 시맨틱 캐시의 차원은 1보다 커야 해요",
+		"maxValueBytesMustBe0OrAtLeast1024": "max_value_bytes는 0이거나 1024 이상이어야 해요",
+		"concurrencyMustBeANumber": "동시성은 숫자여야 해요",
+		"concurrencyMustBeLessThan100000": "동시성은 100000보다 작아야 해요",
+		"bufferSizeMustBeANumber": "버퍼 크기는 숫자여야 해요",
+		"bufferSizeMustBeLessThan100000": "버퍼 크기는 100000보다 작아야 해요",
+		"concurrencyMustBeLessThanOrEqualToBufferSize": "동시성은 버퍼 크기 이하여야 해요",
+		"pleaseSelectATraceType": "트레이스 유형을 선택하세요",
+		"pleaseSelectAProtocol": "프로토콜을 선택하세요",
+		"portMustBeBetween1And65535": "포트는 1에서 65535 사이여야 해요",
+		"collectorAddressIsRequired": "컬렉터 주소는 필수예요",
+		"metricsEndpointIsRequiredWhenMetricsPushIsEnabled": "메트릭 푸시를 사용할 때는 메트릭 엔드포인트가 필요해요",
+		"atLeastOneProfileIsRequired": "프로필이 하나 이상 필요해요",
+		"apiKeyIsRequired2": "API 키는 필수예요",
+		"apiKeyMustStartWithSkMx": "API 키는 'sk_mx_'로 시작해야 해요",
+		"mustBeAValidUrlEGHttpPushgateway9091": "올바른 URL이어야 해요 (예: http://pushgateway:9091)",
+		"passwordIsRequiredWhenUsernameIsProvided": "사용자 이름을 입력하면 비밀번호도 필요해요",
+		"usernameIsRequiredWhenPasswordIsProvided": "비밀번호를 입력하면 사용자 이름도 필요해요",
+		"pushGatewayUrlIsRequiredWhenThePushGatewayIs": "푸시 게이트웨이를 사용할 때는 Push Gateway URL이 필요해요",
+		"specUrlMustBeAValidHttpOrHttpsUrl": "스펙 URL은 올바른 http:// 또는 https:// URL이어야 해요",
+		"baseUrlMustBeAValidHttpOrHttpsUrl": "기본 URL은 올바른 http:// 또는 https:// URL이어야 해요",
+		"pasteOrUploadASpecOrProvideASpecUrl": "스펙을 붙여넣거나 업로드하거나, 스펙 URL을 입력하세요",
+		"clientNameCannotContainHyphens": "클라이언트 이름에는 하이픈을 포함할 수 없어요",
+		"clientNameCannotContainSpaces": "클라이언트 이름에는 공백을 포함할 수 없어요",
+		"clientNameCannotStartWithANumber": "클라이언트 이름은 숫자로 시작할 수 없어요",
+		"headerNameCannotBeEmpty": "헤더 이름은 비워 둘 수 없어요",
+		"duplicateHeaderNamesAreNotAllowed": "헤더 이름은 중복될 수 없어요",
+		"wildcardCannotBeCombinedWithOtherToolNames": "와일드카드 '*'는 다른 도구 이름과 함께 사용할 수 없어요",
+		"duplicateToolNamesAreNotAllowed": "도구 이름은 중복될 수 없어요",
+		"costMustBeNonNegative": "비용은 0 이상이어야 해요",
+		"toolSyncIntervalMustBe0OrAPositiveNumber": "도구 동기화 간격은 0 또는 양수(분)여야 해요",
+		"wildcardCannotBeCombinedWithSpecificHeaderNames": "와일드카드 '*'는 특정 헤더 이름과 함께 사용할 수 없어요",
+		"authorizeUrlMustStartWithHttpOrHttps": "인증 URL은 http:// 또는 https://로 시작해야 해요",
+		"tokenUrlMustStartWithHttpOrHttps": "토큰 URL은 http:// 또는 https://로 시작해야 해요",
+		"registrationUrlMustStartWithHttpOrHttps": "등록 URL은 http:// 또는 https://로 시작해야 해요",
+		"audienceIsRequired": "대상(audience)은 필수예요",
+		"authorizationServerUrlMustStartWithHttpOrHttps": "인증 서버 URL은 http:// 또는 https://로 시작해야 해요",
+		"declareAtLeastOneHeaderNameUsersMustSupply": "사용자가 제공해야 하는 헤더 이름을 하나 이상 선언하세요.",
+		"proxyUrlIsRequiredWhenProxyIsEnabled": "프록시를 사용할 때는 프록시 URL이 필요해요",
+		"ruleNameIsRequired": "규칙 이름은 필수예요",
+		"ruleNameMustBeLessThan255Characters": "규칙 이름은 255자 미만이어야 해요",
+		"descriptionMustBeLessThan1000Characters": "설명은 1000자 미만이어야 해요",
+		"providerIsRequired": "프로바이더는 필수예요",
+		"priorityMustBe0OrGreater": "우선순위는 0 이상이어야 해요",
+		"priorityMustBe1000OrLess": "우선순위는 1000 이하여야 해요",
+		"scopeIdIsRequiredWhenScopeIsNotGlobal": "범위가 전역이 아니면 범위 ID가 필요해요",
+		"additionalBudgetMustBeGreaterThan0": "추가 예산은 0보다 커야 해요.",
+		"resetCyclesMustBeAPositiveWholeNumber": "재설정 주기는 양의 정수여야 해요.",
+		"enterTheSetupTokenConfiguredForThisBifrostInstance": "이 Bifrost 인스턴스에 구성된 설정 토큰을 입력하세요",
+		"giveTheFeedAName": "피드 이름을 입력하세요",
+		"nameMustBe120CharactersOrFewer": "이름은 120자 이하여야 해요",
+		"enterTheFeedUrl": "피드 URL을 입력하세요",
+		"urlIsTooLong": "URL이 너무 길어요",
+		"urlMustStartWithHttpOrHttps": "URL은 http:// 또는 https://로 시작해야 해요",
+		"logoMustBeAnHttpSImageUrlOrAn": "로고는 http(s) 이미지 URL이거나 업로드한 이미지여야 해요",
+		"fieldRequired": "이 필드는 필수예요",
+		"validNumber": "올바른 숫자여야 해요",
+		"validText": "올바른 텍스트 값이어야 해요",
+		"trueOrFalse": "true 또는 false여야 해요",
+		"expectedReceived": "{{expected}}이(가) 필요하지만 {{received}}을(를) 받았어요",
+		"minNumber": "{{minimum}} 이상이어야 해요",
+		"atLeastOneItem": "항목이 하나 이상 필요해요",
+		"maxNumber": "{{maximum}} 이하여야 해요",
+		"maxChars": "{{maximum}}자 이하여야 해요",
+		"validUrl": "올바른 URL이어야 해요",
+		"validEmail": "올바른 이메일이어야 해요",
+		"grpcHostPortFormat": "gRPC는 <host>:<port> 형식이어야 해요 (예: {{example}})",
+		"invalidInput": "잘못된 입력이에요"
+	},
+	"permissionDenied": {
+		"create": "{{entity}}을(를) 만들 권한이 없어요.",
+		"edit": "{{entity}}을(를) 편집할 권한이 없어요.",
+		"delete": "{{entity}}을(를) 삭제할 권한이 없어요.",
+		"rotate": "{{entity}}을(를) 교체할 권한이 없어요."
+	},
+	"duration": {
+		"unknown": "알 수 없음",
+		"second_one": "{{count}}초",
+		"second_other": "{{count}}초",
+		"minute_one": "{{count}}분",
+		"minute_other": "{{count}}분",
+		"hour_one": "{{count}}시간",
+		"hour_other": "{{count}}시간",
+		"day_one": "{{count}}일",
+		"day_other": "{{count}}일",
+		"week_one": "{{count}}주",
+		"week_other": "{{count}}주",
+		"month_one": "{{count}}개월",
+		"month_other": "{{count}}개월",
+		"quarter_one": "{{count}}분기",
+		"quarter_other": "{{count}}분기",
+		"year_one": "{{count}}년",
+		"year_other": "{{count}}년"
+	}
 }

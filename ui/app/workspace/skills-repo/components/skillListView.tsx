@@ -72,19 +72,19 @@ function MarketplacePopover({ baseUrl }: { baseUrl: string }) {
 	const items = [
 		{
 			key: "claude-desktop",
-			label: "Claude Desktop / Cowork",
+			label: "Claude Desktop / Cowork", // i18n-ignore: product names
 			value: `${marketplaceBaseUrl}/skills/serve/claude-code.git`,
 			ariaLabel: t("skillsRepo.copyClaudeDesktop"),
 		},
 		{
 			key: "claude",
-			label: "Claude Code",
+			label: "Claude Code", // i18n-ignore: product name
 			value: `claude plugin marketplace add ${marketplaceBaseUrl}/skills/serve/claude-code/.claude-plugin/marketplace.json`,
 			ariaLabel: t("skillsRepo.copyClaudeCode"),
 		},
 		{
 			key: "codex",
-			label: "Codex",
+			label: "Codex", // i18n-ignore: product name
 			value: `codex plugin marketplace add ${marketplaceBaseUrl}/skills/serve/codex`,
 			ariaLabel: t("skillsRepo.copyCodex"),
 		},

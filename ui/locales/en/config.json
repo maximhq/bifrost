@@ -23,7 +23,8 @@
 		"brandingDescription": "Replace the Bifrost logo with your own across the dashboard and login screen. This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you.",
 		"licenseTitle": "Unlock license management",
 		"apiKeysTitle": "Scope Based API Keys",
-		"apiKeysDescription": "Need granular access control with scope-based API keys? Enterprise customers can create multiple API keys with specific permissions for different services, teams, or environments."
+		"apiKeysDescription": "Need granular access control with scope-based API keys? Enterprise customers can create multiple API keys with specific permissions for different services, teams, or environments.",
+		"unknownOs": "Unknown OS"
 	},
 	"clientSettings": {
 		"title": "Client Settings",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>Denylist:</span0> Headers in the denylist are always blocked from forwarding",
 		"wildcardRules": "<span0>Wildcards:</span0> Use  <code1>*</code1> at the end of a pattern to match prefixes (e.g., <code2>anthropic-*</code2> matches all headers starting with <code3>anthropic-</code3>). Use  <code4>*</code4> alone to match all headers.",
 		"headerNames": "Allowlist/denylist entries should be the header name <span0>without</span0> the  <code1>x-bf-eh-</code1> prefix",
-		"allowlistExample": "Example: To allow <code0>x-bf-eh-custom-id</code0> or direct  <code1>custom-id</code1>, add  <code2>custom-id</code2> to the allowlist"
+		"allowlistExample": "Example: To allow <code0>x-bf-eh-custom-id</code0> or direct  <code1>custom-id</code1>, add  <code2>custom-id</code2> to the allowlist",
+		"extraFieldsPlacement": "Extra Fields Placement",
+		"extraFieldsPlacementHelp": "Where inference responses carry Bifrost's <b>extra_fields</b> metadata. <b>Body</b> keeps the extra_fields object in the JSON response. <b>Headers</b> removes it from the body and from every streaming chunk, and sends its scalar fields as <b>x-bifrost-*</b> response headers.",
+		"extraFieldsPlacementDroppedNote": "In Headers mode these fields are dropped and not sent anywhere: raw request, raw response, routing metadata, guardrail debug, parse errors, and on errors key statuses, billed usage and MCP auth details. Streaming responses only carry what is known before the first chunk (routing, fallback, cache lookup), so per-chunk latency, chunk index and final totals are dropped too.",
+		"extraFieldsBody": "Body",
+		"extraFieldsHeaders": "Headers",
+		"removeSecurityHeader_one": "Remove security header: {{headers}}",
+		"removeSecurityHeader_other": "Remove security headers: {{headers}}"
 	},
 	"caching": {
 		"title": "Local Cache",
@@ -235,7 +243,11 @@
 		"deleteExpiredVirtualKeysHelp": "When enabled, a daily cleanup job deletes every virtual key whose expiry has passed and posts a notification listing the removed keys. Each key can override this from its <b0>Delete after expire</b0> switch: a key set to off is kept, and a key set to on is deleted even while this is disabled.",
 		"enforceVkObjectOwnership": "Restrict Provider Objects to the Creating Virtual Key",
 		"enforceVkObjectOwnershipHelp": "When enabled, files, batches, videos, containers, cached contents and live sessions created with a virtual key can only be read, listed or deleted with that same key. Other virtual keys get a not-found error and do not see them in lists. Requests without a virtual key are not affected. The creating key is recorded even while this is disabled, so enabling it again also covers objects created in the meantime, except any whose creating key could not be recorded.",
-		"proofRequired": "Enter the current admin password to confirm this change. Dashboard protection is off, so this session is not signed in. If you do not know the password, use the setup token instead."
+		"proofRequired": "Enter the current admin password to confirm this change. Dashboard protection is off, so this session is not signed in. If you do not know the password, use the setup token instead.",
+		"skipAccessProfileKeyCreation": "Don't Create User Virtual Keys for Access Profiles",
+		"skipAccessProfileKeyCreationHelp": "When enabled, a user's first access profile doesn't create a virtual key for them. Keys the user already owns, or that you add for them, are still governed by the profile while they hold one.",
+		"skipAccessProfileKeyDeletion": "Don't Delete User Virtual Keys When Access Profiles Are Removed",
+		"skipAccessProfileKeyDeletionHelp": "When enabled, removing a user's last access profile keeps their virtual keys as ordinary keys, with none of the profile's providers or access. Deleting the user still deletes their keys."
 	},
 	"logging": {
 		"title": "Logs Settings",
@@ -300,7 +312,11 @@
 		"convertUnsupportedParamsHelp": "Converts model parameter values that are not supported by the model.",
 		"azureDeepseek": "Use Chat Completion APIs for Azure Deepseek models",
 		"azureDeepseekHelp": "Use Chat Completion APIs for Claude Code, Codex, etc. for Azure Deepseek models.",
-		"toastSaved": "Compatibility settings updated successfully."
+		"toastSaved": "Compatibility settings updated successfully.",
+		"forceReasoningOnlyToResponses": "Use Responses API for reasoning only OpenAI models",
+		"forceReasoningOnlyToResponsesHelp": "Route chat completion requests to the Responses API for models that cannot reason with tool calls on chat completions, instead of turning reasoning off.",
+		"convertDecisionToResponses": "Emulate Decisions API on non-decision models",
+		"convertDecisionToResponsesHelp": "Answer decision requests for models without a native decisions endpoint by prompting the model through the Responses API with a forced function tool. When off, those requests fail as unsupported."
 	},
 	"featureFlags": {
 		"title": "Feature Flags",
@@ -395,7 +411,26 @@
 		"allowedRedirectUrisHelp": "Exact callback URIs remote MCP clients may use, e.g. <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Add <code1>*</code1> to allow any https callback; partial wildcards are not supported. Loopback callbacks and <code2>cursor://anysphere.cursor-mcp</code2> are always allowed. Changing this list requires dashboard authentication.",
 		"allowedRedirectUrisPlaceholder": "Add callback URI (Enter)",
 		"anyCallbackAllowed": "Any callback is allowed",
-		"anyCallbackAllowedHelp": "Any MCP client can register with a callback on any host, so the consent page is the only check against a client that sends authorization codes to an attacker. Prefer listing exact callback URIs."
+		"anyCallbackAllowedHelp": "Any MCP client can register with a callback on any host, so the consent page is the only check against a client that sends authorization codes to an attacker. Prefer listing exact callback URIs.",
+		"codeModeLimitsTitle": "Code Mode Limits",
+		"codeModeLimitsDescription": "Limits on each code execution. Leave a field empty to use its default. Executions are not limited in how many run at once.",
+		"limitMaxSourceBytes": "Max Source Size (bytes)",
+		"limitMaxSourceBytesDesc": "Largest code a single execution may submit.",
+		"limitMaxSteps": "Max Computation Steps",
+		"limitMaxStepsDesc": "Interpreter steps per execution, including work inside builtins.",
+		"limitMaxMemoryBytes": "Max Memory (bytes)",
+		"limitMaxMemoryBytesDesc": "Estimated allocation budget per execution. Every concurrent execution gets its own budget.",
+		"limitMaxLogBytes": "Max Log Output (bytes)",
+		"limitMaxLogBytesDesc": "Print and tool log output per execution, including newlines.",
+		"limitMaxToolCalls": "Max Tool Calls",
+		"limitMaxToolCallsDesc": "Nested MCP tool calls per execution.",
+		"limitMaxValueBytes": "Max Value Size (bytes)",
+		"limitMaxValueBytesDesc": "Size budget for each tool payload and converted result. Must be at least {{min}}.",
+		"limitMaxNestingDepth": "Max Nesting Depth",
+		"limitMaxNestingDepthDesc": "Nesting depth of values crossing the tool boundary. At most {{max}}.",
+		"limitNegative": "{{label}} must not be negative.",
+		"limitValueBytesMin": "Max value size must be at least {{min}} bytes.",
+		"limitNestingMax": "Max nesting depth must be at most {{max}}."
 	},
 	"modelSettings": {
 		"title": "Model Settings",
@@ -741,7 +776,11 @@
 		"intoPath": " into {{path}}/",
 		"intoRoot": " into root",
 		"previewAfterSaving": "Preview available after saving.",
-		"externalUrlRequired": "Set the External Client URL in <settingsLink>Skills Settings</settingsLink> to enable marketplace registration."
+		"externalUrlRequired": "Set the External Client URL in <settingsLink>Skills Settings</settingsLink> to enable marketplace registration.",
+		"showLess": "Show less",
+		"showMore": "Show more",
+		"skillNotFound": "Skill not found",
+		"backToList": "Back to list"
 	},
 	"promptRepo": {
 		"loadFailed": "Failed to load prompt repository",
@@ -941,7 +980,19 @@
 		"governancePlugin": "Governance Plugin",
 		"governancePluginDesc": "Complete access control, budgets, and rate limiting guide",
 		"governancePluginContent": "Master Virtual Keys, hierarchical budgets, rate limiting, and usage tracking for secure AI infrastructure.",
-		"viewGovernanceGuide": "View Governance Guide"
+		"viewGovernanceGuide": "View Governance Guide",
+		"heading": "Power Up Your Bifrost Stack",
+		"viewFullDocumentation": "View Full Documentation",
+		"quickStartGuide": "Quick Start Guide",
+		"readMore": "Read More",
+		"items": {
+			"quickStart": ["HTTP Transport Setup", "Go Package Usage", "Docker Guide"],
+			"architecture": ["System Overview", "Request Flow", "Concurrency Model", "Design Decisions"],
+			"usageGuides": ["Providers Setup", "Key Management", "Error Handling", "Memory & Networking"],
+			"contributing": ["Contributing Guide", "Adding Providers", "Plugin Development", "Code Conventions"],
+			"integrationExamples": ["OpenAI Integration", "Anthropic Integration", "GenAI Integration", "Migration Guides"],
+			"benchmarks": ["5K RPS Test Results", "Performance Metrics", "Configuration Tuning", "Hardware Comparisons"]
+		}
 	},
 	"warp": {
 		"saved": "Warp configuration saved.",
@@ -1044,7 +1095,10 @@
 			"searchLimit": "Search limit must be between 1 and 25.",
 			"retentionRequired": "A value is required",
 			"retentionWhole": "Must be a whole number of days",
-			"retentionMin": "Must be 0 or more days (0 keeps the default)"
+			"retentionMin": "Must be 0 or more days (0 keeps the default)",
+			"modelRequired": "Choose a provider and model to enable Warp.",
+			"modelOrRemove": "Choose a provider and model, or remove this model.",
+			"modelDuplicate": "This provider and model is already listed."
 		},
 		"models": "Models",
 		"modelsHelp": "The models Warp reasons with and writes answers from. The default answers unless someone picks another in the Warp panel. A capable model pays for itself here.",
@@ -1054,6 +1108,67 @@
 		"defaultModel": "Default model",
 		"modelNumber": "Model {{number}}",
 		"makeDefault": "Make default",
-		"removeModel": "Remove model {{number}}"
+		"removeModel": "Remove model {{number}}",
+		"topics": {
+			"badRange": "Choose a valid time range for topics.",
+			"started": "Topic seeding started.",
+			"cancelRequested": "Topic clustering cancellation requested.",
+			"title": "Topic clusters",
+			"infoLabel": "How topics work",
+			"infoIntro": "Topics group requests by what was asked, so Warp can answer what people ask about.",
+			"infoSeed": "<b0>1. Seed, once.</b0> A one-time run clusters the indexed requests of a window and names each group. Seeding is once per embedding model.",
+			"infoFiled": "<b0>2. Filed as they arrive.</b0> Every request indexed after that is filed under its nearest topic.",
+			"infoFound": "<b0>3. New topics found.</b0> Requests that match no topic wait. Once the new topic threshold is reached, an hourly pass groups them into new topics or folds them into existing ones.",
+			"infoTidy": "<b0>4. Kept tidy.</b0> The same pass retires topics with no requests for 30 days and merges topics that come to mean the same thing.",
+			"infoReseed": "Changing the embedding model starts over: its topics are seeded again.",
+			"description": "Seed topics once from a window of indexed requests. After that they keep themselves up to date as new requests are indexed, with no further runs.",
+			"seeded": "Topics are built for this embedding model and keep themselves up to date: new requests are filed as they are indexed, and new topics are found among the ones that match none.",
+			"cancel": "Cancel clustering",
+			"seed": "Seed topics",
+			"saveBeforeSeed": "Save configuration changes before seeding topics.",
+			"needsBackfill": "Nothing is indexed for this embedding model yet. Backfill a window above first, then seed topics from the same window.",
+			"activeTopics_one": "{{count}} active topic",
+			"activeTopics_other": "{{count}} active topics",
+			"inThemes_one": "in {{count}} theme",
+			"inThemes_other": "in {{count}} themes",
+			"pooled_one": "{{count}} request waiting for a topic",
+			"pooled_other": "{{count}} requests waiting for a topic",
+			"unmatchedLastDay_one": "{{percent}}% of the last day's {{count}} request matched no topic",
+			"unmatchedLastDay_other": "{{percent}}% of the last day's {{count}} requests matched no topic",
+			"nothingFiled": "nothing filed in the last day",
+			"requestsRead_one": "{{count}} request read",
+			"requestsRead_other": "{{count}} requests read",
+			"topicsWritten_one": "{{count}} topic written",
+			"topicsWritten_other": "{{count}} topics written",
+			"themesCount_one": "{{count}} theme",
+			"themesCount_other": "{{count}} themes",
+			"labelsFellBack_one": "{{count}} label fell back",
+			"labelsFellBack_other": "{{count}} labels fell back",
+			"statusFailed": "Could not read topic clustering status, so a running job may not be shown.",
+			"thresholdLabel": "New topic threshold",
+			"thresholdHint": "How many requests that matched no topic have to be waiting before Warp groups them into new topics, checked hourly. Lower finds new subjects sooner from fewer examples; higher waits for clearer patterns. {{min}} to {{max}}.",
+			"thresholdError": "Must be a whole number from {{min}} to {{max}}"
+		}
+	},
+	"skillsSettings": {
+		"description": "Configure Skills Repository marketplace serving.",
+		"toastSaved": "Skills settings updated successfully.",
+		"loadFailed": "Failed to load skills settings.",
+		"retry": "Retry",
+		"externalClientUrl": "External Client URL",
+		"externalClientUrlHelp": "Bifrost's public base URL for Claude Code and Codex marketplaces. Leave blank to disable marketplace serving and registration. Skill management and downloads remain available. Supports environment variable and vault references."
+	},
+	"agentGateway": {
+		"title": "Agent Gateway Settings",
+		"description": "Configure Agent Gateway (A2A) settings.",
+		"toastSaved": "Agent Gateway settings updated successfully.",
+		"loadFailed": "Failed to load Agent Gateway settings.",
+		"externalClientUrl": "External Client URL",
+		"externalClientUrlHelp": "Bifrost's public base URL, used for served agent cards and push-notification callback URLs. If left blank, all agent protocol endpoints are disabled. Agent management remains available. Supports env var syntax (e.g. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"privateAllowlist": "Private Network Allowlist",
+		"privateAllowlistHelp": "Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway discovery, OAuth, and runtime requests may reach when they resolve to a private or loopback address. Link-local and cloud metadata addresses are always blocked.",
+		"privateAllowlistPlaceholder": "Add host, IP, or CIDR (Enter or comma)",
+		"captureRaw": "Capture Raw Request and Response",
+		"captureRawHelp": "Persist raw request and response payloads in log records. Raw capture is disabled for gRPC because it uses binary protobuf messages; a size-limited capture can cut through a message and cannot be reliably decoded or inspected."
 	}
 }

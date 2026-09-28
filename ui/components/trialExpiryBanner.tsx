@@ -2,8 +2,10 @@ import { TRIAL_EXPIRY } from "@/lib/constants/config";
 import { cn } from "@/lib/utils";
 import { differenceInDays } from "date-fns";
 import { AlertTriangle } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 
 export default function TrialExpiryBanner() {
+	const { t } = useTranslation("common");
 	if (!TRIAL_EXPIRY) return null;
 
 	const daysRemaining = differenceInDays(TRIAL_EXPIRY, new Date());
@@ -11,7 +13,7 @@ export default function TrialExpiryBanner() {
 	if (!expired && daysRemaining > 7) return null;
 	const critical = !expired && daysRemaining <= 3;
 
-	const subject = expired ? "I need help with my expired enterprise trial" : "I need help extending my enterprise trial";
+	const subject = expired ? t("trialBanner.expiredSubject") : t("trialBanner.extendSubject");
 	const supportHref = `mailto:contact@getmaxim.ai?subject=${encodeURIComponent(subject)}`;
 
 	return (
@@ -26,19 +28,20 @@ export default function TrialExpiryBanner() {
 			<AlertTriangle className="h-3.5 w-3.5" strokeWidth={2} />
 			{expired ? (
 				<span>
-					Your Bifrost Enterprise Trial has expired.{" "}
-					<a href={supportHref} className="font-semibold underline underline-offset-2">
-						Contact us
-					</a>{" "}
-					if you need any assistance.
+					<Trans
+						t={t}
+						i18nKey="trialBanner.expired"
+						components={{ link0: <a href={supportHref} className="font-semibold underline underline-offset-2" /> }}
+					/>
 				</span>
 			) : (
 				<span>
-					Your Bifrost Enterprise Trial expires in {daysRemaining} {daysRemaining === 1 ? "day" : "days"}.{" "}
-					<a href={supportHref} className="font-semibold underline underline-offset-2">
-						Contact us
-					</a>{" "}
-					if you need any assistance.
+					<Trans
+						t={t}
+						i18nKey="trialBanner.expiresIn"
+						count={daysRemaining}
+						components={{ link0: <a href={supportHref} className="font-semibold underline underline-offset-2" /> }}
+					/>
 				</span>
 			)}
 		</div>

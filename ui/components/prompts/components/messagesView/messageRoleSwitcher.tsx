@@ -3,12 +3,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-const AVAILABLE_ROLES = [
-	{ value: "system", label: "System" },
-	{ value: "user", label: "User" },
-	{ value: "assistant", label: "Assistant" },
-	{ value: "tool", label: "Tool" },
-] as const;
+const AVAILABLE_ROLES = [{ value: "system" }, { value: "user" }, { value: "assistant" }, { value: "tool" }] as const;
 
 /**
  * Render a dropdown that lets the user switch the current message role.

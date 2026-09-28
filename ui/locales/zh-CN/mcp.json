@@ -173,7 +173,7 @@
 			"headerKeysRequiredDesc": "至少声明一个用户必须提供的请求头名称。",
 			"headerMustHaveValue": "请求头 \"{{key}}\" 必须有值",
 			"dockerNotice": "Docker 提示",
-			"dockerNoticeBody": "如果未使用官方 Bifrost Docker 镜像，在缺少所需命令（npx、python 等）时 STDIO 连接可能无法工作。若在本地运行，或使用已安装必要依赖的自定义镜像，可忽略此提示。",
+			"dockerNoticeBody": "如果使用官方 Bifrost Docker 镜像，STDIO 连接可能无法工作，因为镜像中未安装 npx、python 等常用命令。如果在本地运行，或使用已安装所需依赖项的自定义镜像，则可以放心忽略此提示。",
 			"serverBehavior": "服务器行为",
 			"serverBehaviorDesc": "控制此服务器如何参与 Code Mode 与健康检查。",
 			"codeModeServer": "Code Mode 服务器",
@@ -401,7 +401,8 @@
 			"cancelReplace": "取消替换",
 			"maxInstructionLength": "最大指令长度（字节）",
 			"maxInstructionLengthTooltip": "此服务器转发的指令长度上限。留空或设为 0 可使用全局设置。所有服务器的合计长度仍受全局上限约束。",
-			"toolsReplacementNote": "“常规”选项卡中已打开替换文档，其操作列表决定要保存哪些工具。请保存或取消替换，然后再在此处编辑工具。"
+			"toolsReplacementNote": "“常规”选项卡中已打开替换文档，其操作列表决定要保存哪些工具。请保存或取消替换，然后再在此处编辑工具。",
+			"replaceLoadStoredFailed": "无法加载已存储的文档：{{message}}"
 		},
 		"tls": {
 			"skipVerify": "跳过 TLS 校验",
@@ -831,7 +832,9 @@
 			"users": "用户",
 			"searchVirtualKeys": "搜索虚拟密钥",
 			"searchUsers": "按姓名或邮箱搜索"
-		}
+		},
+		"grantActions": "授权操作",
+		"viewAuthSessions": "查看认证会话"
 	},
 	"toolGroups": {
 		"title": "MCP 工具组",
@@ -939,7 +942,17 @@
 			"assign": "分配虚拟密钥",
 			"loading": "正在加载虚拟密钥…",
 			"empty": "尚未分配虚拟密钥。分配一个，调用方才能到达此虚拟 MCP。",
-			"unassignAria": "取消分配虚拟密钥"
+			"unassignAria": "取消分配虚拟密钥",
+			"ownerLookupFailed": "无法检查“{{name}}”的所有者，因此未分配。请重试。",
+			"assignOwnedTitle": "分配虚拟密钥？",
+			"assignOwnedDescription": "<strong>{{name}}</strong> 属于{{kind}} <strong>{{owner}}</strong>。分配后，该{{kind}}的密钥即可访问此 Virtual MCP。",
+			"assignOwnedConfirm": "分配",
+			"ownerKind": {
+				"team": "团队",
+				"businessUnit": "业务单元",
+				"customer": "客户",
+				"user": "用户"
+			}
 		},
 		"add": "添加虚拟 MCP"
 	},
@@ -978,5 +991,100 @@
 		"scopeUser": "用户",
 		"scopeGlobal": "全局",
 		"scopeWorkspace": "工作区"
+	},
+	"selectors": {
+		"searchTools": "搜索并选择工具...",
+		"searchServers": "搜索并选择 MCP 服务器...",
+		"tool": "工具",
+		"server": "服务器",
+		"noToolsSelected": "尚未选择工具。请使用上方搜索添加工具。",
+		"noResults": "未找到结果",
+		"noServersSelected": "尚未选择服务器。请使用上方搜索添加 MCP 服务器。",
+		"noServersFound": "未找到 MCP 服务器",
+		"openServerDetails": "在新标签页中打开服务器详情"
+	},
+	"openapi": {
+		"credentials": {
+			"apiKey": "API 密钥",
+			"apiKeyLabel": "{{name}} · {{param}}（{{where}}）",
+			"valuePlaceholder": "值或 env.{{env}}",
+			"basicLabel": "{{name}} · Basic 认证",
+			"username": "用户名",
+			"password": "密码",
+			"passwordPlaceholder": "密码或 env.{{env}}_PASSWORD",
+			"bearerLabel": "{{name}} · Bearer 令牌",
+			"bearerToken": "Bearer 令牌",
+			"tokenPlaceholder": "令牌或 env.{{env}}"
+		},
+		"summary": {
+			"inlineSpec": "内联规范",
+			"operationCount_one": "{{count}} 个操作",
+			"operationCount_other": "{{count}} 个操作"
+		},
+		"source": {
+			"fileTooLarge": "文件超过 OpenAPI 文档 {{size}} 的大小限制。",
+			"fileReadFailed": "无法读取该文件：{{message}}",
+			"fileEmpty": "文件为空。",
+			"fetchSpec": "获取规范",
+			"parseAgain": "重新解析",
+			"tabPaste": "粘贴",
+			"tabUpload": "上传",
+			"pasteHelp": "以 JSON 或 YAML 格式粘贴 OpenAPI 或 Swagger 文档（支持 2.0、3.0、3.1 和 3.2）。",
+			"specUrl": "规范 URL",
+			"urlHelp": "Bifrost 会获取一次文档并随服务器一同存储；该 URL 将作为其来源保留。",
+			"chooseFile": "选择文件",
+			"uploadHelp": "JSON 或 YAML，最大 {{size}}。文件在你的浏览器中读取，并随服务器一同存储。",
+			"parsing": "正在解析文档…",
+			"staleNotice": "获取文档后，URL 或服务器名称已更改。请重新获取以刷新下方的操作。"
+		},
+		"preview": {
+			"baseUrlInvalid": "基础 URL 必须是绝对的 http:// 或 https:// URL",
+			"untitled": "未命名 API",
+			"toolCount_one": "{{count}} 个工具",
+			"toolCount_other": "{{count}} 个工具",
+			"baseUrl": "基础 URL",
+			"selectServer": "选择上游服务器",
+			"custom": "自定义…",
+			"operationServersNote": "每个操作都声明了自己的服务器，调用将发往这些服务器。仅在需要统一覆盖时才设置基础 URL。",
+			"noServerNote": "文档未声明绝对服务器 URL，因此需要在此处指定上游。",
+			"authTitle": "API 认证",
+			"authDescPerUser": "每个调用方通过为各安全方案命名的每用户请求头提供这些凭据，并原样转发给 API。通过查询参数或 Cookie 发送的方案会保留已存储的值。",
+			"authDescStored": "文档中声明的安全方案所用的凭据。它们会加密存储并应用于每次调用，支持 env.VAR 引用。",
+			"noSecuritySchemes": "此文档未声明安全方案。如果 API 仍需要凭据，请在下方添加静态请求头。",
+			"unsupportedBadge": "不支持",
+			"perUserHeaderAria": "{{name}}每用户请求头",
+			"perUserHeaderHelpHttp": "由每个调用方提供并原样转发的请求头；其值即完整凭据，例如“{{example}}”。它会被添加到必需请求头中。",
+			"perUserHeaderHelp": "由每个调用方提供并原样转发的请求头。它会被添加到必需请求头中。",
+			"credentialAria": "{{scheme}} {{field}}",
+			"operationsTitle": "操作（支持 {{supported}} 个，共 {{total}} 个）",
+			"operationsDesc": "勾选的操作将成为此服务器的工具。不支持的操作会连同原因一并列出。",
+			"selectedCount": "已选择 {{selected}} 个，共 {{total}} 个",
+			"selectAllAria": "选择所有操作",
+			"searchPlaceholder": "搜索操作…",
+			"noMatch": "没有与搜索匹配的操作。",
+			"includeAria": "包含 {{name}}",
+			"unsupportedAria": "不支持 {{name}}",
+			"deprecatedBadge": "已弃用"
+		}
+	},
+	"oauthCallback": {
+		"successTitle": "授权完成",
+		"failedTitle": "授权失败",
+		"successDescription": "MCP 服务器已连接。你可以关闭此标签页并返回 MCP 注册表。",
+		"failedDescription": "无法授权该 MCP 服务器。请返回 MCP 注册表后重试。",
+		"backToRegistry": "返回 MCP 注册表",
+		"closeTab": "你可以关闭此标签页。",
+		"closeWindow": "可以关闭此窗口。"
+	},
+	"headersForm": {
+		"staticAdminHeaders": "管理员静态请求头",
+		"staticAdminHeadersHelp": "这些请求头由管理员在 MCP 客户端上设置，会与你提交的值一起附加在每个请求中。你无法在此处编辑它们。",
+		"noKeys": "此 MCP 客户端尚未声明任何请求头键名。",
+		"previouslySubmitted": "之前已提交",
+		"overwritePlaceholder": "••••••（输入新值以覆盖）",
+		"valuePlaceholder": "{{key}} 的值",
+		"hideValue": "隐藏值",
+		"showValue": "显示值",
+		"test": "测试"
 	}
 }

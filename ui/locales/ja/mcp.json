@@ -173,7 +173,7 @@
 			"headerKeysRequiredDesc": "ユーザーが必ず提供しなければならないヘッダー名を少なくとも1つ宣言してください。",
 			"headerMustHaveValue": "ヘッダー「{{key}}」には値が必要です",
 			"dockerNotice": "Dockerのお知らせ",
-			"dockerNoticeBody": "公式のBifrostDockerイメージを使用していない場合、必要なコマンド（npx、pythonなど）がインストールされていないと、STDIO接続が機能しない可能性があります。ローカルで実行する場合や、必要な依存関係を含むカスタムイメージを使用している場合は、これは安全に無視できます。",
+			"dockerNoticeBody": "公式のBifrost Dockerイメージを使用している場合、npxやpythonなどの一般的なコマンドがインストールされていないため、STDIO接続が動作しないことがあります。ローカルで実行している場合や、必要な依存関係を含むカスタムイメージを使用している場合は、この通知を無視してかまいません。",
 			"serverBehavior": "サーバーの動作",
 			"serverBehaviorDesc": "このサーバーがコードモードおよびヘルスチェックにどのように参加するかを制御します。",
 			"codeModeServer": "コードモードサーバー",
@@ -401,7 +401,8 @@
 			"cancelReplace": "置き換えをキャンセル",
 			"maxInstructionLength": "最大インストラクション長（バイト）",
 			"maxInstructionLengthTooltip": "このサーバーから転送されるインストラクションの上限です。空欄または 0 にするとグローバル設定を使用します。全サーバーの合計は引き続きグローバルの合計上限に制限されます。",
-			"toolsReplacementNote": "置き換え用のドキュメントが「全般」タブで開かれており、保存されるツールはそのオペレーション一覧で決まります。ここでツールを編集するには、置き換えを保存またはキャンセルしてください。"
+			"toolsReplacementNote": "置き換え用のドキュメントが「全般」タブで開かれており、保存されるツールはそのオペレーション一覧で決まります。ここでツールを編集するには、置き換えを保存またはキャンセルしてください。",
+			"replaceLoadStoredFailed": "保存されたドキュメントを読み込めませんでした: {{message}}"
 		},
 		"tls": {
 			"skipVerify": "TLS検証をスキップ",
@@ -831,7 +832,9 @@
 			"users": "ユーザー",
 			"searchVirtualKeys": "仮想キーを検索",
 			"searchUsers": "名前またはメールで検索"
-		}
+		},
+		"grantActions": "グラントのアクション",
+		"viewAuthSessions": "認証セッションを表示"
 	},
 	"toolGroups": {
 		"title": "MCP ツールグループ",
@@ -939,7 +942,17 @@
 			"assign": "仮想キーを割り当てる",
 			"loading": "仮想キーを読み込み中…",
 			"empty": "まだ仮想キーは割り当てられていません。通話者がこの仮想MCPにアクセスできるように、キーを割り当ててください。",
-			"unassignAria": "仮想キーの割り当てを解除"
+			"unassignAria": "仮想キーの割り当てを解除",
+			"ownerLookupFailed": "「{{name}}」の所有者を確認できなかったため、割り当てませんでした。もう一度お試しください。",
+			"assignOwnedTitle": "仮想キーを割り当てますか？",
+			"assignOwnedDescription": "<strong>{{name}}</strong> は{{kind}} <strong>{{owner}}</strong>に属しています。割り当てると、その{{kind}}のキーからこのVirtual MCPにアクセスできるようになります。",
+			"assignOwnedConfirm": "割り当て",
+			"ownerKind": {
+				"team": "チーム",
+				"businessUnit": "事業部",
+				"customer": "顧客",
+				"user": "ユーザー"
+			}
 		},
 		"add": "仮想 MCP を追加"
 	},
@@ -978,5 +991,100 @@
 		"scopeUser": "ユーザー",
 		"scopeGlobal": "グローバル",
 		"scopeWorkspace": "ワークスペース"
+	},
+	"selectors": {
+		"searchTools": "ツールを検索して選択...",
+		"searchServers": "MCP サーバーを検索して選択...",
+		"tool": "ツール",
+		"server": "サーバー",
+		"noToolsSelected": "ツールが選択されていません。上の検索からツールを追加してください。",
+		"noResults": "結果が見つかりません",
+		"noServersSelected": "サーバーが選択されていません。上の検索から MCP サーバーを追加してください。",
+		"noServersFound": "MCP サーバーが見つかりません",
+		"openServerDetails": "サーバーの詳細を新しいタブで開く"
+	},
+	"openapi": {
+		"credentials": {
+			"apiKey": "API キー",
+			"apiKeyLabel": "{{name}} · {{param}} ({{where}})",
+			"valuePlaceholder": "値または env.{{env}}",
+			"basicLabel": "{{name}} · Basic 認証",
+			"username": "ユーザー名",
+			"password": "パスワード",
+			"passwordPlaceholder": "パスワードまたは env.{{env}}_PASSWORD",
+			"bearerLabel": "{{name}} · Bearer トークン",
+			"bearerToken": "Bearer トークン",
+			"tokenPlaceholder": "トークンまたは env.{{env}}"
+		},
+		"summary": {
+			"inlineSpec": "インライン仕様",
+			"operationCount_one": "{{count}} 個のオペレーション",
+			"operationCount_other": "{{count}} 個のオペレーション"
+		},
+		"source": {
+			"fileTooLarge": "ファイルが OpenAPI ドキュメントの上限 {{size}} を超えています。",
+			"fileReadFailed": "ファイルを読み取れませんでした: {{message}}",
+			"fileEmpty": "ファイルが空です。",
+			"fetchSpec": "仕様を取得",
+			"parseAgain": "再解析",
+			"tabPaste": "貼り付け",
+			"tabUpload": "アップロード",
+			"pasteHelp": "OpenAPI または Swagger ドキュメントを JSON または YAML で貼り付けてください (2.0、3.0、3.1、3.2 に対応)。",
+			"specUrl": "仕様の URL",
+			"urlHelp": "Bifrost はドキュメントを一度だけ取得してサーバーとともに保存し、URL は取得元として保持されます。",
+			"chooseFile": "ファイルを選択",
+			"uploadHelp": "JSON または YAML、最大 {{size}}。ファイルはブラウザーで読み取られ、サーバーとともに保存されます。",
+			"parsing": "ドキュメントを解析中…",
+			"staleNotice": "ドキュメントの取得後に URL またはサーバー名が変更されました。もう一度取得して、下のオペレーションを更新してください。"
+		},
+		"preview": {
+			"baseUrlInvalid": "ベース URL は絶対 URL (http:// または https://) にしてください",
+			"untitled": "無題の API",
+			"toolCount_one": "{{count}} 個のツール",
+			"toolCount_other": "{{count}} 個のツール",
+			"baseUrl": "ベース URL",
+			"selectServer": "アップストリームサーバーを選択",
+			"custom": "カスタム…",
+			"operationServersNote": "各オペレーションが独自のサーバーを宣言しているため、呼び出しはそちらに送られます。すべてを上書きする場合にのみベース URL を設定してください。",
+			"noServerNote": "ドキュメントに絶対サーバー URL が宣言されていないため、ここでアップストリームを指定する必要があります。",
+			"authTitle": "API 認証",
+			"authDescPerUser": "呼び出し元は、各スキームに対応するユーザー別ヘッダーでこれらを指定し、そのまま API に転送されます。クエリまたは Cookie で送信されるスキームには保存済みの値が使用されます。",
+			"authDescStored": "ドキュメントで宣言されたセキュリティスキームの認証情報です。暗号化して保存され、すべての呼び出しに適用されます。env.VAR 形式の参照にも対応しています。",
+			"noSecuritySchemes": "このドキュメントにはセキュリティスキームが宣言されていません。API が認証情報を必要とする場合は、下で静的ヘッダーを追加してください。",
+			"unsupportedBadge": "非対応",
+			"perUserHeaderAria": "{{name}}のユーザー別ヘッダー",
+			"perUserHeaderHelpHttp": "呼び出し元が指定するヘッダーで、そのまま転送されます。値には認証情報全体を指定します (例: \"{{example}}\")。必須ヘッダーに追加されます。",
+			"perUserHeaderHelp": "呼び出し元が指定するヘッダーで、そのまま転送されます。必須ヘッダーに追加されます。",
+			"credentialAria": "{{scheme}} {{field}}",
+			"operationsTitle": "オペレーション (対応 {{supported}} / 全 {{total}} 件)",
+			"operationsDesc": "チェックを付けたオペレーションがこのサーバーのツールになります。非対応のものは理由とともに表示されます。",
+			"selectedCount": "{{total}} 件中 {{selected}} 件を選択",
+			"selectAllAria": "すべてのオペレーションを選択",
+			"searchPlaceholder": "オペレーションを検索…",
+			"noMatch": "検索に一致するオペレーションがありません。",
+			"includeAria": "{{name}}を含める",
+			"unsupportedAria": "非対応: {{name}}",
+			"deprecatedBadge": "非推奨"
+		}
+	},
+	"oauthCallback": {
+		"successTitle": "認可が完了しました",
+		"failedTitle": "認可に失敗しました",
+		"successDescription": "MCP サーバーに接続しました。このタブを閉じて、MCP レジストリに戻ってください。",
+		"failedDescription": "MCP サーバーを認可できませんでした。MCP レジストリに戻って、もう一度お試しください。",
+		"backToRegistry": "MCP レジストリに戻る",
+		"closeTab": "このタブは閉じて構いません。",
+		"closeWindow": "このウィンドウは閉じて構いません。"
+	},
+	"headersForm": {
+		"staticAdminHeaders": "管理者の静的ヘッダー",
+		"staticAdminHeadersHelp": "これらのヘッダーは管理者が MCP クライアントに設定したもので、送信した値とともにすべてのリクエストに付与されます。ここでは編集できません。",
+		"noKeys": "この MCP クライアントにはヘッダーキーが宣言されていません。",
+		"previouslySubmitted": "送信済み",
+		"overwritePlaceholder": "•••••• (上書きするには新しい値を入力)",
+		"valuePlaceholder": "{{key}}の値",
+		"hideValue": "値を非表示",
+		"showValue": "値を表示",
+		"test": "テスト"
 	}
 }

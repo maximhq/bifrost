@@ -173,7 +173,7 @@
 			"headerKeysRequiredDesc": "사용자가 제공해야 하는 헤더 이름을 하나 이상 선언하세요.",
 			"headerMustHaveValue": "헤더 '{{key}}'에는 값이 있어야 해요.",
 			"dockerNotice": "도커 공지",
-			"dockerNoticeBody": "공식 Bifrost Docker 이미지를 사용하지 않는 경우 필수 명령(npx, python 등)이 설치되지 않으면 STDIO 연결이 작동하지 않을 수 있어요. 로컬로 실행하거나 필요한 종속성이 있는 사용자 지정 이미지를 사용하는 경우 이를 무시해도 돼요.",
+			"dockerNoticeBody": "공식 Bifrost Docker 이미지를 사용하는 경우 npx, python 같은 일반 명령이 설치되어 있지 않아 STDIO 연결이 작동하지 않을 수 있습니다. 로컬에서 실행하거나 필요한 종속 항목이 포함된 맞춤 이미지를 사용하는 경우 이 안내를 무시해도 됩니다.",
 			"serverBehavior": "서버 동작",
 			"serverBehaviorDesc": "이 서버가 코드 모드 및 상태 확인에 참여하는 방식을 제어해요.",
 			"codeModeServer": "코드 모드 서버",
@@ -401,7 +401,8 @@
 			"cancelReplace": "교체 취소",
 			"maxInstructionLength": "최대 명령어 길이(바이트)",
 			"maxInstructionLengthTooltip": "이 서버에서 전달된 지침을 제한하세요. 전역 설정을 사용하려면 비워두거나 0으로 설정하세요. 모든 서버의 총 합계는 여전히 전역 합계로 제한됩니다.",
-			"toolsReplacementNote": "일반 탭에 대체 문서가 열리고 해당 작업 목록에 따라 저장되는 도구가 결정됩니다. 여기에서 도구를 편집하려면 대체 항목을 저장하거나 취소하세요."
+			"toolsReplacementNote": "일반 탭에 대체 문서가 열리고 해당 작업 목록에 따라 저장되는 도구가 결정됩니다. 여기에서 도구를 편집하려면 대체 항목을 저장하거나 취소하세요.",
+			"replaceLoadStoredFailed": "저장된 문서를 불러올 수 없어요: {{message}}"
 		},
 		"tls": {
 			"skipVerify": "TLS 확인 건너뛰기",
@@ -831,7 +832,9 @@
 			"users": "사용자",
 			"searchVirtualKeys": "가상 키 검색",
 			"searchUsers": "이름이나 이메일로 검색"
-		}
+		},
+		"grantActions": "권한 부여 작업",
+		"viewAuthSessions": "인증 세션 보기"
 	},
 	"toolGroups": {
 		"title": "MCP 도구 그룹",
@@ -939,7 +942,17 @@
 			"assign": "가상 키 할당",
 			"loading": "가상 키 로드 중…",
 			"empty": "아직 할당된 가상 키가 없어요. 발신자가 이 가상 MCP에 연결할 수 있도록 하나를 할당하세요.",
-			"unassignAria": "가상 키 할당 해제"
+			"unassignAria": "가상 키 할당 해제",
+			"ownerLookupFailed": "\"{{name}}\"의 소유자를 확인하지 못해 할당하지 않았습니다. 다시 시도하세요.",
+			"assignOwnedTitle": "가상 키를 할당할까요?",
+			"assignOwnedDescription": "<strong>{{name}}</strong>은(는) {{kind}} <strong>{{owner}}</strong>에 속합니다. 할당하면 해당 {{kind}}의 키로 이 Virtual MCP에 접근할 수 있습니다.",
+			"assignOwnedConfirm": "할당",
+			"ownerKind": {
+				"team": "팀",
+				"businessUnit": "사업부",
+				"customer": "고객",
+				"user": "사용자"
+			}
 		},
 		"add": "가상 MCP 추가"
 	},
@@ -978,5 +991,100 @@
 		"scopeUser": "사용자",
 		"scopeGlobal": "글로벌",
 		"scopeWorkspace": "작업공간"
+	},
+	"selectors": {
+		"searchTools": "도구 검색 및 선택...",
+		"searchServers": "MCP 서버 검색 및 선택...",
+		"tool": "도구",
+		"server": "서버",
+		"noToolsSelected": "선택된 도구가 없어요. 위의 검색창에서 도구를 추가하세요.",
+		"noResults": "검색 결과가 없어요",
+		"noServersSelected": "선택된 서버가 없어요. 위의 검색창에서 MCP 서버를 추가하세요.",
+		"noServersFound": "MCP 서버를 찾지 못했어요",
+		"openServerDetails": "서버 상세 정보를 새 탭에서 열기"
+	},
+	"openapi": {
+		"credentials": {
+			"apiKey": "API 키",
+			"apiKeyLabel": "{{name}} · {{param}} ({{where}})",
+			"valuePlaceholder": "값 또는 env.{{env}}",
+			"basicLabel": "{{name}} · Basic 인증",
+			"username": "사용자 이름",
+			"password": "비밀번호",
+			"passwordPlaceholder": "비밀번호 또는 env.{{env}}_PASSWORD",
+			"bearerLabel": "{{name}} · Bearer 토큰",
+			"bearerToken": "Bearer 토큰",
+			"tokenPlaceholder": "토큰 또는 env.{{env}}"
+		},
+		"summary": {
+			"inlineSpec": "인라인 스펙",
+			"operationCount_one": "작업 {{count}}개",
+			"operationCount_other": "작업 {{count}}개"
+		},
+		"source": {
+			"fileTooLarge": "파일이 OpenAPI 문서의 크기 제한({{size}})을 초과했어요.",
+			"fileReadFailed": "파일을 읽을 수 없어요: {{message}}",
+			"fileEmpty": "파일이 비어 있어요.",
+			"fetchSpec": "스펙 가져오기",
+			"parseAgain": "다시 파싱",
+			"tabPaste": "붙여넣기",
+			"tabUpload": "업로드",
+			"pasteHelp": "OpenAPI 또는 Swagger 문서를 JSON 또는 YAML로 붙여넣으세요 (2.0, 3.0, 3.1, 3.2 지원).",
+			"specUrl": "스펙 URL",
+			"urlHelp": "Bifrost는 문서를 한 번 가져와 서버와 함께 저장하며, URL은 출처로 보관돼요.",
+			"chooseFile": "파일 선택",
+			"uploadHelp": "JSON 또는 YAML, 최대 {{size}}. 파일은 브라우저에서 읽어 서버와 함께 저장돼요.",
+			"parsing": "문서를 파싱하는 중…",
+			"staleNotice": "문서를 가져온 이후 URL 또는 서버 이름이 변경되었어요. 아래 작업을 새로 고치려면 다시 가져오세요."
+		},
+		"preview": {
+			"baseUrlInvalid": "기본 URL은 절대 경로 http:// 또는 https:// URL이어야 해요",
+			"untitled": "제목 없는 API",
+			"toolCount_one": "도구 {{count}}개",
+			"toolCount_other": "도구 {{count}}개",
+			"baseUrl": "기본 URL",
+			"selectServer": "업스트림 서버 선택",
+			"custom": "직접 입력…",
+			"operationServersNote": "각 작업이 자체 서버를 선언하고 있으므로 호출은 해당 서버로 전송돼요. 모두 덮어쓰려는 경우에만 기본 URL을 설정하세요.",
+			"noServerNote": "문서에 절대 경로 서버 URL이 선언되어 있지 않으므로 업스트림을 여기에 지정해야 해요.",
+			"authTitle": "API 인증",
+			"authDescPerUser": "각 호출자가 스킴별로 지정된 사용자별 헤더를 통해 이 값을 제공하며, API에 그대로 전달돼요. 쿼리나 쿠키로 전송되는 스킴은 저장된 값을 유지해요.",
+			"authDescStored": "문서에 선언된 보안 스킴의 자격 증명이에요. 암호화되어 저장되며 모든 호출에 적용돼요. env.VAR 참조도 지원해요.",
+			"noSecuritySchemes": "이 문서에는 보안 스킴이 선언되어 있지 않아요. API에 여전히 자격 증명이 필요하면 아래에 정적 헤더를 추가하세요.",
+			"unsupportedBadge": "지원되지 않음",
+			"perUserHeaderAria": "{{name}} 사용자별 헤더",
+			"perUserHeaderHelpHttp": "각 호출자가 제공하는 헤더로, 그대로 전달돼요. 값이 전체 자격 증명이에요(예: \"{{example}}\"). 필수 헤더에 추가돼요.",
+			"perUserHeaderHelp": "각 호출자가 제공하는 헤더로, 그대로 전달돼요. 필수 헤더에 추가돼요.",
+			"credentialAria": "{{scheme}} {{field}}",
+			"operationsTitle": "작업 ({{total}}개 중 {{supported}}개 지원)",
+			"operationsDesc": "체크한 작업이 이 서버의 도구가 돼요. 지원되지 않는 작업은 사유와 함께 표시돼요.",
+			"selectedCount": "{{total}}개 중 {{selected}}개 선택됨",
+			"selectAllAria": "모든 작업 선택",
+			"searchPlaceholder": "작업 검색…",
+			"noMatch": "검색과 일치하는 작업이 없어요.",
+			"includeAria": "{{name}} 포함",
+			"unsupportedAria": "지원되지 않는 {{name}}",
+			"deprecatedBadge": "지원 중단"
+		}
+	},
+	"oauthCallback": {
+		"successTitle": "인증 완료",
+		"failedTitle": "인증 실패",
+		"successDescription": "MCP 서버가 연결되었어요. 이 탭을 닫고 MCP 레지스트리로 돌아가세요.",
+		"failedDescription": "MCP 서버를 인증하지 못했어요. MCP 레지스트리로 돌아가 다시 시도하세요.",
+		"backToRegistry": "MCP 레지스트리로 돌아가기",
+		"closeTab": "이 탭을 닫아도 돼요.",
+		"closeWindow": "이 창을 닫아도 돼요."
+	},
+	"headersForm": {
+		"staticAdminHeaders": "정적 관리자 헤더",
+		"staticAdminHeadersHelp": "이 헤더는 관리자가 MCP 클라이언트에 설정한 것으로, 제출한 값과 함께 모든 요청에 포함돼요. 여기서는 편집할 수 없어요.",
+		"noKeys": "이 MCP 클라이언트에는 선언된 헤더 키가 없어요.",
+		"previouslySubmitted": "이전에 제출됨",
+		"overwritePlaceholder": "•••••• (덮어쓰려면 새 값을 입력하세요)",
+		"valuePlaceholder": "{{key}}의 값",
+		"hideValue": "값 숨기기",
+		"showValue": "값 표시",
+		"test": "테스트"
 	}
 }

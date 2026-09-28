@@ -360,7 +360,11 @@
 			"followUp": "Nachfrage stellen – wird gesendet, sobald diese Antwort fertig ist...",
 			"placeholder": "Fragen zu deinen Bifrost-Daten...",
 			"stop": "Stopp",
-			"send": "Senden"
+			"send": "Senden",
+			"commandClear": "Neue Unterhaltung starten",
+			"settings": "Warp-Einstellungen",
+			"switchModel": "Modell wechseln",
+			"defaultModel": "Standard"
 		},
 		"question": {
 			"label": "Frage",
@@ -449,6 +453,10 @@
 			"render_chart": {
 				"running": "Diagramm wird erstellt",
 				"done": "Diagramm erstellt"
+			},
+			"list_topics": {
+				"running": "Themen werden aufgelistet",
+				"done": "Themen aufgelistet"
 			}
 		},
 		"errors": {
@@ -491,10 +499,7 @@
 			"tool_error": {
 				"summary": "Eine Abfrage ist fehlgeschlagen.",
 				"cause": "Eine von Warps Datenabfragen hat einen Fehler zurückgegeben, und innerhalb der verbleibenden Schritte war keine Wiederherstellung möglich.",
-				"suggestions": [
-					"Engeren Zeitraum wählen.",
-					"Prüfen, ob das genannte Modell, der Schlüssel oder das Team wirklich existiert."
-				]
+				"suggestions": ["Engeren Zeitraum wählen.", "Prüfen, ob das genannte Modell, der Schlüssel oder das Team wirklich existiert."]
 			},
 			"cancelled": {
 				"summary": "Gestoppt.",
@@ -504,10 +509,7 @@
 			"unknown": {
 				"summary": "Etwas ist schiefgelaufen.",
 				"cause": "Warp hat einen Fehler ohne bekannten Code zurückgegeben.",
-				"suggestions": [
-					"Frage nochmal stellen.",
-					"Wenn es weiter passiert, mit den Details unten melden."
-				]
+				"suggestions": ["Frage nochmal stellen.", "Wenn es weiter passiert, mit den Details unten melden."]
 			},
 			"access_denied": {
 				"summary": "Dein Konto hat keinen Zugriff auf das Modell von Warp.",
@@ -543,6 +545,54 @@
 					"Oder wähle in den Warp-Einstellungen ein Modell aus, das dein Konto verwenden darf."
 				]
 			}
+		},
+		"dock": {
+			"resize": "Warp-Panel in der Größe ändern",
+			"description": "Stelle Warp Fragen zu den Protokollen, der Nutzung und den Ausgaben dieses Deployments."
+		},
+		"chart": {
+			"openInLogs": "In Protokollen öffnen",
+			"empty": "Keine Daten in diesem Zeitraum."
 		}
+	},
+	"rssSources": {
+		"newsOn": "News aktiviert",
+		"newsOff": "News für dieses Gateway deaktiviert",
+		"updateSettingsFailed": "News-Einstellungen konnten nicht aktualisiert werden",
+		"updateFeedFailed": "{{name}} konnte nicht aktualisiert werden",
+		"updatedLogo": "Logo für {{name}} aktualisiert",
+		"removedLogo": "Logo von {{name}} entfernt",
+		"updateLogoFailed": "Logo für {{name}} konnte nicht aktualisiert werden",
+		"removed": "{{name}} entfernt",
+		"removeFailed": "{{name}} konnte nicht entfernt werden",
+		"title": "News-Quellen",
+		"description": "Wähle aus, welche RSS-Feeds für alle Benutzer dieses Gateways im Tab „News“ der Benachrichtigungsleiste erscheinen.",
+		"showNews": "News in der Benachrichtigungsleiste anzeigen",
+		"showNewsHelp": "Wenn Du dies deaktivierst, wird der Tab „News“ für alle Benutzer dieses Gateways ausgeblendet und es werden keine News-Einträge mehr abgerufen. Deine Quellen unten bleiben erhalten.",
+		"settingLoadFailed": "Diese Einstellung konnte nicht geladen werden.",
+		"tryAgain": "Erneut versuchen",
+		"loading": "Quellen werden geladen",
+		"loadFailed": "Die Quellen konnten nicht geladen werden.",
+		"builtinFeeds": "Integrierte Feeds",
+		"customFeeds": "Benutzerdefinierte Feeds",
+		"noCustomFeeds": "Noch keine benutzerdefinierten Feeds. Füge unten eine beliebige RSS- oder Atom-URL hinzu.",
+		"removeAria": "{{name}} entfernen",
+		"disableAria": "{{name}} deaktivieren",
+		"enableAria": "{{name}} aktivieren",
+		"changeLogoAria": "Logo für {{name}} ändern",
+		"uploadLogo": "Logo hochladen",
+		"removeLogo": "Logo entfernen",
+		"addedFeed": "{{name}} hinzugefügt",
+		"addFeedTitle": "Feed hinzufügen",
+		"name": "Name",
+		"namePlaceholder": "Bifrost-Releases",
+		"feedUrl": "Feed-URL",
+		"logo": "Logo",
+		"optional": "(optional)",
+		"logoPreviewName": "Logo-Vorschau",
+		"uploadedImage": "Hochgeladenes Bild",
+		"upload": "Hochladen",
+		"logoHelp": "Eine Bild-URL oder eine PNG-, JPEG-, GIF-, WebP-, SVG- oder ICO-Datei bis 96 KB. Standardmäßig wird das Favicon der Website verwendet.",
+		"addFeed": "Feed hinzufügen"
 	}
 }

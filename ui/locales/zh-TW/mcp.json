@@ -173,7 +173,7 @@
 			"headerKeysRequiredDesc": "至少宣告一個使用者必須提供的請求頭名稱。",
 			"headerMustHaveValue": "請求頭 \"{{key}}\" 必須有值",
 			"dockerNotice": "Docker 提示",
-			"dockerNoticeBody": "如果未使用官方 Bifrost Docker 映象，在缺少所需命令（npx、python 等）時 STDIO 連線可能無法工作。若在本地執行，或使用已安裝必要依賴的自定義映象，可忽略此提示。",
+			"dockerNoticeBody": "若使用官方 Bifrost Docker 映像檔，STDIO 連線可能無法運作，因為映像檔未安裝 npx、python 等常用指令。若在本機執行，或使用已安裝必要相依項目的自訂映像檔，則可忽略此訊息。",
 			"serverBehavior": "伺服器行為",
 			"serverBehaviorDesc": "控制此伺服器如何參與 Code Mode 與健康檢查。",
 			"codeModeServer": "Code Mode 伺服器",
@@ -401,7 +401,8 @@
 			"cancelReplace": "取消替換",
 			"maxInstructionLength": "最大指令長度（位元組）",
 			"maxInstructionLengthTooltip": "限制從此伺服器轉送的指令。保留為空或設定為 0 以使用全域設定。所有伺服器的總和仍受全域總數的限制。",
-			"toolsReplacementNote": "替換文件在「常規」標籤上打開，其操作清單決定要保存哪些工具。儲存或取消替換以在此編輯工具。"
+			"toolsReplacementNote": "替換文件在「常規」標籤上打開，其操作清單決定要保存哪些工具。儲存或取消替換以在此編輯工具。",
+			"replaceLoadStoredFailed": "無法載入已儲存的文件：{{message}}"
 		},
 		"tls": {
 			"skipVerify": "跳過 TLS 校驗",
@@ -831,7 +832,9 @@
 			"users": "使用者",
 			"searchVirtualKeys": "搜尋虛擬金鑰",
 			"searchUsers": "按姓名或郵箱搜尋"
-		}
+		},
+		"grantActions": "授權操作",
+		"viewAuthSessions": "檢視認證會話"
 	},
 	"toolGroups": {
 		"title": "MCP 工具組",
@@ -939,7 +942,17 @@
 			"assign": "分配虛擬金鑰",
 			"loading": "正在載入虛擬金鑰…",
 			"empty": "尚未分配虛擬金鑰。分配一個，呼叫方才能到達此虛擬 MCP。",
-			"unassignAria": "取消分配虛擬金鑰"
+			"unassignAria": "取消分配虛擬金鑰",
+			"ownerLookupFailed": "無法確認「{{name}}」的擁有者，因此未指派。請再試一次。",
+			"assignOwnedTitle": "要指派虛擬金鑰嗎？",
+			"assignOwnedDescription": "<strong>{{name}}</strong> 屬於{{kind}}<strong>{{owner}}</strong>。指派後，該{{kind}}的金鑰即可存取此 Virtual MCP。",
+			"assignOwnedConfirm": "指派",
+			"ownerKind": {
+				"team": "團隊",
+				"businessUnit": "業務單位",
+				"customer": "客戶",
+				"user": "使用者"
+			}
 		},
 		"add": "新增虛擬 MCP"
 	},
@@ -978,5 +991,100 @@
 		"scopeUser": "使用者",
 		"scopeGlobal": "全域",
 		"scopeWorkspace": "工作區"
+	},
+	"selectors": {
+		"searchTools": "搜尋並選擇工具...",
+		"searchServers": "搜尋並選擇 MCP 伺服器...",
+		"tool": "工具",
+		"server": "伺服器",
+		"noToolsSelected": "尚未選擇工具。請使用上方搜尋新增工具。",
+		"noResults": "未找到結果",
+		"noServersSelected": "尚未選擇伺服器。請使用上方搜尋新增 MCP 伺服器。",
+		"noServersFound": "未找到 MCP 伺服器",
+		"openServerDetails": "在新分頁中開啟伺服器詳情"
+	},
+	"openapi": {
+		"credentials": {
+			"apiKey": "API 金鑰",
+			"apiKeyLabel": "{{name}} · {{param}}（{{where}}）",
+			"valuePlaceholder": "值或 env.{{env}}",
+			"basicLabel": "{{name}} · 基本驗證",
+			"username": "使用者名稱",
+			"password": "密碼",
+			"passwordPlaceholder": "密碼或 env.{{env}}_PASSWORD",
+			"bearerLabel": "{{name}} · Bearer 令牌",
+			"bearerToken": "Bearer 令牌",
+			"tokenPlaceholder": "令牌或 env.{{env}}"
+		},
+		"summary": {
+			"inlineSpec": "內嵌規格",
+			"operationCount_one": "{{count}} 個操作",
+			"operationCount_other": "{{count}} 個操作"
+		},
+		"source": {
+			"fileTooLarge": "檔案超過 OpenAPI 文件 {{size}} 的大小限制。",
+			"fileReadFailed": "無法讀取檔案：{{message}}",
+			"fileEmpty": "檔案為空。",
+			"fetchSpec": "擷取規格",
+			"parseAgain": "重新解析",
+			"tabPaste": "貼上",
+			"tabUpload": "上傳",
+			"pasteHelp": "以 JSON 或 YAML 格式貼上 OpenAPI 或 Swagger 文件（支援 2.0、3.0、3.1 和 3.2）。",
+			"specUrl": "規格 URL",
+			"urlHelp": "Bifrost 會擷取一次文件並隨伺服器一併儲存；該 URL 會保留為其來源。",
+			"chooseFile": "選擇檔案",
+			"uploadHelp": "JSON 或 YAML，最大 {{size}}。檔案會在你的瀏覽器中讀取，並隨伺服器一併儲存。",
+			"parsing": "正在解析文件…",
+			"staleNotice": "自擷取文件後，URL 或伺服器名稱已變更。請重新擷取以更新下方的操作。"
+		},
+		"preview": {
+			"baseUrlInvalid": "Base URL 必須是絕對的 http:// 或 https:// URL",
+			"untitled": "未命名 API",
+			"toolCount_one": "{{count}} 個工具",
+			"toolCount_other": "{{count}} 個工具",
+			"baseUrl": "Base URL",
+			"selectServer": "選擇上游伺服器",
+			"custom": "自訂…",
+			"operationServersNote": "每個操作都宣告了自己的伺服器，因此呼叫會發往該伺服器。僅在需要全部覆蓋時才設定 Base URL。",
+			"noServerNote": "文件未宣告絕對的伺服器 URL，因此必須在此指定上游。",
+			"authTitle": "API 驗證",
+			"authDescPerUser": "每個呼叫方透過以各方案命名的每使用者請求頭提供這些值，並原樣轉發給 API。透過查詢字串或 Cookie 傳送的方案會保留已儲存的值。",
+			"authDescStored": "文件所宣告安全方案的憑證。它們會加密儲存並套用於每次呼叫，支援 env.VAR 引用。",
+			"noSecuritySchemes": "此文件未宣告任何安全方案。如果 API 仍需要憑證，請在下方新增靜態請求頭。",
+			"unsupportedBadge": "不支援",
+			"perUserHeaderAria": "{{name}} 每使用者請求頭",
+			"perUserHeaderHelpHttp": "每個呼叫方提供並原樣轉發的請求頭；其值即完整憑證，例如「{{example}}」。它會被新增到必需請求頭中。",
+			"perUserHeaderHelp": "每個呼叫方提供並原樣轉發的請求頭。它會被新增到必需請求頭中。",
+			"credentialAria": "{{scheme}} {{field}}",
+			"operationsTitle": "操作（支援 {{supported}} 個，共 {{total}} 個）",
+			"operationsDesc": "勾選的操作會成為此伺服器的工具。不支援的操作會附上原因一併列出。",
+			"selectedCount": "已選擇 {{selected}} 個，共 {{total}} 個",
+			"selectAllAria": "選擇全部操作",
+			"searchPlaceholder": "搜尋操作…",
+			"noMatch": "沒有符合搜尋條件的操作。",
+			"includeAria": "包含 {{name}}",
+			"unsupportedAria": "不支援 {{name}}",
+			"deprecatedBadge": "已棄用"
+		}
+	},
+	"oauthCallback": {
+		"successTitle": "授權完成",
+		"failedTitle": "授權失敗",
+		"successDescription": "MCP 伺服器已連線。你可以關閉此分頁並返回 MCP 註冊表。",
+		"failedDescription": "無法授權 MCP 伺服器。請返回 MCP 註冊表後重試。",
+		"backToRegistry": "返回 MCP 註冊表",
+		"closeTab": "你可以關閉此分頁。",
+		"closeWindow": "可以關閉此視窗。"
+	},
+	"headersForm": {
+		"staticAdminHeaders": "靜態管理員請求頭",
+		"staticAdminHeadersHelp": "這些請求頭由管理員在 MCP 客戶端上設定，會與你提交的值一起隨每次請求傳送。你無法在此處編輯它們。",
+		"noKeys": "此 MCP 客戶端尚未宣告任何請求頭鍵名。",
+		"previouslySubmitted": "先前已提交",
+		"overwritePlaceholder": "••••••（輸入新值以覆蓋）",
+		"valuePlaceholder": "{{key}} 的值",
+		"hideValue": "隱藏值",
+		"showValue": "顯示值",
+		"test": "測試"
 	}
 }

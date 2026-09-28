@@ -23,7 +23,8 @@
 		"brandingDescription": "在儀表板與登入頁將 Bifrost 標誌替換為你自己的品牌。此功能屬於 Bifrost 企業版許可證。我們很想了解你的使用場景，以及如何更好地幫助你。",
 		"licenseTitle": "解鎖許可證管理",
 		"apiKeysTitle": "基於範圍的 API 金鑰",
-		"apiKeysDescription": "需要按範圍精細控制存取的 API 金鑰？企業客戶可為不同服務、團隊或環境建立多把具有特定許可權的 API 金鑰。"
+		"apiKeysDescription": "需要按範圍精細控制存取的 API 金鑰？企業客戶可為不同服務、團隊或環境建立多把具有特定許可權的 API 金鑰。",
+		"unknownOs": "未知作業系統"
 	},
 	"clientSettings": {
 		"title": "客戶端設定",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>拒絕列表：</span0>始終阻止轉發拒絕列表中的請求頭。",
 		"wildcardRules": "<span0>萬用字元：</span0>在模式末尾使用 <code1>*</code1> 可匹配字首（例如 <code2>anthropic-*</code2> 匹配所有以 <code3>anthropic-</code3> 開頭的請求頭）。單獨使用 <code4>*</code4> 可匹配所有請求頭。",
 		"headerNames": "允許列表和拒絕列表應填寫<span0>不帶</span0> <code1>x-bf-eh-</code1> 字首的請求頭名稱。",
-		"allowlistExample": "例如：要允許 <code0>x-bf-eh-custom-id</code0> 或直接請求頭 <code1>custom-id</code1>，請將 <code2>custom-id</code2> 加入允許列表。"
+		"allowlistExample": "例如：要允許 <code0>x-bf-eh-custom-id</code0> 或直接請求頭 <code1>custom-id</code1>，請將 <code2>custom-id</code2> 加入允許列表。",
+		"extraFieldsPlacement": "額外欄位位置",
+		"extraFieldsPlacementHelp": "推理回應在何處攜帶 Bifrost 的 <b>extra_fields</b> 中繼資料。<b>Body</b> 會將 extra_fields 物件保留在 JSON 回應中。<b>Headers</b> 會將其從回應主體和每個串流區塊中移除，並將其純量欄位作為 <b>x-bifrost-*</b> 回應頭傳送。",
+		"extraFieldsPlacementDroppedNote": "在 Headers 模式下，以下欄位會被捨棄，不會傳送到任何地方：原始請求、原始回應、路由中繼資料、護欄除錯資訊、解析錯誤，以及發生錯誤時的金鑰狀態、計費用量和 MCP 認證詳情。串流回應只會攜帶首個區塊之前已知的資訊（路由、回退、快取查詢），因此每個區塊的延遲、區塊索引和最終總計也會被捨棄。",
+		"extraFieldsBody": "Body",
+		"extraFieldsHeaders": "Headers",
+		"removeSecurityHeader_one": "移除安全請求頭：{{headers}}",
+		"removeSecurityHeader_other": "移除安全請求頭：{{headers}}"
 	},
 	"caching": {
 		"title": "本地快取",
@@ -231,7 +239,11 @@
 		"deleteExpiredVirtualKeysHelp": "啟用後，每日清理作業將刪除每個已過期的虛擬金鑰，並發布通知，列出已刪除的金鑰。每個按鍵都可以在 expire</b0> 開關後從其 <b0>Delete 中覆蓋此設定：保留設定為關閉的鍵，設定為開啟的鍵即使在停用時也會被刪除。",
 		"enforceVkObjectOwnership": "將提供者物件限制為建立虛擬金鑰",
 		"enforceVkObjectOwnershipHelp": "啟用後，使用虛擬金鑰建立的檔案、批次、影片、容器、快取內容和即時會話只能使用相同金鑰讀取、列出或刪除。其他虛擬鍵會出現未找到錯誤，並且在清單中看不到它們。沒有虛擬金鑰的請求不受影響。即使停用此功能，建立金鑰也會被記錄，因此再次啟用它也會覆蓋同時建立的對象，但無法記錄其建立金鑰的對象除外。",
-		"proofRequired": "輸入目前的管理員密碼以確認此變更。儀表板保護已關閉，因此此會話未登入。如果您不知道密碼，請改用設定令牌。"
+		"proofRequired": "輸入目前的管理員密碼以確認此變更。儀表板保護已關閉，因此此會話未登入。如果您不知道密碼，請改用設定令牌。",
+		"skipAccessProfileKeyCreation": "不要為存取設定檔建立使用者虛擬金鑰",
+		"skipAccessProfileKeyCreationHelp": "啟用後，使用者首次套用存取設定檔時不會為其建立虛擬金鑰。使用者已擁有的金鑰或你為其新增的金鑰，在使用者套用此設定檔期間仍會受其管理。",
+		"skipAccessProfileKeyDeletion": "移除存取設定檔時不要刪除使用者虛擬金鑰",
+		"skipAccessProfileKeyDeletionHelp": "啟用後，移除使用者最後一個存取設定檔時，會保留其虛擬金鑰並轉為一般金鑰，不再套用該設定檔的供應商或存取權限。刪除使用者時仍會刪除其金鑰。"
 	},
 	"logging": {
 		"title": "日誌設定",
@@ -296,7 +308,11 @@
 		"convertUnsupportedParamsHelp": "轉換模型不支援的引數值。",
 		"azureDeepseek": "對 Azure Deepseek 模型使用 Chat Completion API",
 		"azureDeepseekHelp": "讓 Claude Code、Codex 等對 Azure Deepseek 模型走 Chat Completion API。",
-		"toastSaved": "相容性設定已成功更新。"
+		"toastSaved": "相容性設定已成功更新。",
+		"forceReasoningOnlyToResponses": "對僅支援推理的 OpenAI 模型使用 Responses API",
+		"forceReasoningOnlyToResponsesHelp": "對於無法在 chat completions 上結合工具呼叫進行推理的模型，將對話補全請求路由到 Responses API，而不是關閉推理。",
+		"convertDecisionToResponses": "在非決策模型上模擬 Decisions API",
+		"convertDecisionToResponsesHelp": "對於沒有原生決策端點的模型，透過 Responses API 搭配強制函式工具來提示模型，以回應決策請求。關閉時，這些請求會因不受支援而失敗。"
 	},
 	"featureFlags": {
 		"title": "功能開關",
@@ -387,7 +403,26 @@
 		"allowedRedirectUrisHelp": "遠端 MCP 用戶端可能使用的精確回呼 URI，例如<code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>。新增 <code1>*</code1> 以允許任何 https 回呼；不支援部分通配符。始終允許環回回調和 <code2>cursor://anysphere.cursor-mcp</code2>。更改此清單需要儀表板身份驗證。",
 		"allowedRedirectUrisPlaceholder": "新增回調 URI（輸入）",
 		"anyCallbackAllowed": "允許任何回調",
-		"anyCallbackAllowedHelp": "任何 MCP 用戶端都可以在任何主機上註冊回調，因此同意頁面是針對向攻擊者發送授權代碼的用戶端的唯一檢查。更喜欢列出精确的回调 URI。"
+		"anyCallbackAllowedHelp": "任何 MCP 用戶端都可以在任何主機上註冊回調，因此同意頁面是針對向攻擊者發送授權代碼的用戶端的唯一檢查。更喜欢列出精确的回调 URI。",
+		"limitMaxSourceBytes": "最大原始碼大小（位元組）",
+		"limitMaxSourceBytesDesc": "單次執行可提交的程式碼大小上限。",
+		"limitMaxSteps": "最大運算步數",
+		"limitMaxStepsDesc": "每次執行的直譯器步數，包含內建函式內部的工作。",
+		"limitMaxMemoryBytes": "最大記憶體（位元組）",
+		"limitMaxMemoryBytesDesc": "每次執行的預估配置預算。每個並行執行都有各自獨立的預算。",
+		"limitMaxLogBytes": "最大日誌輸出（位元組）",
+		"limitMaxLogBytesDesc": "每次執行的 print 與工具日誌輸出，包含換行符。",
+		"limitMaxToolCalls": "最大工具呼叫次數",
+		"limitMaxToolCallsDesc": "每次執行中巢狀 MCP 工具呼叫的次數。",
+		"limitMaxValueBytes": "最大值大小（位元組）",
+		"limitMaxValueBytesDesc": "每個工具載荷和轉換結果的大小預算。至少為 {{min}}。",
+		"limitMaxNestingDepth": "最大巢狀深度",
+		"limitMaxNestingDepthDesc": "跨越工具邊界的值的巢狀深度。最多為 {{max}}。",
+		"limitNegative": "{{label}}不能為負數。",
+		"limitValueBytesMin": "最大值大小至少為 {{min}} 位元組。",
+		"limitNestingMax": "最大巢狀深度最多為 {{max}}。",
+		"codeModeLimitsTitle": "程式碼模式限制",
+		"codeModeLimitsDescription": "對每次程式碼執行的限制。欄位留空則使用其預設值。同時執行的數量不受限制。"
 	},
 	"modelSettings": {
 		"title": "模型設定",
@@ -733,7 +768,11 @@
 		"intoPath": " 到 {{path}}/",
 		"intoRoot": " 到 root",
 		"previewAfterSaving": "儲存後可預覽。",
-		"externalUrlRequired": "在 <settingsLink> 技能設定 </settingsLink> 中設定外部用戶端 URL 以啟用市場註冊。"
+		"externalUrlRequired": "在 <settingsLink> 技能設定 </settingsLink> 中設定外部用戶端 URL 以啟用市場註冊。",
+		"showLess": "顯示更少",
+		"showMore": "顯示更多",
+		"skillNotFound": "未找到技能",
+		"backToList": "返回清單"
 	},
 	"promptRepo": {
 		"loadFailed": "載入提示詞倉庫失敗",
@@ -933,7 +972,19 @@
 		"governancePlugin": "治理外掛",
 		"governancePluginDesc": "完整的存取控制、預算與速率限制指南",
 		"governancePluginContent": "掌握虛擬金鑰、分層預算、速率限制與用量跟蹤，構建安全的 AI 基礎設施。",
-		"viewGovernanceGuide": "檢視治理指南"
+		"viewGovernanceGuide": "檢視治理指南",
+		"heading": "全面強化你的 Bifrost 技術棧",
+		"viewFullDocumentation": "檢視完整文件",
+		"quickStartGuide": "快速入門指南",
+		"readMore": "閱讀更多",
+		"items": {
+			"quickStart": ["HTTP 傳輸層設定", "Go 套件用法", "Docker 指南"],
+			"architecture": ["系統概覽", "請求流程", "並行模型", "設計決策"],
+			"usageGuides": ["供應商設定", "金鑰管理", "錯誤處理", "記憶體與網路"],
+			"contributing": ["貢獻指南", "新增供應商", "外掛開發", "程式碼規範"],
+			"integrationExamples": ["OpenAI 整合", "Anthropic 整合", "GenAI 整合", "遷移指南"],
+			"benchmarks": ["5K RPS 測試結果", "效能指標", "配置調優", "硬體對比"]
+		}
 	},
 	"warp": {
 		"saved": "Warp 設定已儲存。",
@@ -1036,7 +1087,10 @@
 			"searchLimit": "搜尋上限必須在 1 到 25 之間。",
 			"retentionRequired": "必須填寫一個值",
 			"retentionWhole": "必須為整天數",
-			"retentionMin": "必須為 0 天或更多（0 表示保留預設值）"
+			"retentionMin": "必須為 0 天或更多（0 表示保留預設值）",
+			"modelRequired": "請選擇供應商和模型以啟用 Warp。",
+			"modelOrRemove": "請選擇供應商和模型，或移除此模型。",
+			"modelDuplicate": "此供應商和模型已在清單中。"
 		},
 		"models": "型號",
 		"modelsHelp": "模型 Warp 進行推理並從中寫出答案。除非有人在「扭曲」面板中選擇另一個答案，否則將使用預設答案。一個有能力的模型在這裡是值得的。",
@@ -1046,6 +1100,67 @@
 		"defaultModel": "預設型號",
 		"modelNumber": "型號{{number}}",
 		"makeDefault": "設為預設",
-		"removeModel": "刪除型號{{number}}"
+		"removeModel": "刪除型號{{number}}",
+		"topics": {
+			"badRange": "請選擇有效的主題時間範圍。",
+			"started": "已開始建立主題。",
+			"cancelRequested": "已要求取消主題分群。",
+			"title": "主題群集",
+			"infoLabel": "主題運作方式",
+			"infoIntro": "主題會依請求內容將請求分組，讓 Warp 能回答大家常問的問題。",
+			"infoSeed": "<b0>1. 建立種子，只需一次。</b0> 執行一次作業，將指定時間範圍內已索引的請求分群並為各群命名。每個嵌入模型只需建立一次種子。",
+			"infoFiled": "<b0>2. 隨到隨分類。</b0> 之後索引的每個請求都會歸入最相近的主題。",
+			"infoFound": "<b0>3. 找出新主題。</b0> 不符合任何主題的請求會先等待。達到新主題門檻後，每小時執行一次作業，將它們分成新主題或併入現有主題。",
+			"infoTidy": "<b0>4. 持續整理。</b0> 同一作業會封存 30 天沒有請求的主題，並合併意義相同的主題。",
+			"infoReseed": "變更嵌入模型會重新開始：為該模型再次建立主題種子。",
+			"description": "從一段已索引請求的時間範圍建立一次主題種子。之後每當有新請求完成索引，主題就會自動更新，不必再次執行。",
+			"seeded": "此嵌入模型的主題已建立並會自動更新：新請求在索引時會歸入主題，不符合任何主題的請求則會用來找出新主題。",
+			"cancel": "取消分群",
+			"seed": "建立主題種子",
+			"saveBeforeSeed": "建立主題種子前，請先儲存配置變更。",
+			"needsBackfill": "此嵌入模型尚無已索引內容。請先對上方的時間範圍回填資料，再從相同範圍建立主題種子。",
+			"activeTopics_one": "{{count}} 個啟用中的主題",
+			"activeTopics_other": "{{count}} 個啟用中的主題",
+			"inThemes_one": "{{count}} 個主題",
+			"inThemes_other": "{{count}} 個主題",
+			"pooled_one": "有 {{count}} 個請求等待歸入主題",
+			"pooled_other": "有 {{count}} 個請求等待歸入主題",
+			"unmatchedLastDay_one": "過去一天有 {{count}} 個請求（{{percent}}%）不符合任何主題",
+			"unmatchedLastDay_other": "過去一天有 {{count}} 個請求（{{percent}}%）不符合任何主題",
+			"nothingFiled": "過去一天沒有歸類的請求",
+			"requestsRead_one": "已讀取 {{count}} 個請求",
+			"requestsRead_other": "已讀取 {{count}} 個請求",
+			"topicsWritten_one": "已建立 {{count}} 個主題",
+			"topicsWritten_other": "已建立 {{count}} 個主題",
+			"themesCount_one": "{{count}} 個主題",
+			"themesCount_other": "{{count}} 個主題",
+			"labelsFellBack_one": "{{count}} 個標籤改用備援值",
+			"labelsFellBack_other": "{{count}} 個標籤改用備援值",
+			"statusFailed": "無法讀取主題分群狀態，因此可能不會顯示執行中的作業。",
+			"thresholdLabel": "新主題門檻",
+			"thresholdHint": "有多少個不符合任何主題的請求必須等待，Warp 才會將它們分成新主題；每小時檢查一次。數值越低，越少範例就能更快發現新主題；數值越高，則會等待更明確的模式。範圍：{{min}} 到 {{max}}。",
+			"thresholdError": "必須是介於 {{min}} 到 {{max}} 之間的整數"
+		}
+	},
+	"agentGateway": {
+		"title": "代理網關設定",
+		"description": "配置代理網關（A2A）設定。",
+		"toastSaved": "代理網關設定已成功更新。",
+		"loadFailed": "載入代理網關設定失敗。",
+		"externalClientUrl": "外部用戶端 URL",
+		"externalClientUrlHelp": "Bifrost 的公開基礎 URL，用於提供代理卡片和推送通知回呼 URL。若留空，所有代理協定端點都會停用，代理管理仍可使用。支援環境變數語法（例如 <code>env.BIFROST_EXTERNAL_URL</code>）。",
+		"privateAllowlist": "私有網路允許清單",
+		"privateAllowlistHelp": "不含協定與連接埠的主機、IP 位址或 CIDR 範圍。當代理網關的探索、OAuth 及執行時請求解析到私有或回環位址時，允許其存取這些位置。連結本機位址和雲端中繼資料位址一律被阻止。",
+		"privateAllowlistPlaceholder": "新增主機、IP 或 CIDR（按 Enter 或逗號）",
+		"captureRaw": "擷取原始請求與回應",
+		"captureRawHelp": "在日誌記錄中持久化原始請求和回應載荷。gRPC 因使用二進位 protobuf 訊息而停用原始擷取；受大小限制的擷取可能截斷訊息，無法可靠地解碼或檢查。"
+	},
+	"skillsSettings": {
+		"description": "配置技能庫市集的對外服務。",
+		"toastSaved": "技能設定已成功更新。",
+		"loadFailed": "載入技能設定失敗。",
+		"retry": "重試",
+		"externalClientUrl": "外部用戶端 URL",
+		"externalClientUrlHelp": "供 Claude Code 與 Codex 市集使用的 Bifrost 公開基礎 URL。留空則停用市集服務與註冊，技能管理與下載仍可使用。支援環境變數和 vault 引用。"
 	}
 }

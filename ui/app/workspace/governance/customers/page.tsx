@@ -16,6 +16,7 @@ const PAGE_SIZE = 25;
 
 export default function GovernanceCustomersPage() {
 	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
 	// Background refetches replace the rows behind an open edit sheet, which is
@@ -81,7 +82,12 @@ export default function GovernanceCustomersPage() {
 
 	if (showLoadError(customersError, customersData)) {
 		return (
-			<LoadErrorView entity="customers" error={customersError} onRetry={() => void refetchCustomers()} testId="customers-load-error" />
+			<LoadErrorView
+				entity={tCommon("entities.customers")}
+				error={customersError}
+				onRetry={() => void refetchCustomers()}
+				testId="customers-load-error"
+			/>
 		);
 	}
 

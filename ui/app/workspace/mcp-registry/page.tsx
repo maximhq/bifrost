@@ -6,6 +6,7 @@ import { getErrorMessage, useGetMCPClientsQuery } from "@/lib/store";
 import { showLoadError } from "@/lib/utils/loadError";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { MCPClientsFilterSidebar, type MCPClientFilters } from "./views/mcpClientsFilterSidebar";
 import MCPClientsTable from "./views/mcpClientsTable";
 
@@ -26,6 +27,7 @@ function isMCPNotConfigured(error: unknown): boolean {
 }
 
 export default function MCPServersPage() {
+	const { t: tCommon } = useTranslation("common");
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			search: parseAsString.withDefault(""),
@@ -128,19 +130,21 @@ export default function MCPServersPage() {
 		if (error) {
 			if (isMCPNotConfigured(error)) return;
 			toast({
-				title: "Error",
+				title: tCommon("error"),
 				description: getErrorMessage(error),
 				variant: "destructive",
 			});
 		}
-	}, [error, toast]);
+	}, [error, toast, tCommon]);
 
 	if (isLoading) {
 		return <FullPageLoader />;
 	}
 
 	if (showLoadError(isMCPNotConfigured(error) ? undefined : error, mcpClientsData)) {
-		return <LoadErrorView entity="MCP servers" error={error} onRetry={() => void refetch()} testId="mcp-servers-load-error" />;
+		return (
+			<LoadErrorView entity={tCommon("entities.mcpServers")} error={error} onRetry={() => void refetch()} testId="mcp-servers-load-error" />
+		);
 	}
 
 	const handleSearchChange = (value: string) => void setUrlState({ search: value, offset: 0 });

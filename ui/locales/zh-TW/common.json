@@ -66,7 +66,11 @@
 		"mcpServers": "MCP 伺服器",
 		"virtualMcp": "虛擬 MCP",
 		"virtualMcps": "虛擬 MCP",
-		"video": "影片"
+		"video": "影片",
+		"agents": "代理",
+		"providers": "供應商",
+		"webhookEndpoints": "Webhook 端點",
+		"modelLimits": "模型限額"
 	},
 	"aboutField": "關於{{field}}",
 	"thisField": "此欄位",
@@ -109,7 +113,8 @@
 		"selectModel": "選擇模型",
 		"searching": "正在搜尋…",
 		"loadingMore": "正在載入更多…",
-		"useModel": "使用 <name>{{name}}</name>"
+		"useModel": "使用 <name>{{name}}</name>",
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} 已阻止"
 	},
 	"providerSelect": {
 		"select": "選擇供應商",
@@ -118,12 +123,393 @@
 		"couldntLoad": "無法載入供應商。",
 		"noMatching": "沒有匹配的供應商。",
 		"noneAvailable": "沒有可用的供應商。",
-		"loading": "正在載入供應商…"
+		"loading": "正在載入供應商…",
+		"customProviders": "自訂供應商"
 	},
 	"providerList": {
 		"moreProviders_one": "另有 {{count}} 個供應商",
 		"moreProviders_other": "另有 {{count}} 個供應商",
 		"moreCount": "+{{count}} 更多"
 	},
-	"failedToLoadMoreEntities": "無法載入更多 {{entity}}"
+	"failedToLoadMoreEntities": "無法載入更多 {{entity}}",
+	"multiSelect": {
+		"placeholder": "選擇選項",
+		"announce": {
+			"oneSelected": "已選擇 {{label}}。已選 {{selected}} 個，共 {{total}} 個選項。",
+			"manySelected": "已選擇 {{count}} 個選項。已選 {{selected}} 個，共 {{total}} 個。",
+			"removed": "已移除選項。已選 {{selected}} 個，共 {{total}} 個選項。",
+			"opened": "下拉選單已開啟。有 {{count}} 個選項可用。請使用方向鍵瀏覽。",
+			"closed": "下拉選單已關閉。",
+			"found_one": "找到 {{count}} 個符合「{{query}}」的選項",
+			"found_other": "找到 {{count}} 個符合「{{query}}」的選項"
+		},
+		"dropdownHelp": "多選下拉選單。使用方向鍵瀏覽，按 Enter 選擇，按 Escape 關閉。",
+		"noneSelected": "未選擇任何選項",
+		"selectedList_one": "已選擇 {{count}} 個選項：{{labels}}",
+		"selectedList_other": "已選擇 {{count}} 個選項：{{labels}}",
+		"triggerAria": "多選：已選 {{selected}} 個，共 {{total}} 個選項。{{placeholder}}",
+		"removeFromSelection": "從已選項目中移除 {{label}}",
+		"clearAllAria_one": "清除已選擇的選項",
+		"clearAllAria_other": "清除全部 {{count}} 個已選擇的選項",
+		"availableOptions": "可用選項",
+		"searchPlaceholder": "搜尋選項...",
+		"searchAria": "搜尋可用選項",
+		"searchHelp": "輸入文字以篩選選項。使用方向鍵瀏覽結果。",
+		"selectAllAria": "選擇全部 {{count}} 個選項",
+		"selectAll": "（全選）",
+		"selectAllWithCount": "（全選 - {{count}} 個選項）",
+		"optionSelectedAria": "{{label}}，已選擇{{disabled}}",
+		"optionNotSelectedAria": "{{label}}，未選擇{{disabled}}",
+		"disabledSuffix": "，已停用",
+		"clear": "清除"
+	},
+	"quarterStart": {
+		"fiscalYearStarts": "財年開始於",
+		"nextReset": "下次重置於 <date>{{reset}}</date>。目前季度結束於 {{end}}。"
+	},
+	"headersTable": {
+		"headerName": "標頭名稱",
+		"headerValue": "標頭值",
+		"headers": "標頭",
+		"name": "名稱",
+		"value": "值",
+		"unsupportedKey": "不支援此鍵名",
+		"duplicateKey": "鍵重複"
+	},
+	"sidebar": {
+		"toggle": "切換側邊欄"
+	},
+	"sheet": {
+		"collapse": "收合",
+		"expand": "展開"
+	},
+	"tabs": {
+		"showMore_one": "再顯示 {{count}} 個分頁",
+		"showMore_other": "再顯示 {{count}} 個分頁"
+	},
+	"promoCard": {
+		"dismiss": "關閉"
+	},
+	"searchSelect": {
+		"failedToLoad": "載入失敗。"
+	},
+	"numberAndSelect": {
+		"resetPeriod": "重置週期"
+	},
+	"secretVar": {
+		"resolvedAfterSave": "儲存後將顯示解析後的值"
+	},
+	"agentGrants": {
+		"label": "代理存取",
+		"tooltip": "授予此金鑰對已註冊代理的存取權。之後該金鑰即可在 <path0>{{path}}</path0> 呼叫各個代理。標示為對所有金鑰開放的代理無需授權。",
+		"selectPlaceholder": "選擇要新增的代理",
+		"removeAria": "移除 {{name}}"
+	},
+	"calendarAlignment": {
+		"rollingNotice": "{{durations}} 將在其完整時長內使用滾動視窗。日曆對齊僅適用於 1d、1w、1M、1Q 和 1Y。"
+	},
+	"formFooter": {
+		"noPermission": "你沒有執行此操作的權限",
+		"saving": "儲存中...",
+		"fixValidation": "請修正驗證錯誤",
+		"update": "更新{{label}}",
+		"create": "建立{{label}}"
+	},
+	"loadError": {
+		"failedToLoad": "載入{{entity}}失敗。",
+		"retry": "重試"
+	},
+	"notAvailableBanner": {
+		"title": "尚未設定配置儲存。",
+		"description": "UI 需要資料庫連線來儲存配置資料，但目前尚未配置任何資料庫。",
+		"enableHintPrefix": "若要啟用 UI，請將資料庫設定新增到你的 config.json（請參閱",
+		"documentation": "文件",
+		"enableHintSuffix": "）。"
+	},
+	"scopeChips": {
+		"showAll_one": "顯示 {{count}} 個範圍",
+		"showAll_other": "顯示全部 {{count}} 個範圍",
+		"grantedScopes": "已授予的範圍"
+	},
+	"theme": {
+		"light": "淺色",
+		"dark": "深色",
+		"system": "系統",
+		"toggle": "切換主題"
+	},
+	"trialBanner": {
+		"expired": "你的 Bifrost 企業版試用已到期。如需協助，請<link0>聯絡我們</link0>。",
+		"expiresIn_one": "你的 Bifrost 企業版試用將在 {{count}} 天後到期。如需協助，請<link0>聯絡我們</link0>。",
+		"expiresIn_other": "你的 Bifrost 企業版試用將在 {{count}} 天後到期。如需協助，請<link0>聯絡我們</link0>。",
+		"expiredSubject": "我的企業版試用已到期，需要協助",
+		"extendSubject": "我需要協助延長企業版試用"
+	},
+	"calendarAlignedLabel": "{{label}}（日曆）",
+	"resetsWhen": "{{when}}重置",
+	"budgetDisplay": {
+		"usageAria": "預算用量",
+		"override": "覆蓋",
+		"baseTooltip": "基礎 {{base}} + 覆蓋 {{override}}"
+	},
+	"rateLimit": {
+		"tokens": "tokens",
+		"req": "req",
+		"tokensUsageAria": "token 用量",
+		"requestUsageAria": "請求用量"
+	},
+	"sidekiq": {
+		"sectionAria": "背景作業",
+		"emptyTitle": "沒有背景作業",
+		"emptyDescription": "長時間執行的任務會在此顯示進度。",
+		"status": {
+			"pending": "已排入佇列",
+			"running": "執行中",
+			"completed": "已完成",
+			"failed": "失敗",
+			"cancelled": "已取消"
+		},
+		"dismissAria": "關閉 {{label}}",
+		"progressAria": "{{label}}進度",
+		"done": "完成",
+		"started": "開始於 {{when}}",
+		"finished": "結束於 {{when}}",
+		"stopJob": "停止作業",
+		"keep": "保留"
+	},
+	"tableColumns": {
+		"configAria": "欄位配置",
+		"toggle": "切換欄位",
+		"resetToDefault": "重置為預設值",
+		"actionsAria": "欄位操作",
+		"hide": "隱藏欄位",
+		"unpin": "取消固定",
+		"pinLeft": "固定到左側",
+		"pinRight": "固定到右側"
+	},
+	"configSyncAlert": {
+		"message": "此配置是從 <code0>config.json</code0> 同步而來。日後對 config.json 的任何更新都會覆蓋在 UI 中所做的更改。如果你只是用 config.json 引導初始配置，可以忽略此提示。"
+	},
+	"breadcrumb": {
+		"label": "導覽路徑",
+		"more": "更多"
+	},
+	"modelParameters": {
+		"keepBetween": "請將{{label}}保持在 {{min}} 到 {{max}} 之間。",
+		"addString": "新增字串",
+		"select": "選擇"
+	},
+	"entityAssociation": {
+		"placeholders": {
+			"virtualKey": "新增虛擬金鑰名稱...",
+			"team": "新增團隊名稱...",
+			"customer": "新增客戶名稱...",
+			"user": "新增使用者名稱...",
+			"provider": "新增供應商名稱...",
+			"apiKey": "新增 API 金鑰名稱..."
+		},
+		"noOptions": {
+			"virtualKey": "未找到虛擬金鑰",
+			"team": "未找到團隊",
+			"customer": "未找到客戶",
+			"user": "未找到使用者",
+			"provider": "未找到供應商",
+			"apiKey": "未找到 API 金鑰"
+		},
+		"selected": "已選擇",
+		"createOption": "新增「{{value}}」"
+	},
+	"combobox": {
+		"selectEllipsis3": "選擇...",
+		"select": "選擇…",
+		"clearSelection": "清除選擇",
+		"clearSearch": "清除搜尋",
+		"search": "搜尋...",
+		"typeOrSelect": "輸入或選擇...",
+		"use": "使用「{{value}}」",
+		"noResults": "未找到結果。",
+		"selectedCount": "已選擇 {{count}} 項",
+		"removeAria": "移除 {{label}}"
+	},
+	"validation": {
+		"customProviderNameIsRequired": "自訂供應商名稱為必填項",
+		"endpointIsRequired": "端點為必填項",
+		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 驗證需要填寫 Client ID、Client Secret 和 Tenant ID",
+		"tokenLifetimeMustBeAWholeNumberOfSeconds": "令牌有效期必須是整數秒",
+		"tokenLifetimeMustBeAtLeast600Seconds": "令牌有效期至少為 600 秒",
+		"tokenLifetimeMustBeAtMost43200Seconds": "令牌有效期最多為 43200 秒",
+		"projectIdIsRequired": "專案 ID 為必填項",
+		"regionIsRequired": "區域為必填項",
+		"authCredentialsIsRequiredForServiceAccountJsonAuthentication": "服務帳戶 JSON 驗證需要填寫驗證憑證",
+		"workloadIdentityPoolProviderAudienceIsRequired": "Workload Identity Pool 供應商的 Audience 為必填項",
+		"removeTheAuthCredentialsJsonWhenUsingAwsWorkloadIdentity": "使用 AWS workload identity 時，請移除驗證憑證 JSON",
+		"bucketNameIsRequired": "儲存桶名稱為必填項",
+		"bothAccessKeyAndSecretKeyAreRequiredForExplicit": "明確指定憑證時，Access Key 和 Secret Key 都為必填項",
+		"modelNameIsRequired": "模型名稱為必填項",
+		"serverUrlIsRequired": "伺服器 URL 為必填項",
+		"chooseAGrantType": "請選擇授權類型",
+		"tokenUrlIsRequired": "令牌 URL 為必填項",
+		"tokenUrlMustBeAnHttpsUrl": "令牌 URL 必須是 https URL",
+		"tokenUrlMustNotCarryUserinfoAQueryOrA": "令牌 URL 不得包含使用者資訊、查詢字串或片段；額外參數請透過 extra_params 傳送",
+		"clientIdIsRequiredForClientCredentials": "客戶端憑證模式需要填寫 Client ID",
+		"clientSecretIsRequiredForClientCredentials": "客戶端憑證模式需要填寫 Client Secret",
+		"privateKeyIsRequiredForJwtBearer": "JWT bearer 需要填寫私鑰",
+		"privateKeyMustBeAnRsaOrEcPemBlock": "私鑰必須是 RSA 或 EC PEM 區塊",
+		"issuerIsRequiredForJwtBearer": "JWT bearer 需要填寫 Issuer",
+		"audienceIsRequiredForJwtBearer": "JWT bearer 需要填寫 Audience",
+		"assertionLifetimeMustBeBetween1And3600Seconds0": "斷言有效期必須介於 1 到 3600 秒之間（0 表示使用預設值）",
+		"accountIdIsRequired": "帳戶 ID 為必填項",
+		"workspaceUrlIsRequired": "工作區 URL 為必填項",
+		"clientIdAndClientSecretAreBothRequiredForOauth": "OAuth M2M 驗證需要同時填寫 Client ID 和 Client Secret",
+		"clientIdAndClientSecretMustBeSetTogether": "Client ID 和 Client Secret 必須同時設定",
+		"modelIdIsRequired": "模型 ID 為必填項",
+		"idIsRequired": "ID 為必填項",
+		"nameIsRequired": "名稱為必填項",
+		"weightMustBeAValidNumberBetween0And1": "權重必須是 0 到 1 之間的有效數字",
+		"weightMustBeEqualToOrGreaterThan0": "權重必須大於或等於 0",
+		"weightMustBeEqualToOrLessThan1": "權重必須小於或等於 1",
+		"apiKeyIsRequired": "API 金鑰為必填項",
+		"timeoutMustBeGreaterThan0Seconds": "逾時必須大於 0 秒",
+		"timeoutMustBeLessThan3600Seconds": "逾時必須小於 3600 秒",
+		"maxRetriesMustBeGreaterThan0": "最大重試次數必須大於 0",
+		"maxRetriesMustBeLessThan10": "最大重試次數必須小於 10",
+		"streamIdleTimeoutMustBeAWholeNumberOfSeconds": "串流閒置逾時必須是整數秒",
+		"streamIdleTimeoutMustBeAtLeast5Seconds": "串流閒置逾時至少為 5 秒",
+		"streamIdleTimeoutMustBeAtMost3600SecondsI": "串流閒置逾時最多為 3600 秒，即 60 分鐘",
+		"keepAliveTimeoutMustBeAWholeNumberOfSeconds": "Keep-alive 逾時必須是整數秒",
+		"keepAliveTimeoutMustBeAtLeast1Second": "Keep-alive 逾時至少為 1 秒",
+		"keepAliveTimeoutMustBeAtMost3600SecondsI": "Keep-alive 逾時最多為 3600 秒，即 60 分鐘",
+		"maxConnectionsMustBeAWholeNumber": "最大連線數必須是整數",
+		"maxConnectionsMustBeAtLeast1": "最大連線數至少為 1",
+		"maxConnectionsMustBeAtMost10000": "最大連線數最多為 10000",
+		"http2PingIntervalMustBeAWholeNumberOf": "HTTP/2 ping 間隔必須是整數秒",
+		"http2PingIntervalMustBeAtLeast0Seconds": "HTTP/2 ping 間隔至少為 0 秒",
+		"http2PingIntervalMustBeAtMost3600Seconds": "HTTP/2 ping 間隔最多為 3600 秒，即 60 分鐘",
+		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial 必須 <= retry_backoff_max",
+		"mustBeAValidHttpOrHttpsUrl": "必須是有效的 HTTP 或 HTTPS URL",
+		"timeoutMustBeANumber": "逾時必須是數字",
+		"timeoutMustBeLessThan172800SecondsIE48": "逾時必須小於 172800 秒，即 48 小時",
+		"maxRetriesMustBeANumber": "最大重試次數必須是數字",
+		"retryBackoffInitialMustBeANumber": "初始重試退避時間必須是數字",
+		"retryBackoffInitialMustBeAtLeast100ms": "初始重試退避時間至少為 100ms",
+		"retryBackoffInitialMustBeAtMost1000000ms": "初始重試退避時間最多為 1000000ms",
+		"retryBackoffMaxMustBeANumber": "最大重試退避時間必須是數字",
+		"retryBackoffMaxMustBeAtLeast100ms": "最大重試退避時間至少為 100ms",
+		"retryBackoffMaxMustBeAtMost1000000ms": "最大重試退避時間最多為 1000000ms",
+		"streamIdleTimeoutMustBeANumber": "串流閒置逾時必須是數字",
+		"keepAliveTimeoutMustBeANumber": "Keep-alive 逾時必須是數字",
+		"maxConnectionsMustBeANumber": "最大連線數必須是數字",
+		"http2PingIntervalMustBeANumber": "HTTP/2 ping 間隔必須是數字",
+		"initialBackoffMustBeLessThanOrEqualToMax": "初始退避時間必須小於或等於最大退避時間",
+		"concurrencyMustBeGreaterThan0": "並行數必須大於 0",
+		"concurrencyMustBeLessThanOrEqualTo100": "並行數必須小於或等於 100",
+		"bufferSizeMustBeGreaterThan0": "緩衝區大小必須大於 0",
+		"bufferSizeMustBeLessThanOrEqualTo1000": "緩衝區大小必須小於或等於 1000",
+		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "使用 HTTP 或 SOCKS5 代理時，代理 URL 為必填項",
+		"mustBeAValidUrlEGHttpProxyExample": "必須是有效的 URL（例如 http://proxy.example.com:8080）",
+		"setARoleAnIndexOrBothAPointWith": "請設定角色、索引或兩者皆設定，兩者都沒有的點不會匹配任何內容",
+		"use164LettersDigitsOr": "請使用 1-64 個字母、數字、_ 或 -",
+		"pickAnMcpServer": "請選擇 MCP 伺服器",
+		"pickATool": "請選擇工具",
+		"waitingForTheMcpServerToLoad": "正在等待 MCP 伺服器載入",
+		"anotherToolAlreadyUsesThisName": "已有其他工具使用此名稱",
+		"thisMcpToolIsAlreadyInjected": "此 MCP 工具已被注入",
+		"isKeylessIsNotAllowedForBedrock": "Bedrock 不允許無金鑰模式",
+		"baseProviderTypeIsRequired": "基礎供應商類型為必填項",
+		"atLeastOneKeyIsRequired": "至少需要一個金鑰",
+		"providerNameIsRequired": "供應商名稱為必填項",
+		"embeddingModelIsRequired": "Embedding 模型為必填項",
+		"dimensionMustBeGreaterThan1ForProviderBackedSemantic": "由供應商支援的語意快取，維度必須大於 1",
+		"maxValueBytesMustBe0OrAtLeast1024": "max_value_bytes 必須為 0 或至少 1024",
+		"concurrencyMustBeANumber": "並行數必須是數字",
+		"concurrencyMustBeLessThan100000": "並行數必須小於 100000",
+		"bufferSizeMustBeANumber": "緩衝區大小必須是數字",
+		"bufferSizeMustBeLessThan100000": "緩衝區大小必須小於 100000",
+		"concurrencyMustBeLessThanOrEqualToBufferSize": "並行數必須小於或等於緩衝區大小",
+		"pleaseSelectATraceType": "請選擇追蹤類型",
+		"pleaseSelectAProtocol": "請選擇協定",
+		"portMustBeBetween1And65535": "連接埠必須介於 1 到 65535 之間",
+		"collectorAddressIsRequired": "收集器位址為必填項",
+		"metricsEndpointIsRequiredWhenMetricsPushIsEnabled": "啟用指標推送時，指標端點為必填項",
+		"atLeastOneProfileIsRequired": "至少需要一個設定檔",
+		"apiKeyIsRequired2": "API 金鑰為必填項",
+		"apiKeyMustStartWithSkMx": "API 金鑰必須以 'sk_mx_' 開頭",
+		"mustBeAValidUrlEGHttpPushgateway9091": "必須是有效的 URL（例如 http://pushgateway:9091）",
+		"passwordIsRequiredWhenUsernameIsProvided": "提供使用者名稱時，密碼為必填項",
+		"usernameIsRequiredWhenPasswordIsProvided": "提供密碼時，使用者名稱為必填項",
+		"pushGatewayUrlIsRequiredWhenThePushGatewayIs": "啟用 Push Gateway 時，Push Gateway URL 為必填項",
+		"specUrlMustBeAValidHttpOrHttpsUrl": "規格 URL 必須是有效的 http:// 或 https:// URL",
+		"baseUrlMustBeAValidHttpOrHttpsUrl": "Base URL 必須是有效的 http:// 或 https:// URL",
+		"pasteOrUploadASpecOrProvideASpecUrl": "請貼上或上傳規格，或提供規格 URL",
+		"clientNameCannotContainHyphens": "客戶端名稱不能包含連字號",
+		"clientNameCannotContainSpaces": "客戶端名稱不能包含空格",
+		"clientNameCannotStartWithANumber": "客戶端名稱不能以數字開頭",
+		"headerNameCannotBeEmpty": "請求頭名稱不能為空",
+		"duplicateHeaderNamesAreNotAllowed": "不允許重複的請求頭名稱",
+		"wildcardCannotBeCombinedWithOtherToolNames": "萬用字元 '*' 不能與其他工具名稱同時使用",
+		"duplicateToolNamesAreNotAllowed": "不允許重複的工具名稱",
+		"costMustBeNonNegative": "成本不能為負數",
+		"toolSyncIntervalMustBe0OrAPositiveNumber": "工具同步間隔必須為 0 或正數分鐘",
+		"wildcardCannotBeCombinedWithSpecificHeaderNames": "萬用字元 '*' 不能與特定請求頭名稱同時使用",
+		"authorizeUrlMustStartWithHttpOrHttps": "授權 URL 必須以 http:// 或 https:// 開頭",
+		"tokenUrlMustStartWithHttpOrHttps": "令牌 URL 必須以 http:// 或 https:// 開頭",
+		"registrationUrlMustStartWithHttpOrHttps": "註冊 URL 必須以 http:// 或 https:// 開頭",
+		"audienceIsRequired": "Audience 為必填項",
+		"authorizationServerUrlMustStartWithHttpOrHttps": "授權伺服器 URL 必須以 http:// 或 https:// 開頭",
+		"declareAtLeastOneHeaderNameUsersMustSupply": "請至少宣告一個使用者必須提供的請求頭名稱。",
+		"proxyUrlIsRequiredWhenProxyIsEnabled": "啟用代理時，代理 URL 為必填項",
+		"ruleNameIsRequired": "規則名稱為必填項",
+		"ruleNameMustBeLessThan255Characters": "規則名稱必須少於 255 個字元",
+		"descriptionMustBeLessThan1000Characters": "描述必須少於 1000 個字元",
+		"providerIsRequired": "供應商為必填項",
+		"priorityMustBe0OrGreater": "優先順序必須大於或等於 0",
+		"priorityMustBe1000OrLess": "優先順序必須小於或等於 1000",
+		"scopeIdIsRequiredWhenScopeIsNotGlobal": "範圍不是全域時，範圍 ID 為必填項",
+		"additionalBudgetMustBeGreaterThan0": "追加預算必須大於 0。",
+		"resetCyclesMustBeAPositiveWholeNumber": "重置週期數必須是正整數。",
+		"enterTheSetupTokenConfiguredForThisBifrostInstance": "請輸入為此 Bifrost 實例設定的安裝令牌",
+		"giveTheFeedAName": "請為此訂閱源命名",
+		"nameMustBe120CharactersOrFewer": "名稱不得超過 120 個字元",
+		"enterTheFeedUrl": "請輸入訂閱源 URL",
+		"urlIsTooLong": "URL 過長",
+		"urlMustStartWithHttpOrHttps": "URL 必須以 http:// 或 https:// 開頭",
+		"logoMustBeAnHttpSImageUrlOrAn": "標誌必須是 http(s) 圖片 URL 或已上傳的圖片",
+		"fieldRequired": "此欄位為必填項",
+		"validNumber": "必須是有效的數字",
+		"validText": "必須是有效的文字值",
+		"trueOrFalse": "必須是 true 或 false",
+		"expectedReceived": "預期為 {{expected}}，實際收到 {{received}}",
+		"minNumber": "不得小於 {{minimum}}",
+		"atLeastOneItem": "至少需要一項",
+		"maxNumber": "不得大於 {{maximum}}",
+		"maxChars": "不得超過 {{maximum}} 個字元",
+		"validUrl": "必須是有效的 URL",
+		"validEmail": "必須是有效的電子郵件",
+		"grpcHostPortFormat": "gRPC 的格式必須為 <host>:<port>（例如 {{example}}）",
+		"invalidInput": "輸入無效"
+	},
+	"permissionDenied": {
+		"create": "你沒有許可權建立{{entity}}。",
+		"edit": "你沒有許可權編輯{{entity}}。",
+		"delete": "你沒有許可權刪除{{entity}}。",
+		"rotate": "你沒有許可權輪換{{entity}}。"
+	},
+	"duration": {
+		"unknown": "未知",
+		"second_one": "{{count}} 秒",
+		"second_other": "{{count}} 秒",
+		"minute_one": "{{count}} 分鐘",
+		"minute_other": "{{count}} 分鐘",
+		"hour_one": "{{count}} 小時",
+		"hour_other": "{{count}} 小時",
+		"day_one": "{{count}} 天",
+		"day_other": "{{count}} 天",
+		"week_one": "{{count}} 週",
+		"week_other": "{{count}} 週",
+		"month_one": "{{count}} 個月",
+		"month_other": "{{count}} 個月",
+		"quarter_one": "{{count}} 個季度",
+		"quarter_other": "{{count}} 個季度",
+		"year_one": "{{count}} 年",
+		"year_other": "{{count}} 年"
+	}
 }

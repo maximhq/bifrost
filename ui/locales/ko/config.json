@@ -23,7 +23,8 @@
 		"brandingDescription": "대시보드와 로그인 화면 전체에서 Bifrost 로고를 자신의 로고로 바꾸세요. 이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. 사용 장면과 어떻게 도울 수 있을지 알고 싶습니다.",
 		"licenseTitle": "라이선스 관리 잠금 해제",
 		"apiKeysTitle": "범위 기반 API 키",
-		"apiKeysDescription": "범위 기반 API 키를 사용하여 세부적인 액세스 제어가 필요하십니까? 기업 고객은 다양한 서비스, 팀 또는 환경에 대한 특정 권한을 사용하여 여러 개의 API 키를 생성할 수 있어요."
+		"apiKeysDescription": "범위 기반 API 키를 사용하여 세부적인 액세스 제어가 필요하십니까? 기업 고객은 다양한 서비스, 팀 또는 환경에 대한 특정 권한을 사용하여 여러 개의 API 키를 생성할 수 있어요.",
+		"unknownOs": "알 수 없는 OS"
 	},
 	"clientSettings": {
 		"title": "클라이언트 설정",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>거부 목록:</span0> 거부 목록의 헤더는 항상 전달이 차단돼요.",
 		"wildcardRules": "<span0>와일드카드:</span0> 접두어를 일치시키려면 패턴 끝에 <code1>*</code1>를 사용하세요(예: <code2>anthropic-*</code2>는 <code3>anthropic-</code3>로 시작하는 모든 헤더와 일치합니다). 모든 헤더를 일치시키려면 <code4>*</code4>만 사용하세요.",
 		"headerNames": "허용 목록/거부 목록 항목은 <code1>x-bf-eh-</code1> 접두사가 없는 <span0></span0> 헤더 이름이어야 해요.",
-		"allowlistExample": "예: <code0>x-bf-eh-custom-id</code0>를 허용하거나 <code1>custom-id</code1>를 직접 허용하려면 허용 목록에 <code2>custom-id</code2>를 추가하세요."
+		"allowlistExample": "예: <code0>x-bf-eh-custom-id</code0>를 허용하거나 <code1>custom-id</code1>를 직접 허용하려면 허용 목록에 <code2>custom-id</code2>를 추가하세요.",
+		"extraFieldsPlacement": "추가 필드 위치",
+		"extraFieldsPlacementHelp": "추론 응답에서 Bifrost의 <b>extra_fields</b> 메타데이터를 담는 위치예요. <b>본문</b>은 extra_fields 객체를 JSON 응답에 유지해요. <b>헤더</b>는 본문과 모든 스트리밍 청크에서 이를 제거하고, 스칼라 필드를 <b>x-bifrost-*</b> 응답 헤더로 보내요.",
+		"extraFieldsPlacementDroppedNote": "헤더 모드에서는 다음 필드가 어디에도 전송되지 않고 삭제돼요: 원시 요청, 원시 응답, 라우팅 메타데이터, 가드레일 디버그, 파싱 오류, 그리고 오류 시 키 상태, 청구된 사용량, MCP 인증 세부 정보. 스트리밍 응답에는 첫 청크 이전에 알 수 있는 정보(라우팅, 폴백, 캐시 조회)만 포함되므로, 청크별 지연 시간, 청크 인덱스, 최종 합계도 삭제돼요.",
+		"extraFieldsBody": "본문",
+		"extraFieldsHeaders": "헤더",
+		"removeSecurityHeader_one": "보안 헤더 제거: {{headers}}",
+		"removeSecurityHeader_other": "보안 헤더 제거: {{headers}}"
 	},
 	"caching": {
 		"title": "로컬 캐시",
@@ -231,7 +239,11 @@
 		"deleteExpiredVirtualKeysHelp": "활성화되면 일일 정리 작업은 만료된 모든 가상 키를 삭제하고 제거된 키를 나열하는 알림을 게시합니다. 각 키는 만료 후 <b0>Delete</b0> 스위치에서 이를 재정의할 수 있습니다. 꺼짐으로 설정된 키는 유지되고 켜짐으로 설정된 키는 비활성화된 동안에도 삭제됩니다.",
 		"enforceVkObjectOwnership": "공급자 개체를 가상 키 생성으로 제한",
 		"enforceVkObjectOwnershipHelp": "활성화되면 가상 키로 생성된 파일, 배치, 비디오, 컨테이너, 캐시된 콘텐츠 및 라이브 세션은 동일한 키로만 읽거나 나열하거나 삭제할 수 있습니다. 다른 가상 키에는 찾을 수 없음 오류가 발생하며 목록에 표시되지 않습니다. 가상 키가 없는 요청은 영향을 받지 않습니다. 생성 키는 비활성화된 동안에도 기록되므로, 다시 활성화하면 생성 키를 기록할 수 없는 개체를 제외하고 그 동안 생성된 개체에도 적용됩니다.",
-		"proofRequired": "이 변경 사항을 확인하려면 현재 관리자 비밀번호를 입력하세요. 대시보드 보호가 꺼져 있으므로 이 세션은 로그인되지 않습니다. 비밀번호를 모르는 경우 대신 설정 토큰을 사용하세요."
+		"proofRequired": "이 변경 사항을 확인하려면 현재 관리자 비밀번호를 입력하세요. 대시보드 보호가 꺼져 있으므로 이 세션은 로그인되지 않습니다. 비밀번호를 모르는 경우 대신 설정 토큰을 사용하세요.",
+		"skipAccessProfileKeyCreation": "액세스 프로필용 사용자 가상 키 만들지 않기",
+		"skipAccessProfileKeyCreationHelp": "사용 설정하면 사용자의 첫 액세스 프로필이 해당 사용자의 가상 키를 만들지 않습니다. 사용자가 이미 소유한 키나 사용자를 위해 추가한 키는 프로필이 있는 동안 계속 프로필의 관리를 받습니다.",
+		"skipAccessProfileKeyDeletion": "액세스 프로필 제거 시 사용자 가상 키 삭제하지 않기",
+		"skipAccessProfileKeyDeletionHelp": "사용 설정하면 사용자의 마지막 액세스 프로필을 제거해도 가상 키는 일반 키로 유지되며, 프로필의 공급자나 액세스 권한은 적용되지 않습니다. 사용자를 삭제하면 키도 삭제됩니다."
 	},
 	"logging": {
 		"title": "로그 설정",
@@ -296,7 +308,11 @@
 		"convertUnsupportedParamsHelp": "모델에서 지원하지 않는 모델 매개변수 값을 변환해요.",
 		"azureDeepseek": "Azure Deepseek 모델에 채팅 완료 API 사용",
 		"azureDeepseekHelp": "Claude 코드에는 채팅 완료 API를 사용하고, Azure Deepseek 모델에는 Codex 등을 사용하세요.",
-		"toastSaved": "호환성 설정이 업데이트되었어요."
+		"toastSaved": "호환성 설정이 업데이트되었어요.",
+		"forceReasoningOnlyToResponses": "추론 전용 OpenAI 모델에 Responses API 사용",
+		"forceReasoningOnlyToResponsesHelp": "채팅 완성에서 도구 호출과 함께 추론할 수 없는 모델의 경우, 추론을 끄는 대신 채팅 완성 요청을 Responses API로 라우팅해요.",
+		"convertDecisionToResponses": "결정 모델이 아닌 모델에서 Decisions API 에뮬레이션",
+		"convertDecisionToResponsesHelp": "네이티브 decisions 엔드포인트가 없는 모델의 결정 요청에, 강제 함수 도구와 함께 Responses API로 모델에 프롬프트를 보내 응답해요. 끄면 해당 요청은 지원되지 않아 실패해요."
 	},
 	"featureFlags": {
 		"title": "기능 플래그",
@@ -387,7 +403,26 @@
 		"allowedRedirectUrisHelp": "원격 MCP 클라이언트가 사용할 수 있는 정확한 콜백 URI(예: <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. 모든 https 콜백을 허용하려면 <code1>*</code1>를 추가하세요. 부분 와일드카드는 지원되지 않습니다. 루프백 콜백 및 <code2>cursor://anysphere.cursor-mcp</code2>는 항상 허용됩니다. 이 목록을 변경하려면 대시보드 인증이 필요합니다.",
 		"allowedRedirectUrisPlaceholder": "콜백 URI 추가(Enter)",
 		"anyCallbackAllowed": "모든 콜백이 허용됩니다.",
-		"anyCallbackAllowedHelp": "모든 MCP 클라이언트는 모든 호스트의 콜백에 등록할 수 있으므로 동의 페이지는 공격자에게 인증 코드를 보내는 클라이언트에 대한 유일한 확인입니다. 정확한 콜백 URI를 나열하는 것이 좋습니다."
+		"anyCallbackAllowedHelp": "모든 MCP 클라이언트는 모든 호스트의 콜백에 등록할 수 있으므로 동의 페이지는 공격자에게 인증 코드를 보내는 클라이언트에 대한 유일한 확인입니다. 정확한 콜백 URI를 나열하는 것이 좋습니다.",
+		"limitMaxSourceBytes": "최대 소스 크기(바이트)",
+		"limitMaxSourceBytesDesc": "한 번의 실행에서 제출할 수 있는 코드의 최대 크기예요.",
+		"limitMaxSteps": "최대 연산 단계 수",
+		"limitMaxStepsDesc": "내장 함수 내부 작업을 포함한 실행당 인터프리터 단계 수예요.",
+		"limitMaxMemoryBytes": "최대 메모리(바이트)",
+		"limitMaxMemoryBytesDesc": "실행당 예상 할당 예산이에요. 동시에 실행되는 각 실행에는 별도의 예산이 주어져요.",
+		"limitMaxLogBytes": "최대 로그 출력(바이트)",
+		"limitMaxLogBytesDesc": "줄바꿈을 포함한 실행당 print 및 도구 로그 출력 크기예요.",
+		"limitMaxToolCalls": "최대 도구 호출 수",
+		"limitMaxToolCallsDesc": "실행당 중첩된 MCP 도구 호출 수예요.",
+		"limitMaxValueBytes": "최대 값 크기(바이트)",
+		"limitMaxValueBytesDesc": "각 도구 페이로드와 변환된 결과의 크기 예산이에요. 최소 {{min}} 이상이어야 해요.",
+		"limitMaxNestingDepth": "최대 중첩 깊이",
+		"limitMaxNestingDepthDesc": "도구 경계를 넘나드는 값의 중첩 깊이예요. 최대 {{max}}까지 가능해요.",
+		"limitNegative": "{{label}}은(는) 음수일 수 없어요.",
+		"limitValueBytesMin": "최대 값 크기는 {{min}}바이트 이상이어야 해요.",
+		"limitNestingMax": "최대 중첩 깊이는 {{max}} 이하여야 해요.",
+		"codeModeLimitsTitle": "코드 모드 제한",
+		"codeModeLimitsDescription": "각 코드 실행에 적용되는 제한이에요. 필드를 비워 두면 기본값을 사용해요. 동시에 실행되는 횟수에는 제한이 없어요."
 	},
 	"modelSettings": {
 		"title": "모델 설정",
@@ -733,7 +768,11 @@
 		"intoPath": "{{path}}/로",
 		"intoRoot": "루트에",
 		"previewAfterSaving": "저장 후 미리보기가 가능해요.",
-		"externalUrlRequired": "마켓플레이스 등록을 활성화하려면 <settingsLink>Skills 설정</settingsLink>에서 외부 클라이언트 URL을 설정하세요."
+		"externalUrlRequired": "마켓플레이스 등록을 활성화하려면 <settingsLink>Skills 설정</settingsLink>에서 외부 클라이언트 URL을 설정하세요.",
+		"showLess": "간단히 보기",
+		"showMore": "더 보기",
+		"skillNotFound": "스킬을 찾을 수 없어요",
+		"backToList": "목록으로 돌아가기"
 	},
 	"promptRepo": {
 		"loadFailed": "프롬프트 저장소를 로드하지 못했어요.",
@@ -933,7 +972,19 @@
 		"governancePlugin": "거버넌스 플러그인",
 		"governancePluginDesc": "완전한 액세스 제어, 예산 및 속도 제한 가이드",
 		"governancePluginContent": "안전한 AI 인프라를 위한 마스터 가상 키, 계층적 예산, 속도 제한 및 사용 추적.",
-		"viewGovernanceGuide": "거버넌스 가이드 보기"
+		"viewGovernanceGuide": "거버넌스 가이드 보기",
+		"heading": "Bifrost 스택 성능 높이기",
+		"viewFullDocumentation": "전체 문서 보기",
+		"quickStartGuide": "빠른 시작 가이드",
+		"readMore": "더 읽어보세요",
+		"items": {
+			"quickStart": ["HTTP 전송 설정", "Go 패키지 사용법", "Docker 가이드"],
+			"architecture": ["시스템 개요", "요청 흐름", "동시성 모델", "설계 결정"],
+			"usageGuides": ["공급자 설정", "키 관리", "오류 처리", "메모리 및 네트워킹"],
+			"contributing": ["기여 가이드", "공급자 추가", "플러그인 개발", "코드 규칙"],
+			"integrationExamples": ["OpenAI 통합", "Anthropic 통합", "GenAI 통합", "마이그레이션 가이드"],
+			"benchmarks": ["5K RPS 테스트 결과", "성능 지표", "구성 튜닝", "하드웨어 비교"]
+		}
 	},
 	"warp": {
 		"saved": "Warp 설정을 저장했습니다.",
@@ -1036,7 +1087,10 @@
 			"searchLimit": "검색 한도는 1에서 25 사이여야 합니다.",
 			"retentionRequired": "값이 필요합니다",
 			"retentionWhole": "일수는 정수여야 합니다",
-			"retentionMin": "0일 이상이어야 합니다(0은 기본값 유지)"
+			"retentionMin": "0일 이상이어야 합니다(0은 기본값 유지)",
+			"modelRequired": "Warp를 사용하려면 공급자와 모델을 선택하세요.",
+			"modelOrRemove": "공급자와 모델을 선택하거나 이 모델을 제거하세요.",
+			"modelDuplicate": "이 공급자와 모델은 이미 목록에 있어요."
 		},
 		"models": "모델",
 		"modelsHelp": "Warp 모델은 추론하고 답변을 작성합니다. 누군가 Warp 패널에서 다른 항목을 선택하지 않는 한 기본 응답이 적용됩니다. 유능한 모델은 여기서 그만한 가치를 발휘합니다.",
@@ -1046,6 +1100,67 @@
 		"defaultModel": "기본 모델",
 		"modelNumber": "모델 {{number}}",
 		"makeDefault": "기본값으로 설정",
-		"removeModel": "모델 {{number}} 제거"
+		"removeModel": "모델 {{number}} 제거",
+		"topics": {
+			"badRange": "주제에 사용할 유효한 시간 범위를 선택하세요.",
+			"started": "주제 시드 생성이 시작되었습니다.",
+			"cancelRequested": "주제 클러스터링 취소를 요청했습니다.",
+			"title": "주제 클러스터",
+			"infoLabel": "주제 작동 방식",
+			"infoIntro": "주제는 요청 내용을 기준으로 요청을 묶어 Warp가 사람들이 무엇을 묻는지 파악할 수 있게 합니다.",
+			"infoSeed": "<b0>1. 한 번 시드 생성.</b0> 한 번 실행하면 지정한 기간의 인덱싱된 요청을 클러스터로 묶고 각 그룹에 이름을 붙입니다. 시드 생성은 임베딩 모델마다 한 번 수행합니다.",
+			"infoFiled": "<b0>2. 들어오는 요청 분류.</b0> 그 이후 인덱싱되는 모든 요청은 가장 가까운 주제에 분류됩니다.",
+			"infoFound": "<b0>3. 새 주제 찾기.</b0> 어떤 주제와도 일치하지 않는 요청은 대기합니다. 새 주제 기준에 도달하면 매시간 실행되는 작업이 요청을 새 주제로 묶거나 기존 주제에 합칩니다.",
+			"infoTidy": "<b0>4. 주제 정리.</b0> 같은 작업에서 30일 동안 요청이 없던 주제를 종료하고, 의미가 같아진 주제를 병합합니다.",
+			"infoReseed": "임베딩 모델을 변경하면 처음부터 다시 시작합니다. 새 모델의 주제를 다시 시드 생성합니다.",
+			"description": "인덱싱된 요청 기간을 기준으로 주제를 한 번 시드 생성하세요. 이후 새 요청이 인덱싱되면 추가 실행 없이 주제가 자동으로 최신 상태를 유지합니다.",
+			"seeded": "이 임베딩 모델의 주제가 생성되어 자동으로 최신 상태를 유지합니다. 새 요청은 인덱싱될 때 분류되고, 어떤 주제와도 일치하지 않는 요청에서 새 주제를 찾습니다.",
+			"cancel": "클러스터링 취소",
+			"seed": "주제 시드 생성",
+			"saveBeforeSeed": "주제 시드 생성 전에 구성 변경 사항을 저장하세요.",
+			"needsBackfill": "이 임베딩 모델에는 아직 인덱싱된 항목이 없습니다. 먼저 위에서 기간을 백필한 다음 같은 기간의 주제를 시드 생성하세요.",
+			"activeTopics_one": "활성 주제 {{count}}개",
+			"activeTopics_other": "활성 주제 {{count}}개",
+			"inThemes_one": "테마 {{count}}개에 포함",
+			"inThemes_other": "테마 {{count}}개에 포함",
+			"pooled_one": "주제를 기다리는 요청 {{count}}개",
+			"pooled_other": "주제를 기다리는 요청 {{count}}개",
+			"unmatchedLastDay_one": "지난 하루 요청 {{count}}개 중 {{percent}}%가 어떤 주제와도 일치하지 않았습니다",
+			"unmatchedLastDay_other": "지난 하루 요청 {{count}}개 중 {{percent}}%가 어떤 주제와도 일치하지 않았습니다",
+			"nothingFiled": "지난 하루 동안 분류된 항목 없음",
+			"requestsRead_one": "요청 {{count}}개 읽음",
+			"requestsRead_other": "요청 {{count}}개 읽음",
+			"topicsWritten_one": "주제 {{count}}개 작성됨",
+			"topicsWritten_other": "주제 {{count}}개 작성됨",
+			"themesCount_one": "테마 {{count}}개",
+			"themesCount_other": "테마 {{count}}개",
+			"labelsFellBack_one": "대체된 라벨 {{count}}개",
+			"labelsFellBack_other": "대체된 라벨 {{count}}개",
+			"statusFailed": "주제 클러스터링 상태를 읽지 못했습니다. 실행 중인 작업이 표시되지 않을 수 있습니다.",
+			"thresholdLabel": "새 주제 기준",
+			"thresholdHint": "Warp가 요청을 새 주제로 묶기 전에 어떤 주제와도 일치하지 않는 요청이 몇 개까지 쌓여야 하는지 설정합니다. 매시간 확인합니다. 값을 낮추면 더 적은 예시로 새 주제를 빨리 찾고, 높이면 패턴이 더 뚜렷해질 때까지 기다립니다. {{min}}~{{max}}.",
+			"thresholdError": "{{min}}~{{max}} 사이의 정수를 입력해야 합니다"
+		}
+	},
+	"agentGateway": {
+		"title": "Agent Gateway 설정",
+		"description": "Agent Gateway(A2A) 설정을 구성해요.",
+		"toastSaved": "Agent Gateway 설정이 업데이트되었어요.",
+		"loadFailed": "Agent Gateway 설정을 불러오지 못했어요.",
+		"externalClientUrl": "외부 클라이언트 URL",
+		"externalClientUrlHelp": "제공되는 에이전트 카드와 푸시 알림 콜백 URL에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 모든 에이전트 프로토콜 엔드포인트가 비활성화돼요. 에이전트 관리는 계속 사용할 수 있어요. 환경 변수 구문을 지원해요(예: <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"privateAllowlist": "사설 네트워크 허용 목록",
+		"privateAllowlistHelp": "Agent Gateway의 검색, OAuth, 런타임 요청이 사설 또는 루프백 주소로 확인될 때 접근할 수 있는 호스트, IP 주소 또는 CIDR 범위예요. 스킴이나 포트는 포함하지 마세요. 링크 로컬 및 클라우드 메타데이터 주소는 항상 차단돼요.",
+		"privateAllowlistPlaceholder": "호스트, IP 또는 CIDR 추가(Enter 또는 쉼표)",
+		"captureRaw": "원시 요청 및 응답 캡처",
+		"captureRawHelp": "원시 요청 및 응답 페이로드를 로그 레코드에 저장해요. gRPC는 바이너리 protobuf 메시지를 사용하므로 원시 캡처가 비활성화돼요. 크기가 제한된 캡처는 메시지 중간에서 잘릴 수 있어 안정적으로 디코딩하거나 검사할 수 없어요."
+	},
+	"skillsSettings": {
+		"description": "Skills Repository 마켓플레이스 제공을 구성해요.",
+		"toastSaved": "스킬 설정이 업데이트되었어요.",
+		"loadFailed": "스킬 설정을 불러오지 못했어요.",
+		"retry": "다시 시도",
+		"externalClientUrl": "외부 클라이언트 URL",
+		"externalClientUrlHelp": "Claude Code 및 Codex 마켓플레이스에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 마켓플레이스 제공과 등록이 비활성화돼요. 스킬 관리와 다운로드는 계속 사용할 수 있어요. 환경 변수와 Vault 참조를 지원해요."
 	}
 }

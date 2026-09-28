@@ -360,7 +360,11 @@
 			"followUp": "후속 질문을 입력하세요. 이 답변이 끝나면 전송됩니다...",
 			"placeholder": "Bifrost 데이터에 대해 질문...",
 			"stop": "중지",
-			"send": "전송"
+			"send": "전송",
+			"commandClear": "새 대화 시작",
+			"settings": "Warp 설정",
+			"switchModel": "모델 전환",
+			"defaultModel": "기본값"
 		},
 		"question": {
 			"label": "질문",
@@ -449,16 +453,17 @@
 			"render_chart": {
 				"running": "차트 그리기",
 				"done": "차트를 그렸습니다"
+			},
+			"list_topics": {
+				"running": "주제 목록을 불러오는 중",
+				"done": "주제 목록을 불러왔습니다"
 			}
 		},
 		"errors": {
 			"not_configured": {
 				"summary": "Warp가 아직 구성되지 않았습니다.",
 				"cause": "프로바이더와 모델이 설정되지 않았거나, 설정에서 Warp가 꺼져 있습니다.",
-				"suggestions": [
-					"Warp 설정을 열고 프로바이더와 모델을 선택하세요.",
-					"Warp 사용이 켜져 있는지 확인하세요."
-				]
+				"suggestions": ["Warp 설정을 열고 프로바이더와 모델을 선택하세요.", "Warp 사용이 켜져 있는지 확인하세요."]
 			},
 			"max_iterations": {
 				"summary": "Warp가 답변에 도달하지 못했습니다.",
@@ -491,10 +496,7 @@
 			"tool_error": {
 				"summary": "쿼리가 실패했습니다.",
 				"cause": "Warp의 데이터 쿼리 중 하나가 오류를 반환했고, 남은 단계 안에서 복구하지 못했습니다.",
-				"suggestions": [
-					"더 좁은 시간 범위를 시도하세요.",
-					"지정한 모델, 키 또는 팀이 실제로 존재하는지 확인하세요."
-				]
+				"suggestions": ["더 좁은 시간 범위를 시도하세요.", "지정한 모델, 키 또는 팀이 실제로 존재하는지 확인하세요."]
 			},
 			"cancelled": {
 				"summary": "중지됨.",
@@ -504,10 +506,7 @@
 			"unknown": {
 				"summary": "문제가 발생했습니다.",
 				"cause": "Warp가 인식되지 않는 코드로 오류를 반환했습니다.",
-				"suggestions": [
-					"질문을 다시 시도하세요.",
-					"계속되면 아래 세부 정보와 함께 보고하세요."
-				]
+				"suggestions": ["질문을 다시 시도하세요.", "계속되면 아래 세부 정보와 함께 보고하세요."]
 			},
 			"access_denied": {
 				"summary": "계정에 Warp 모델을 사용할 권한이 없습니다.",
@@ -538,11 +537,56 @@
 			"model_blocked": {
 				"summary": "계정에서 Warp 모델을 사용할 수 없습니다.",
 				"cause": "이 배포의 거버넌스 규칙에서 계정에 대해 Warp가 사용하도록 설정된 모델 또는 공급자를 차단해 공급자에 도달하기 전에 요청이 거부되었습니다.",
-				"suggestions": [
-					"관리자에게 계정에서 Warp 모델을 허용해 달라고 요청하세요.",
-					"또는 Warp 설정에서 계정에 허용된 모델을 선택하세요."
-				]
+				"suggestions": ["관리자에게 계정에서 Warp 모델을 허용해 달라고 요청하세요.", "또는 Warp 설정에서 계정에 허용된 모델을 선택하세요."]
 			}
+		},
+		"dock": {
+			"resize": "Warp 패널 크기 조정",
+			"description": "이 배포의 로그, 사용량, 지출에 대해 Warp에 질문하세요."
+		},
+		"chart": {
+			"openInLogs": "로그에서 열기",
+			"empty": "이 기간에는 데이터가 없어요."
 		}
+	},
+	"rssSources": {
+		"newsOn": "뉴스를 켰어요",
+		"newsOff": "이 게이트웨이의 뉴스를 껐어요",
+		"updateSettingsFailed": "뉴스 설정을 업데이트하지 못했어요",
+		"updateFeedFailed": "{{name}}을(를) 업데이트하지 못했어요",
+		"updatedLogo": "{{name}}의 로고를 업데이트했어요",
+		"removedLogo": "{{name}}에서 로고를 제거했어요",
+		"updateLogoFailed": "{{name}}의 로고를 업데이트하지 못했어요",
+		"removed": "{{name}}을(를) 제거했어요",
+		"removeFailed": "{{name}}을(를) 제거하지 못했어요",
+		"title": "뉴스 소스",
+		"description": "이 게이트웨이를 사용하는 모든 사용자의 알림 트레이 뉴스 탭에 표시할 RSS 피드를 선택하세요.",
+		"showNews": "알림 트레이에 뉴스 표시",
+		"showNewsHelp": "이 기능을 끄면 이 게이트웨이를 사용하는 모든 사용자에게서 뉴스 탭이 숨겨지고 뉴스 항목 가져오기도 중단돼요. 아래의 소스는 그대로 유지돼요.",
+		"settingLoadFailed": "이 설정을 불러오지 못했어요.",
+		"tryAgain": "다시 시도",
+		"loading": "소스 불러오는 중",
+		"loadFailed": "소스를 불러올 수 없어요.",
+		"builtinFeeds": "기본 제공 피드",
+		"customFeeds": "커스텀 피드",
+		"noCustomFeeds": "아직 커스텀 피드가 없어요. 아래에 RSS 또는 Atom URL을 추가하세요.",
+		"removeAria": "{{name}} 제거",
+		"disableAria": "{{name}} 비활성화",
+		"enableAria": "{{name}} 활성화",
+		"changeLogoAria": "{{name}}의 로고 변경",
+		"uploadLogo": "로고 업로드",
+		"removeLogo": "로고 제거",
+		"addedFeed": "{{name}}을(를) 추가했어요",
+		"addFeedTitle": "피드 추가",
+		"name": "이름",
+		"namePlaceholder": "Bifrost 릴리스",
+		"feedUrl": "피드 URL",
+		"logo": "로고",
+		"optional": "(선택 사항)",
+		"logoPreviewName": "로고 미리보기",
+		"uploadedImage": "업로드한 이미지",
+		"upload": "업로드",
+		"logoHelp": "이미지 URL 또는 96KB 이하의 PNG, JPEG, GIF, WebP, SVG, ICO 파일이에요. 기본값은 사이트의 파비콘이에요.",
+		"addFeed": "피드 추가"
 	}
 }

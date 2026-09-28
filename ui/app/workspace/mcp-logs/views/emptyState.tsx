@@ -48,14 +48,16 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 			<div className="absolute top-4 right-4 z-10 flex items-center gap-2">
 				{showLanguageSelect && onLanguageChange && (
 					<Select value={language} onValueChange={onLanguageChange}>
-						<SelectTrigger className="h-8 w-fit text-xs" aria-label="Code language">
+						<SelectTrigger className="h-8 w-fit text-xs" aria-label={t("logs.empty.codeLanguage")}>
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem className="text-xs" value="python">
+								{/* i18n-ignore: programming language name */}
 								Python
 							</SelectItem>
 							<SelectItem className="text-xs" value="typescript">
+								{/* i18n-ignore: programming language name */}
 								TypeScript
 							</SelectItem>
 						</SelectContent>

@@ -360,7 +360,11 @@
 			"followUp": "フォローアップを入力。この回答が終わると送信されます...",
 			"placeholder": "Bifrost のデータについて質問...",
 			"stop": "停止",
-			"send": "送信"
+			"send": "送信",
+			"commandClear": "新しい会話を開始",
+			"settings": "Warp 設定",
+			"switchModel": "モデルを切り替え",
+			"defaultModel": "デフォルト"
 		},
 		"question": {
 			"label": "質問",
@@ -449,6 +453,10 @@
 			"render_chart": {
 				"running": "チャートを描画中",
 				"done": "チャートを描画しました"
+			},
+			"list_topics": {
+				"running": "トピックを一覧表示中",
+				"done": "トピックを一覧表示しました"
 			}
 		},
 		"errors": {
@@ -491,10 +499,7 @@
 			"tool_error": {
 				"summary": "クエリが失敗しました。",
 				"cause": "Warp のデータクエリの一つがエラーを返し、残りのステップ内で回復できませんでした。",
-				"suggestions": [
-					"より狭い時間範囲を試してください。",
-					"指定したモデル、キー、チームが実際に存在するか確認してください。"
-				]
+				"suggestions": ["より狭い時間範囲を試してください。", "指定したモデル、キー、チームが実際に存在するか確認してください。"]
 			},
 			"cancelled": {
 				"summary": "停止しました。",
@@ -504,10 +509,7 @@
 			"unknown": {
 				"summary": "問題が発生しました。",
 				"cause": "Warp が認識されないコードでエラーを返しました。",
-				"suggestions": [
-					"質問を再度試してください。",
-					"繰り返す場合は、下記の詳細とともに報告してください。"
-				]
+				"suggestions": ["質問を再度試してください。", "繰り返す場合は、下記の詳細とともに報告してください。"]
 			},
 			"access_denied": {
 				"summary": "アカウントには Warp のモデルへのアクセス権がありません。",
@@ -543,6 +545,54 @@
 					"または、Warp の設定でアカウントから使用できるモデルを選択してください。"
 				]
 			}
+		},
+		"dock": {
+			"resize": "Warp パネルのサイズを変更",
+			"description": "このデプロイメントのログ、使用量、支出について Warp に質問できます。"
+		},
+		"chart": {
+			"openInLogs": "ログで開く",
+			"empty": "この期間のデータはありません。"
 		}
+	},
+	"rssSources": {
+		"newsOn": "ニュースをオンにしました",
+		"newsOff": "このゲートウェイのニュースをオフにしました",
+		"updateSettingsFailed": "ニュース設定を更新できませんでした",
+		"updateFeedFailed": "{{name}}を更新できませんでした",
+		"updatedLogo": "{{name}}のロゴを更新しました",
+		"removedLogo": "{{name}}のロゴを削除しました",
+		"updateLogoFailed": "{{name}}のロゴを更新できませんでした",
+		"removed": "{{name}}を削除しました",
+		"removeFailed": "{{name}}を削除できませんでした",
+		"title": "ニュースソース",
+		"description": "このゲートウェイのすべてのユーザーに対し、通知トレイの「ニュース」タブに表示する RSS フィードを選択します。",
+		"showNews": "通知トレイにニュースを表示",
+		"showNewsHelp": "オフにすると、このゲートウェイのすべてのユーザーで「ニュース」タブが非表示になり、ニュースの取得も停止します。下のソースは保持されます。",
+		"settingLoadFailed": "この設定を読み込めませんでした。",
+		"tryAgain": "再試行",
+		"loading": "ソースを読み込み中",
+		"loadFailed": "ソースを読み込めませんでした。",
+		"builtinFeeds": "組み込みフィード",
+		"customFeeds": "カスタムフィード",
+		"noCustomFeeds": "カスタムフィードはまだありません。下で RSS または Atom の URL を追加してください。",
+		"removeAria": "{{name}}を削除",
+		"disableAria": "{{name}}を無効にする",
+		"enableAria": "{{name}}を有効にする",
+		"changeLogoAria": "{{name}}のロゴを変更",
+		"uploadLogo": "ロゴをアップロード",
+		"removeLogo": "ロゴを削除",
+		"addedFeed": "{{name}}を追加しました",
+		"addFeedTitle": "フィードを追加",
+		"name": "名前",
+		"namePlaceholder": "Bifrost リリース",
+		"feedUrl": "フィード URL",
+		"logo": "ロゴ",
+		"optional": "(任意)",
+		"logoPreviewName": "ロゴのプレビュー",
+		"uploadedImage": "アップロードした画像",
+		"upload": "アップロード",
+		"logoHelp": "画像の URL、または 96 KB までの PNG、JPEG、GIF、WebP、SVG、ICO。デフォルトはサイトのファビコンです。",
+		"addFeed": "フィードを追加"
 	}
 }

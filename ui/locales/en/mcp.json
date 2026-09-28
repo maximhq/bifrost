@@ -415,7 +415,8 @@
 			"cancelReplace": "Cancel replace",
 			"maxInstructionLength": "Max Instruction Length (bytes)",
 			"maxInstructionLengthTooltip": "Cap on the instructions forwarded from this server. Leave empty or set to 0 to use the global setting. The combined total across all servers is still bounded by the global total.",
-			"toolsReplacementNote": "A replacement document is open on the General tab, and its operation list decides which tools are saved. Save or cancel the replacement to edit tools here."
+			"toolsReplacementNote": "A replacement document is open on the General tab, and its operation list decides which tools are saved. Save or cancel the replacement to edit tools here.",
+			"replaceLoadStoredFailed": "Could not load the stored document: {{message}}"
 		},
 		"tls": {
 			"skipVerify": "Skip TLS verification",
@@ -879,7 +880,9 @@
 			"users": "Users",
 			"searchVirtualKeys": "Search virtual keys",
 			"searchUsers": "Search by name or email"
-		}
+		},
+		"grantActions": "Grant actions",
+		"viewAuthSessions": "View auth sessions"
 	},
 	"toolGroups": {
 		"title": "MCP Tool Groups",
@@ -987,7 +990,17 @@
 			"assign": "Assign virtual key",
 			"loading": "Loading virtual keys…",
 			"empty": "No virtual keys assigned yet. Assign one so callers can reach this Virtual MCP.",
-			"unassignAria": "Unassign virtual key"
+			"unassignAria": "Unassign virtual key",
+			"ownerLookupFailed": "Could not check who owns \"{{name}}\", so it was not assigned. Try again.",
+			"assignOwnedTitle": "Assign virtual key?",
+			"assignOwnedDescription": "<strong>{{name}}</strong> belongs to the {{kind}} <strong>{{owner}}</strong>. Assigning it lets that {{kind}}'s key reach this Virtual MCP.",
+			"assignOwnedConfirm": "Assign",
+			"ownerKind": {
+				"team": "team",
+				"businessUnit": "business unit",
+				"customer": "customer",
+				"user": "user"
+			}
 		},
 		"add": "Add Virtual MCP"
 	},
@@ -1026,5 +1039,100 @@
 		"scopeUser": "User",
 		"scopeGlobal": "Global",
 		"scopeWorkspace": "Workspace"
+	},
+	"headersForm": {
+		"staticAdminHeaders": "Static admin headers",
+		"staticAdminHeadersHelp": "These headers are set by the admin on the MCP client and accompany every request alongside your submitted values. You can't edit them here.",
+		"noKeys": "No header keys have been declared on this MCP client.",
+		"previouslySubmitted": "Previously submitted",
+		"overwritePlaceholder": "•••••• (enter new value to overwrite)",
+		"valuePlaceholder": "Value for {{key}}",
+		"hideValue": "Hide value",
+		"showValue": "Show value",
+		"test": "Test"
+	},
+	"openapi": {
+		"credentials": {
+			"apiKey": "API key",
+			"apiKeyLabel": "{{name}} · {{param}} ({{where}})",
+			"valuePlaceholder": "Value or env.{{env}}",
+			"basicLabel": "{{name}} · Basic authentication",
+			"username": "Username",
+			"password": "Password",
+			"passwordPlaceholder": "Password or env.{{env}}_PASSWORD",
+			"bearerLabel": "{{name}} · Bearer token",
+			"bearerToken": "Bearer token",
+			"tokenPlaceholder": "Token or env.{{env}}"
+		},
+		"summary": {
+			"inlineSpec": "inline spec",
+			"operationCount_one": "{{count}} operation",
+			"operationCount_other": "{{count}} operations"
+		},
+		"source": {
+			"fileTooLarge": "The file exceeds the {{size}} limit for OpenAPI documents.",
+			"fileReadFailed": "The file could not be read: {{message}}",
+			"fileEmpty": "The file is empty.",
+			"fetchSpec": "Fetch spec",
+			"parseAgain": "Parse again",
+			"tabPaste": "Paste",
+			"tabUpload": "Upload",
+			"pasteHelp": "Paste the OpenAPI or Swagger document as JSON or YAML (2.0, 3.0, 3.1 and 3.2 are supported).",
+			"specUrl": "Spec URL",
+			"urlHelp": "Bifrost fetches the document once and stores it with the server; the URL is kept as its source.",
+			"chooseFile": "Choose file",
+			"uploadHelp": "JSON or YAML, up to {{size}}. The file is read in your browser and stored with the server.",
+			"parsing": "Parsing the document…",
+			"staleNotice": "The URL or server name changed since the document was fetched. Fetch it again to refresh the operations below."
+		},
+		"preview": {
+			"baseUrlInvalid": "Base URL must be an absolute http:// or https:// URL",
+			"untitled": "Untitled API",
+			"toolCount_one": "{{count}} tool",
+			"toolCount_other": "{{count}} tools",
+			"baseUrl": "Base URL",
+			"selectServer": "Select the upstream server",
+			"custom": "Custom…",
+			"operationServersNote": "Every operation declares its own server, so calls go there. Set a base URL only to override them all.",
+			"noServerNote": "The document declares no absolute server URL, so the upstream must be given here.",
+			"authTitle": "API authentication",
+			"authDescPerUser": "Each caller supplies these through the per-user header named for each scheme, forwarded to the API as is. Schemes sent in the query or a cookie keep a stored value.",
+			"authDescStored": "Credentials for the security schemes the document declares. They are stored encrypted and applied to every call; env.VAR references are supported.",
+			"noSecuritySchemes": "This document declares no security schemes. Add static headers below if the API still needs a credential.",
+			"unsupportedBadge": "unsupported",
+			"perUserHeaderAria": "{{name}} per-user header",
+			"perUserHeaderHelpHttp": "Header each caller supplies, forwarded as is; its value is the full credential, e.g. \"{{example}}\". It is added to Required Headers.",
+			"perUserHeaderHelp": "Header each caller supplies, forwarded as is. It is added to Required Headers.",
+			"credentialAria": "{{scheme}} {{field}}",
+			"operationsTitle": "Operations ({{supported}} of {{total}} supported)",
+			"operationsDesc": "Ticked operations become tools of this server. Unsupported ones are listed with the reason.",
+			"selectedCount": "{{selected}} of {{total}} selected",
+			"selectAllAria": "Select all operations",
+			"searchPlaceholder": "Search operations…",
+			"noMatch": "No operation matches the search.",
+			"includeAria": "Include {{name}}",
+			"unsupportedAria": "Unsupported {{name}}",
+			"deprecatedBadge": "deprecated"
+		}
+	},
+	"oauthCallback": {
+		"successTitle": "Authorization complete",
+		"failedTitle": "Authorization failed",
+		"successDescription": "The MCP server is connected. You can close this tab and return to the MCP registry.",
+		"failedDescription": "The MCP server could not be authorized. Return to the MCP registry and try again.",
+		"backToRegistry": "Back to MCP registry",
+		"closeTab": "You can close this tab.",
+		"closeWindow": "This window can be closed."
+	},
+	"selectors": {
+		"searchTools": "Search and select tools...",
+		"searchServers": "Search and select MCP servers...",
+		"tool": "Tool",
+		"server": "Server",
+		"noToolsSelected": "No tools selected. Use the search above to add tools.",
+		"noResults": "No results found",
+		"noServersSelected": "No servers selected. Use the search above to add MCP servers.",
+		"noServersFound": "No MCP servers found",
+		"openServerDetails": "Open server details in new tab"
 	}
 }

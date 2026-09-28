@@ -51,7 +51,15 @@
 			"updateAction": "Kunde aktualisieren",
 			"createAction": "Kunde erstellen",
 			"calendarAlignHelp": "Das Aktivieren der Kalenderausrichtung setzt die Budgetnutzung für diesen Kunden auf <bold0>$0.00</bold0> und die Token-/Anfrage-Ratenlimit-Zähler auf <bold1>0</bold1> zurück. Anschließend wird jedes Rücksetzdatum an den Beginn des aktuellen Zeitraums angepasst (z. B. Beginn des Tages, der Woche, des Monats oder des Jahres). Das Zurücksetzen der Nutzung kann nicht rückgängig gemacht werden, die Kalenderausrichtung kann jedoch später deaktiviert werden. Dies wird wirksam, sobald du speicherst."
-		}
+		},
+		"detail": {
+			"title": "Kundendetails",
+			"description": "Nutzungsdetails für diesen Kunden.",
+			"info": "Info",
+			"name": "Name",
+			"noBudgets": "Keine Budgets konfiguriert"
+		},
+		"actionsAria": "Kundenaktionen {{name}}"
 	},
 	"teams": {
 		"title": "Teams",
@@ -98,10 +106,13 @@
 			"updateAction": "Team aktualisieren",
 			"createAction": "Team erstellen",
 			"calendarAlignHelp": "Wenn du die Kalenderanpassung aktivierst, wird die Budgetnutzung für dieses Team auf <bold0>0,00 $</bold0> und die Zähler für Token-/Anfrage-Ratenbegrenzungen auf <bold1>0</bold1> zurückgesetzt. Anschließend wird jedes Rücksetzdatum an den Beginn des aktuellen Zeitraums angepasst (z. B. Beginn des Tages, der Woche, des Monats oder des Jahres). Das Zurücksetzen der Nutzung kann nicht rückgängig gemacht werden, die Kalenderanpassung kann jedoch später wieder deaktiviert werden. Dies wird beim Speichern wirksam."
-		}
+		},
+		"actionsAria": "Team-Aktionen für {{name}}"
 	},
 	"virtualKeys": {
-		"loadFailed": "Virtuelle Schlüssel konnten nicht geladen werden: {{message}}"
+		"loadFailed": "Virtuelle Schlüssel konnten nicht geladen werden: {{message}}",
+		"metadataFilterInvalid": "Der Metadaten-Filterschlüssel in diesem Link ist ungültig und wird daher nicht angewendet. Schlüssel bestehen aus 1–256 Buchstaben, Ziffern, „.“, „_“ oder „-“.",
+		"clearFilter": "Filter zurücksetzen"
 	},
 	"plugins": {
 		"title": "Erweiterungen",
@@ -353,7 +364,26 @@
 			"filterEvent": "Ereignis",
 			"filterResponseStatus": "Antwortstatus",
 			"filterWebhooks": "Webhooks",
-			"searchWebhooks": "Webhooks durchsuchen..."
+			"searchWebhooks": "Webhooks durchsuchen...",
+			"table": {
+				"waiting": "Warten auf neue Zustellungen...",
+				"empty": "Keine Zustellungen gefunden. Passe deine Filter und/oder den Zeitraum an.",
+				"range": "{{from}}-{{to}} von {{total}} Zustellungen"
+			},
+			"header": {
+				"searchByDeliveryId": "Nach Zustellungs-ID suchen",
+				"switchLookup": "Zwischen Suche nach Anfrage-ID und Zustellungs-ID wechseln"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "Zustellungs-ID",
+				"actions": "Aktionen",
+				"collapseSends": "Sendungen einklappen",
+				"expandSends": "Sendungen aufklappen",
+				"noPermission": "Du hast keine Berechtigung, erneut zuzustellen",
+				"openInLogs": "{{id}} — in Logs öffnen"
+			},
+			"copyRequestId": "Anfrage-ID {{id}} kopieren"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "Nutzer-Rankings für bessere Übersicht freischalten"
 	},
 	"promptDeployments": {
-		"unlockTitle": "Prompt-Deployments für bessere Prompt-Versionierung und A/B-Tests freischalten."
+		"unlockTitle": "Prompt-Deployments für bessere Prompt-Versionierung und A/B-Tests freischalten.",
+		"accordionTitle": "Deployments"
 	},
 	"connectorsUnlock": {
 		"splunk": "Native Splunk-Datenerfassung für bessere Observability freischalten",
@@ -389,7 +420,8 @@
 		"datadog": "Native Datadog-Datenerfassung für bessere Observability freischalten",
 		"bigquery": "Native BigQuery-Datenerfassung für Analysen freischalten",
 		"kafka": "Natives Kafka-Log-Streaming für Echtzeit-Observability freischalten",
-		"kafkaDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Übertrage abgeschlossene Request-Traces als JSON an ein Kafka-Topic für Echtzeitanalysen, Warnmeldungen und nachgelagerte Verarbeitung."
+		"kafkaDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Übertrage abgeschlossene Request-Traces als JSON an ein Kafka-Topic für Echtzeitanalysen, Warnmeldungen und nachgelagerte Verarbeitung.",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "Zugriffsprofile für bessere Performance freischalten",
@@ -439,7 +471,9 @@
 		"reset": "Zurücksetzen",
 		"addBudgetButton": "Budget hinzufügen",
 		"maximumSpend": "Höchstausgaben (USD)",
-		"noBudgetLimits": "Keine Budgetgrenzen konfiguriert."
+		"noBudgetLimits": "Keine Budgetgrenzen konfiguriert.",
+		"removeBudgetAria": "Budget {{number}} entfernen",
+		"duplicateResetPeriod": "Doppelter Reset-Zeitraum; jede Budgetzeile muss ein anderes Intervall verwenden."
 	},
 	"filters": {
 		"filters": "Filter",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} Patterns",
 		"removeAria": "{{name}} entfernen",
 		"noneLeftClick": "Keine weiteren Anbieter zum Konfigurieren. Klicken zum Hinzufügen"
+	},
+	"orgChart": {
+		"unlockTitle": "Organigramm freischalten",
+		"unlockDescription": "Sieh Budgets, Ausgaben, Modelle und Tools über Geschäftseinheiten, Teams und Benutzer hinweg in einer Baumansicht. Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz."
+	},
+	"usage": {
+		"budgetAria": "Budgetnutzung",
+		"tokenAria": "Token-Nutzung",
+		"requestAria": "Anfragenutzung",
+		"resets": "Reset {{period}}",
+		"tokens": "{{value}} Tokens",
+		"req": "{{value}} Anfr.",
+		"tokenTooltip": "{{used}} / {{max}} Tokens",
+		"requestTooltip": "{{used}} / {{max}} Anfragen",
+		"keyCount_one": "{{count}} Schlüssel",
+		"keyCount_other": "{{count}} Schlüssel"
+	},
+	"budgetOverride": {
+		"updated": "Budget-Override aktualisiert",
+		"added": "Budget-Override hinzugefügt",
+		"removed": "Budget-Override entfernt",
+		"invalidInput": "Ungültige Eingabe",
+		"editOverride": "Override bearbeiten",
+		"addOverride": "Override hinzufügen",
+		"editTitle": "Budget-Override bearbeiten",
+		"addTitle": "Budget-Override hinzufügen",
+		"description": "Erhöhe den Ausgabenspielraum vorübergehend, ohne das Basisbudget {{budget}} zu ändern.",
+		"additionalBudget": "Zusätzliches Budget",
+		"duration": "Dauer",
+		"modeCycles": "Für eine Anzahl von Reset-Zyklen",
+		"modeForever": "Bis zur Entfernung",
+		"resetCycles": "Reset-Zyklen",
+		"cycleHint": "Der aktuelle Reset-Zyklus zählt als erster Zyklus.",
+		"validUntil": "Gültig bis <b0>{{date}}</b0>",
+		"currentEffectiveLimit": "Aktuelles effektives Limit: <b0>{{limit}}</b0>",
+		"removeOverride": "Override entfernen",
+		"updateOverride": "Override aktualisieren",
+		"managerDescription": "Erhöhe den Ausgabenspielraum eines Budgets vorübergehend, ohne sein Basislimit zu ändern.",
+		"rowActive": "+{{amount}} Override · effektiv {{effective}}",
+		"rowBase": "Basis {{amount}}",
+		"edit": "Bearbeiten",
+		"remove": "Entfernen",
+		"update": "Aktualisieren",
+		"add": "Hinzufügen"
 	}
 }

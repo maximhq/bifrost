@@ -23,7 +23,8 @@
 		"brandingDescription": "Replace the Bifrost logo with your own across the dashboard and login screen. Questa funzionalità fa parte della licenza Enterprise di Bifrost. Vorremmo saperne di più sul tuo caso d’uso e su come possiamo aiutarti.",
 		"licenseTitle": "Sblocca la gestione delle licenze",
 		"apiKeysTitle": "Chiavi API basate su scope",
-		"apiKeysDescription": "Hai bisogno di un controllo granulare degli accessi con chiavi API basate su ambiti? I clienti Enterprise possono creare più chiavi API con autorizzazioni specifiche per diversi servizi, team o ambienti."
+		"apiKeysDescription": "Hai bisogno di un controllo granulare degli accessi con chiavi API basate su ambiti? I clienti Enterprise possono creare più chiavi API con autorizzazioni specifiche per diversi servizi, team o ambienti.",
+		"unknownOs": "Sistema operativo sconosciuto"
 	},
 	"clientSettings": {
 		"title": "Impostazioni client",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>Denylist:</span0> Gli header nella denylist sono sempre bloccati dall'inoltro",
 		"wildcardRules": "<span0>Caratteri jolly:</span0> Usa <code1>*</code1> alla fine di un pattern per trovare corrispondenze con i prefissi (ad es. <code2>anthropic-*</code2> corrisponde a tutti gli header che iniziano con <code3>anthropic-</code3>). Usa <code4>*</code4> da solo per trovare corrispondenze con tutti gli header.",
 		"headerNames": "Le voci di allowlist/denylist devono essere il nome dell'header <span0>senza</span0> il prefisso <code1>x-bf-eh-</code1>",
-		"allowlistExample": "Esempio: per consentire <code0>x-bf-eh-custom-id</code0> o <code1>custom-id</code1> diretto, aggiungi <code2>custom-id</code2> all'allowlist"
+		"allowlistExample": "Esempio: per consentire <code0>x-bf-eh-custom-id</code0> o <code1>custom-id</code1> diretto, aggiungi <code2>custom-id</code2> all'allowlist",
+		"extraFieldsPlacement": "Posizione dei campi extra",
+		"extraFieldsPlacementHelp": "Dove le risposte di inference includono i metadati <b>extra_fields</b> di Bifrost. <b>Body</b> mantiene l'oggetto extra_fields nella risposta JSON. <b>Headers</b> lo rimuove dal body e da ogni chunk dello streaming, inviandone i campi scalari come header di risposta <b>x-bifrost-*</b>.",
+		"extraFieldsPlacementDroppedNote": "In modalità Headers, questi campi vengono eliminati e non inviati altrove: richiesta grezza, risposta grezza, metadati di routing, debug guardrail, errori di parsing e, in caso di errore, stato delle chiavi, utilizzo addebitato e dettagli di autenticazione MCP. Le risposte in streaming includono solo i dati noti prima del primo chunk (routing, fallback, ricerca cache); vengono quindi eliminati anche latenza per chunk, indice del chunk e totali finali.",
+		"extraFieldsBody": "Body",
+		"extraFieldsHeaders": "Headers",
+		"removeSecurityHeader_one": "Rimuovi header di sicurezza: {{headers}}",
+		"removeSecurityHeader_other": "Rimuovi header di sicurezza: {{headers}}"
 	},
 	"caching": {
 		"title": "Cache locale",
@@ -231,7 +239,11 @@
 		"deleteExpiredVirtualKeysHelp": "Se abilitato, un job di pulizia giornaliero elimina ogni chiave virtuale la cui scadenza è trascorsa e invia una notifica con l'elenco delle chiavi rimosse. Ogni chiave può ignorare questa impostazione con l'interruttore <b0>Elimina dopo la scadenza</b0>: una chiave impostata su off viene conservata, una impostata su on viene eliminata anche se questa opzione è disabilitata.",
 		"enforceVkObjectOwnership": "Limita gli oggetti del provider alla chiave virtuale che li ha creati",
 		"enforceVkObjectOwnershipHelp": "Se abilitato, file, batch, video, container, contenuti in cache e sessioni live creati con una chiave virtuale possono essere letti, elencati o eliminati solo con quella stessa chiave. Le altre chiavi virtuali ricevono un errore not-found e non li vedono negli elenchi. Le richieste senza chiave virtuale non sono interessate. La chiave creatrice viene registrata anche quando l'opzione è disabilitata, quindi riabilitarla copre anche gli oggetti creati nel frattempo, tranne quelli la cui chiave creatrice non è stato possibile registrare.",
-		"proofRequired": "Inserisci la password admin attuale per confermare questa modifica. La protezione della dashboard è disattivata, quindi questa sessione non è autenticata. Se non conosci la password, usa invece il token di configurazione."
+		"proofRequired": "Inserisci la password admin attuale per confermare questa modifica. La protezione della dashboard è disattivata, quindi questa sessione non è autenticata. Se non conosci la password, usa invece il token di configurazione.",
+		"skipAccessProfileKeyCreation": "Non creare chiavi virtuali utente per i profili di accesso",
+		"skipAccessProfileKeyCreationHelp": "Se attivata, il primo profilo di accesso di un utente non gli crea una chiave virtuale. Le chiavi già possedute dall'utente, o aggiunte per suo conto, restano governate dal profilo finché è assegnato.",
+		"skipAccessProfileKeyDeletion": "Non eliminare le chiavi virtuali utente quando vengono rimossi i profili di accesso",
+		"skipAccessProfileKeyDeletionHelp": "Se attivata, la rimozione dell'ultimo profilo di accesso di un utente lascia le sue chiavi virtuali come chiavi ordinarie, senza i provider né gli accessi del profilo. L'eliminazione dell'utente elimina comunque le sue chiavi."
 	},
 	"logging": {
 		"title": "Impostazioni dei log",
@@ -296,7 +308,11 @@
 		"convertUnsupportedParamsHelp": "Converte i valori dei parametri non supportati dal modello.",
 		"azureDeepseek": "Usa le API Chat Completion per i modelli Azure Deepseek",
 		"azureDeepseekHelp": "Usa le API Chat Completion per Claude Code, Codex, ecc. per i modelli Azure Deepseek.",
-		"toastSaved": "Impostazioni di compatibilità aggiornate con successo."
+		"toastSaved": "Impostazioni di compatibilità aggiornate con successo.",
+		"forceReasoningOnlyToResponses": "Usa Responses API per i modelli OpenAI solo di reasoning",
+		"forceReasoningOnlyToResponsesHelp": "Instrada le richieste di completamento chat alla Responses API per i modelli che non supportano il reasoning con chiamate agli strumenti nei completamenti chat, invece di disattivare il reasoning.",
+		"convertDecisionToResponses": "Emula Decisions API sui modelli senza supporto decisionale",
+		"convertDecisionToResponsesHelp": "Rispondi alle richieste decision tramite Responses API con uno strumento funzione forzato, per i modelli senza endpoint decision nativo. Se disattivato, queste richieste restituiscono un errore di operazione non supportata."
 	},
 	"featureFlags": {
 		"title": "Feature flag",
@@ -387,7 +403,26 @@
 		"allowedRedirectUrisHelp": "URI di callback esatti che i client MCP remoti possono usare, ad es. <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Aggiungi <code1>*</code1> per consentire qualsiasi callback https; i caratteri jolly parziali non sono supportati. I callback loopback e <code2>cursor://anysphere.cursor-mcp</code2> sono sempre consentiti. La modifica di questo elenco richiede l'autenticazione della dashboard.",
 		"allowedRedirectUrisPlaceholder": "Aggiungi URI di callback (Invio)",
 		"anyCallbackAllowed": "Qualsiasi callback è consentito",
-		"anyCallbackAllowedHelp": "Qualsiasi client MCP può registrarsi con un callback su qualsiasi host, quindi la pagina di consenso è l'unico controllo contro un client che invia i codici di autorizzazione a un malintenzionato. Meglio elencare gli URI di callback esatti."
+		"anyCallbackAllowedHelp": "Qualsiasi client MCP può registrarsi con un callback su qualsiasi host, quindi la pagina di consenso è l'unico controllo contro un client che invia i codici di autorizzazione a un malintenzionato. Meglio elencare gli URI di callback esatti.",
+		"limitMaxSourceBytes": "Dimensione massima sorgente (byte)",
+		"limitMaxSourceBytesDesc": "Quantità massima di codice che una singola esecuzione può inviare.",
+		"limitMaxSteps": "Numero massimo di passaggi di calcolo",
+		"limitMaxStepsDesc": "Passaggi dell'interprete per esecuzione, incluso il lavoro eseguito nelle funzioni integrate.",
+		"limitMaxMemoryBytes": "Memoria massima (byte)",
+		"limitMaxMemoryBytesDesc": "Budget stimato di allocazione per esecuzione. Ogni esecuzione simultanea ha il proprio budget.",
+		"limitMaxLogBytes": "Output massimo dei log (byte)",
+		"limitMaxLogBytesDesc": "Output di stampa e dei log degli strumenti per esecuzione, incluse le nuove righe.",
+		"limitMaxToolCalls": "Chiamate massime agli strumenti",
+		"limitMaxToolCallsDesc": "Chiamate MCP annidate agli strumenti per esecuzione.",
+		"limitMaxValueBytes": "Dimensione massima valore (byte)",
+		"limitMaxValueBytesDesc": "Budget di dimensione per ogni payload dello strumento e risultato convertito. Deve essere almeno {{min}}.",
+		"limitMaxNestingDepth": "Profondità massima di annidamento",
+		"limitMaxNestingDepthDesc": "Profondità di annidamento dei valori che attraversano il confine dello strumento. Massimo {{max}}.",
+		"limitNegative": "{{label}} non può essere negativo.",
+		"limitValueBytesMin": "La dimensione massima del valore deve essere almeno {{min}} byte.",
+		"limitNestingMax": "La profondità massima di annidamento deve essere al massimo {{max}}.",
+		"codeModeLimitsTitle": "Limiti della modalità codice",
+		"codeModeLimitsDescription": "Limiti per ogni esecuzione del codice. Lascia un campo vuoto per usare il valore predefinito. Il numero di esecuzioni simultanee non è limitato."
 	},
 	"modelSettings": {
 		"title": "Impostazioni modelli",
@@ -733,7 +768,11 @@
 		"intoPath": " in {{path}}/",
 		"intoRoot": " nella radice",
 		"previewAfterSaving": "Anteprima disponibile dopo il salvataggio.",
-		"externalUrlRequired": "Imposta l'URL client esterno in <settingsLink>Impostazioni Skills</settingsLink> per abilitare la registrazione nel marketplace."
+		"externalUrlRequired": "Imposta l'URL client esterno in <settingsLink>Impostazioni Skills</settingsLink> per abilitare la registrazione nel marketplace.",
+		"showLess": "Mostra meno",
+		"showMore": "Mostra di più",
+		"skillNotFound": "Skill non trovata",
+		"backToList": "Torna all'elenco"
 	},
 	"promptRepo": {
 		"loadFailed": "Impossibile caricare il repository dei prompt",
@@ -933,7 +972,19 @@
 		"governancePlugin": "Plugin Governance",
 		"governancePluginDesc": "Guida completa a controllo degli accessi, budget e rate limiting",
 		"governancePluginContent": "Padroneggia le chiavi virtuali, i budget gerarchici, il rate limiting e il monitoraggio dell'utilizzo per un'infrastruttura IA sicura.",
-		"viewGovernanceGuide": "Visualizza la guida alla governance"
+		"viewGovernanceGuide": "Visualizza la guida alla governance",
+		"heading": "Potenzia il tuo stack Bifrost",
+		"viewFullDocumentation": "Visualizza la documentazione completa",
+		"quickStartGuide": "Guida introduttiva",
+		"readMore": "Leggi di più",
+		"items": {
+			"quickStart": ["Configurazione HTTP Transport", "Utilizzo del pacchetto Go", "Guida Docker"],
+			"architecture": ["Panoramica del sistema", "Flusso delle richieste", "Modello di concorrenza", "Scelte progettuali"],
+			"usageGuides": ["Configurazione provider", "Gestione delle chiavi", "Gestione degli errori", "Memoria e rete"],
+			"contributing": ["Guida ai contributi", "Aggiungere provider", "Sviluppo plugin", "Convenzioni del codice"],
+			"integrationExamples": ["Integrazione OpenAI", "Integrazione Anthropic", "Integrazione GenAI", "Guide alla migrazione"],
+			"benchmarks": ["Risultati test 5K RPS", "Metriche di prestazione", "Ottimizzazione della configurazione", "Confronti hardware"]
+		}
 	},
 	"warp": {
 		"saved": "Configurazione Warp salvata.",
@@ -1036,7 +1087,10 @@
 			"searchLimit": "Il limite di ricerca deve essere tra 1 e 25.",
 			"retentionRequired": "È richiesto un valore",
 			"retentionWhole": "Deve essere un numero intero di giorni",
-			"retentionMin": "Deve essere 0 o più giorni (0 mantiene il default)"
+			"retentionMin": "Deve essere 0 o più giorni (0 mantiene il default)",
+			"modelRequired": "Scegli un provider e un modello per abilitare Warp.",
+			"modelOrRemove": "Scegli un provider e un modello oppure rimuovi questo modello.",
+			"modelDuplicate": "Questo provider e modello sono già nell'elenco."
 		},
 		"models": "Modelli",
 		"modelsHelp": "I modelli con cui Warp ragiona e scrive le risposte. Risponde il modello predefinito, a meno che qualcuno non ne scelga un altro nel pannello Warp. Qui un modello potente ripaga.",
@@ -1046,6 +1100,67 @@
 		"defaultModel": "Modello predefinito",
 		"modelNumber": "Modello {{number}}",
 		"makeDefault": "Imposta come predefinito",
-		"removeModel": "Rimuovi modello {{number}}"
+		"removeModel": "Rimuovi modello {{number}}",
+		"topics": {
+			"badRange": "Scegli un intervallo di tempo valido per gli argomenti.",
+			"started": "Avvio della creazione degli argomenti.",
+			"cancelRequested": "Richiesta l'interruzione del raggruppamento degli argomenti.",
+			"title": "Gruppi di argomenti",
+			"infoLabel": "Come funzionano gli argomenti",
+			"infoIntro": "Gli argomenti raggruppano le richieste in base a ciò che chiedono, così Warp può rispondere su ciò che interessa alle persone.",
+			"infoSeed": "<b0>1. Inizializzazione, una volta.</b0> Un'esecuzione iniziale raggruppa le richieste indicizzate in un intervallo e assegna un nome a ciascun gruppo. L'inizializzazione avviene una volta per modello di embedding.",
+			"infoFiled": "<b0>2. Classificazione man mano che arrivano.</b0> Ogni richiesta indicizzata da quel momento viene assegnata all'argomento più vicino.",
+			"infoFound": "<b0>3. Rilevamento di nuovi argomenti.</b0> Le richieste che non corrispondono ad alcun argomento restano in attesa. Al raggiungimento della soglia per i nuovi argomenti, un'elaborazione oraria le raggruppa in nuovi argomenti o le aggiunge a quelli esistenti.",
+			"infoTidy": "<b0>4. Manutenzione.</b0> La stessa elaborazione archivia gli argomenti senza richieste da 30 giorni e unisce quelli che hanno acquisito lo stesso significato.",
+			"infoReseed": "Cambiare il modello di embedding azzera il lavoro: gli argomenti vengono inizializzati di nuovo.",
+			"description": "Inizializza gli argomenti una volta usando un intervallo di richieste indicizzate. In seguito si aggiornano da soli man mano che vengono indicizzate nuove richieste, senza altre esecuzioni.",
+			"seeded": "Gli argomenti sono stati creati per questo modello di embedding e si aggiornano da soli: le nuove richieste vengono assegnate durante l'indicizzazione e vengono individuati nuovi argomenti tra quelle senza corrispondenze.",
+			"cancel": "Annulla raggruppamento",
+			"seed": "Inizializza argomenti",
+			"saveBeforeSeed": "Salva le modifiche alla configurazione prima di inizializzare gli argomenti.",
+			"needsBackfill": "Non è ancora stato indicizzato nulla per questo modello di embedding. Prima compila un intervallo qui sopra, poi inizializza gli argomenti usando lo stesso intervallo.",
+			"activeTopics_one": "{{count}} argomento attivo",
+			"activeTopics_other": "{{count}} argomenti attivi",
+			"inThemes_one": "in {{count}} tema",
+			"inThemes_other": "in {{count}} temi",
+			"pooled_one": "{{count}} richiesta in attesa di un argomento",
+			"pooled_other": "{{count}} richieste in attesa di un argomento",
+			"unmatchedLastDay_one": "Il {{percent}}% delle {{count}} richieste dell'ultimo giorno non ha trovato un argomento",
+			"unmatchedLastDay_other": "Il {{percent}}% delle {{count}} richieste dell'ultimo giorno non ha trovato un argomento",
+			"nothingFiled": "nessuna richiesta assegnata nell'ultimo giorno",
+			"requestsRead_one": "{{count}} richiesta letta",
+			"requestsRead_other": "{{count}} richieste lette",
+			"topicsWritten_one": "{{count}} argomento creato",
+			"topicsWritten_other": "{{count}} argomenti creati",
+			"themesCount_one": "{{count}} tema",
+			"themesCount_other": "{{count}} temi",
+			"labelsFellBack_one": "{{count}} etichetta ripiegata",
+			"labelsFellBack_other": "{{count}} etichette ripiegate",
+			"statusFailed": "Impossibile leggere lo stato del raggruppamento degli argomenti; un processo in corso potrebbe non essere mostrato.",
+			"thresholdLabel": "Soglia per i nuovi argomenti",
+			"thresholdHint": "Numero di richieste senza corrispondenza che devono essere in attesa prima che Warp le raggruppi in nuovi argomenti, con verifica ogni ora. Un valore basso individua prima nuovi temi con pochi esempi; uno alto attende schemi più chiari. Da {{min}} a {{max}}.",
+			"thresholdError": "Deve essere un numero intero da {{min}} a {{max}}"
+		}
+	},
+	"agentGateway": {
+		"title": "Impostazioni Agent Gateway",
+		"description": "Configura le impostazioni di Agent Gateway (A2A).",
+		"toastSaved": "Impostazioni di Agent Gateway aggiornate correttamente.",
+		"loadFailed": "Impossibile caricare le impostazioni di Agent Gateway.",
+		"externalClientUrl": "URL client esterno",
+		"externalClientUrlHelp": "URL di base pubblico di Bifrost, usato per le schede agente pubblicate e gli URL callback delle notifiche push. Se lasciato vuoto, tutti gli endpoint del protocollo agente sono disabilitati. La gestione degli agenti resta disponibile. Supporta la sintassi delle variabili d'ambiente (ad es. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"privateAllowlist": "Elenco consentiti rete privata",
+		"privateAllowlistHelp": "Host, indirizzi IP o intervalli CIDR, senza schema né porta, che Agent Gateway può raggiungere per discovery, OAuth e richieste runtime quando risolvono in un indirizzo privato o loopback. Gli indirizzi link-local e dei metadati cloud sono sempre bloccati.",
+		"privateAllowlistPlaceholder": "Aggiungi host, IP o CIDR (Invio o virgola)",
+		"captureRaw": "Acquisisci richieste e risposte grezze",
+		"captureRawHelp": "Salva i payload grezzi di richieste e risposte nei record dei log. L'acquisizione grezza è disabilitata per gRPC perché usa messaggi protobuf binari; un'acquisizione con limite di dimensione può interrompere un messaggio e impedirne la decodifica o l'ispezione affidabile."
+	},
+	"skillsSettings": {
+		"description": "Configura la pubblicazione del marketplace del repository Skills.",
+		"toastSaved": "Impostazioni Skills aggiornate correttamente.",
+		"loadFailed": "Impossibile caricare le impostazioni Skills.",
+		"retry": "Riprova",
+		"externalClientUrl": "URL client esterno",
+		"externalClientUrlHelp": "URL di base pubblico di Bifrost per i marketplace Claude Code e Codex. Lascialo vuoto per disabilitare la pubblicazione e la registrazione del marketplace. La gestione e il download delle skill restano disponibili. Supporta riferimenti a variabili d'ambiente e vault."
 	}
 }

@@ -40,6 +40,7 @@ function usageBarClass(pct: number, exhausted: boolean) {
 }
 
 function UsageLine({ current, max, format }: { current: number; max: number; format: (n: number) => string }) {
+	const { t } = useTranslation("models");
 	const pct = calculateUsagePercentage(current, max);
 	const exhausted = max > 0 && current >= max;
 	return (
@@ -58,7 +59,7 @@ function UsageLine({ current, max, format }: { current: number; max: number; for
 				</span>
 			</div>
 			<Progress
-				aria-label="Usage"
+				aria-label={t("virtualKeys.usage")}
 				value={Math.min(pct, 100)}
 				className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))}
 			/>
@@ -82,6 +83,7 @@ export default function VirtualKeyDetailSheet({
 	hasNext = false,
 }: VirtualKeyDetailSheetProps) {
 	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit } =
 		useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
@@ -216,7 +218,7 @@ export default function VirtualKeyDetailSheet({
 										<span className="text-muted-foreground ml-1 text-xs">({new Date(virtualKey.expires_at).toLocaleString()})</span>
 										{deletesAfterExpire && (
 											<span className="text-muted-foreground ml-1 text-xs" data-testid="vk-details-delete-after-expire">
-												· deleted automatically after expiry
+												{t("virtualKeys.deletedAfterExpiry")}
 											</span>
 										)}
 									</div>
@@ -239,7 +241,7 @@ export default function VirtualKeyDetailSheet({
 
 							{virtualKey.metadata && Object.keys(virtualKey.metadata).length > 0 && (
 								<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
-									<span className="text-muted-foreground text-sm">Metadata</span>
+									<span className="text-muted-foreground text-sm">{t("virtualKeys.metadata")}</span>
 									{/* Each entry is also on every log row the key produced, so it links to the logs filtered by it. */}
 									<div className="col-span-2 flex flex-col gap-1.5" data-testid="vk-details-metadata">
 										{Object.entries(virtualKey.metadata)
@@ -255,7 +257,7 @@ export default function VirtualKeyDetailSheet({
 														className="text-xs text-blue-600 hover:underline dark:text-blue-400"
 														data-testid={`vk-details-metadata-spend-link-${key}`}
 													>
-														View spend
+														{t("virtualKeys.viewSpend")}
 													</Link>
 												</div>
 											))}
@@ -662,10 +664,10 @@ export default function VirtualKeyDetailSheet({
 
 							{/* Agent access grants: the registered agents this key may call. */}
 							<div className="space-y-4">
-								<h3 className="font-semibold">Agent access</h3>
+								<h3 className="font-semibold">{tc("agentGrants.label")}</h3>
 
 								{!virtualKey.agent_grants || virtualKey.agent_grants.length === 0 ? (
-									<span className="text-muted-foreground text-sm">No agents granted</span>
+									<span className="text-muted-foreground text-sm">{t("virtualKeys.noAgentsGranted")}</span>
 								) : (
 									<div className="flex flex-wrap gap-1">
 										{virtualKey.agent_grants.map((grant) => (
