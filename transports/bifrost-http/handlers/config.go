@@ -924,8 +924,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			// setup_token or BIFROST_SETUP_TOKEN env var) so that action can't be taken by
 			// an unauthenticated network caller racing the real operator to a freshly
 			// exposed instance.
-			if authConfig == nil && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
-				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
+			// The token may come in auth_config.setup_token or in the SetupTokenHeader
+			// the management API requires before an admin exists, so callers send it once.
+			setupToken := payload.AuthConfig.SetupToken
+			if setupToken == "" {
+				setupToken = string(ctx.Request.Header.Peek(SetupTokenHeader))
+			}
+			if authConfig == nil && !h.configManager.ValidateSetupToken(setupToken) {
+				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in the "+SetupTokenHeader+" header or auth_config.setup_token")
 				return
 			}
 			// Fetching current Auth config
