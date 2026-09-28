@@ -56,6 +56,9 @@
 		"tokenLimit": "Limite token",
 		"requestLimit": "Limite richieste",
 		"apiStructure": "Struttura API",
+		"networkTab": "Rete",
+		"betaHeadersTab": "Header beta",
+		"debuggingTab": "Debug",
 		"performance": "Prestazioni",
 		"governance": "Governance",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "Elenca modelli",
+				"model_retrieve": "Recupera modello",
 				"text_completion": "Completamento testo",
 				"text_completion_stream": "Stream completamento testo",
 				"chat_completion": "Completamento chat",
@@ -442,7 +446,9 @@
 				"image_edit": "Modifica immagine",
 				"image_edit_stream": "Stream modifica immagine",
 				"image_variation": "Variazione immagine",
-				"count_tokens": "Conteggio token"
+				"count_tokens": "Conteggio token",
+				"decisions": "Decisioni",
+				"live": "Live"
 			},
 			"title": "Tipi di richiesta consentiti",
 			"description": "Seleziona quali tipi di richiesta può gestire questo provider personalizzato.",

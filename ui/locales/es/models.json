@@ -56,6 +56,9 @@
 		"tokenLimit": "Límite de token",
 		"requestLimit": "Límite de solicitud",
 		"apiStructure": "Estructura de API",
+		"networkTab": "Red",
+		"betaHeadersTab": "Encabezados beta",
+		"debuggingTab": "Depuración",
 		"performance": "Ejecución",
 		"governance": "Gobernanza",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "Modelos de lista",
+				"model_retrieve": "Recuperar modelo",
 				"text_completion": "Compleción de texto",
 				"text_completion_stream": "Transmisión de la compleción de texto",
 				"chat_completion": "Composición de chat",
@@ -442,7 +446,9 @@
 				"image_edit": "Imagen Editada",
 				"image_edit_stream": "Imagen Editar Corriente",
 				"image_variation": "Variación de imagen",
-				"count_tokens": "Conde Tokens"
+				"count_tokens": "Conde Tokens",
+				"decisions": "Decisiones",
+				"live": "En vivo"
 			},
 			"title": "Tipos de solicitud permitidos",
 			"description": "Selecciona qué tipos de solicitud puede manejar este proveedor personalizado.",

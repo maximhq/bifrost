@@ -17,6 +17,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useFieldArray, useForm, type Control, type Resolver, type UseFormReturn } from "react-hook-form";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
 // ProfileForm is a single profile's form shape, derived from the form schema.
@@ -64,7 +65,7 @@ interface OtelFormFragmentProps {
 }
 
 const getTraceTypeOptions = (
-	t: (key: string) => string,
+	t: TFunction<"observability">,
 ): {
 	value: string;
 	label: string;

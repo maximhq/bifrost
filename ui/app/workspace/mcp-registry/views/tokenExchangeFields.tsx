@@ -179,7 +179,7 @@ export function TokenExchangeFields({
 						name="token_exchange.profile"
 						render={({ field }) => (
 							<FormItem className={`flex flex-col gap-2 ${fullRow}`}>
-								<FormLabel>{t("registry.tokenExchange.howUpstreamTokenObtained")}</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.profileLabel")}</FormLabel>
 								<FormControl>
 									<div
 										className="bg-muted inline-flex w-fit gap-0.5 rounded-md p-0.5"

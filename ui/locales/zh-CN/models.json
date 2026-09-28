@@ -56,6 +56,9 @@
 		"tokenLimit": "Token 限额",
 		"requestLimit": "请求限额",
 		"apiStructure": "API 结构",
+		"networkTab": "网络",
+		"betaHeadersTab": "Beta 请求头",
+		"debuggingTab": "调试",
 		"performance": "性能",
 		"governance": "治理",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "列出模型",
+				"model_retrieve": "检索模型",
 				"text_completion": "文本补全",
 				"text_completion_stream": "流式文本补全",
 				"chat_completion": "对话补全",
@@ -442,7 +446,9 @@
 				"image_edit": "图像编辑",
 				"image_edit_stream": "流式图像编辑",
 				"image_variation": "图像变体",
-				"count_tokens": "统计 token 数"
+				"count_tokens": "统计 token 数",
+				"decisions": "决策",
+				"live": "实时"
 			},
 			"title": "允许的请求类型",
 			"description": "选择此自定义供应商可处理的请求类型。",

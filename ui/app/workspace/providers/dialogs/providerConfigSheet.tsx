@@ -19,6 +19,7 @@ import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { passthroughRoutePrefix } from "../fragments/passthroughForm.utils";
 
@@ -42,7 +43,7 @@ const availableTabs = (
 	openAIConfigTabLabel: string | undefined,
 	hasBetaHeaders: boolean,
 	hasPassthrough: boolean,
-	t: (key: string) => string,
+	t: TFunction<"models">,
 ) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
@@ -53,7 +54,7 @@ const availableTabs = (
 	}
 	tabs.push({
 		id: "network",
-		label: t("providers.network"),
+		label: t("providers.networkTab"),
 	});
 	tabs.push({
 		id: "proxy",
@@ -72,7 +73,7 @@ const availableTabs = (
 	if (hasBetaHeaders) {
 		tabs.push({
 			id: "beta-headers",
-			label: t("providers.betaHeaders"),
+			label: t("providers.betaHeadersTab"),
 		});
 	}
 	tabs.push({
@@ -95,7 +96,7 @@ const availableTabs = (
 	}
 	tabs.push({
 		id: "debugging",
-		label: t("providers.debugging"),
+		label: t("providers.debuggingTab"),
 	});
 	if (openAIConfigTabLabel) {
 		tabs.push({

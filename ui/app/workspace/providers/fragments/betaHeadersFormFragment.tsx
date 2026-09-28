@@ -302,7 +302,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 											<div className="flex flex-col gap-0.5">
 												<span className="font-mono text-xs">{row.name}</span>
 												<span className="text-muted-foreground text-xs">
-													{typesafeHeaders
+													{row.prefix === "typesafe-danger-zone-images"
 														? t("providers.betaHeaders.typesafeDangerZoneImages")
 														: t(`providers.betaHeaders.known.${row.prefix}.description`)}
 												</span>

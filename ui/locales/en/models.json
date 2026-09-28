@@ -56,6 +56,9 @@
 		"tokenLimit": "Token Limit",
 		"requestLimit": "Request Limit",
 		"apiStructure": "API Structure",
+		"networkTab": "Network",
+		"betaHeadersTab": "Beta Headers",
+		"debuggingTab": "Debugging",
 		"performance": "Performance",
 		"governance": "Governance",
 		"betaHeaders": {
@@ -423,6 +426,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "List Models",
+				"model_retrieve": "Retrieve Model",
 				"text_completion": "Text Completion",
 				"text_completion_stream": "Text Completion Stream",
 				"chat_completion": "Chat Completion",
@@ -443,7 +447,11 @@
 				"image_edit": "Image Edit",
 				"image_edit_stream": "Image Edit Stream",
 				"image_variation": "Image Variation",
-				"count_tokens": "Count Tokens"
+				"count_tokens": "Count Tokens",
+				"decisions": "Decisions",
+				"live": "Live",
+				"passthrough": "Passthrough",
+				"passthrough_stream": "Passthrough Stream"
 			},
 			"title": "Allowed Request Types",
 			"description": "Select which request types this custom provider can handle.",
