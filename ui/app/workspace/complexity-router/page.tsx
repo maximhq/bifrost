@@ -569,7 +569,7 @@ export default function ComplexityRouterPage() {
 										)}
 										<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
 											<a
-												href={"https://docs.getbifrost.ai/features/governance/complexity-router"}
+												href={"https://docs.getbifrost.ai/features/complexity-router"}
 												target="_blank"
 												rel="noopener noreferrer"
 											>

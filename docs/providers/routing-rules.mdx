@@ -122,10 +122,10 @@ request > 90               // Switch providers when request limit near max
 complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", or "COMPLEX"
 ```
 
-Bifrost embeds each request and assigns it the tier of its nearest reference phrase before routing rules are evaluated. This lets you route cheap/fast requests to small models and deep reasoning tasks to frontier models with no application-side changes.
+Bifrost classifies a request with Jev or by embedding it and matching the nearest semantic reference phrase before a complexity rule is evaluated. This lets you route simple requests to smaller models and demanding tasks to more capable models with no application-side changes.
 
 <Note>
-If complexity classification is unavailable for a request (classifier not configured or not ready, unsupported input, or a match below the similarity floor), `complexity_tier` is treated as **unknown** by the evaluator — the rule does not match and evaluation falls through. Rules using other variables are unaffected.
+If complexity classification is unavailable for a request (classifier not configured or not ready, unsupported input, timeout, or a semantic match below the similarity floor), `complexity_tier` is treated as **unknown** when session state has no tier to supply. The rule does not match and evaluation falls through. Rules using other variables are unaffected.
 </Note>
 
 **Examples:**
@@ -136,7 +136,7 @@ complexity_tier in ["MEDIUM", "COMPLEX"]                    // Medium and above
 complexity_tier == "COMPLEX" && team_name == "research"     // Scoped to a team
 ```
 
-See [Complexity Router](/features/governance/complexity-router) for how tiers are computed and how to tune the reference phrases and embedding configuration.
+See [Complexity Router](/features/complexity-router) for how tiers are computed, including Jev decisions and semantic reference phrases.
 
 #### How Capacity Metrics Are Resolved
 

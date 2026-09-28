@@ -1021,7 +1021,11 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # semantic:                          # Semantic (embedding-based) complexity classification — the only mechanism; without it no complexity_tier is published
+      # classifier: "jev"                  # Primary classifier: semantic (default) or jev
+      # jev:                               # Uses the configured Typesafe provider and its enabled key
+      #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
+      #   timeout: "1.5s"                  # Maximum wait for one Jev decision; usage counts toward request cost and budgets
+      # semantic:                          # Semantic (embedding-based) complexity classification
       #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
       #   embedding_model: "text-embedding-3-small"
       #                                      # Bifrost detects the embedding dimension during warmup
@@ -1037,7 +1041,7 @@ bifrost:
       #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
       #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
       #                                      #                   node-local even with a path, so it is private per pod.
-      #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
+      #   fallback: "none"                 # none (default) | llm (requires llm below) | jev (uses Typesafe); runs when semantic produces no tier
       # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
       #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
       #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
@@ -1045,9 +1049,9 @@ bifrost:
       #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
       #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
       #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
-      # session:                            # Optional session-aware routing; requires semantic configuration above
+      # session:                            # Optional session-aware routing; works with semantic or Jev primary
       #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
-      # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; Jev does not read these phrases
       #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
       #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
       #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
