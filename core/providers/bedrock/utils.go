@@ -1743,7 +1743,14 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 		// The Converse API rejects duplicate document names within a
 		// request (#7003): disambiguate via the request-scoped namer.
 		document.Name = docNamer.name(document.Name)
-		return []BedrockContentBlock{{Document: document}}, nil
+		blocks := []BedrockContentBlock{{Document: document}}
+		// Cache point must be in a separate block (#7613)
+		if block.CacheControl != nil {
+			blocks = append(blocks, BedrockContentBlock{
+				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
+			})
+		}
+		return blocks, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")
