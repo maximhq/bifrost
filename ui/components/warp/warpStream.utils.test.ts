@@ -539,6 +539,7 @@ describe("indexStatusLabel", () => {
 	it("names each state and shows progress while indexing", () => {
 		expect(indexStatusLabel({ state: "ready", vector_store_connected: true, embedding_configured: true })).toEqual({
 			label: "Index ready",
+			shortLabel: "Ready",
 			tone: "ok",
 		});
 		expect(indexStatusLabel({ state: "unavailable", vector_store_connected: false, embedding_configured: true })).toEqual({

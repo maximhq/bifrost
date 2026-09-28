@@ -374,6 +374,8 @@ export function pendingWarpQuestion(turns: WarpTurn[]): WarpQuestion | null {
 /** What the tray's index chip says, and how loudly. */
 export interface IndexStatusLabel {
 	label: string;
+	/** Shorter label for small screens, when the full one is too wide. */
+	shortLabel?: string;
 	tone: "ok" | "busy" | "error" | "muted";
 	/** A cause worth showing on hover, such as the last backfill error. */
 	detail?: string;
@@ -406,7 +408,7 @@ export function indexStatusLabel(status: WarpLogIndexStatus): IndexStatusLabel {
 			return { label: "Indexing", tone: "busy" };
 		}
 		default:
-			return { label: "Index ready", tone: "ok" };
+			return { label: "Index ready", shortLabel: "Ready", tone: "ok" };
 	}
 }
 

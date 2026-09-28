@@ -594,6 +594,22 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	@apply rounded-sm!;
 }
 
+/* Streamdown's table and code controls ship without a pointer cursor */
+[data-streamdown="table-wrapper"] button:not(:disabled),
+[data-streamdown="code-block-actions"] button:not(:disabled) {
+	@apply cursor-pointer;
+}
+
+/* Copy/download dropdown: streamdown paints it bg-background, which is translucent in dark
+   mode and the same shade as bg-accent in light mode, so use the popover surface instead */
+[data-streamdown="table-wrapper"] div.absolute.top-full {
+	@apply bg-popover text-popover-foreground;
+}
+
+[data-streamdown="table-wrapper"] div.absolute.top-full > button:hover {
+	@apply bg-accent text-accent-foreground;
+}
+
 /* Ensure toasts remain clickable above modal overlays (radix react-remove-scroll) */
 [data-sonner-toaster] {
 	pointer-events: auto !important;

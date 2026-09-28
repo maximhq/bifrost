@@ -104,7 +104,8 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 	}
 
 	return (
-		<ScrollArea className="h-full">
+		// no-table lets long titles truncate instead of widening the list past the panel.
+		<ScrollArea className="h-full" viewportClassName="no-table">
 			<ul className="space-y-1 p-2" data-testid="warp-history">
 				{conversations.map((conversation) => {
 					const cost = formatWarpUsage({
@@ -131,18 +132,20 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 								{/* Cost sits beside the time so the spend of a thread is visible
 								    without opening it. It is the only place a whole conversation's
 								    cost is summed anywhere in the dashboard. */}
-								<p className="text-muted-foreground flex items-center gap-1.5 text-[11px] tabular-nums">
-									<span>
+								<p className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-[11px] tabular-nums">
+									<span className="whitespace-nowrap">
 										{formatDistanceToNow(new Date(conversation.updated_at), {
 											addSuffix: true,
 										})}
 									</span>
 									<span aria-hidden>·</span>
-									<span>{conversation.message_count} messages</span>
+									<span className="whitespace-nowrap">{conversation.message_count} messages</span>
 									{cost && (
 										<>
 											<span aria-hidden>·</span>
-											<span data-testid="warp-history-cost">{cost}</span>
+											<span className="whitespace-nowrap" data-testid="warp-history-cost">
+												{cost}
+											</span>
 										</>
 									)}
 									{openingId === conversation.id && <Loader2 className="ml-1 size-3 animate-spin" />}

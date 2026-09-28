@@ -1,19 +1,19 @@
-import WarpComposer from "@/components/warp/warpComposer";
-import WarpHistory from "@/components/warp/warpHistory";
-import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
-import WarpQuestionCard from "@/components/warp/warpQuestion";
-import { useWarpStream } from "@/components/warp/useWarpStream";
-import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { WarpIcon } from "@/components/ui/icons";
 import { ScrollArea } from "@/components/ui/scrollArea";
+import { useWarpAutoScroll } from "@/components/warp/useWarpAutoScroll";
+import { useWarpStream } from "@/components/warp/useWarpStream";
+import WarpComposer from "@/components/warp/warpComposer";
+import WarpHistory from "@/components/warp/warpHistory";
+import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
+import WarpQuestionCard from "@/components/warp/warpQuestion";
+import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
 import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
 import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
 import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
-import { useWarpAutoScroll } from "@/components/warp/useWarpAutoScroll";
 import { ArrowDown, Database, History, Loader2, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -505,7 +505,7 @@ export default function WarpPanel() {
 						    it stays transparent so the transcript runs under it unbroken.
 						    The wrapper carries no padding either - each child brings its own,
 						    so an absent question card costs nothing. */}
-					<div className="absolute inset-x-0 bottom-0" ref={setControlsNode}>
+					<div className="absolute inset-x-0 bottom-0 bg-card" ref={setControlsNode}>
 						{/* The question sits on top of the composer, not inside the scrolling
 						    transcript: it is about what you are going to say next, so it stays
 						    put while you scroll back to read the answer that prompted it. */}
@@ -562,7 +562,7 @@ export default function WarpPanel() {
  * the cause on hover.
  */
 function WarpIndexChip({ status }: { status: Parameters<typeof indexStatusLabel>[0] }) {
-	const { label, tone, detail } = indexStatusLabel(status);
+	const { label, shortLabel, tone, detail } = indexStatusLabel(status);
 	return (
 		<Badge
 			variant={tone === "error" ? "destructive" : "secondary"}
@@ -572,7 +572,14 @@ function WarpIndexChip({ status }: { status: Parameters<typeof indexStatusLabel>
 			className={cn("flex shrink-0 items-center gap-1 text-[10px] font-normal", tone === "muted" && "text-muted-foreground")}
 		>
 			{tone === "busy" ? <Loader2 className="size-2.5 animate-spin" /> : <Database className="size-2.5" />}
-			{label}
+			{shortLabel ? (
+				<>
+					<span className="sm:hidden">{shortLabel}</span>
+					<span className="hidden sm:inline">{label}</span>
+				</>
+			) : (
+				label
+			)}
 		</Badge>
 	);
 }

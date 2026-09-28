@@ -46,6 +46,7 @@ import {
 	ArrowDown,
 	ArrowUp,
 	ArrowUpDown,
+	Building2,
 	ChevronLeft,
 	ChevronRight,
 	Copy,
@@ -61,6 +62,8 @@ import {
 	Search,
 	ShieldCheck,
 	Trash2,
+	UserRound,
+	Users,
 	X,
 } from "lucide-react";
 import { useQueryState } from "nuqs";
@@ -119,6 +122,15 @@ function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 
 // Entity selectors only ever set a value, so a filter built on one needs its own
 // reset back to "all" — this restores the affordance ComboboxSelect gave for free.
+// Filters show only their icon until the toolbar has room for the full labelled dropdown.
+const FILTER_WRAPPER_CLASS =
+	"flex shrink-0 items-center gap-1 @6xl/vk-toolbar:max-w-[250px] @6xl/vk-toolbar:min-w-[150px] @6xl/vk-toolbar:shrink @6xl/vk-toolbar:grow @6xl/vk-toolbar:basis-[150px]";
+const FILTER_SELECTOR_CLASS = "w-auto min-w-0 @6xl/vk-toolbar:w-full";
+const FILTER_TRIGGER_CLASS =
+	"size-9 justify-center px-0 [&_[data-slot=entity-selector-chevron]]:hidden [&_[data-slot=entity-selector-label]]:sr-only @6xl/vk-toolbar:w-full @6xl/vk-toolbar:justify-between @6xl/vk-toolbar:px-3 @6xl/vk-toolbar:[&_[data-slot=entity-selector-chevron]]:block @6xl/vk-toolbar:[&_[data-slot=entity-selector-label]]:not-sr-only";
+const FILTER_CONTENT_CLASS = "w-(--radix-popover-trigger-width) min-w-64";
+const FILTER_ICON_CLASS = "size-4 shrink-0 @6xl/vk-toolbar:hidden";
+
 function FilterClearButton({
 	show,
 	label,
@@ -808,9 +820,9 @@ export default function VirtualKeysTable({
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
 				{/* Toolbar: Search + Filters + Actions */}
-				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
+				<div className="@container/vk-toolbar mb-4 flex shrink-0 flex-wrap items-center gap-3">
 					<PageTitle title="Virtual Keys">Manage virtual keys, their permissions, budgets, and rate limits.</PageTitle>
-					<div className="relative w-full max-w-sm min-w-0 flex-1 basis-full sm:min-w-[180px] sm:basis-auto">
+					<div className="relative max-w-sm min-w-0 grow basis-40">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label={`Search virtual keys by ${searchHint}`}
@@ -823,13 +835,15 @@ export default function VirtualKeysTable({
 					</div>
 					{/* Both filters search server-side and resolve their own label for a
 					    value restored from the URL, so the page fetches no entity lists. */}
-					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-customer-filter">
+					<div className={FILTER_WRAPPER_CLASS} data-testid="vk-customer-filter">
 						<CustomerSelector
 							value={customerFilter}
 							onChange={onCustomerFilterChange}
 							placeholder="All Customers"
-							triggerClassName="h-9"
-							className="w-full min-w-0"
+							triggerIcon={<Building2 className={FILTER_ICON_CLASS} />}
+							triggerClassName={FILTER_TRIGGER_CLASS}
+							contentClassName={FILTER_CONTENT_CLASS}
+							className={FILTER_SELECTOR_CLASS}
 						/>
 						<FilterClearButton
 							show={!!customerFilter}
@@ -839,13 +853,15 @@ export default function VirtualKeysTable({
 						/>
 					</div>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-team-filter">
+					<div className={FILTER_WRAPPER_CLASS} data-testid="vk-team-filter">
 						<TeamSelector
 							value={teamFilter}
 							onChange={onTeamFilterChange}
 							placeholder="All Teams"
-							triggerClassName="h-9"
-							className="w-full min-w-0"
+							triggerIcon={<Users className={FILTER_ICON_CLASS} />}
+							triggerClassName={FILTER_TRIGGER_CLASS}
+							contentClassName={FILTER_CONTENT_CLASS}
+							className={FILTER_SELECTOR_CLASS}
 						/>
 						<FilterClearButton
 							show={!!teamFilter}
@@ -858,13 +874,15 @@ export default function VirtualKeysTable({
 						<span className="text-muted-foreground text-xs font-medium">or</span>
 					)}
 					{UserPicker && (
-						<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-user-filter">
+						<div className={FILTER_WRAPPER_CLASS} data-testid="vk-user-filter">
 							<UserPicker
 								value={userFilter}
 								onChange={onUserFilterChange}
 								placeholder="All Users"
-								triggerClassName="h-9"
-								className="w-full min-w-0"
+								triggerIcon={<UserRound className={FILTER_ICON_CLASS} />}
+								triggerClassName={FILTER_TRIGGER_CLASS}
+								contentClassName={FILTER_CONTENT_CLASS}
+								className={FILTER_SELECTOR_CLASS}
 							/>
 							<FilterClearButton
 								show={!!userFilter}
@@ -875,26 +893,56 @@ export default function VirtualKeysTable({
 						</div>
 					)}
 
-					<div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:shrink-0 sm:flex-nowrap">
+					<div className="ml-auto flex shrink-0 items-center gap-2">
 						{selectedCount > 0 && (
-							<Button
-								variant="outline"
-								onClick={() => setShowBulkRotateDialog(true)}
-								disabled={!hasUpdateAccess || isBulkRotating}
-								data-testid="vk-bulk-rotate-btn"
-							>
-								<RotateCcw className="h-4 w-4" />
-								Rotate selected ({selectedCount})
-							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										variant="outline"
+										className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+										onClick={() => setShowBulkRotateDialog(true)}
+										disabled={!hasUpdateAccess || isBulkRotating}
+										aria-label={`Rotate selected (${selectedCount})`}
+										data-testid="vk-bulk-rotate-btn"
+									>
+										<RotateCcw className="h-4 w-4" />
+										<span className="hidden @5xl/vk-toolbar:inline">Rotate selected ({selectedCount})</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>Rotate selected ({selectedCount})</TooltipContent>
+							</Tooltip>
 						)}
-						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
-							<Download className="h-4 w-4" />
-							Export CSV
-						</Button>
-						<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess} data-testid="create-vk-btn">
-							<Plus className="h-4 w-4" />
-							Add Virtual Key
-						</Button>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									variant="outline"
+									className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+									onClick={openExportDialog}
+									disabled={virtualKeys.length === 0}
+									aria-label="Export CSV"
+									data-testid="vk-export-btn"
+								>
+									<Download className="h-4 w-4" />
+									<span className="hidden @5xl/vk-toolbar:inline">Export CSV</span>
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>Export CSV</TooltipContent>
+						</Tooltip>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+									onClick={handleAddVirtualKey}
+									disabled={!hasCreateAccess}
+									aria-label="Add Virtual Key"
+									data-testid="create-vk-btn"
+								>
+									<Plus className="h-4 w-4" />
+									<span className="hidden @5xl/vk-toolbar:inline">Add Virtual Key</span>
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>Add Virtual Key</TooltipContent>
+						</Tooltip>
 					</div>
 				</div>
 
