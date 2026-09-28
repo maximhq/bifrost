@@ -2032,7 +2032,9 @@ type ChatCompletionTokensDetails struct {
 	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
 	AudioTokens              int  `json:"audio_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
+	// NumSearchQueries and NumWebFetchRequests carry Anthropic's server_tool_use block.
 	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+	NumWebFetchRequests      *int `json:"num_web_fetch_requests,omitempty"`
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
 	ImageTokens              *int `json:"image_tokens,omitempty"`
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
@@ -2115,6 +2117,7 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		}
 		merged.CompletionTokensDetails.CitationTokens = sumOptionalInts(baseDetails.CitationTokens, addDetails.CitationTokens)
 		merged.CompletionTokensDetails.NumSearchQueries = sumOptionalInts(baseDetails.NumSearchQueries, addDetails.NumSearchQueries)
+		merged.CompletionTokensDetails.NumWebFetchRequests = sumOptionalInts(baseDetails.NumWebFetchRequests, addDetails.NumWebFetchRequests)
 		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
 	}
 
@@ -2440,6 +2443,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		cd := *u.CompletionTokensDetails
 		cd.CitationTokens = copyIntPtr(u.CompletionTokensDetails.CitationTokens)
 		cd.NumSearchQueries = copyIntPtr(u.CompletionTokensDetails.NumSearchQueries)
+		cd.NumWebFetchRequests = copyIntPtr(u.CompletionTokensDetails.NumWebFetchRequests)
 		cd.ImageTokens = copyIntPtr(u.CompletionTokensDetails.ImageTokens)
 		c.CompletionTokensDetails = &cd
 	}

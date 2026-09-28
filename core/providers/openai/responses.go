@@ -1172,3 +1172,23 @@ func (r *OpenAICompactionRequest) ToBifrostCompactionRequest(ctx *schemas.Bifros
 		ExtraParams:          r.ExtraParams,
 	}
 }
+
+// ApplyOpenAIServerToolUsage records server-tool call counts on usage so
+// CalculateCost can charge the per-query web search fee. OpenAI keeps these out of
+// usage and reports them in the top-level tool_usage block, which is the billed
+// count: the output items are not a substitute, since a single web_search_call may
+// be an open_page or find_in_page action that does not bill.
+func ApplyOpenAIServerToolUsage(response *schemas.BifrostResponsesResponse) {
+	if response == nil || response.Usage == nil || response.ToolUsage == nil {
+		return
+	}
+	if response.ToolUsage.WebSearch == nil || response.ToolUsage.WebSearch.NumRequests <= 0 {
+		return
+	}
+	if response.Usage.OutputTokensDetails == nil {
+		response.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+	}
+	if response.Usage.OutputTokensDetails.NumSearchQueries == nil {
+		response.Usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(response.ToolUsage.WebSearch.NumRequests)
+	}
+}

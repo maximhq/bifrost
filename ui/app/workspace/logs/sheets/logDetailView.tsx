@@ -2279,6 +2279,13 @@ export function LogDetailView({
 											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
 										/>
 									)}
+									{(log.cost_breakdown?.output_cost_details?.search_queries_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Web Search Cost"
+											value={formatCostPrecise(log.cost_breakdown?.output_cost_details?.search_queries_cost)}
+										/>
+									)}
 									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
@@ -2416,6 +2423,20 @@ export function LogDetailView({
 													className="w-full"
 													label="Rejected Prediction Tokens"
 													value={log.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"}
+												/>
+											)}
+											{log.token_usage.completion_tokens_details.num_search_queries && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Web Search Requests"
+													value={log.token_usage.completion_tokens_details.num_search_queries || "-"}
+												/>
+											)}
+											{log.token_usage.completion_tokens_details.num_web_fetch_requests && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Web Fetch Requests"
+													value={log.token_usage.completion_tokens_details.num_web_fetch_requests || "-"}
 												/>
 											)}
 										</>

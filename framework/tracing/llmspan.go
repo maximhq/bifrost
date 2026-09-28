@@ -424,6 +424,9 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 			if resp.Usage.CompletionTokensDetails.NumSearchQueries != nil && *resp.Usage.CompletionTokensDetails.NumSearchQueries > 0 {
 				attrs[schemas.AttrCompletionTokenDetailsSearch] = *resp.Usage.CompletionTokensDetails.NumSearchQueries
 			}
+			if resp.Usage.CompletionTokensDetails.NumWebFetchRequests != nil && *resp.Usage.CompletionTokensDetails.NumWebFetchRequests > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsWebFetch] = *resp.Usage.CompletionTokensDetails.NumWebFetchRequests
+			}
 		}
 	}
 }
@@ -976,6 +979,9 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 			}
 			if d.NumSearchQueries != nil && *d.NumSearchQueries > 0 {
 				attrs[schemas.AttrOutputTokenDetailsSearch] = *d.NumSearchQueries
+			}
+			if d.NumWebFetchRequests != nil && *d.NumWebFetchRequests > 0 {
+				attrs[schemas.AttrOutputTokenDetailsWebFetch] = *d.NumWebFetchRequests
 			}
 		}
 	}

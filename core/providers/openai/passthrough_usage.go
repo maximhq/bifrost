@@ -149,9 +149,11 @@ type oaiResponsesWrapper struct {
 	Response *struct {
 		Usage       *schemas.ResponsesResponseUsage `json:"usage"`
 		ServiceTier *string                         `json:"service_tier"`
+		ToolUsage   *schemas.ResponsesToolUsage     `json:"tool_usage"`
 	} `json:"response"`
 	Usage       *schemas.ResponsesResponseUsage `json:"usage"`
 	ServiceTier *string                         `json:"service_tier"`
+	ToolUsage   *schemas.ResponsesToolUsage     `json:"tool_usage"`
 }
 
 func extractOAIResponsesUsage(body []byte) *schemas.BifrostPassthroughUsage {
@@ -165,17 +167,17 @@ func extractOAIResponsesUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	}
 
 	// Streaming takes priority: nested under "response" with a non-zero total.
-	ru, tier := w.Usage, w.ServiceTier
+	ru, tier, toolUsage := w.Usage, w.ServiceTier, w.ToolUsage
 	if w.Response != nil && w.Response.Usage != nil && w.Response.Usage.TotalTokens > 0 {
-		ru, tier = w.Response.Usage, w.Response.ServiceTier
+		ru, tier, toolUsage = w.Response.Usage, w.Response.ServiceTier, w.Response.ToolUsage
 	}
 	if ru == nil || ru.TotalTokens == 0 {
 		return nil
 	}
-	return buildOAIResponsesUsage(ru, tier)
+	return buildOAIResponsesUsage(ru, tier, toolUsage)
 }
 
-func buildOAIResponsesUsage(ru *schemas.ResponsesResponseUsage, serviceTier *string) *schemas.BifrostPassthroughUsage {
+func buildOAIResponsesUsage(ru *schemas.ResponsesResponseUsage, serviceTier *string, toolUsage *schemas.ResponsesToolUsage) *schemas.BifrostPassthroughUsage {
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     ru.InputTokens,
 		CompletionTokens: ru.OutputTokens,
@@ -194,7 +196,12 @@ func buildOAIResponsesUsage(ru *schemas.ResponsesResponseUsage, serviceTier *str
 		if ru.OutputTokensDetails.NumSearchQueries != nil {
 			usage.CompletionTokensDetails.NumSearchQueries = ru.OutputTokensDetails.NumSearchQueries
 		}
+		if ru.OutputTokensDetails.NumWebFetchRequests != nil {
+			usage.CompletionTokensDetails.NumWebFetchRequests = ru.OutputTokensDetails.NumWebFetchRequests
+		}
 	}
+	// OpenAI reports billed server-tool calls in tool_usage, not in usage.
+	applyPassthroughServerToolUsage(usage, toolUsage)
 	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
 	if serviceTier != nil {
 		t := schemas.BifrostServiceTier(*serviceTier)
@@ -398,4 +405,18 @@ func extractOAIContainerUsage(body []byte) *schemas.BifrostPassthroughUsage {
 		identifier = "container-" + resp.MemoryLimit
 	}
 	return &schemas.BifrostPassthroughUsage{ContainerIdentifier: identifier}
+}
+
+// applyPassthroughServerToolUsage mirrors ApplyOpenAIServerToolUsage for the
+// passthrough path, where only the raw body is available.
+func applyPassthroughServerToolUsage(usage *schemas.BifrostLLMUsage, toolUsage *schemas.ResponsesToolUsage) {
+	if toolUsage == nil || toolUsage.WebSearch == nil || toolUsage.WebSearch.NumRequests <= 0 {
+		return
+	}
+	if usage.CompletionTokensDetails == nil {
+		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+	}
+	if usage.CompletionTokensDetails.NumSearchQueries == nil {
+		usage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(toolUsage.WebSearch.NumRequests)
+	}
 }

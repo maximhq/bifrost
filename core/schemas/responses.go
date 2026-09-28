@@ -270,6 +270,7 @@ type BifrostResponsesResponse struct {
 	ToolChoice           *ResponsesToolChoice                `json:"tool_choice,omitempty"` // Whether to call a tool
 	Tools                []ResponsesTool                     `json:"tools"`                 // Tools to use
 	Truncation           *string                             `json:"truncation,omitempty"`
+	ToolUsage            *ResponsesToolUsage                 `json:"tool_usage,omitempty"` // Per-server-tool call counts (OpenAI)
 	Usage                *ResponsesResponseUsage             `json:"usage"`
 	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
@@ -1345,6 +1346,33 @@ type ResponsesServerSideToolUsageDetails struct {
 	DocumentSearchCalls  int `json:"document_search_calls"`
 }
 
+type ResponsesToolUsage struct {
+	WebSearch *ResponsesToolUsageWebSearch `json:"web_search,omitempty"`
+}
+
+type ResponsesToolUsageWebSearch struct {
+	NumRequests int `json:"num_requests"`
+}
+
+// SyncToolUsage mirrors the neutral web-search counter into the OpenAI-shaped
+// tool_usage block, so a response sourced from Anthropic's server_tool_use still
+// reports its server-tool calls on the OpenAI wire. An existing block wins.
+func (r *BifrostResponsesResponse) SyncToolUsage() {
+	if r == nil || r.Usage == nil || r.Usage.OutputTokensDetails == nil {
+		return
+	}
+	n := r.Usage.OutputTokensDetails.NumSearchQueries
+	if n == nil || *n <= 0 {
+		return
+	}
+	if r.ToolUsage == nil {
+		r.ToolUsage = &ResponsesToolUsage{}
+	}
+	if r.ToolUsage.WebSearch == nil {
+		r.ToolUsage.WebSearch = &ResponsesToolUsageWebSearch{NumRequests: *n}
+	}
+}
+
 // ResponsesContextDetails holds the per-context token breakdown returned by xAI.
 type ResponsesContextDetails struct {
 	InputTokens  int `json:"input_tokens"`
@@ -1430,7 +1458,9 @@ type ResponsesResponseOutputTokens struct {
 	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
-	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+	// NumSearchQueries and NumWebFetchRequests carry Anthropic's server_tool_use block.
+	NumSearchQueries    *int `json:"num_search_queries,omitempty"`
+	NumWebFetchRequests *int `json:"num_web_fetch_requests,omitempty"`
 }
 
 // =============================================================================

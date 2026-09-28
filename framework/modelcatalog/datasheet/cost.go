@@ -841,6 +841,9 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		if u.OutputTokensDetails.NumSearchQueries != nil {
 			usage.CompletionTokensDetails.NumSearchQueries = u.OutputTokensDetails.NumSearchQueries
 		}
+		if u.OutputTokensDetails.NumWebFetchRequests != nil {
+			usage.CompletionTokensDetails.NumWebFetchRequests = u.OutputTokensDetails.NumWebFetchRequests
+		}
 	}
 	return usage
 }

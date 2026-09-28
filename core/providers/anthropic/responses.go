@@ -4796,12 +4796,17 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + billable.CacheCreationInputTokens
 	}
 
-	// Propagate server tool use (web search) counts
-	if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
+	// Propagate server tool use (web search / web fetch) counts
+	if billable.ServerToolUse != nil {
 		if bifrostUsage.OutputTokensDetails == nil {
 			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 		}
-		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(billable.ServerToolUse.WebSearchRequests)
+		if billable.ServerToolUse.WebSearchRequests > 0 {
+			bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(billable.ServerToolUse.WebSearchRequests)
+		}
+		if billable.ServerToolUse.WebFetchRequests > 0 {
+			bifrostUsage.OutputTokensDetails.NumWebFetchRequests = schemas.Ptr(billable.ServerToolUse.WebFetchRequests)
+		}
 	}
 
 	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
@@ -4858,10 +4863,20 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		}
 	}
 
-	// Handle server tool use statistics (e.g., web search)
-	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.NumSearchQueries != nil && *bifrostUsage.OutputTokensDetails.NumSearchQueries > 0 {
-		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{
-			WebSearchRequests: *bifrostUsage.OutputTokensDetails.NumSearchQueries,
+	// Handle server tool use statistics (web search / web fetch)
+	if d := bifrostUsage.OutputTokensDetails; d != nil {
+		searches, fetches := 0, 0
+		if d.NumSearchQueries != nil {
+			searches = *d.NumSearchQueries
+		}
+		if d.NumWebFetchRequests != nil {
+			fetches = *d.NumWebFetchRequests
+		}
+		if searches > 0 || fetches > 0 {
+			anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{
+				WebSearchRequests: searches,
+				WebFetchRequests:  fetches,
+			}
 		}
 	}
 
@@ -4931,6 +4946,7 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	// Convert usage information using common converter (handles iterations recursively)
 	bifrostResp.Usage = ConvertAnthropicUsageToBifrostUsage(response.Usage)
+	bifrostResp.SyncToolUsage()
 
 	// Record the model that actually served the turn when server-side fallback
 	// handed off mid-request. Routing cannot see this, so pricing reads it here.

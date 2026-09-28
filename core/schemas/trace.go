@@ -976,6 +976,7 @@ const (
 	AttrCompletionTokenDetailsReject    = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
 	AttrCompletionTokenDetailsCite      = "gen_ai.usage.completion_token_details.citation_tokens"
 	AttrCompletionTokenDetailsSearch    = "gen_ai.usage.completion_token_details.num_search_queries"
+	AttrCompletionTokenDetailsWebFetch  = "gen_ai.usage.completion_token_details.num_web_fetch_requests"
 
 	// Error Attributes
 	AttrError     = "gen_ai.error"
@@ -1083,6 +1084,7 @@ const (
 	AttrOutputTokenDetailsReject       = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
 	AttrOutputTokenDetailsCite         = "gen_ai.usage.output_token_details.citation_tokens"
 	AttrOutputTokenDetailsSearch       = "gen_ai.usage.output_token_details.num_search_queries"
+	AttrOutputTokenDetailsWebFetch     = "gen_ai.usage.output_token_details.num_web_fetch_requests"
 
 	// Tool execution attributes (OTel GenAI spec) used on MCP tool spans.
 	AttrToolName          = "gen_ai.tool.name"
