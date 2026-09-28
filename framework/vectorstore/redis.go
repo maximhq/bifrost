@@ -244,8 +244,139 @@ func (s *RedisStore) GetChunks(ctx context.Context, namespace string, ids []stri
 	return results, nil
 }
 
+// redisEmbeddingField is the hash field an entry's vector is stored in.
+const redisEmbeddingField = "embedding"
+
 // GetAll retrieves all chunks from the Redis vector store.
+//
+// A caller that asked for vectors gets each entry's stored one. The vector is
+// a field of the entry's hash like any other, so it is read by asking for
+// that field too and lifting it out of the properties afterwards.
+//
+// Unfiltered, that caller is reading the namespace out, so it is served by
+// walking the keys rather than by search: a search stops at MAXSEARCHRESULTS,
+// 10,000 by default, and answers a read past it with nothing - which looks
+// exactly like the end of the namespace. Filtered, it is taking a slice, and
+// search is what can find one without visiting every key; the slice has to
+// fit under that ceiling, which is the caller's to arrange.
 func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
+	if !IncludeVectorsRequested(ctx) {
+		return s.getAll(ctx, namespace, queries, selectFields, cursor, limit)
+	}
+	fields := selectFields
+	if len(fields) > 0 && !containsField(fields, redisEmbeddingField) {
+		fields = append(append(make([]string, 0, len(fields)+1), fields...), redisEmbeddingField)
+	}
+	read := s.getAllByKeyWalk
+	if len(queries) > 0 && (cursor == nil || !strings.HasPrefix(*cursor, redisWalkCursorPrefix)) {
+		read = s.getAll
+	}
+	results, next, err := read(ctx, namespace, queries, fields, cursor, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	for index := range results {
+		raw, present := results[index].Properties[redisEmbeddingField]
+		if !present {
+			continue
+		}
+		results[index].Vector = bytesToFloat32Slice(raw)
+		if !containsField(selectFields, redisEmbeddingField) {
+			delete(results[index].Properties, redisEmbeddingField)
+		}
+	}
+	return results, next, nil
+}
+
+// FiltersVectorReadsOnServer reports that a filtered read is served by the
+// search index.
+func (s *RedisStore) FiltersVectorReadsOnServer() bool { return true }
+
+// redisWalkCursorPrefix marks a cursor handed out by getAllByKeyWalk, so it
+// is never mistaken for the offset a search cursor carries.
+const redisWalkCursorPrefix = "walk:"
+
+// getAllByKeyWalk pages a namespace by walking its keys with SCAN.
+//
+// The cursor is "walk:<node>:<scan cursor>": which node is being walked, in
+// address order, and where SCAN has got to on it. A single server is node 0.
+// SCAN returns about as many keys as it is asked for, sometimes none and, while
+// the keyspace is being written to, occasionally the same key twice - so a
+// page may be short or overfull, and a caller that cannot take a repeat has to
+// look for one. Filters are applied here, since a walk has no query.
+func (s *RedisStore) getAllByKeyWalk(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
+	defer cancel()
+
+	node, scanCursor := 0, uint64(0)
+	if cursor != nil && *cursor != "" {
+		if _, err := fmt.Sscanf(*cursor, redisWalkCursorPrefix+"%d:%d", &node, &scanCursor); err != nil || node < 0 {
+			return nil, nil, fmt.Errorf("%w: invalid cursor %q", ErrQuerySyntax, *cursor)
+		}
+	}
+	nodes, err := s.walkNodes(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	wanted := int(boundedPageLimit(limit, BatchLimit))
+	pattern := buildKey(namespace, "*")
+	results := make([]SearchResult, 0, wanted)
+	for node < len(nodes) {
+		keys, next, err := nodes[node].Scan(ctx, scanCursor, pattern, int64(wanted-len(results))).Result()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to scan keys: %w", err)
+		}
+		matches, err := s.fetchMatchingSearchResults(ctx, nodes[node], namespace, keys, queries, selectFields)
+		if err != nil {
+			return nil, nil, err
+		}
+		results = append(results, matches...)
+		scanCursor = next
+		if scanCursor == 0 {
+			node++
+		}
+		if len(results) >= wanted {
+			break
+		}
+	}
+	s.decodeFilterableProperties(namespace, results)
+	if node >= len(nodes) {
+		return results, nil, nil
+	}
+	resume := fmt.Sprintf("%s%d:%d", redisWalkCursorPrefix, node, scanCursor)
+	return results, &resume, nil
+}
+
+// walkNodes is the servers a key walk visits: the one server, or a cluster's
+// masters in address order, which is what lets a cursor name one by position.
+func (s *RedisStore) walkNodes(ctx context.Context) ([]redis.Cmdable, error) {
+	cluster, ok := s.client.(*redis.ClusterClient)
+	if !ok {
+		return []redis.Cmdable{s.client}, nil
+	}
+	var mu sync.Mutex
+	masters := map[string]*redis.Client{}
+	if err := cluster.ForEachMaster(ctx, func(_ context.Context, client *redis.Client) error {
+		mu.Lock()
+		defer mu.Unlock()
+		masters[client.Options().Addr] = client
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("failed to list cluster nodes: %w", err)
+	}
+	addrs := make([]string, 0, len(masters))
+	for addr := range masters {
+		addrs = append(addrs, addr)
+	}
+	sort.Strings(addrs)
+	nodes := make([]redis.Cmdable, 0, len(addrs))
+	for _, addr := range addrs {
+		nodes = append(nodes, masters[addr])
+	}
+	return nodes, nil
+}
+
+func (s *RedisStore) getAll(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
@@ -1728,6 +1859,30 @@ func escapeSearchValue(value string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// bytesToFloat32Slice reads a vector back from the binary form
+// float32SliceToBytes writes. The client hands a binary field over as a
+// string or as bytes depending on the protocol; anything else, or a length
+// that is not whole floats, is not a vector.
+func bytesToFloat32Slice(raw interface{}) []float32 {
+	var data []byte
+	switch value := raw.(type) {
+	case string:
+		data = []byte(value)
+	case []byte:
+		data = value
+	default:
+		return nil
+	}
+	if len(data) == 0 || len(data)%4 != 0 {
+		return nil
+	}
+	floats := make([]float32, len(data)/4)
+	for index := range floats {
+		floats[index] = math.Float32frombits(binary.LittleEndian.Uint32(data[index*4:]))
+	}
+	return floats
 }
 
 // Binary embedding conversion helpers

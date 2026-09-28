@@ -191,16 +191,21 @@ func (s *ChromemStore) GetAll(ctx context.Context, namespace string, queries []Q
 		return nil, nil, err
 	}
 
+	includeVectors := IncludeVectorsRequested(ctx)
 	filtered := make([]SearchResult, 0, len(docs))
 	for _, doc := range docs {
 		props := decodeChromemMetadata(doc.Metadata)
 		if !matchesChromemQueries(props, queries) {
 			continue
 		}
-		filtered = append(filtered, SearchResult{
+		result := SearchResult{
 			ID:         doc.ID,
 			Properties: applyChromemSelectFields(props, selectFields),
-		})
+		}
+		if includeVectors {
+			result.Vector = doc.Embedding
+		}
+		filtered = append(filtered, result)
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID < filtered[j].ID })
 
