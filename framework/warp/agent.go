@@ -201,6 +201,7 @@ func accumulateUsage(total, next *schemas.BifrostLLMUsage, price CostFunc) *sche
 	// prices each turn as it arrives.
 	total.PromptTokensDetails = mergePromptTokenDetails(total.PromptTokensDetails, next.PromptTokensDetails)
 	total.CompletionTokensDetails = mergeCompletionTokenDetails(total.CompletionTokensDetails, next.CompletionTokensDetails)
+	total.ToolUsage = total.ToolUsage.Add(next.ToolUsage)
 
 	turnCost := 0.0
 	if next.Cost != nil {
@@ -1217,5 +1218,6 @@ func usageFromResponses(usage *schemas.ResponsesResponseUsage) *schemas.BifrostL
 			NumSearchQueries:         details.NumSearchQueries,
 		}
 	}
+	converted.ToolUsage = usage.ToolUsage.DeepCopy()
 	return converted
 }

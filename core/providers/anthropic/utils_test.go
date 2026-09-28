@@ -4242,6 +4242,12 @@ func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
 	if got := *billed.CompletionTokensDetails.NumSearchQueries; got != 2 {
 		t.Fatalf("billed usage NumSearchQueries = %d, want 2", got)
 	}
+	if got := usage.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("response usage ToolUsage web search = %d, want 2", got)
+	}
+	if got := billed.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("billed usage ToolUsage web search = %d, want 2", got)
+	}
 }
 
 // TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo verifies the chat

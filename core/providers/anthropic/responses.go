@@ -4802,6 +4802,7 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 		}
 		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(billable.ServerToolUse.WebSearchRequests)
+		bifrostUsage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: billable.ServerToolUse.WebSearchRequests}}
 	}
 
 	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
@@ -4859,10 +4860,8 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 	}
 
 	// Handle server tool use statistics (e.g., web search)
-	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.NumSearchQueries != nil && *bifrostUsage.OutputTokensDetails.NumSearchQueries > 0 {
-		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{
-			WebSearchRequests: *bifrostUsage.OutputTokensDetails.NumSearchQueries,
-		}
+	if bifrostUsage.ToolUsage != nil && bifrostUsage.ToolUsage.WebSearch != nil && bifrostUsage.ToolUsage.WebSearch.NumRequests > 0 {
+		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{WebSearchRequests: bifrostUsage.ToolUsage.WebSearch.NumRequests}
 	}
 
 	// Reasoning tokens map back to Anthropic's thinking-token breakdown. Unlike the
