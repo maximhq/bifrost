@@ -220,6 +220,14 @@ export const baseApi = createApi({
 	endpoints: () => ({}),
 });
 
+export const getErrorCode = (error: unknown): string | undefined => {
+	if (typeof error !== "object" || !error || !("data" in error)) {
+		return undefined;
+	}
+	const data = (error as { data?: BifrostErrorResponse }).data;
+	return typeof data?.error?.code === "string" ? data.error.code : undefined;
+};
+
 // Helper function to extract error message from RTK Query error
 export const getErrorMessage = (error: unknown): string => {
 	if (error === undefined || error === null) {

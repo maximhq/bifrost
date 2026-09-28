@@ -1043,35 +1043,64 @@ func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
 	m.tempTokensEnabled.Store(enabled)
 }
 
+// 401 codes for the temp-token fallback. Only sent to a caller that presented a
+// token, so other routes leak nothing about this instance's config.
+const (
+	TempTokenAuthDisabledCode = "temp_token_auth_disabled"
+	TempTokenRejectedCode     = "temp_token_rejected"
+)
+
 // tryTempTokenOrUnauthorized is the last-resort auth path: a request that
 // failed every conventional credential check (no Authorization header, no
 // valid cookie) is given one more chance to present an X-Bifrost-Temp-Token
 // header that authorizes the specific (method, path) being requested. On
 // success the validated scope and resource_id are attached to ctx for
 // handler-side defense-in-depth checks, and the next handler runs. On
-// failure (no header, expired, route-mismatch, etc.) a 401 is written.
+// failure (no header, expired, route-mismatch, etc.) a 401 is written, carrying
+// one of the codes above when a token was presented.
 //
 // Temp-token validation is intentionally *not* attempted when an
 // Authorization header or session cookie is present — those paths have
 // their own success/failure semantics and silently rescuing a bad password
 // with a temp token would be surprising.
 func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, next fasthttp.RequestHandler) {
-	if m.tempTokensService != nil && m.tempTokensEnabled.Load() {
-		token := string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
-		if token != "" {
-			// Scope authorization must use the same raw path as router dispatch.
-			// A normalized path can name an allowed flow while the router selects
-			// a protected management handler through an encoded path parameter.
-			validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Request.URI().PathOriginal()))
-			if err == nil && validated != nil {
-				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenScope, validated.Scope)
-				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenResourceID, validated.ResourceID)
-				next(ctx)
-				return
-			}
-		}
+	token := ""
+	if m.tempTokensService != nil {
+		token = string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
 	}
-	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+	if token == "" {
+		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	if !m.tempTokensEnabled.Load() {
+		sendUnauthorizedWithCode(ctx, TempTokenAuthDisabledCode, "temp token auth is disabled on this instance")
+		return
+	}
+	// Scope authorization must use the same raw path as router dispatch.
+	// A normalized path can name an allowed flow while the router selects
+	// a protected management handler through an encoded path parameter.
+	validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Request.URI().PathOriginal()))
+	if err == nil && validated != nil {
+		ctx.SetUserValue(schemas.BifrostContextKeyTempTokenScope, validated.Scope)
+		ctx.SetUserValue(schemas.BifrostContextKeyTempTokenResourceID, validated.ResourceID)
+		next(ctx)
+		return
+	}
+	// Expired, unknown and out-of-scope are one answer to the caller.
+	sendUnauthorizedWithCode(ctx, TempTokenRejectedCode, "Unauthorized")
+}
+
+// sendUnauthorizedWithCode writes a 401 carrying a machine-readable code.
+func sendUnauthorizedWithCode(ctx *fasthttp.RequestCtx, code, message string) {
+	status := fasthttp.StatusUnauthorized
+	SendBifrostError(ctx, &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &status,
+		Error: &schemas.ErrorField{
+			Code:    &code,
+			Message: message,
+		},
+	})
 }
 
 // InferenceMiddleware is for inference requests (including MCP routes). It always
