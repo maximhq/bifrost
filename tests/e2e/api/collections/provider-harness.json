@@ -180152,6 +180152,206 @@
           }
         }
       ]
+    },
+    {
+      "name": "128. Routing rule rewrite reports the requested model (requested-route)",
+      "description": "Pins the caller's pre-routing model on the wire. A routing rule rewrites the request's model in PreRequestHook, so before this change nothing on the response named the model the caller sent: routing_info.model and the deprecated original_model_requested both carry the rewritten model. Core now records the caller's provider/model before any PreRequestHook runs (BifrostContextKeyRequestedProvider/Model, readable by plugins), and RoutingInfo reports them as requested_provider/requested_model, mirrored in the x-bifrost-routing-info-requested-provider/-model headers. The static rule harness-requested-route-rewrite in tests/integrations/python/config.json (behind x-harness-requested-route: rewrite) rewrites the model to gpt-4o-mini; each case sends a model OpenAI does not have, so a rule that stops firing fails the case loudly instead of passing it. The cases pin the JSON body and headers on /v1/chat/completions, the SSE chunks and the headers written before the first chunk on the streaming path, and the headers on the OpenAI drop-in route, whose body has no extra_fields.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini requested-route: routing rule rewrite reports the requested model non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the rewritten request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('headers report the routed model and the model the caller sent', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'routed model header: ' + text).to.equal('gpt-4o-mini');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-model'), 'requested model header: ' + text).to.equal('harness-requested-route-alias');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'requested provider header: ' + text).to.equal('openai');",
+                  "});",
+                  "pm.test('routing_info carries the requested route next to the routed model', function () {",
+                  "  var ri = ((pm.response.json() || {}).extra_fields || {}).routing_info || {};",
+                  "  pm.expect(ri.model, 'routing_info.model: ' + text).to.eql('gpt-4o-mini');",
+                  "  pm.expect(ri.requested_model, 'routing_info.requested_model: ' + text).to.eql('harness-requested-route-alias');",
+                  "  pm.expect(ri.requested_provider, 'routing_info.requested_provider: ' + text).to.eql('openai');",
+                  "  pm.expect(pm.response.json().choices).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-requested-route",
+                "value": "rewrite"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/harness-requested-route-alias\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini requested-route: routing rule rewrite reports the requested model streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the rewritten request streams to completion', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'stream carried an error: ' + text).to.not.include('\"error\"');",
+                  "  pm.expect(text, 'stream never finished: ' + text).to.include('[DONE]');",
+                  "});",
+                  "// Stream headers are written from the routing snapshot before the first chunk.",
+                  "pm.test('headers report the routed model and the model the caller sent', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'routed model header: ' + text).to.equal('gpt-4o-mini');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-model'), 'requested model header: ' + text).to.equal('harness-requested-route-alias');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'requested provider header: ' + text).to.equal('openai');",
+                  "});",
+                  "pm.test('streamed chunks carry the requested route in routing_info', function () {",
+                  "  var requested = [];",
+                  "  (text || '').split('\\n').forEach(function (line) {",
+                  "    var t = line.replace(/\\r$/, '');",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try {",
+                  "      var ri = (JSON.parse(payload).extra_fields || {}).routing_info || {};",
+                  "      if (ri.requested_model) { requested.push(ri.requested_model + '|' + ri.model); }",
+                  "    } catch (e) {}",
+                  "  });",
+                  "  pm.expect(requested, 'no streamed chunk carried routing_info.requested_model: ' + text).to.not.be.empty;",
+                  "  requested.forEach(function (pair) {",
+                  "    pm.expect(pair, 'a chunk reported a different requested/routed pair').to.eql('harness-requested-route-alias|gpt-4o-mini');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-requested-route",
+                "value": "rewrite"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/harness-requested-route-alias\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini requested-route: routing rule rewrite reports the requested model on the OpenAI drop-in route",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the rewritten request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(pm.response.json().choices, 'no choices: ' + text).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('headers report the routed model and the model the caller sent', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'routed model header: ' + text).to.equal('gpt-4o-mini');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-model'), 'requested model header: ' + text).to.equal('harness-requested-route-alias');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'requested provider header: ' + text).to.equal('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-requested-route",
+                "value": "rewrite"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/harness-requested-route-alias\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

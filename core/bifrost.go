@@ -5362,6 +5362,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	var served *schemas.Route
 	servedFallback := false
 	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	stampRequestedRoute(ctx, requested)
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
@@ -5536,6 +5537,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	var served *schemas.Route
 	servedFallback := false
 	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	stampRequestedRoute(ctx, requested)
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
@@ -7465,6 +7467,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			Provider: provider.GetProviderKey(),
 			Model:    originalModelRequested,
 		}
+		// The per-attempt closures overwrite this with BuildRoutingInfo, which already
+		// carries the caller's requested route. The pre-seed only survives when every
+		// retry fails before a closure runs, so stamp the requested route here too or
+		// those errors would be the only responses without it. Not BuildRoutingInfo
+		// itself: it also reads BifrostContextKeyResolvedAlias, which at this point on a
+		// fallback still holds the previous attempt's alias (clearCtxForFallback keeps
+		// it), and would pin the primary's alias onto the fallback's error.
+		attemptRoutingInfo.ApplyRequestRouting(req.Context)
 		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
 		// worker-level error fallback below. Single-threaded write (assigned by the retry
 		// loop's per-attempt closure) and single-threaded read (after retries finish), so

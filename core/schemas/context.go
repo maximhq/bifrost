@@ -43,6 +43,8 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
+	BifrostContextKeyRequestedProvider:       {},
+	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyMCPInboundBearer:        {},
 }
 
