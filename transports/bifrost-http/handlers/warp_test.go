@@ -313,6 +313,90 @@ func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
 	require.Equal(t, "u-1", snapshot.Value(schemas.BifrostContextKeyUserID))
 }
 
+// Warp's model calls go through the gateway client in-process, so no HTTP
+// transport settles who they are - and governance refuses a request that
+// carries no grant. The snapshot must carry a grant settled from the dashboard
+// request, attributed to the user who asked, or every chat fails with "request
+// carries no grant".
+func TestWarpSnapshotCarriesSettledGrant(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserEmail, "u1@example.com")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	g := warp.NewGrantFromContext(snapshot)
+	require.NotNil(t, g, "a turn without a grant is refused by governance on its first model call")
+	require.NotNil(t, g.Identity(), "the grant's identity must be settled, not left open")
+	require.NotNil(t, g.Identity().User())
+	require.Equal(t, "u-1", g.Identity().User().ID)
+
+	// A deployment with no auth still settles an identity - "nobody" - which is
+	// distinct from never having been settled.
+	anonymous, cancelAnonymous, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second)
+	require.NoError(t, err)
+	defer cancelAnonymous()
+	require.NotNil(t, warp.NewGrantFromContext(anonymous))
+	require.NotNil(t, warp.NewGrantFromContext(anonymous).Identity())
+}
+
+// Governance stamps the caller's name, teams and customer only while resolving
+// a grant, once per grant. Each of Warp's model calls must therefore settle its
+// own grant, still attributed to the user who asked, even after fasthttp has
+// recycled the request the values came from.
+func TestWarpSnapshotSettlesAFreshGrantPerCall(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserName, "Suresh")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	ctx.ResetUserValues()
+
+	first, second := warp.NewGrantFromContext(snapshot), warp.NewGrantFromContext(snapshot)
+	require.NotSame(t, first, second, "a shared grant is resolved on the first call only")
+	for _, g := range []schemas.Grant{first, second} {
+		require.Equal(t, "u-1", g.Identity().User().ID)
+		require.Equal(t, "Suresh", g.Identity().User().Name)
+	}
+}
+
+// A virtual key arrives as a request header, never as a user value, so the
+// grant must read it from the headers the way lib.ConvertToBifrostContext does
+// - otherwise a dashboard request that presents a key settles as the session
+// alone and governance never sees the key.
+func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
+	for name, set := range map[string]func(*fasthttp.RequestHeader){
+		"x-bf-vk":              func(h *fasthttp.RequestHeader) { h.Set("x-bf-vk", "sk-bf-abc") },
+		"authorization bearer": func(h *fasthttp.RequestHeader) { h.Set("Authorization", "Bearer sk-bf-abc") },
+		"x-api-key":            func(h *fasthttp.RequestHeader) { h.Set("x-api-key", "sk-bf-abc") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			set(&ctx.Request.Header)
+			ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+
+			snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+			require.NoError(t, err)
+			defer cancel()
+			identity := warp.NewGrantFromContext(snapshot).Identity()
+			require.NotNil(t, identity)
+			require.Equal(t, "sk-bf-abc", identity.Credential().Value)
+			require.Equal(t, "u-1", identity.User().ID, "the session's user is kept alongside the key")
+		})
+	}
+
+	// A bearer that is not a virtual key (a dashboard session token) is not one.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Authorization", "Bearer session-token")
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	require.Empty(t, warp.NewGrantFromContext(snapshot).Identity().Credential().Value)
+}
+
 // A scope that was set on the request but cannot be carried over is the
 // dangerous case: queryscope.FromContext reads a missing scope as "no
 // restriction", so the agent would run unscoped over every tenant's prompts and

@@ -102,15 +102,12 @@ type WarpConfig struct {
 	// Empty is valid and common: a provider on a trusted network, or one using
 	// ambient IAM credentials, needs no key at all.
 	APIKeyID string `json:"api_key_id,omitempty"`
-	// BaseURL overrides the provider's default endpoint. Required for
-	// self-hosted and proxied deployments, empty otherwise.
-	BaseURL string `json:"base_url,omitempty"`
 	// MaxIterations bounds the agent loop. Zero means WarpDefaultMaxIterations.
 	MaxIterations int `json:"max_iterations,omitempty"`
 	// RequestTimeoutSeconds bounds a single upstream call. Zero means
-	// WarpDefaultRequestTimeoutSeconds. This feeds the dedicated Warp client's
-	// NetworkConfig, which is why it is stored rather than hardcoded: a local
-	// model behind BaseURL can be far slower than a hosted frontier model.
+	// WarpDefaultRequestTimeoutSeconds. It is a deadline on Warp's own call, on
+	// top of the provider's network timeout, and is stored rather than hardcoded
+	// because a self-hosted model can be far slower than a hosted frontier one.
 	RequestTimeoutSeconds int `json:"request_timeout_seconds,omitempty"`
 	// HistoryRetentionDays is how long a saved chat is kept after its last turn.
 	// Zero means WarpDefaultHistoryRetentionDays.

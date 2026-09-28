@@ -34,6 +34,9 @@ type scriptedModel struct {
 	// field lastTools/lastInstructions don't pull out on their own, such as
 	// temperature or reasoning effort.
 	lastParams *schemas.ResponsesParameters
+	// lastProvider and lastModel are where the request was addressed.
+	lastProvider schemas.ModelProvider
+	lastModel    string
 }
 
 // respond is the ChatFunc the agent drives.
@@ -42,6 +45,8 @@ func (m *scriptedModel) respond(_ context.Context, req *schemas.BifrostResponses
 	if req != nil {
 		m.lastInput = req.Input
 		m.lastParams = req.Params
+		m.lastProvider = req.Provider
+		m.lastModel = req.Model
 		if req.Params != nil {
 			m.lastTools = req.Params.Tools
 			m.lastInstructions = ""
@@ -535,20 +540,36 @@ func TestWarpSystemPromptExplainsScopeTag(t *testing.T) {
 	require.Contains(t, content, `pass scope: "all" in filters`, "the tag is only reachable for an identified caller through the filter marker")
 }
 
-// With the default base URL Warp talks to this Bifrost, which routes on the
-// model name alone - so a bare "gpt-5.5" lands on whichever provider that name
-// resolves to, and Warp's configured provider is silently ignored. Qualifying it
-// is what makes the setting mean anything.
-func TestWarpQualifiesModelWithProvider(t *testing.T) {
-	require.Equal(t, "openai/gpt-5.5",
-		modelForRequest(&schemas.WarpConfig{Provider: schemas.OpenAI, Model: "gpt-5.5"}))
+// Warp's calls run on the gateway client in-process, so the request is
+// addressed to the configured provider natively. It used to go out as
+// Provider "openai" with a "provider/model" string for the OpenAI-compatible
+// mount at base_url to route - a round trip through the deployment's own public
+// URL that fails behind Tailscale or a proxy.
+func TestWarpAgentAddressesConfiguredProviderNatively(t *testing.T) {
+	cases := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		wantProvider schemas.ModelProvider
+		wantModel    string
+	}{
+		{name: "bare model", provider: schemas.Anthropic, model: "claude-sonnet-5", wantProvider: schemas.Anthropic, wantModel: "claude-sonnet-5"},
+		{name: "qualified model routes by its prefix", provider: schemas.Anthropic, model: "vertex/gemini-2.5-pro", wantProvider: schemas.Vertex, wantModel: "gemini-2.5-pro"},
+		{name: "native slug keeps its slash", provider: schemas.Bedrock, model: "meta/llama-3-8b", wantProvider: schemas.Bedrock, wantModel: "meta/llama-3-8b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
+			agent := newTestAgent(model, &fakeLogReader{}, 8)
+			agent.config.Provider = tc.provider
+			agent.config.Model = tc.model
 
-	// An already-qualified model is what the operator typed; leave it alone
-	// rather than producing "openai/anthropic/claude".
-	require.Equal(t, "anthropic/claude-sonnet-5",
-		modelForRequest(&schemas.WarpConfig{Provider: schemas.OpenAI, Model: "anthropic/claude-sonnet-5"}))
+			collectEvents(t, agent, context.Background())
 
-	require.Equal(t, "gpt-5.5", modelForRequest(&schemas.WarpConfig{Model: "gpt-5.5"}))
+			require.Equal(t, tc.wantProvider, model.lastProvider)
+			require.Equal(t, tc.wantModel, model.lastModel)
+		})
+	}
 }
 
 // TestAccumulateWarpUsageSumsIterations covers the reason this helper exists: a
