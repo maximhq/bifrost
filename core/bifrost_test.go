@@ -4367,3 +4367,65 @@ func TestFallbackPinOutsideAllowedKeysIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestSDKFidelityDecisionRequestNullStateReachesProvider pins #7599 at the core
+// entrypoint: a decision request whose state is null (an SDK-valid EntryType)
+// must be dispatched to the provider as {"state": null} instead of being
+// rejected before dispatch.
+func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		if r.URL.Path != "/v1/systemone" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"usage":{"input_tokens":3,"output_tokens":0}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Typesafe, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.Typesafe, []schemas.Key{{
+		ID:     "test-key-typesafe",
+		Value:  *schemas.NewSecretVar("sk-test-typesafe"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Typesafe,
+		Model:    "jev-1.13.0",
+		State:    nil,
+		Questions: map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
+	}
+	if resp == nil || resp.Answers["q"].Value != 0.25 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
+		t.Errorf("provider must receive state null, got bodies %v", bodies)
+	}
+}

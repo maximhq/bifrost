@@ -601,19 +601,22 @@ The live provider harness is the user's to run, not the agent's. Do not launch i
 **RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
 
 ```bash
-# 1. port 8080 must be free
-lsof -nP -iTCP:8080 -sTCP:LISTEN
+# 1. backing services: Weaviate must answer on 9000 (start it if not)
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:9000/v1/.well-known/ready || docker compose -f framework/docker-compose.yml up -d weaviate
 
-# 2. start Bifrost from the code under test, then wait for /health
-make dev APP_DIR=$(pwd)/tests/integrations/python
+# 2. pick a free port (worktrees run side by side, so never assume 8080)
+lsof -nP -iTCP:<port> -sTCP:LISTEN
 
-# 3. run the harness against that server
-make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+# 3. start Bifrost from the code under test on that port, then wait for /health
+make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python
+
+# 4. run the harness against that server
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
 ```
 
-Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs.
+Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs. Always pass `PORT` to `make dev` and the matching `BASE_URL` to the harness: several worktrees may be running at once, and the harness viewer itself listens on 8090, so pick a port that is neither 8080 nor 8090 unless `lsof` shows both free.
 
-Never print that block with a placeholder still in it. `<provider>` and `<keyword>` belong to the template; substitute the real values for the change so every line pastes straight into a shell.
+Never print that block with a placeholder still in it. `<provider>`, `<keyword>`, and `<port>` belong to the template; substitute the real values for the change so every line pastes straight into a shell. The keyword is descriptive text from the case or folder names (for example `"sdk fidelity"`), never an issue or PR number.
 
 The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt. For an exempt change, say so explicitly instead of printing the block.
 
@@ -629,7 +632,7 @@ The profile is the shared provider config at `tests/integrations/python/config.j
 
 `HARNESS_MAX_REQUESTS=<n>` is an optional enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Add it when a run is broad enough that the cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to need it. The preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
 
-Port 8080 is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:8080 -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
+The gateway port is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers at `BASE_URL` and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:<port> -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 
@@ -791,6 +794,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 - **Converter functions**: Pure — no side effects, no logging, no HTTP.
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
+- **Struct comments**: Keep struct field comments to a short trailing one-liner (or none). Long multi-line explanations do not belong inside struct definitions; put the rationale in the doc comment of the function that uses the field, or in the package doc.
 - **Go filenames**: No underscores. The only permitted underscore is the `_test.go` suffix. Examples: `pluginpipeline.go`, `pluginpipeline_test.go` — never `plugin_pipeline.go` or `plugin_pipeline_race_test.go`. Concatenate words (lowercase, no separators) for multi-word filenames.
 
 # Frontend Code Guidelines & Patterns
