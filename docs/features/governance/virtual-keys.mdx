@@ -52,6 +52,8 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 **Expiry** (optional): Pick **Never**, a preset (30 min to 7 days), or a custom date and time. See [Key Expiry](#key-expiry).
 
+**Content logging** (optional): **Inherit gateway setting** (default), **Off for this key**, or **On for this key**. See [Content logging per key](#content-logging-per-key).
+
 3. Click **Create Virtual Key**
 
 </Tab>
@@ -256,6 +258,31 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 
 </Tab>
 </Tabs>
+
+### Content logging per key
+
+Each virtual key can decide whether the content of its requests and responses is stored. The `disable_content_logging` field is tri-state:
+
+- omitted or `null`: inherit `client.disable_content_logging`
+- `true`: content is not stored in the log store for this key's traffic (an allowed `x-bf-disable-content-logging: false` header can still re-enable it for one request), and OpenTelemetry export is stripped of content too
+- `false`: content is stored for this key's traffic even when the client setting is `true`
+
+```bash
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "support-bot",
+    "disable_content_logging": true,
+    "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"] }]
+  }'
+
+# Clear the decision back to inherit
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{ "disable_content_logging": null }'
+```
+
+Precedence is client setting, then the key, then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
 
 ### Provider access
 

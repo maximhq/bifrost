@@ -1,3 +1,4 @@
+import { featureFlagsApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { waitForNetworkIdle } from '../../core/utils/test-helpers'
 import { DashboardPage } from './pages/dashboard.page'
@@ -379,6 +380,39 @@ test.describe('Dashboard', () => {
       const errorAlert = dashboardPage.page.locator('[role="alert"][data-variant="destructive"], .text-destructive, [data-sonner-toast][data-type="error"]')
       const hasErrorAlert = await errorAlert.count() > 0
       expect(hasErrorAlert).toBe(false)
+    })
+  })
+
+  test.describe('Topbar Warp Launcher', () => {
+    let warpWasEnabled = false
+
+    test.beforeEach(async ({ dashboardPage }) => {
+      // Waiting on the page first lets the auto-login handler run, so the flag
+      // calls below carry the session cookie that page.request shares.
+      await expect(dashboardPage.pageTitle).toBeVisible()
+      const { flags } = await featureFlagsApi.getAll(dashboardPage.page.request)
+      warpWasEnabled = flags.find((flag) => flag.id === 'warp')?.enabled ?? false
+      await featureFlagsApi.set(dashboardPage.page.request, 'warp', true)
+      await dashboardPage.page.reload()
+    })
+
+    test.afterEach(async ({ dashboardPage }) => {
+      await featureFlagsApi.set(dashboardPage.page.request, 'warp', warpWasEnabled)
+    })
+
+    test('should keep the warp button in the topbar and mark it selected while open', async ({ dashboardPage }) => {
+      const warpButton = dashboardPage.page.getByTestId('topbar-warp-btn')
+      await expect(warpButton).toBeVisible()
+      await expect(warpButton).toHaveAttribute('data-state', 'closed')
+
+      await warpButton.click()
+      await expect(warpButton).toBeVisible()
+      await expect(warpButton).toHaveAttribute('data-state', 'open')
+      await expect(warpButton).toHaveAttribute('aria-pressed', 'true')
+
+      await warpButton.click()
+      await expect(warpButton).toHaveAttribute('data-state', 'closed')
+      await expect(warpButton).toHaveAttribute('aria-pressed', 'false')
     })
   })
 

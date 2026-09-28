@@ -84,6 +84,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// managingProfile, for the same reason isManagedByProfile is: see resolveDisplayRateLimit.
 	const displayRateLimit: RateLimit | undefined = resolveDisplayRateLimit({
 		isManagedByProfile,
+		isEntityGoverned: assignedUsers.length === 0 && !!(vk?.team_id || vk?.customer_id || vk?.business_unit_id),
 		profileRateLimit: apRL,
 		vkRateLimit: vk?.rate_limit,
 	});

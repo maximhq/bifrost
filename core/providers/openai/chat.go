@@ -90,6 +90,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
+		openaiReq.stripUnsupportedSamplingParams(caps)
 		// URL-sourced documents are NOT inlined here. Chat Completions rejects file_url, so they
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
@@ -256,6 +257,32 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
+		// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
+		if e := req.ChatParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
+			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(caps.Model())))
+		}
+	}
+}
+
+// stripUnsupportedSamplingParams drops sampling fields OpenAI rejects at the request's reasoning effort.
+func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(caps schemas.ModelCaps) {
+	effort := ""
+	if req.ChatParameters.Reasoning != nil && req.ChatParameters.Reasoning.Effort != nil {
+		effort = *req.ChatParameters.Reasoning.Effort
+	}
+	model := caps.Model()
+	if samplingParamUnsupported(caps, schemas.FieldTopP, model, effort) {
+		req.ChatParameters.TopP = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldTemperature, model, effort) {
+		req.ChatParameters.Temperature = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, model, effort) {
+		req.ChatParameters.TopLogProbs = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldLogprobs, model, effort) {
+		req.ChatParameters.LogProbs = nil
 	}
 }
 

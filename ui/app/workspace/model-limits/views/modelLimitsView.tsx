@@ -1,6 +1,6 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
-import { getErrorMessage, useGetModelConfigsQuery, useGetProvidersQuery } from "@/lib/store";
+import { getErrorMessage, useGetModelConfigsQuery } from "@/lib/store";
 import { getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useRef, useState } from "react";
@@ -28,8 +28,6 @@ export default function ModelLimitsView() {
 	useEffect(() => {
 		setOffset(0);
 	}, [debouncedSearch, scope, provider]);
-
-	const { data: providers } = useGetProvidersQuery();
 
 	const {
 		data: modelConfigsData,
@@ -81,7 +79,6 @@ export default function ModelLimitsView() {
 		<ModelLimitsTable
 			modelConfigs={modelConfigsData?.model_configs || []}
 			totalCount={modelConfigsData?.total_count || 0}
-			providers={providers ?? []}
 			search={search}
 			debouncedSearch={debouncedSearch}
 			onSearchChange={setSearch}

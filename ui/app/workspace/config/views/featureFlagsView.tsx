@@ -77,17 +77,17 @@ function FeatureFlagRow({ flag, canUpdate, onToggle }: FeatureFlagRowProps) {
 
 	return (
 		<TableRow className="group hover:bg-muted/50 transition-colors">
-			<TableCell className="align-top">
-				<div className="flex flex-col gap-1">
+			<TableCell className="align-top whitespace-normal">
+				<div className="flex min-w-0 flex-col gap-1">
 					<div className="flex flex-wrap items-center gap-2">
 						<span className="text-sm font-medium">{primaryLabel}</span>
-						{flag.display_name && <span className="text-muted-foreground font-mono text-xs">{flag.id}</span>}
+						{flag.display_name && <span className="text-muted-foreground font-mono text-xs break-all">{flag.id}</span>}
 						<SourceBadge source={flag.source} />
 						{flag.enterprise_only && <EnterpriseBadge />}
 						{flag.locked && !flag.enterprise_only && <LockedBadge />}
 						{!flag.registered && <UnregisteredBadge />}
 					</div>
-					{flag.description && <p className="text-muted-foreground text-sm">{flag.description}</p>}
+					{flag.description && <p className="text-muted-foreground text-sm break-words">{flag.description}</p>}
 					{!flag.registered && (
 						<p className="text-muted-foreground text-xs">
 							No code currently reads this flag. The override is stored but inert until a Register() call is added.

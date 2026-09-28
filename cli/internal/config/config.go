@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bytedance/sonic"
 )
@@ -27,9 +28,10 @@ type FileConfig struct {
 
 // Profile represents a named Bifrost connection profile with a base URL.
 type Profile struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	BaseURL string `json:"base_url"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	BaseURL      string `json:"base_url"`
+	DefaultModel string `json:"default_model,omitempty"`
 }
 
 // Selection stores the user's last chosen harness and model for a profile.
@@ -189,4 +191,41 @@ func (s *State) ProfileByID(id string) *Profile {
 		}
 	}
 	return nil
+}
+
+// ProfileByName returns a profile whose name matches name case-insensitively.
+func (s *State) ProfileByName(name string) *Profile {
+	for i := range s.Profiles {
+		if strings.EqualFold(s.Profiles[i].Name, name) {
+			return &s.Profiles[i]
+		}
+	}
+	return nil
+}
+
+// ResolveProfile returns the profile matching either an ID or a display name.
+func (s *State) ResolveProfile(value string) *Profile {
+	if profile := s.ProfileByID(value); profile != nil {
+		return profile
+	}
+	return s.ProfileByName(value)
+}
+
+// DeleteProfile removes a profile and its associated selection from state.
+func (s *State) DeleteProfile(id string) bool {
+	for i := range s.Profiles {
+		if s.Profiles[i].ID != id {
+			continue
+		}
+		s.Profiles = append(s.Profiles[:i], s.Profiles[i+1:]...)
+		delete(s.Selections, id)
+		if s.LastProfileID == id {
+			s.LastProfileID = ""
+			if len(s.Profiles) > 0 {
+				s.LastProfileID = s.Profiles[0].ID
+			}
+		}
+		return true
+	}
+	return false
 }

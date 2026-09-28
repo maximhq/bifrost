@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // vertexBatchCustomIDLabel is the request label used to carry the Bifrost custom_id
@@ -136,15 +137,19 @@ func vertexBatchJobToBifrost(job *VertexBatchPredictionJob) schemas.BifrostBatch
 	return resp
 }
 
-// parseVertexJobAPIError parses a Vertex AI error response (same envelope as GCS).
-func parseVertexJobAPIError(body []byte, statusCode int, op string) *schemas.BifrostError {
+// parseVertexJobAPIError parses a Vertex AI error response (same envelope as GCS), with the
+// retry hint from the response headers.
+func parseVertexJobAPIError(resp *fasthttp.Response, op string) *schemas.BifrostError {
+	statusCode := resp.StatusCode()
 	var apiErr gcsErrorBody
-	_ = sonic.Unmarshal(body, &apiErr)
+	_ = sonic.Unmarshal(resp.Body(), &apiErr)
 	msg := apiErr.Error.Message
 	if msg == "" {
 		msg = fmt.Sprintf("Vertex %s failed with HTTP %d", op, statusCode)
 	}
-	return providerUtils.NewProviderAPIError(msg, nil, statusCode, nil, nil)
+	bifrostErr := providerUtils.NewProviderAPIError(msg, nil, statusCode, nil, nil)
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
 }
 
 // ToVertexBatchCreateRequest maps a Bifrost batch create request to a Vertex

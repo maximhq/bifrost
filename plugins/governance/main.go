@@ -30,6 +30,50 @@ const (
 	VirtualKeyPrefix = "sk-bf-"
 )
 
+// A team or a customer can carry budgets and a rate limit of its own. The enterprise build adds a
+// second way to govern the same entity - an access profile attached to it - and the two cannot both
+// apply, or the entity ends up with two caps on the same keys.
+//
+// Enterprise registers the check here, and the paths that write those limits ask before writing: the
+// team and customer update handlers, and the config reconcile that applies governance.budgets from
+// config.json. In the OSS build nothing is registered, so nothing is refused.
+const (
+	// The kinds of entity that can hold budgets and a rate limit of their own. A team or customer may
+	// hold several budgets; a business unit holds at most one.
+	LegacyLimitHolderTeam         = "team"
+	LegacyLimitHolderCustomer     = "customer"
+	LegacyLimitHolderBusinessUnit = "business_unit"
+)
+
+// LegacyLimitGuard names what already governs an entity's spend, or "" when nothing does. An error
+// means the question could not be answered; callers fail closed rather than write a second cap.
+type LegacyLimitGuard func(ctx context.Context, holderKind, holderID string) (governedBy string, err error)
+
+var (
+	legacyLimitGuardMu sync.RWMutex
+	legacyLimitGuard   LegacyLimitGuard
+)
+
+// RegisterLegacyLimitGuard installs the guard for this process. Passing nil clears it, which is how a
+// test puts the process back as it found it.
+func RegisterLegacyLimitGuard(guard LegacyLimitGuard) {
+	legacyLimitGuardMu.Lock()
+	legacyLimitGuard = guard
+	legacyLimitGuardMu.Unlock()
+}
+
+// LegacyLimitsGovernedBy names what already governs this entity's spend, or "" when nothing does -
+// including every build where no guard is registered.
+func LegacyLimitsGovernedBy(ctx context.Context, holderKind, holderID string) (string, error) {
+	legacyLimitGuardMu.RLock()
+	guard := legacyLimitGuard
+	legacyLimitGuardMu.RUnlock()
+	if guard == nil || holderID == "" {
+		return "", nil
+	}
+	return guard(ctx, holderKind, holderID)
+}
+
 // Config is the configuration for the governance plugin
 type Config struct {
 	IsVkMandatory         *bool     `json:"is_vk_mandatory"`
@@ -1463,6 +1507,7 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	}
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	stampVirtualKeyContentLogging(ctx, vk)
 	if vk.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)

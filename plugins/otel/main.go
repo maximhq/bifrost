@@ -127,6 +127,10 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
+	// ExportRawPayloads attaches raw provider bodies to LLM spans. Off by default;
+	// requires store_raw_request_response and is suppressed by disable_content_logging.
+	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
+
 	// GroupTracesBySession, when true, groups all requests sharing the same x-bf-session-id
 	// header into a single OTEL trace: every span adopts a session-derived trace ID and each
 	// request's root span becomes a top-level sibling under one synthetic session parent
@@ -420,6 +424,7 @@ type otelTarget struct {
 	metricsExporter          *MetricsExporter
 	requestHeaders           []string
 	disableContentLogging    bool
+	exportRawPayloads        bool
 	groupTracesBySession     bool
 	disableRootSpanContent   bool
 	overheadBreakdownEnabled bool
@@ -621,6 +626,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		traceType:                profile.TraceType,
 		requestHeaders:           slices.Clone(profile.RequestHeaders),
 		disableContentLogging:    profile.DisableContentLogging,
+		exportRawPayloads:        profile.ExportRawPayloads,
 		groupTracesBySession:     profile.GroupTracesBySession,
 		disableRootSpanContent:   profile.DisableRootSpanContent,
 		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
@@ -876,6 +882,18 @@ func (p *OtelPlugin) ConsumesOverheadSpans() bool {
 	return false
 }
 
+// ConsumesRawPayloads opts in when any profile exports raw bodies.
+func (p *OtelPlugin) ConsumesRawPayloads() bool {
+	for _, t := range p.targets {
+		// Raw bodies ride spans: a nil client means metrics-only, and
+		// disable_content_logging drops them at conversion.
+		if t.client != nil && t.exportRawPayloads && !t.disableContentLogging {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil
@@ -897,7 +915,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
@@ -953,15 +971,6 @@ func (p *OtelPlugin) RequestHeaderPatterns() []string {
 }
 
 // Helper functions for type-safe attribute extraction from trace spans
-func getStringAttr(attrs map[string]any, key string) string {
-	if attrs == nil {
-		return ""
-	}
-	if v, ok := attrs[key].(string); ok {
-		return v
-	}
-	return ""
-}
 
 // getStringSliceAttr reads an array-valued span attribute ([]string or []any).
 func getStringSliceAttr(attrs map[string]any, key string) []string {
@@ -988,9 +997,9 @@ func entitySetFromAttrs(attrs map[string]any, idsKey, namesKey, scalarIDKey, sca
 	ids := getStringSliceAttr(attrs, idsKey)
 	names := getStringSliceAttr(attrs, namesKey)
 	if len(ids) == 0 {
-		if id := getStringAttr(attrs, scalarIDKey); id != "" {
+		if id := schemas.GetStringAttr(attrs, scalarIDKey); id != "" {
 			ids = []string{id}
-			names = []string{getStringAttr(attrs, scalarNameKey)}
+			names = []string{schemas.GetStringAttr(attrs, scalarNameKey)}
 		}
 	}
 	return schemas.CanonicalEntitySet(ids, names)
@@ -1009,54 +1018,10 @@ func entitySetFromContext(ctx context.Context, idsKey, namesKey, scalarIDKey, sc
 	return schemas.CanonicalEntitySet(ids, names)
 }
 
-func getIntAttr(attrs map[string]any, key string) int {
-	if attrs == nil {
-		return 0
-	}
-	switch v := attrs[key].(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
-	}
-	return 0
-}
-
-func getFloat64Attr(attrs map[string]any, key string) float64 {
-	if attrs == nil {
-		return 0
-	}
-	switch v := attrs[key].(type) {
-	case float64:
-		return v
-	case int:
-		return float64(v)
-	case int64:
-		return float64(v)
-	}
-	return 0
-}
-
 // getFloat64AttrOK is getFloat64Attr with presence reporting. Needed where zero
 // is a meaningful value distinct from "absent": an upstream total of 0 (a cache
 // hit, or a request rejected before any provider call) means all of the elapsed
 // time was Bifrost's, whereas a missing attribute means it was never measured.
-func getFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
-	if attrs == nil {
-		return 0, false
-	}
-	switch v := attrs[key].(type) {
-	case float64:
-		return v, true
-	case int:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	}
-	return 0, false
-}
 
 // overheadMicrosFromTrace reads Bifrost's own cost (in microseconds) off the root
 // span, where the tracer stamps it as AttrBifrostOverheadDurationMs (root duration
@@ -1067,7 +1032,7 @@ func overheadMicrosFromTrace(trace *schemas.Trace) (float64, bool) {
 	if trace == nil || trace.RootSpan == nil {
 		return 0, false
 	}
-	overheadMs, ok := getFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	overheadMs, ok := schemas.GetFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	if !ok {
 		return 0, false
 	}
@@ -1075,33 +1040,116 @@ func overheadMicrosFromTrace(trace *schemas.Trace) (float64, bool) {
 }
 
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
+//
+// Reads the typed span payload where the span carries it, falling back to the
+// attribute map for spans built by paths that do not populate it. Typed reads
+// cannot silently return a zero value for a mistyped or misspelled key, which is
+// how gen_ai.response.service_tier went missing here for as long as it did.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
-	method := getStringAttr(attrs, "request.type")
+
+	provider := schemas.GetStringAttr(attrs, schemas.AttrProviderName)
+	model := schemas.GetStringAttr(attrs, schemas.AttrRequestModel)
+	method := schemas.GetStringAttr(attrs, schemas.AttrLegacyRequestType)
+	if llm := span.LLM; llm != nil {
+		if llm.Provider != "" {
+			provider = schemas.OTelProviderName(llm.Provider)
+		}
+		if llm.RequestModel != "" {
+			model = llm.RequestModel
+		}
+		if llm.RequestType != "" {
+			method = string(llm.RequestType)
+		}
+	}
 	if method == "" {
 		method = span.Name
 	}
-	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName)
-	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName)
-	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
+
+	e := span.Enrichment
+	teamIDs, teamNames := entitySet(e, attrs, entityTeam)
+	customerIDs, customerNames := entitySet(e, attrs, entityCustomer)
+	buIDs, buNames := entitySet(e, attrs, entityBusinessUnit)
+
 	return BuildBifrostAttributes(
-		getStringAttr(attrs, schemas.AttrProviderName),
-		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
+		provider,
+		schemas.NormalizeModelName(model),
 		method,
-		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyID),
-		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyName),
-		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyID),
-		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyName),
-		getIntAttr(attrs, schemas.AttrBifrostFallbackIndex),
+		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyID, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyName, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyName }),
+		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyID, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyName, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyName }),
+		fallbackIndex(e, attrs),
 		teamIDs,
 		teamNames,
 		customerIDs,
 		customerNames,
 		buIDs,
 		buNames,
-		getStringAttr(attrs, schemas.AttrBifrostProjectID),
-		getStringAttr(attrs, schemas.AttrBifrostProjectName),
+		enrichedStr(e, attrs, schemas.AttrBifrostProjectID, func(e *schemas.SpanEnrichment) string { return e.ProjectID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostProjectName, func(e *schemas.SpanEnrichment) string { return e.ProjectName }),
 	)
+}
+
+// enrichedStr prefers the typed dimension, falling back to the attribute key.
+func enrichedStr(e *schemas.SpanEnrichment, attrs map[string]any, key string, pick func(*schemas.SpanEnrichment) string) string {
+	if e != nil {
+		if v := pick(e); v != "" {
+			return v
+		}
+	}
+	return schemas.GetStringAttr(attrs, key)
+}
+
+func fallbackIndex(e *schemas.SpanEnrichment, attrs map[string]any) int {
+	if e != nil && e.FallbackIndex != nil {
+		return *e.FallbackIndex
+	}
+	return schemas.GetIntAttr(attrs, schemas.AttrBifrostFallbackIndex)
+}
+
+// entityKind names one of the three multi-valued governance entity sets.
+type entityKind int
+
+const (
+	entityTeam entityKind = iota
+	entityCustomer
+	entityBusinessUnit
+)
+
+// entitySet resolves a multi-valued entity set, preferring the typed dimensions.
+// A set collapses to its scalar form when only the singular dimension is present.
+func entitySet(e *schemas.SpanEnrichment, attrs map[string]any, kind entityKind) (idsCSV, namesCSV string) {
+	var idsKey, namesKey, scalarIDKey, scalarNameKey string
+	var ids, names []string
+	var scalarID, scalarName string
+	switch kind {
+	case entityTeam:
+		idsKey, namesKey = schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.TeamIDs, e.TeamNames, e.TeamID, e.TeamName
+		}
+	case entityCustomer:
+		idsKey, namesKey = schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.CustomerIDs, e.CustomerNames, e.CustomerID, e.CustomerName
+		}
+	case entityBusinessUnit:
+		idsKey, namesKey = schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.BusinessUnitIDs, e.BusinessUnitNames, e.BusinessUnitID, e.BusinessUnitName
+		}
+	}
+	if e == nil {
+		return entitySetFromAttrs(attrs, idsKey, namesKey, scalarIDKey, scalarNameKey)
+	}
+	if len(ids) == 0 && scalarID != "" {
+		ids, names = []string{scalarID}, []string{scalarName}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
 }
 
 // buildContextAttrs builds the same metric dimension attrs as buildSpanAttrs, but sourced
@@ -1141,17 +1189,17 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 func buildMCPSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
 	out := []attribute.KeyValue{
-		attribute.String(schemas.AttrMCPMethodName, getStringAttr(attrs, schemas.AttrMCPMethodName)),
+		attribute.String(schemas.AttrMCPMethodName, schemas.GetStringAttr(attrs, schemas.AttrMCPMethodName)),
 	}
-	if tool := getStringAttr(attrs, schemas.AttrToolName); tool != "" {
+	if tool := schemas.GetStringAttr(attrs, schemas.AttrToolName); tool != "" {
 		out = append(out, attribute.String(schemas.AttrToolName, tool))
 	}
-	if transport := getStringAttr(attrs, schemas.AttrNetworkTransport); transport != "" {
+	if transport := schemas.GetStringAttr(attrs, schemas.AttrNetworkTransport); transport != "" {
 		out = append(out, attribute.String(schemas.AttrNetworkTransport, transport))
 	}
 	// Governance identity: bifrost.* span attrs → flat metric label names.
 	for spanKey, labelKey := range mcpGovernanceLabelMap {
-		if v := getStringAttr(attrs, spanKey); v != "" {
+		if v := schemas.GetStringAttr(attrs, spanKey); v != "" {
 			out = append(out, attribute.String(labelKey, v))
 		}
 	}
@@ -1185,12 +1233,12 @@ func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *Me
 			continue
 		}
 		// Skip un-enriched spans so we never emit an empty mcp.method.name dimension.
-		if getStringAttr(span.Attributes, schemas.AttrMCPMethodName) == "" {
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrMCPMethodName) == "" {
 			continue
 		}
 		mcpAttrs := buildMCPSpanAttrs(span)
 		if span.Status == schemas.SpanStatusError {
-			errorType := getStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
 			if errorType == "" {
 				errorType = "_OTHER"
 			}
@@ -1199,7 +1247,7 @@ func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *Me
 		// Prefer tool-execution (CallTool) latency over span wall-time (which covers PostHooks).
 		// Fall back to wall-time when it's absent (e.g. the op failed before returning one).
 		var durationSeconds float64
-		if toolMs := getIntAttr(span.Attributes, schemas.AttrBifrostMCPToolDurationMs); toolMs > 0 {
+		if toolMs := schemas.GetIntAttr(span.Attributes, schemas.AttrBifrostMCPToolDurationMs); toolMs > 0 {
 			durationSeconds = float64(toolMs) / 1000.0
 		} else if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
 			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
@@ -1227,8 +1275,8 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		}
 		// Skip spans with no provider and no model (avoid empty-label series); also
 		// excludes them from final-span selection below.
-		if getStringAttr(span.Attributes, schemas.AttrProviderName) == "" &&
-			strings.TrimSpace(getStringAttr(span.Attributes, schemas.AttrRequestModel)) == "" {
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrProviderName) == "" &&
+			strings.TrimSpace(schemas.GetStringAttr(span.Attributes, schemas.AttrRequestModel)) == "" {
 			continue
 		}
 
@@ -1243,7 +1291,7 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 
 		if span.Status == schemas.SpanStatusError {
 			statusCode := "unknown"
-			if code := getIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
+			if code := schemas.GetIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
 				statusCode = strconv.Itoa(code)
 			}
 			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)], attribute.String("status_code", statusCode))
@@ -1289,8 +1337,8 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	attrs := finalSpan.Attributes
 
 	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label series.
-	if getStringAttr(attrs, schemas.AttrProviderName) == "" &&
-		strings.TrimSpace(getStringAttr(attrs, schemas.AttrRequestModel)) == "" {
+	if schemas.GetStringAttr(attrs, schemas.AttrProviderName) == "" &&
+		strings.TrimSpace(schemas.GetStringAttr(attrs, schemas.AttrRequestModel)) == "" {
 		return
 	}
 
@@ -1298,28 +1346,28 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 
 	// Record retries used for this request. Read off the final span (the last attempt's
 	// attempt index) so the value is "total retries used", matching the Prometheus side.
-	retries := getIntAttr(attrs, schemas.AttrBifrostRetries)
+	retries := schemas.GetIntAttr(attrs, schemas.AttrBifrostRetries)
 	exporter.RecordRequestRetries(ctx, float64(retries), otelAttrs...)
 
 	// Record token usage
-	inputTokens := getIntAttr(attrs, schemas.AttrInputTokens)
+	inputTokens := schemas.GetIntAttr(attrs, schemas.AttrInputTokens)
 	if inputTokens > 0 {
 		exporter.RecordInputTokens(ctx, int64(inputTokens), otelAttrs...)
 	}
 
-	outputTokens := getIntAttr(attrs, schemas.AttrOutputTokens)
+	outputTokens := schemas.GetIntAttr(attrs, schemas.AttrOutputTokens)
 	if outputTokens > 0 {
 		exporter.RecordOutputTokens(ctx, int64(outputTokens), otelAttrs...)
 	}
 
 	// Record cost if available
-	cost := getFloat64Attr(attrs, schemas.AttrUsageCost)
+	cost := schemas.GetFloat64Attr(attrs, schemas.AttrUsageCost)
 	if cost > 0 {
 		exporter.RecordCost(ctx, cost, otelAttrs...)
 	}
 
 	// Record streaming latency metrics if available
-	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstChunk)
+	ttft := schemas.GetFloat64Attr(attrs, schemas.AttrTimeToFirstChunk)
 	if ttft > 0 {
 		exporter.RecordStreamFirstTokenLatency(ctx, ttft, otelAttrs...)
 	}
@@ -1330,22 +1378,22 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	// span-attr keys across the chat and responses APIs; the 5m/1h breakdown uses
 	// API-family-specific keys that are mutually exclusive per request, so a fallback read
 	// covers both.
-	if n := getIntAttr(attrs, schemas.AttrUsageCacheReadInputTokens); n > 0 {
+	if n := schemas.GetIntAttr(attrs, schemas.AttrUsageCacheReadInputTokens); n > 0 {
 		exporter.RecordCacheReadInputTokens(ctx, int64(n), otelAttrs...)
 	}
-	if n := getIntAttr(attrs, schemas.AttrUsageCacheCreationInputTokens); n > 0 {
+	if n := schemas.GetIntAttr(attrs, schemas.AttrUsageCacheCreationInputTokens); n > 0 {
 		exporter.RecordCacheWriteInputTokens(ctx, int64(n), otelAttrs...)
 	}
-	cacheWrite5m := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite5m)
+	cacheWrite5m := schemas.GetIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite5m)
 	if cacheWrite5m == 0 {
-		cacheWrite5m = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite5m)
+		cacheWrite5m = schemas.GetIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite5m)
 	}
 	if cacheWrite5m > 0 {
 		exporter.RecordCacheWriteInputTokens5m(ctx, int64(cacheWrite5m), otelAttrs...)
 	}
-	cacheWrite1h := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite1h)
+	cacheWrite1h := schemas.GetIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite1h)
 	if cacheWrite1h == 0 {
-		cacheWrite1h = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite1h)
+		cacheWrite1h = schemas.GetIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite1h)
 	}
 	if cacheWrite1h > 0 {
 		exporter.RecordCacheWriteInputTokens1h(ctx, int64(cacheWrite1h), otelAttrs...)

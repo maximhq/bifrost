@@ -854,22 +854,29 @@ Once all approved changes are applied:
    front; if they are wanted, run them as a separately approved `SKIP_STREAM_CANCEL=` run
    without the cap. After the run, quote the provider table's Total column as the actual.
 
-   Port 8080 is a blocking precondition. The recipe reuses any server whose `/health` answers
-   and then never starts the `APP_DIR` one, so a stale listener silently tests old code. Run
-   `lsof -nP -iTCP:8080 -sTCP:LISTEN` first: if it reports a listener you did not start on the
-   current working tree in this session, stop, ask the user to shut it down (never kill a
-   process you did not start), and recheck; do not run the target while `lsof` still reports
-   it. The one acceptable listener is Bifrost you started yourself from the code under test,
+   The gateway port is a blocking precondition. Worktrees run side by side, so never assume
+   8080: pick a free port (not 8080 or 8090, the harness viewer's own port, unless `lsof`
+   shows them free), pass it as `PORT` to `make dev` and as `BASE_URL` to the harness. The
+   recipe reuses any server whose `/health` answers at `BASE_URL` and then never starts the
+   `APP_DIR` one, so a stale listener silently tests old code. Run
+   `lsof -nP -iTCP:<port> -sTCP:LISTEN` first: if it reports a listener you did not start on the
+   current working tree in this session, pick another port or ask the user (never kill a
+   process you did not start). Backing services must be up first: Weaviate must answer on
+   9000, otherwise start it with `docker compose -f framework/docker-compose.yml up -d weaviate`.
+   The one acceptable listener is Bifrost you started yourself from the code under test,
    which is also the reliable way to run it, because a cold `make dev` from this config can
    take longer than the recipe's 60s health wait:
    ```bash
-   make dev APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
+   curl -s -o /dev/null -w "%{http_code}\n" http://localhost:9000/v1/.well-known/ready || docker compose -f framework/docker-compose.yml up -d weaviate
+   make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
-   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
    # cross-cutting change: the curated smoke set instead
-   make run-provider-harness-test SMOKE=1
+   make run-provider-harness-test SMOKE=1 BASE_URL=http://localhost:<port>
    ```
+   `<keyword>` is descriptive text that appears in the case or folder names (for example
+   `"sdk fidelity"`), never an issue or PR number; verify it with `filter-collection.mjs` first.
    Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
    which scope ran. See AGENTS.md "Every wire-visible change ships with a provider-harness
    case" and "Every non-exempt wire-visible fix ends with unit tests, then a harness command

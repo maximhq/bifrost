@@ -186,6 +186,63 @@ func TestSupportsFastMode_OverrideAbsent_FallbackTakesOver(t *testing.T) {
 	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929").SupportsFastMode(DefaultSupportsFastMode("claude-sonnet-4-5-20250929")))
 }
 
+func TestSupportsSafeguards_OverrideHit(t *testing.T) {
+	model := "non-claude-test-model-safeguards-yes"
+	yes := true
+	setOverride(t, model, schemas.ModelCapabilities{SupportsSafeguards: &yes})
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, model)))
+}
+
+func TestSupportsSafeguards_OverrideExplicitFalse(t *testing.T) {
+	// Even on a name the substring fallback marks supported (Sonnet 5), an
+	// explicit false override wins.
+	model := "claude-sonnet-5-test-overridden"
+	no := false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsSafeguards: &no})
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, model)))
+}
+
+// Catalog overrides can enable models outside the default model family gate.
+func TestSupportsSafeguards_CloudOverrideEnables(t *testing.T) {
+	model := "claude-haiku-4-5-cloud-enabled"
+	yes := true
+	// setOverride only answers for Anthropic, so register a resolver that covers
+	// the cloud pairs this case is about.
+	providerUtils.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m == model {
+			return &schemas.ModelCapabilities{SupportsSafeguards: &yes}
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.Vertex, schemas.Azure} {
+		assert.True(t, schemas.ResolveModelCaps(provider, model).SupportsSafeguards(DefaultSupportsSafeguards(provider, model)),
+			"datasheet override must enable %s", provider)
+	}
+}
+
+func TestSupportsSafeguards_OverrideAbsent_FallbackTakesOver(t *testing.T) {
+	// Anthropic direct: supported on the auto-mode models (Sonnet 5, Opus 4.7+
+	// covering 4.8 and 5, Fable); Haiku, Sonnet 4.6 and Opus 4.5 are out.
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-5").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-sonnet-5")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-7-20260401").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-4-7-20260401")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-8").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-4-8")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-5").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-5")))
+	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-fable-5-1").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-fable-5-1")))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-haiku-4-5").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-haiku-4-5")))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-sonnet-4-6")))
+	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-5-20251101").SupportsSafeguards(DefaultSupportsSafeguards(schemas.Anthropic, "claude-opus-4-5-20251101")))
+
+	// Claude cloud surfaces share the supported model families.
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure} {
+		for _, model := range []string{"claude-sonnet-5", "claude-opus-4-8", "claude-fable-5-1", "claude-haiku-4-5"} {
+			assert.Equal(t, model != "claude-haiku-4-5", schemas.ResolveModelCaps(provider, model).SupportsSafeguards(DefaultSupportsSafeguards(provider, model)),
+				"%s/%s must respect the model gate", provider, model)
+		}
+	}
+}
+
 func TestSupportsAdaptiveThinking_OverrideHit(t *testing.T) {
 	model := "non-opus-test-model-adaptive-yes"
 	yes := true
@@ -353,10 +410,10 @@ func forcedToolChoiceChatRequest(model string, tc *schemas.ChatToolChoice) *sche
 	}
 }
 
-func TestForcedToolChoice_DroppedOnFable51(t *testing.T) {
+func TestForcedToolChoice_DroppedWhenUnsupported(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 
-	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5"} {
 		t.Run(model+" responses any", func(t *testing.T) {
 			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
 				&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))

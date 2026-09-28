@@ -149,12 +149,34 @@ func (mc *ModelCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, resp *
 	if mc == nil || resp == nil {
 		return 0
 	}
+	return mc.CalculateCost(resp, requestPricingScopes(ctx, resp))
+}
+
+// CalculateRequestCostBreakdown is the per-category sibling of
+// CalculateRequestCost behind ctx.CalculateCostBreakdown: same scope
+// resolution, same datasheet path, so TotalCost matches the scalar exactly.
+//
+// The datasheet may hand back the provider-supplied usage.Cost pointer when a
+// provider priced the request itself, so the result is deep-copied: plugins
+// own what they get and can never mutate the client-facing response through it.
+func (mc *ModelCatalog) CalculateRequestCostBreakdown(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *schemas.BifrostCost {
+	if mc == nil || resp == nil {
+		return nil
+	}
+	return mc.CalculateCostBreakdown(resp, requestPricingScopes(ctx, resp)).DeepCopy()
+}
+
+// requestPricingScopes resolves the pricing lookup scopes for a completed
+// response: governance identity from ctx, provider from the response's routing
+// info (falling back to the legacy ExtraFields.Provider). Shared by both
+// plugin-facing cost entry points so their scope resolution cannot drift.
+func requestPricingScopes(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *PricingLookupScopes {
 	extraFields := resp.GetExtraFields()
 	provider := extraFields.RoutingInfo.Provider
 	if provider == "" {
 		provider = extraFields.Provider
 	}
-	return mc.CalculateCost(resp, PricingLookupScopesFromContext(ctx, string(provider)))
+	return PricingLookupScopesFromContext(ctx, string(provider))
 }
 
 // formatCost renders a per-unit rate the way the models API reports it. Fixed

@@ -4049,6 +4049,303 @@
       ]
     },
     {
+      "name": "Governance - VK Content Logging",
+      "description": "disable_content_logging on a virtual key is tri-state: absent inherits client.disable_content_logging, true forces content off for the key's traffic, false forces it on for the log store. The update route must keep omitted, null and false apart: omitted leaves the decision, null clears it back to inherit, false is a decision of its own.",
+      "item": [
+        {
+          "name": "Create VK (disable_content_logging: true)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "pm.request.body.raw = JSON.stringify({ name: 'VK ContentLogging ' + ts, is_active: true, disable_content_logging: true });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "var json = null;",
+                  "try { json = pm.response.json(); } catch (e) { json = null; }",
+                  "var vk = (json && (json.virtual_key || json)) || {};",
+                  "if (vk && vk.id) pm.collectionVariables.set('vkcl_id', vk.id);",
+                  "pm.test('disable_content_logging: true round-trips on create', function () { pm.expect(vk.disable_content_logging, JSON.stringify(vk)).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update VK without the field leaves the decision alone",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({ description: 'touched ' + Date.now() });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update VK returns 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "var json = null;",
+                  "try { json = pm.response.json(); } catch (e) { json = null; }",
+                  "var vk = (json && (json.virtual_key || json)) || {};",
+                  "pm.test('omitted disable_content_logging is left unchanged', function () { pm.expect(vk.disable_content_logging, JSON.stringify(vk)).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkcl_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkcl_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update VK (disable_content_logging: false)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({ disable_content_logging: false });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update VK returns 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "var json = null;",
+                  "try { json = pm.response.json(); } catch (e) { json = null; }",
+                  "var vk = (json && (json.virtual_key || json)) || {};",
+                  "pm.test('disable_content_logging: false is a decision, not an absence', function () { pm.expect(vk.disable_content_logging, JSON.stringify(vk)).to.eql(false); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkcl_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkcl_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update VK (disable_content_logging: null clears to inherit)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({ disable_content_logging: null });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update VK returns 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "var json = null;",
+                  "try { json = pm.response.json(); } catch (e) { json = null; }",
+                  "var vk = (json && (json.virtual_key || json)) || {};",
+                  "pm.test('null clears disable_content_logging back to inherit', function () { pm.expect(vk.disable_content_logging, JSON.stringify(vk)).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkcl_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkcl_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get VK reads back the inherited state",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get VK returns 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "var json = null;",
+                  "try { json = pm.response.json(); } catch (e) { json = null; }",
+                  "var vk = (json && (json.virtual_key || json)) || {};",
+                  "pm.test('stored key inherits after the null update', function () { pm.expect(vk.disable_content_logging, JSON.stringify(vk)).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkcl_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkcl_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkcl_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkcl_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "Governance - VK Regex Entries",
       "description": "regex: entries in the existing model lists (allowed_models / blacklisted_models on a VK provider config, models / blacklisted_models on a provider key): the text after the prefix is an RE2 pattern matched case-insensitively as a full match against the model name, next to exact names in the same list. Sections: write-time validation (400 on an unparsable pattern or regex:* on VK and provider-key endpoints), a base VK exercised on /v1/models plus real completions (family allowed, preview blocked, other family denied), a PUT that mixes an exact name with a regex entry, and a provider-key round-trip.",
       "item": [

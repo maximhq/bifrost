@@ -550,7 +550,8 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/models?provider=openai&limit=10")
+	// Searched, because an unsearched listing drops deprecated models outright.
+	ctx.Request.SetRequestURI("/api/models?provider=openai&query=model&limit=10")
 
 	h.listModels(ctx)
 
@@ -564,7 +565,7 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 	}
 
 	if resp.Total != 3 {
-		t.Fatalf("expected total=3 (deprecated models are not filtered), got %d", resp.Total)
+		t.Fatalf("expected total=3 (a search does not filter deprecated models), got %d", resp.Total)
 	}
 	var deprecated *ModelResponse
 	for i := range resp.Models {
@@ -2010,4 +2011,127 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 			t.Fatalf("gpt-3.5-turbo should be blocked by blacklist, got %v", resp.Models)
 		}
 	}
+}
+
+func TestListModels_UnsearchedListingOmitsDeprecatedModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "old-b", "current-a", "current-b"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"old-b": {"provider":"openai","mode":"chat","base_model":"old-b","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"},
+		"current-b": {"provider":"openai","mode":"chat","base_model":"current-b"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&limit=10")
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 (deprecated models dropped), got %d", resp.Total)
+	}
+	for _, model := range resp.Models {
+		if model.IsDeprecated {
+			t.Fatalf("unsearched listing should hold no deprecated models, got %#v", resp.Models)
+		}
+	}
+}
+
+func TestListModels_SearchIncludesDeprecatedModelsBelowLiveOnes(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	// The deprecated models sort first by name, so an unordered listing would lead with them.
+	models := []string{"gpt-old-a", "gpt-old-b", "gpt-zed"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"gpt-old-a": {"provider":"openai","mode":"chat","base_model":"gpt-old-a","is_deprecated":true},
+		"gpt-old-b": {"provider":"openai","mode":"chat","base_model":"gpt-old-b","is_deprecated":true},
+		"gpt-zed": {"provider":"openai","mode":"chat","base_model":"gpt-zed"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&query=gpt&limit=10")
+
+	if resp.Total != 3 {
+		t.Fatalf("expected total=3 (a search keeps deprecated models), got %d", resp.Total)
+	}
+	if len(resp.Models) != 3 {
+		t.Fatalf("expected 3 models, got %#v", resp.Models)
+	}
+	if resp.Models[0].Name != "gpt-zed" {
+		t.Fatalf("expected the live model first, got %#v", resp.Models)
+	}
+	if !resp.Models[1].IsDeprecated || !resp.Models[2].IsDeprecated {
+		t.Fatalf("expected the deprecated models to sink to the end, got %#v", resp.Models)
+	}
+}
+
+func TestListModels_IncludeDeprecatedOptsOutOfHiding(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "current-a"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&limit=10&include_deprecated=true")
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 with include_deprecated=true, got %d", resp.Total)
+	}
+	if resp.Models[0].Name != "current-a" || !resp.Models[1].IsDeprecated {
+		t.Fatalf("expected the deprecated model kept but sunk, got %#v", resp.Models)
+	}
+}
+
+func TestListModelDetails_KeepsDeprecatedModelsWhenUnsearched(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "current-a"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
+	}`))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=10")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// The model catalog is an inventory, not a picker: it lists what exists, deprecated included.
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
+	}
+}
+
+func listModelsForTest(t *testing.T, h *ProviderHandler, uri string) ListModelsResponse {
+	t.Helper()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI(uri)
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	return resp
 }

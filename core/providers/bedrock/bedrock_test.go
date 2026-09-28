@@ -3002,6 +3002,46 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			expectedContentType: "json",
 			expectedJSON:        mustMarshalJSON(map[string]any{"results": []any{}}),
 		},
+		// Converse rejects a json document containing an empty-string object key with
+		// "The format of the value at ...toolResult.content.N.json is invalid" (verified
+		// live against us.anthropic.claude-haiku-4-5). Cursor's list_directory results
+		// carry such keys for extensionless files, so these payloads must fall back to a
+		// text block holding the original JSON string.
+		{
+			name:                "EmptyKeyObjectFallsBackToText",
+			toolResultContent:   `{"success":{"fullSubtreeExtensionCounts":{"":2,".md":1},"numFiles":3}}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"success":{"fullSubtreeExtensionCounts":{"":2,".md":1},"numFiles":3}}`),
+		},
+		{
+			name:                "EmptyKeyInsideArrayFallsBackToText",
+			toolResultContent:   `[{"path":"/repo","counts":{"":1}}]`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`[{"path":"/repo","counts":{"":1}}]`),
+		},
+		{
+			// An empty string as a VALUE is fine; only empty keys are rejected.
+			name:                "EmptyStringValueStaysJSON",
+			toolResultContent:   `{"a":""}`,
+			expectedContentType: "json",
+			expectedJSON:        mustMarshalJSON(map[string]any{"a": ""}),
+		},
+		{
+			// Empty string value followed by an empty key: the detector must not
+			// confuse a value in key position with a key.
+			name:                "EmptyValueThenEmptyKeyFallsBackToText",
+			toolResultContent:   `{"a":"","":1}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":"","":1}`),
+		},
+		{
+			// Empty key appearing after a nested container in the same object: the
+			// detector must keep checking sibling keys after descending.
+			name:                "EmptyKeyAfterNestedContainerFallsBackToText",
+			toolResultContent:   `{"a":{"b":[1,2]},"":2}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":{"b":[1,2]},"":2}`),
+		},
 	}
 
 	for _, tt := range tests {
@@ -4650,6 +4690,67 @@ func chatFileBlockDocument(t *testing.T, file *schemas.ChatInputFile) *bedrock.B
 	return result.Messages[0].Content[1].Document
 }
 
+// A file content block carrying cache_control must be followed by a standalone
+// cachePoint block, exactly as text and image blocks already are (#7613). Without it
+// the document is billed as fresh input on every request and the client's cache
+// breakpoint is silently lost on the wire.
+func TestDocumentBlockCacheControlEmitsCachePoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		ttl         *string
+		expectedTTL *string
+	}{
+		{"DefaultTTL", nil, nil},
+		{"OneHourTTL", schemas.Ptr("1h"), schemas.Ptr("1h")},
+		{"UnsupportedTTLDropsToDefault", schemas.Ptr("1m"), nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarise the attached document.")},
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{
+										Filename: schemas.Ptr("a.pdf"),
+										FileData: schemas.Ptr("data:application/pdf;base64,JVBERi0xLjQK"),
+									},
+									CacheControl: &schemas.CacheControl{
+										Type: schemas.CacheControlTypeEphemeral,
+										TTL:  tt.ttl,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.Len(t, result.Messages, 1)
+
+			content := result.Messages[0].Content
+			require.Len(t, content, 3, "expected text, document, cachePoint; got %+v", content)
+			require.NotNil(t, content[0].Text)
+			require.NotNil(t, content[1].Document)
+			require.NotNil(t, content[2].CachePoint, "cache_control on a file block must emit a trailing cachePoint block")
+			assert.Equal(t, bedrock.BedrockCachePointTypeDefault, content[2].CachePoint.Type)
+			assert.Equal(t, tt.expectedTTL, content[2].CachePoint.TTL)
+		})
+	}
+}
+
 // The standard OpenAI chat `type:"file"` part carries the document's MIME type only
 // inside the file_data data URL - file_type is a Bifrost extension normal clients
 // don't send. Without reading it, every non-PDF document was labeled format "pdf"
@@ -6081,7 +6182,7 @@ func TestToBedrockChatCompletionRequest_AliasesLongMCPToolNames(t *testing.T) {
 	assert.NotEqual(t, toolName, alias)
 	assert.Contains(t, alias, "_list_network_requests")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -6125,7 +6226,7 @@ func TestToBedrockChatCompletionRequest_AliasesToolNamesWithInvalidChars(t *test
 	alias := result.ToolConfig.Tools[0].ToolSpec.Name
 	assert.NotEqual(t, toolName, alias, "name with disallowed chars must be aliased")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -6220,7 +6321,7 @@ func TestToBedrockResponsesRequest_AliasesLongMCPToolNames(t *testing.T) {
 	assert.NotEqual(t, toolName, alias)
 	assert.Contains(t, alias, "_notion-notion-search")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)

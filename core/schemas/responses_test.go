@@ -2,9 +2,93 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestAnthropicBillingHeaderExtraction(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c; cc_entrypoint=cli; cch=12345;"
+	for _, tc := range []struct {
+		name, text string
+		strip      bool
+	}{
+		{"metadata", header, true},
+		{"whitespace", " \n" + header + "\n", true},
+		{"future field", "x-anthropic-billing-header: cc_version=2.1.270.abc; future=value;", true},
+		{"ordinary text", "Keep these instructions.", false},
+		{"quoted header", "Discuss " + header, false},
+		{"mixed multiline", header + "\nKeep these instructions.", false},
+		{"mixed same line", header + " Keep these instructions.", false},
+	} {
+		for _, shape := range []string{"string", "blocks"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
+				content := &ResponsesMessageContent{ContentStr: &tc.text}
+				if shape == "blocks" {
+					content = &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeText, Text: &tc.text}}}
+				}
+				r := &BifrostResponsesRequest{Input: []ResponsesMessage{
+					{Role: Ptr(ResponsesInputMessageRoleSystem), Content: content},
+					{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: &tc.text}},
+				}, RawRequestBody: []byte("original raw body")}
+				before, err := MarshalSorted(r)
+				require.NoError(t, err)
+				r.ExtractAnthropicBillingHeader()
+				r.ExtractAnthropicBillingHeader() // Repeated normalization is harmless.
+				if tc.strip {
+					require.Len(t, r.Input, 1)
+					assert.Equal(t, ResponsesInputMessageRoleUser, *r.Input[0].Role)
+					assert.Equal(t, tc.text, *r.Input[0].Content.ContentStr)
+				} else {
+					assert.Nil(t, r.anthropicBillingHeader)
+					require.Len(t, r.Input, 2)
+				}
+				assert.Equal(t, "original raw body", string(r.RawRequestBody))
+				restored := r.WithAnthropicBillingHeader()
+				after, err := MarshalSorted(restored)
+				require.NoError(t, err)
+				assert.Equal(t, string(before), string(after))
+				assert.Same(t, restored, restored.WithAnthropicBillingHeader())
+			})
+		}
+	}
+}
+
+func TestAnthropicBillingHeaderRestoresPositionsAndCacheMarkers(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.270.42c;"
+	block := func(text string) ResponsesMessageContentBlock {
+		return ResponsesMessageContentBlock{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr(text)}
+	}
+	for _, onlyHeaders := range []bool{false, true} {
+		blocks := []ResponsesMessageContentBlock{block(header), block(header)}
+		if !onlyHeaders {
+			blocks = []ResponsesMessageContentBlock{block("first"), block(header), block("last"), block(header)}
+		}
+		blocks[1].CacheControl = &CacheControl{Type: CacheControlTypeEphemeral}
+		r := &BifrostResponsesRequest{Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: blocks}},
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hello")}},
+		}}
+		before, err := MarshalSorted(r)
+		require.NoError(t, err)
+		r.ExtractAnthropicBillingHeader()
+		normalized, err := MarshalSorted(r)
+		require.NoError(t, err)
+		assert.NotContains(t, string(normalized), "x-anthropic-billing-header:")
+		// Core fallbacks shallow-copy the request; the private metadata must survive.
+		fallback := *r
+		restored := fallback.WithAnthropicBillingHeader()
+		after, err := MarshalSorted(restored)
+		require.NoError(t, err)
+		assert.Equal(t, string(before), string(after))
+		unchanged, err := MarshalSorted(r)
+		require.NoError(t, err)
+		assert.Equal(t, string(normalized), string(unchanged))
+	}
+}
 
 // TestBifrostResponsesStreamResponseOmitsEmptyItem verifies that events without
 // an item object (response.created, output_text.delta, response.completed, ...)
@@ -344,6 +428,63 @@ func TestBifrostResponsesResponseUnmarshalTimestamps(t *testing.T) {
 	})
 }
 
+func TestResponsesMessageContentUnmarshalJSONBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want ResponsesMessageContent
+	}{
+		{name: "empty string", data: `""`, want: ResponsesMessageContent{ContentStr: Ptr("")}},
+		{name: "string with whitespace", data: " \t\r\n\"hello\" \t\r\n", want: ResponsesMessageContent{ContentStr: Ptr("hello")}},
+		{name: "escaped string", data: `"line\n\"quote\"\u4e16\u754c"`, want: ResponsesMessageContent{ContentStr: Ptr("line\n\"quote\"\u4e16\u754c")}},
+		{name: "null", data: " \t\r\nnull \t\r\n", want: ResponsesMessageContent{ContentStr: Ptr("")}},
+		{name: "empty array", data: " \t\r\n[] \t\r\n", want: ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{}}},
+		{
+			name: "content blocks",
+			data: `[{"type":"input_text","text":"hello"}]`,
+			want: ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+				{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("hello")},
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got ResponsesMessageContent
+			require.NoError(t, got.UnmarshalJSON([]byte(tt.data)))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	invalid := []struct {
+		name string
+		data string
+	}{
+		{name: "empty", data: ""},
+		{name: "whitespace only", data: " \t\r\n"},
+		{name: "object", data: `{}`},
+		{name: "number", data: `123`},
+		{name: "boolean", data: `true`},
+		{name: "non JSON whitespace", data: "\vnull"},
+		{name: "truncated null", data: `nul`},
+		{name: "truncated string", data: `"unterminated`},
+		{name: "invalid escape", data: `"\q"`},
+		{name: "truncated array", data: `[`},
+		{name: "invalid array item", data: `[{"type":"input_text","text":"new"},42]`},
+		{name: "trailing comma", data: `[{},]`},
+		{name: "trailing value", data: `"text" false`},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			before := ResponsesMessageContent{ContentStr: Ptr("previous")}
+			got := before
+			err := got.UnmarshalJSON([]byte(tt.data))
+			const wantError = "content field is neither a string nor an array of Content blocks"
+			require.EqualError(t, err, wantError)
+			assert.Equal(t, before, got, "failed decode changed receiver")
+		})
+	}
+}
+
 // TestResponsesMessageContentEmptyMarshalsToEmptyString verifies that empty
 // content serializes as "" rather than null, since the OpenAI Responses API
 // rejects null content.
@@ -672,6 +813,227 @@ func TestDeepCopyResponsesMessagePreservesRawPreserved(t *testing.T) {
 	}
 	if string(encoded) != raw {
 		t.Fatalf("copy did not round-trip verbatim:\n got: %s\nwant: %s", encoded, raw)
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesCacheControls verifies cache breakpoints survive copy-on-write request transforms.
+func TestDeepCopyResponsesMessagePreservesCacheControls(t *testing.T) {
+	ttl := "1h"
+	scope := "user"
+	original := ResponsesMessage{
+		Type:         Ptr(ResponsesMessageTypeFunctionCallOutput),
+		CacheControl: &CacheControl{Type: CacheControlTypeEphemeral, TTL: &ttl, Scope: &scope},
+		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+			Type:         ResponsesInputMessageContentBlockTypeText,
+			Text:         Ptr("cacheable content"),
+			CacheControl: &CacheControl{Type: CacheControlTypeEphemeral, TTL: &ttl, Scope: &scope},
+		}}},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	cacheControls := [][2]*CacheControl{
+		{original.CacheControl, copied.CacheControl},
+		{original.Content.ContentBlocks[0].CacheControl, copied.Content.ContentBlocks[0].CacheControl},
+	}
+	for _, pair := range cacheControls {
+		originalCacheControl, copiedCacheControl := pair[0], pair[1]
+		if copiedCacheControl == nil {
+			t.Fatal("deep copy dropped cache control")
+		}
+		if copiedCacheControl.Type != originalCacheControl.Type || copiedCacheControl.TTL == nil || originalCacheControl.TTL == nil || *copiedCacheControl.TTL != *originalCacheControl.TTL || copiedCacheControl.Scope == nil || originalCacheControl.Scope == nil || *copiedCacheControl.Scope != *originalCacheControl.Scope {
+			t.Fatalf("cache control = %#v, want %#v", copiedCacheControl, originalCacheControl)
+		}
+		if copiedCacheControl == originalCacheControl {
+			t.Error("copy aliases the original cache control struct")
+		}
+		if copiedCacheControl.TTL == originalCacheControl.TTL {
+			t.Error("copy aliases the original cache control TTL")
+		}
+		if copiedCacheControl.Scope == originalCacheControl.Scope {
+			t.Error("copy aliases the original cache control scope")
+		}
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesExtendedFields verifies newly supported Responses fields survive the shared copy path.
+func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
+	fileType := "application/pdf"
+	breakpointMode := "explicit"
+	annotationIndex := 1
+	annotationPage := 2
+	annotationSource := "anthropic"
+	annotationEncryptedIndex := "ciphertext"
+	category := "safety"
+	original := ResponsesMessage{
+		ProviderNativeParts: json.RawMessage(`{"thoughtSignature":"opaque"}`),
+		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+			Type:                                  ResponsesOutputMessageContentTypeText,
+			ResponsesInputMessageContentBlockFile: &ResponsesInputMessageContentBlockFile{FileType: &fileType},
+			Citations:                             &Citations{Enabled: Ptr(true)},
+			PromptCacheBreakpoint:                 &PromptCacheBreakpoint{Mode: &breakpointMode},
+			ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{Annotations: []ResponsesOutputMessageContentTextAnnotation{{
+				Index:           &annotationIndex,
+				StartCharIndex:  &annotationIndex,
+				EndCharIndex:    &annotationIndex,
+				StartPageNumber: &annotationPage,
+				EndPageNumber:   &annotationPage,
+				StartBlockIndex: &annotationIndex,
+				EndBlockIndex:   &annotationIndex,
+				Source:          &annotationSource,
+				EncryptedIndex:  &annotationEncryptedIndex,
+			}}},
+			ResponsesOutputMessageContentRenderedContent: &ResponsesOutputMessageContentRenderedContent{RenderedContent: "rendered"},
+			ResponsesOutputMessageContentCompaction:      &ResponsesOutputMessageContentCompaction{Summary: "summary"},
+			ResponsesOutputMessageContentFallback: &ResponsesOutputMessageContentFallback{
+				FromModel:       "claude-opus-5",
+				ToModel:         "claude-sonnet-5",
+				TriggerType:     "refusal",
+				TriggerCategory: &category,
+			},
+		}}},
+		ResponsesToolMessage: &ResponsesToolMessage{
+			Action: &ResponsesToolMessageActionStruct{ResponsesToolCallActionStr: Ptr("generate")},
+			ResponsesComputerToolCall: &ResponsesComputerToolCall{PendingSafetyChecks: []ResponsesComputerToolCallPendingSafetyCheck{{
+				ID: "check_1", Code: "confirm", Message: "confirm action",
+			}}},
+			ResponsesComputerToolCallOutput: &ResponsesComputerToolCallOutput{AcknowledgedSafetyChecks: []ResponsesComputerToolCallAcknowledgedSafetyCheck{{
+				ID: "check_1", Code: Ptr("confirm"), Message: Ptr("approved"),
+			}}},
+			ResponsesCodeInterpreterToolCall: &ResponsesCodeInterpreterToolCall{
+				Code:        Ptr("print('hello')"),
+				ContainerID: "container_1",
+				Outputs: []ResponsesCodeInterpreterOutput{{
+					ResponsesCodeInterpreterOutputLogs: &ResponsesCodeInterpreterOutputLogs{Type: "logs", Logs: "hello"},
+				}},
+			},
+			ResponsesMCPToolCall: &ResponsesMCPToolCall{ServerLabel: "repo"},
+			ResponsesImageGenerationCall: &ResponsesImageGenerationCall{
+				Result:        "image",
+				Background:    Ptr("transparent"),
+				OutputFormat:  Ptr("png"),
+				Quality:       Ptr("high"),
+				RevisedPrompt: Ptr("draw a cat"),
+				Size:          Ptr("1024x1024"),
+			},
+			ResponsesMCPListTools: &ResponsesMCPListTools{ServerLabel: "repo", Tools: []ResponsesMCPTool{{
+				Name:        "read_file",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"path": "string"}},
+				Description: Ptr("read a file"),
+				Annotations: &map[string]any{"readOnlyHint": true},
+			}}},
+			ResponsesMCPApprovalResponse: &ResponsesMCPApprovalResponse{
+				ApprovalRequestID: "approval_1", Approve: true, Reason: Ptr("allowed"),
+			},
+			ResponsesAdvisorCall: &ResponsesAdvisorCall{
+				ResultType:       "advisor_result",
+				Text:             Ptr("advice"),
+				EncryptedContent: Ptr("encrypted"),
+				ErrorCode:        Ptr("none"),
+				StopReason:       Ptr("end_turn"),
+			},
+			ResponsesToolSearchCall: &ResponsesToolSearchCall{ToolReferences: []string{"read_file"}},
+			ResponsesCodeExecutionCall: &ResponsesCodeExecutionCall{
+				ToolName: "bash_code_execution",
+				Input:    Ptr(`{"command":"pwd"}`),
+				Lines:    []string{"line one"},
+				Files:    []ResponsesCodeExecutionFileOutput{{FileID: "file_1"}},
+				Caller:   &ResponsesToolCaller{Type: "code_execution_20260120", ToolID: Ptr("tool_1")},
+			},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	if !reflect.DeepEqual(original, copied) {
+		t.Fatalf("deep copy lost Responses fields\noriginal: %#v\ncopied: %#v", original, copied)
+	}
+	if &original.ProviderNativeParts[0] == &copied.ProviderNativeParts[0] {
+		t.Fatal("copy aliases provider native parts")
+	}
+	if original.Content.ContentBlocks[0].ResponsesInputMessageContentBlockFile.FileType == copied.Content.ContentBlocks[0].ResponsesInputMessageContentBlockFile.FileType {
+		t.Fatal("copy aliases file type")
+	}
+	if original.ResponsesToolMessage.Action.ResponsesToolCallActionStr == copied.ResponsesToolMessage.Action.ResponsesToolCallActionStr {
+		t.Fatal("copy aliases bare tool action")
+	}
+
+	copied.ProviderNativeParts[0] = '['
+	copied.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].InputSchema["type"] = "array"
+	copied.ResponsesToolMessage.ResponsesCodeExecutionCall.Lines[0] = "changed"
+	if string(original.ProviderNativeParts) != `{"thoughtSignature":"opaque"}` {
+		t.Fatal("mutating copied provider native parts changed the original")
+	}
+	if original.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].InputSchema["type"] != "object" {
+		t.Fatal("mutating copied MCP schema changed the original")
+	}
+	if original.ResponsesToolMessage.ResponsesCodeExecutionCall.Lines[0] != "line one" {
+		t.Fatal("mutating copied code execution lines changed the original")
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesNilMCPAnnotations verifies a non-nil annotations pointer to a nil map is copied without panicking or aliasing.
+func TestDeepCopyResponsesMessagePreservesNilMCPAnnotations(t *testing.T) {
+	annotations := map[string]any(nil)
+	original := ResponsesMessage{
+		ResponsesToolMessage: &ResponsesToolMessage{
+			ResponsesMCPListTools: &ResponsesMCPListTools{Tools: []ResponsesMCPTool{{Annotations: &annotations}}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	copyAnnotations := copied.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].Annotations
+	if copyAnnotations == nil {
+		t.Fatal("copy dropped annotations pointer")
+	}
+	if copyAnnotations == original.ResponsesToolMessage.ResponsesMCPListTools.Tools[0].Annotations {
+		t.Fatal("copy aliases annotations pointer")
+	}
+	if *copyAnnotations != nil {
+		t.Fatal("copy changed nil annotations map")
+	}
+}
+
+// TestDeepCopyResponsesMessageCopiesCodeExecutionPointers verifies code-execution pointer fields do not alias the original message.
+func TestDeepCopyResponsesMessageCopiesCodeExecutionPointers(t *testing.T) {
+	originalCall := &ResponsesCodeExecutionCall{
+		Input:              Ptr(`{"command":"pwd"}`),
+		Stdout:             Ptr("output"),
+		Stderr:             Ptr("error"),
+		ReturnCode:         Ptr(1),
+		EncryptedStdout:    Ptr("encrypted"),
+		FileType:           Ptr("text"),
+		FileContent:        Ptr("contents"),
+		StartLine:          Ptr(1),
+		NumLines:           Ptr(2),
+		TotalLines:         Ptr(3),
+		IsFileUpdate:       Ptr(true),
+		OldStart:           Ptr(4),
+		OldLines:           Ptr(5),
+		NewStart:           Ptr(6),
+		NewLines:           Ptr(7),
+		Lines:              []string{"before", "after"},
+		ErrorCode:          Ptr("unavailable"),
+		Files:              []ResponsesCodeExecutionFileOutput{{FileID: "file_1"}},
+		ContainerExpiresAt: Ptr("2026-10-01T00:00:00Z"),
+		Caller:             &ResponsesToolCaller{Type: "code_execution_20260120", ToolID: Ptr("tool_1")},
+	}
+	original := ResponsesMessage{ResponsesToolMessage: &ResponsesToolMessage{ResponsesCodeExecutionCall: originalCall}}
+
+	copied := DeepCopyResponsesMessage(original)
+	copiedCall := copied.ResponsesToolMessage.ResponsesCodeExecutionCall
+	if !reflect.DeepEqual(originalCall, copiedCall) {
+		t.Fatalf("deep copy changed code-execution call\noriginal: %#v\ncopied: %#v", originalCall, copiedCall)
+	}
+
+	for _, field := range []string{
+		"Input", "Stdout", "Stderr", "ReturnCode", "EncryptedStdout", "FileType", "FileContent",
+		"StartLine", "NumLines", "TotalLines", "IsFileUpdate", "OldStart", "OldLines", "NewStart",
+		"NewLines", "ErrorCode", "ContainerExpiresAt",
+	} {
+		originalPointer := reflect.ValueOf(originalCall).Elem().FieldByName(field)
+		copiedPointer := reflect.ValueOf(copiedCall).Elem().FieldByName(field)
+		if originalPointer.Pointer() == copiedPointer.Pointer() {
+			t.Fatalf("copy aliases code-execution %s", field)
+		}
 	}
 }
 
@@ -1005,4 +1367,244 @@ func TestResponsesWebSearchSourceRoundTrip(t *testing.T) {
 			t.Fatalf("expected no name key on a plain url source, got %v", source["name"])
 		}
 	})
+}
+
+// TestResponsesOpenAIWireShapes pins OpenAI Responses shapes that previously failed
+// to decode or re-encoded lossily: each input must survive an unmarshal/marshal
+// round trip unchanged.
+func TestResponsesOpenAIWireShapes(t *testing.T) {
+	assertRoundTrip := func(t *testing.T, v any, in string) {
+		t.Helper()
+		if err := Unmarshal([]byte(in), v); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := MarshalSorted(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+	}
+
+	t.Run("mcp_approval_response_keeps_approval_request_id", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesMessage{}, `{"type":"mcp_approval_response","approval_request_id":"mcpr_1","approve":true,"reason":"ok"}`)
+	})
+
+	t.Run("mcp_call_structured_errors", func(t *testing.T) {
+		for _, tc := range []struct{ in, text string }{
+			{`{"type":"mcp_call","id":"mcp_1","name":"search","arguments":"{}","error":{"type":"mcp_protocol_error","code":-32602,"message":"bad params"}}`, "bad params"},
+			{`{"type":"mcp_call","id":"mcp_2","name":"search","arguments":"{}","error":{"type":"http_error","code":502,"message":"upstream down"}}`, "upstream down"},
+			{`{"type":"mcp_call","id":"mcp_3","name":"search","arguments":"{}","error":{"type":"mcp_tool_execution_error","content":[{"type":"text","text":"boom"}]}}`, `[{"type":"text","text":"boom"}]`},
+			{`{"type":"mcp_call","id":"mcp_4","name":"search","arguments":"{}","error":"legacy string"}`, "legacy string"},
+		} {
+			msg := &ResponsesMessage{}
+			assertRoundTrip(t, msg, tc.in)
+			if got := msg.ResponsesToolMessage.Error.Text(); got != tc.text {
+				t.Fatalf("Text() = %q, want %q", got, tc.text)
+			}
+		}
+	})
+
+	t.Run("conversation_accepts_string_and_object", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesParameters{}, `{"conversation":"conv_1"}`)
+		assertRoundTrip(t, &ResponsesParameters{}, `{"conversation":{"id":"conv_1"}}`)
+	})
+
+	t.Run("reused_conversation_clears_previous_union_arm", func(t *testing.T) {
+		var conversation ResponsesResponseConversation
+		if err := Unmarshal([]byte(`{"id":"conv_1"}`), &conversation); err != nil {
+			t.Fatalf("unmarshal object conversation: %v", err)
+		}
+		if err := Unmarshal([]byte(`"conv_2"`), &conversation); err != nil {
+			t.Fatalf("unmarshal string conversation into reused receiver: %v", err)
+		}
+		if conversation.ResponsesResponseConversationStruct != nil ||
+			conversation.ResponsesResponseConversationStr == nil ||
+			*conversation.ResponsesResponseConversationStr != "conv_2" {
+			t.Fatalf("reused conversation retained stale object arm: %#v", conversation)
+		}
+
+		if err := Unmarshal([]byte(`{"id":"conv_3"}`), &conversation); err != nil {
+			t.Fatalf("unmarshal object conversation into reused receiver: %v", err)
+		}
+		if conversation.ResponsesResponseConversationStr != nil ||
+			conversation.ResponsesResponseConversationStruct == nil ||
+			conversation.ResponsesResponseConversationStruct.ID != "conv_3" {
+			t.Fatalf("reused conversation retained stale string arm: %#v", conversation)
+		}
+	})
+
+	t.Run("mcp_allowed_tools_accepts_array_and_filter", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"mcp","server_label":"docs","server_url":"https://mcp.example.com","allowed_tools":["search","fetch"]}`)
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"mcp","server_label":"docs","server_url":"https://mcp.example.com","allowed_tools":{"read_only":true,"tool_names":["search"]}}`)
+	})
+
+	t.Run("reused_tool_error_clears_previous_union_arm", func(t *testing.T) {
+		var toolError ResponsesToolMessageError
+		if err := Unmarshal([]byte(`{"type":"http_error","code":502}`), &toolError); err != nil {
+			t.Fatalf("unmarshal structured error: %v", err)
+		}
+		if err := Unmarshal([]byte(`"legacy"`), &toolError); err != nil {
+			t.Fatalf("unmarshal string error into reused receiver: %v", err)
+		}
+		if toolError.ResponsesToolMessageErrorStruct != nil || toolError.ResponsesToolMessageErrorStr == nil || *toolError.ResponsesToolMessageErrorStr != "legacy" {
+			t.Fatalf("reused error retained stale union state: %#v", toolError)
+		}
+
+		if err := Unmarshal([]byte(`{"type":"mcp_protocol_error"}`), &toolError); err != nil {
+			t.Fatalf("unmarshal structured error into reused receiver: %v", err)
+		}
+		if toolError.ResponsesToolMessageErrorStr != nil || toolError.ResponsesToolMessageErrorStruct == nil {
+			t.Fatalf("reused error retained stale string arm: %#v", toolError)
+		}
+	})
+
+	t.Run("reused_allowed_tools_clears_previous_union_arm", func(t *testing.T) {
+		var allowed ResponsesToolMCPAllowedTools
+		if err := Unmarshal([]byte(`{"read_only":true}`), &allowed); err != nil {
+			t.Fatalf("unmarshal filter: %v", err)
+		}
+		if err := Unmarshal([]byte(`["search"]`), &allowed); err != nil {
+			t.Fatalf("unmarshal names into reused receiver: %v", err)
+		}
+		if allowed.Filter != nil || !reflect.DeepEqual(allowed.ToolNames, []string{"search"}) {
+			t.Fatalf("reused allowed_tools retained stale union state: %#v", allowed)
+		}
+
+		if err := Unmarshal([]byte(`{"tool_names":["fetch"]}`), &allowed); err != nil {
+			t.Fatalf("unmarshal filter into reused receiver: %v", err)
+		}
+		if allowed.ToolNames != nil || allowed.Filter == nil || !reflect.DeepEqual(allowed.Filter.ToolNames, []string{"fetch"}) {
+			t.Fatalf("reused allowed_tools retained stale names arm: %#v", allowed)
+		}
+	})
+
+	t.Run("file_search_in_and_nin_filters", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"file_search","vector_store_ids":["vs_1"],"filters":{"type":"and","filters":[{"type":"in","key":"region","value":["us","eu"]},{"type":"nin","key":"year","value":[2023,2024]}]}}`)
+	})
+}
+
+func TestResponsesToolMessageErrorClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *ResponsesToolMessageError
+		want bool
+	}{
+		{name: "absent", err: nil, want: false},
+		{name: "empty legacy string", err: &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("")}, want: false},
+		{name: "legacy string", err: &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("failed")}, want: true},
+		{name: "empty structured error", err: &ResponsesToolMessageError{ResponsesToolMessageErrorStruct: &ResponsesToolMessageErrorStruct{}}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.IsError(); got != tt.want {
+				t.Fatalf("IsError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
+	original := ResponsesMessage{ResponsesToolMessage: &ResponsesToolMessage{Error: &ResponsesToolMessageError{
+		ResponsesToolMessageErrorStruct: &ResponsesToolMessageErrorStruct{
+			Type: "http_error", Code: Ptr(502), Message: Ptr("upstream failed"), Content: json.RawMessage(`{"retryable":true}`),
+		},
+	}}}
+
+	copied := DeepCopyResponsesMessage(original)
+	originalError := original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	copiedError := copied.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	if copiedError == nil {
+		t.Fatal("deep copy dropped structured error")
+	}
+	if copiedError == originalError || copiedError.Code == originalError.Code || copiedError.Message == originalError.Message {
+		t.Fatal("deep copy aliases structured error fields")
+	}
+	if len(copiedError.Content) > 0 && &copiedError.Content[0] == &originalError.Content[0] {
+		t.Fatal("deep copy aliases structured error content")
+	}
+
+	*copiedError.Code = 503
+	*copiedError.Message = "changed"
+	copiedError.Content[2] = 'x'
+	if *originalError.Code != 502 || *originalError.Message != "upstream failed" || string(originalError.Content) != `{"retryable":true}` {
+		t.Fatalf("mutating copied error changed original: %#v", originalError)
+	}
+}
+
+// TestResponsesToolOpenAIFields pins the OpenAI tool fields async (function and
+// custom), output_schema (function) and tunnel_id (MCP) through a round trip,
+// including function tools nested in a namespace.
+func TestResponsesToolOpenAIFields(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"function","name":"get_weather","async":true,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":true,"output_schema":{"type":"object","properties":{"temp":{"type":"number","exclusiveMinimum":-273}},"const":"x"}}`,
+		`{"type":"custom","name":"run_job","async":false,"format":{"type":"text"}}`,
+		`{"type":"mcp","server_label":"internal","tunnel_id":"tunnel_0123456789abcdef0123456789abcdef","require_approval":"never"}`,
+		`{"type":"namespace","name":"jobs","description":"Job tools","tools":[{"type":"function","name":"start","async":true,"parameters":{"type":"object","properties":{}},"strict":false,"output_schema":{"type":"string"}}]}`,
+	} {
+		var tool ResponsesTool
+		if err := Unmarshal([]byte(in), &tool); err != nil {
+			t.Fatalf("unmarshal %s: %v", in, err)
+		}
+		out, err := MarshalSorted(tool)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+	}
+}
+
+// TestResponsesToolCallAsyncSurvives pins async on function_call and
+// custom_tool_call items. A replayed pending async call without it is rejected by
+// OpenAI with "No tool output found for function call".
+func TestResponsesToolCallAsyncSurvives(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Paris\"}","async":true,"status":"completed"}`,
+		`{"type":"custom_tool_call","call_id":"call_2","name":"run_job","input":"go","async":true}`,
+	} {
+		var msg ResponsesMessage
+		if err := Unmarshal([]byte(in), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+
+		copied := DeepCopyResponsesMessage(msg)
+		if copied.ResponsesToolMessage.Async == nil || !*copied.ResponsesToolMessage.Async {
+			t.Fatalf("deep copy lost async: %s", in)
+		}
+		if copied.ResponsesToolMessage.Async == msg.ResponsesToolMessage.Async {
+			t.Fatalf("deep copy aliases the async pointer: %s", in)
+		}
+	}
 }

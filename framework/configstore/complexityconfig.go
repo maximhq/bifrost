@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -301,13 +302,25 @@ func (c ComplexitySemanticConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// normalizeComplexityProvider trims a configured provider name and lowercases
+// it only when it names a built-in provider. Custom providers are registered
+// and looked up under their exact name, so lowercasing "DeepInfra-Embeddings"
+// would point the classifier at a provider that does not exist.
+func normalizeComplexityProvider(provider schemas.ModelProvider) schemas.ModelProvider {
+	trimmed := strings.TrimSpace(string(provider))
+	if lower := schemas.ModelProvider(strings.ToLower(trimmed)); slices.Contains(schemas.StandardProviders, lower) {
+		return lower
+	}
+	return schemas.ModelProvider(trimmed)
+}
+
 // normalized returns a canonical deep copy with defaults applied.
 func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 	if c == nil {
 		return nil
 	}
 	out := &ComplexitySemanticConfig{
-		Provider:            schemas.ModelProvider(strings.ToLower(strings.TrimSpace(string(c.Provider)))),
+		Provider:            normalizeComplexityProvider(c.Provider),
 		EmbeddingModel:      strings.TrimSpace(c.EmbeddingModel),
 		Timeout:             c.Timeout,
 		MinSimilarity:       c.MinSimilarity,
@@ -507,7 +520,7 @@ func (c *ComplexityLLMConfig) normalized() *ComplexityLLMConfig {
 		return nil
 	}
 	out := &ComplexityLLMConfig{
-		Provider:            schemas.ModelProvider(strings.ToLower(strings.TrimSpace(string(c.Provider)))),
+		Provider:            normalizeComplexityProvider(c.Provider),
 		Model:               strings.TrimSpace(c.Model),
 		Timeout:             c.Timeout,
 		Prompt:              strings.TrimSpace(c.Prompt),

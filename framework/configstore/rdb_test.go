@@ -1490,6 +1490,56 @@ func TestUpdateVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Updated Name", result.Name)
 	assert.False(t, result.IsActiveValue())
+
+	// Content logging is tri-state and every state must survive an update: the update path names
+	// its columns explicitly, so a column left off that list is silently never written.
+	vk.DisableContentLogging = new(true)
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	require.NotNil(t, result.DisableContentLogging, "forcing content off must persist")
+	assert.True(t, *result.DisableContentLogging)
+
+	vk.DisableContentLogging = new(false)
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	require.NotNil(t, result.DisableContentLogging, "forcing content on must persist")
+	assert.False(t, *result.DisableContentLogging)
+
+	vk.DisableContentLogging = nil
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	assert.Nil(t, result.DisableContentLogging, "clearing the override must write NULL, back to inherit")
+}
+
+// TestUpdateVirtualKey_PersistsBusinessUnitOwner verifies an update writes business_unit_id, so
+// assigning an existing key to a business unit sticks and moving it elsewhere clears it.
+func TestUpdateVirtualKey_PersistsBusinessUnitOwner(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-bu-owner",
+		Name:     "BU Owner",
+		Value:    *schemas.NewSecretVar("vk-bu-owner-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	vk.BusinessUnitID = schemas.Ptr("bu-1")
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err := store.GetVirtualKey(ctx, "vk-bu-owner")
+	require.NoError(t, err)
+	require.NotNil(t, result.BusinessUnitID, "assigning a business unit must persist")
+	assert.Equal(t, "bu-1", *result.BusinessUnitID)
+
+	vk.BusinessUnitID = nil
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-bu-owner")
+	require.NoError(t, err)
+	assert.Nil(t, result.BusinessUnitID, "clearing the business unit must write NULL")
 }
 
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
@@ -4360,6 +4410,42 @@ func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
 				require.Equalf(t, want, got.Priority, "priority for %s", id)
 			}
 		})
+	}
+}
+
+// TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled pins the update path for a rule whose
+// enabled field is omitted, as every config.json rule without "enabled" is. Save writes every
+// column, so a nil Enabled used to write NULL into the NOT NULL column and fail startup.
+func TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled(t *testing.T) {
+	ctx := context.Background()
+
+	updaters := map[string]func(store *RDBConfigStore, rule *tables.TableRoutingRule) error{
+		"SyncRoutingRules": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.SyncRoutingRules(ctx, nil, []tables.TableRoutingRule{*rule})
+		},
+		"UpdateRoutingRule": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.UpdateRoutingRule(ctx, rule)
+		},
+	}
+
+	for name, update := range updaters {
+		for _, stored := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/stored=%t", name, stored), func(t *testing.T) {
+				store := setupRDBTestStore(t)
+				created := routingRuleFixture("rule-a", 0, "openai")
+				created.Enabled = new(stored)
+				require.NoError(t, store.CreateRoutingRule(ctx, created))
+
+				incoming := routingRuleFixture("rule-a", 0, "openai")
+				incoming.Enabled = nil
+				require.NoError(t, update(store, incoming))
+
+				got, err := store.GetRoutingRule(ctx, "rule-a")
+				require.NoError(t, err)
+				require.NotNil(t, got.Enabled)
+				require.Equal(t, stored, *got.Enabled, "omitted enabled must keep the stored value")
+			})
+		}
 	}
 }
 
