@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { validateSkillForm, validateVersionBump } from "@/lib/validators/skills";
 import { AlertTriangle, Check, Copy, Eye, Info, Loader2, Plus, Save, Search, Settings2, X } from "lucide-react";
 import { useRef, useState } from "react";
+import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import { FileManagerSection } from "../components/fileManagerView";
 import { FilePreviewPane } from "../components/filePreview";
@@ -601,7 +602,7 @@ export function SkillEditView({
 }
 
 /** Build autocomplete items for referencing skill files with @[name](path) syntax. */
-function buildFilePathCompletions(files: SkillFileEntry[], t: (key: string, options?: { path: string }) => string): CompletionItem[] {
+function buildFilePathCompletions(files: SkillFileEntry[], t: TFunction<"config">): CompletionItem[] {
 	const completions: CompletionItem[] = [];
 	const folderPaths = new Set<string>();
 

@@ -28,13 +28,14 @@ import {
 } from "@/lib/store";
 import { MoreVertical, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import i18n from "@/lib/i18n";
 
 const matchTypeOptions: Array<{
 	value: UserAgentMappingMatchType;
-	labelKey: string;
+	labelKey: ParseKeys<"config">;
 }> = [
 	{ value: "contains", labelKey: "userAgent.contains" },
 	{ value: "starts_with", labelKey: "userAgent.startsWith" },

@@ -1,3 +1,5 @@
+import type { ParseKeys, TFunction } from "i18next";
+
 import {
 	AddProviderRequest,
 	AliasConfig,
@@ -41,10 +43,7 @@ const message = (key: string, values?: MigrationMessage["values"]): MigrationMes
 	...(values ? { values } : {}),
 });
 
-export function formatMigrationMessage(
-	value: MigrationMessage,
-	t: (key: string, values?: Record<string, string | number>) => string,
-): string {
+export function formatMigrationMessage(value: MigrationMessage, t: TFunction<"models">): string {
 	const values = Object.fromEntries(
 		Object.entries(value.values ?? {}).map(([key, entry]) => [
 			key,
@@ -55,7 +54,7 @@ export function formatMigrationMessage(
 					: entry,
 		]),
 	);
-	return t(value.key, values);
+	return t(value.key as ParseKeys<"models">, values);
 }
 
 class MigrationMessageError extends Error {

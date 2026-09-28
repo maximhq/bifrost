@@ -26,7 +26,7 @@ interface NetworkFormFragmentProps {
 }
 
 // seconds to human readable time
-const secondsToHumanReadable = (seconds: number, t: TFunction) => {
+const secondsToHumanReadable = (seconds: number, t: TFunction<"models">) => {
 	// Handle edge cases
 	if (!seconds || seconds < 0 || isNaN(seconds)) {
 		return t("providers.network.zeroSeconds");

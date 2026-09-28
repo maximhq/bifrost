@@ -532,6 +532,7 @@
 		},
 		"gridView": "網格檢視",
 		"tableView": "表格檢視",
+		"tableLabel": "表格",
 		"viewModeAria": "庫檢視模式",
 		"auth": {
 			"userHeaders": "使用者請求頭",

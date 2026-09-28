@@ -56,6 +56,9 @@
 		"tokenLimit": "토큰 한도",
 		"requestLimit": "요청 한도",
 		"apiStructure": "API 구조",
+		"networkTab": "네트워크",
+		"betaHeadersTab": "베타 헤더",
+		"debuggingTab": "디버깅",
 		"performance": "성능",
 		"governance": "거버넌스",
 		"betaHeaders": {

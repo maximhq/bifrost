@@ -1376,7 +1376,7 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 // LocalCachingFilter – filter by semantic-cache hit type (direct / semantic)
 // ---------------------------------------------------------------------------
 
-const LocalCachingOptions: { key: string; label: string }[] = [
+const LocalCachingOptions: { key: "direct" | "semantic"; label: string }[] = [
 	{ key: "direct", label: "Direct cache" },
 	{ key: "semantic", label: "Semantic cache" },
 ];

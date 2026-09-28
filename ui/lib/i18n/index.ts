@@ -51,6 +51,9 @@ if (!i18n.isInitialized) {
 			resources,
 			ns: [...NAMESPACES],
 			defaultNS: "common",
+			// Namespaces are chosen via useTranslation(ns) or { ns }, never a "ns:key" prefix.
+			// Keep in sync with CustomTypeOptions in i18next.d.ts.
+			nsSeparator: false,
 			fallbackLng: DEFAULT_LOCALE,
 			supportedLngs: [...supportedLocaleCodes],
 			nonExplicitSupportedLngs: false,

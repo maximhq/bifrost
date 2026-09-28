@@ -532,6 +532,7 @@
 		},
 		"gridView": "Vista em grelha",
 		"tableView": "Vista em tabela",
+		"tableLabel": "Tabela",
 		"viewModeAria": "Modo de vista da biblioteca",
 		"auth": {
 			"userHeaders": "Cabeçalhos de utilizador",

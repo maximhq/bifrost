@@ -15,11 +15,12 @@ import {
 } from "@/lib/types/webhooks";
 import { PanelLeftClose, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 
 const COLLAPSE_STORAGE_KEY = "webhook-deliveries-filter-sidebar-collapsed";
 
-const OUTCOME_LABEL_KEYS: Record<WebhookDeliveryOutcome, string> = {
+const OUTCOME_LABEL_KEYS: Record<WebhookDeliveryOutcome, ParseKeys<"governance">> = {
 	delivered: "webhooks.outcomes.deliveredLabel",
 	retryable_failure: "webhooks.outcomes.retryingLabel",
 	permanent_failure: "webhooks.outcomes.failedLabel",

@@ -1,3 +1,4 @@
+import type { ParseKeys } from "i18next";
 /**
  * Gap between a topbar trigger and the menu it opens, in pixels. One tighter
  * than the app-wide default of 4 that dropdownMenu/popover/hoverCard ship.
@@ -61,7 +62,7 @@ const routeTitleOverrides: Record<string, string> = {
 	"/workspace/scim": "User Provisioning",
 };
 
-const routeTitleI18nKeys: Record<string, string> = {
+const routeTitleI18nKeys: Partial<Record<string, ParseKeys<"shell">>> = {
 	"/workspace/adaptive-routing/settings": "titles.adaptiveRoutingSettings",
 	"/workspace/alerting/channels": "titles.alertChannels",
 	"/workspace/alerting/history": "titles.alertHistory",
@@ -90,7 +91,7 @@ function pathKey(pathname: string): string {
 }
 
 /** shell.json key for a route override, or undefined when the slug fallback applies. */
-export function getRouteTitleI18nKey(pathname: string): string | undefined {
+export function getRouteTitleI18nKey(pathname: string): ParseKeys<"shell"> | undefined {
 	return routeTitleI18nKeys[pathKey(pathname)];
 }
 

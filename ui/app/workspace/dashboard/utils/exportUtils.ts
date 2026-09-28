@@ -5,6 +5,7 @@
  * for `buildCSV()`.
  */
 
+import type { ParseKeys } from "i18next";
 import i18n from "@/lib/i18n";
 import type {
 	CostHistogramResponse,
@@ -231,7 +232,7 @@ export type ExportTab = DashboardTab | "all";
  * Single source of truth for the tab labels shown in the export menu and as
  * PDF section headings, and for the DOM ids the PDF capture reads.
  */
-const DASHBOARD_EXPORT_TAB_DEFS: { value: DashboardTab; labelKey: string; sectionId: string }[] = [
+const DASHBOARD_EXPORT_TAB_DEFS: { value: DashboardTab; labelKey: ParseKeys<"observability">; sectionId: string }[] = [
 	{ value: "overview", labelKey: "dashboard.tabs.overview", sectionId: "dashboard-section-overview" },
 	{ value: "provider-usage", labelKey: "dashboard.tabs.providerUsage", sectionId: "dashboard-section-provider-usage" },
 	{ value: "rankings", labelKey: "dashboard.tabs.modelRankings", sectionId: "dashboard-section-rankings" },

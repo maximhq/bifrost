@@ -3,13 +3,14 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { ChevronDown, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { FieldErrors, PricingFieldKey } from "./pricingFields";
 import { PRICING_FIELDS } from "./pricingFields";
 
 type GroupKey = "chat" | "embedding" | "rerank" | "audio" | "image" | "video" | "ocr";
 
-const PRICING_GROUPS: { key: GroupKey; labelKey: string }[] = [
+const PRICING_GROUPS: { key: GroupKey; labelKey: ParseKeys<"models"> }[] = [
 	{ key: "chat", labelKey: "customPricing.groupChat" },
 	{ key: "embedding", labelKey: "customPricing.groupEmbedding" },
 	{ key: "rerank", labelKey: "customPricing.groupRerank" },

@@ -198,7 +198,7 @@ export default function MCPLibraryPage() {
 											data-testid="mcp-library-table-view-toggle"
 										>
 											<List className="h-4 w-4" />
-											<span className="hidden sm:inline">{t("library.table")}</span>
+											<span className="hidden sm:inline">{t("library.tableLabel")}</span>
 										</Button>
 										<Button
 											type="button"

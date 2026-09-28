@@ -192,7 +192,7 @@ export function warpToolLabel(name: string, isRunning = false): string {
 	// An unknown tool falls back to its raw name rather than something invented.
 	// A wrong-but-friendly label for a step nobody recognises is worse than a
 	// technical one, because it hides that the tool set has moved on.
-	if (!WARP_TOOLS.includes(name)) return name;
+	if (!isWarpTool(name)) return name;
 	return i18n.t(`warp.tools.${name}.${isRunning ? "running" : "done"}`, { ns: "shell" });
 }
 
@@ -229,7 +229,13 @@ const WARP_TOOLS = [
 	"describe_filter_space",
 	"describe_virtual_key",
 	"ask_user",
-];
+] as const;
+
+type WarpTool = (typeof WARP_TOOLS)[number];
+
+function isWarpTool(name: string): name is WarpTool {
+	return (WARP_TOOLS as readonly string[]).includes(name);
+}
 
 /**
  * Whether a link in an answer points inside the dashboard.
@@ -581,23 +587,26 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 			return {
 				summary: raw ?? i18n.t("warp.errors.unknown.summary", { ns: "shell" }),
 				cause: i18n.t("warp.errors.unknown.cause", { ns: "shell" }),
-				suggestions: i18n.t("warp.errors.unknown.suggestions", {
-					ns: "shell",
-					returnObjects: true,
-				}) as string[],
+				suggestions: warpSuggestions("unknown"),
 				raw,
 			};
 	}
 }
 
-function warpErrorCopy(code: string, raw: string | undefined): WarpErrorDetail {
+type WarpErrorCode = "not_configured" | "max_iterations" | "timeout" | "upstream_error" | "tool_error" | "cancelled" | "unknown";
+
+// Suggestions are a string array in shell.json; the typed catalog treats arrays as
+// leaves (see i18next.d.ts), so check the shape here rather than cast it.
+function warpSuggestions(code: WarpErrorCode): string[] {
+	const value: unknown = i18n.t(`warp.errors.${code}.suggestions`, { ns: "shell", returnObjects: true });
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function warpErrorCopy(code: Exclude<WarpErrorCode, "unknown">, raw: string | undefined): WarpErrorDetail {
 	return {
 		summary: i18n.t(`warp.errors.${code}.summary`, { ns: "shell" }),
 		cause: i18n.t(`warp.errors.${code}.cause`, { ns: "shell" }),
-		suggestions: i18n.t(`warp.errors.${code}.suggestions`, {
-			ns: "shell",
-			returnObjects: true,
-		}) as string[],
+		suggestions: warpSuggestions(code),
 		raw,
 	};
 }

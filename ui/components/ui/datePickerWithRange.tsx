@@ -1,3 +1,4 @@
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import { getSupportedTimezones } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
@@ -53,7 +54,7 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	onDateTimeUpdate?: (date: DateRange) => void;
 	onPredefinedPeriodChange?: (period: string | undefined) => void;
 	dateTime?: DateRange;
-	preDefinedPeriods?: { label: string; value: string; labelKey?: string }[];
+	preDefinedPeriods?: { label: string; value: string; labelKey?: ParseKeys<"common"> }[];
 	predefinedPeriod?: string;
 	disabledBefore?: Date;
 	disabledAfter?: Date;
@@ -74,7 +75,8 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 	const { t } = useTranslation("common");
 	const isMobile = useIsMobile();
-	const periodLabel = (period?: { label: string; labelKey?: string }) => (period?.labelKey ? t(period.labelKey) : period?.label);
+	const periodLabel = (period?: { label: string; labelKey?: ParseKeys<"common"> }) =>
+		period?.labelKey ? t(period.labelKey) : period?.label;
 	const { className, buttonClassName, triggerLabel, onTrigger, dateTime } = props;
 	const activeTimezone = props.showTimezone ? props.timezone : undefined;
 

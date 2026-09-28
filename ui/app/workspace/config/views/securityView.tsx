@@ -15,7 +15,7 @@ import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { formatCooldown } from "@/lib/utils/duration";
-import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
+import { getPasswordPolicyFailures, type PasswordRequirementKey, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
@@ -183,7 +183,7 @@ export default function SecurityView() {
 	}, []);
 
 	const formatPasswordPolicyError = useCallback(
-		(failures: string[]) => {
+		(failures: PasswordRequirementKey[]) => {
 			if (failures.length === 0) return "";
 			return t("security.passwordMustInclude", {
 				requirements: failures.map((key) => t(`security.passwordRequirement.${key}`)).join(t("security.requirementSeparator")),

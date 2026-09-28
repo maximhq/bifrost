@@ -532,6 +532,7 @@
 		},
 		"gridView": "Grid view",
 		"tableView": "Table view",
+		"tableLabel": "Table",
 		"viewModeAria": "Library view mode",
 		"auth": {
 			"userHeaders": "User headers",

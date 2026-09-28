@@ -56,6 +56,9 @@
 		"tokenLimit": "Лимит токенов",
 		"requestLimit": "Лимит запросов",
 		"apiStructure": "Структура API",
+		"networkTab": "Сеть",
+		"betaHeadersTab": "Бета-заголовки",
+		"debuggingTab": "Отладка",
 		"performance": "Производительность",
 		"governance": "Управление",
 		"betaHeaders": {

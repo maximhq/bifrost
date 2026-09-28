@@ -8,6 +8,7 @@ import { ProviderIcons, ProviderIconType, RenderProviderIcon } from "@/lib/const
 import { getProviderLabel } from "@/lib/constants/logs";
 import { cn } from "@/lib/utils";
 import { ComponentProps, ReactNode, useLayoutEffect, useRef, useState } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { fitCount, measureKey, uniqueProviders } from "./utils";
 
@@ -124,7 +125,7 @@ export function ProviderList({
 	);
 }
 
-function overflowLabel(count: number, variant: "icon" | "label", t: (key: string, options?: { count: number }) => string) {
+function overflowLabel(count: number, variant: "icon" | "label", t: TFunction<"common">) {
 	return variant === "label" ? t("providerList.moreCount", { count }) : `+${count}`;
 }
 
