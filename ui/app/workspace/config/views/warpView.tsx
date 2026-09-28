@@ -1,5 +1,4 @@
 import PageTitle from "@/components/pageTitle";
-import { formatWarpUsage } from "@/components/warp/warpStream.utils";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,8 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { AutoSizeTextarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { formatWarpUsage } from "@/components/warp/warpStream.utils";
 import { getErrorMessage } from "@/lib/store";
-import { cn } from "@/lib/utils";
 import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import {
 	useCancelWarpBackfillMutation,
@@ -29,12 +28,13 @@ import {
 	type WarpBackfillJob,
 	type WarpConfigInput,
 } from "@/lib/types/warp";
+import { cn } from "@/lib/utils";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import {
 	embeddingSpaceChanged,
 	normalizeWarpNamespace,
@@ -609,6 +609,7 @@ export default function WarpView() {
 										// which is Bifrost load-balancing across the whole pool.
 										keys={modelKeys}
 										value={form.model}
+										unfiltered
 										onChange={(model) => update("model", model)}
 										placeholder={form.provider ? "Search or type a model..." : "Select a provider first"}
 										disabled={!form.provider || !hasWarpUpdateAccess}
