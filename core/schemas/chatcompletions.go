@@ -271,15 +271,25 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 
 	// Now aux.Reasoning (from Alias) and aux.ReasoningEffort are filled
 
-	// Validate that specific fields don't conflict
-	if aux.ReasoningEffort != nil && aux.Reasoning != nil && aux.Reasoning.Effort != nil {
-		return fmt.Errorf("both reasoning_effort and reasoning.effort cannot be present at the same time")
+	// Clients that mirror the same reasoning directive in both spellings (the
+	// flat reasoning_* shorthand and the equivalent reasoning object field)
+	// are accepted as long as the two agree; the value canonicalizes to the
+	// object form in the merge below. Only contradictory values stay an error,
+	// which keeps the union invariant's protective intent: a request that asks
+	// for two different efforts is still rejected instead of silently picking
+	// a winner. Clients known to send both spellings include ai-sdk-based
+	// agents that emit every vendor dialect at once.
+	if aux.ReasoningEffort != nil && aux.Reasoning != nil && aux.Reasoning.Effort != nil &&
+		*aux.ReasoningEffort != *aux.Reasoning.Effort {
+		return fmt.Errorf("reasoning_effort (%q) conflicts with reasoning.effort (%q)", *aux.ReasoningEffort, *aux.Reasoning.Effort)
 	}
-	if aux.ReasoningMaxTokens != nil && aux.Reasoning != nil && aux.Reasoning.MaxTokens != nil {
-		return fmt.Errorf("both reasoning_max_tokens and reasoning.max_tokens cannot be present at the same time")
+	if aux.ReasoningMaxTokens != nil && aux.Reasoning != nil && aux.Reasoning.MaxTokens != nil &&
+		*aux.ReasoningMaxTokens != *aux.Reasoning.MaxTokens {
+		return fmt.Errorf("reasoning_max_tokens (%d) conflicts with reasoning.max_tokens (%d)", *aux.ReasoningMaxTokens, *aux.Reasoning.MaxTokens)
 	}
-	if aux.ReasoningDisplay != nil && aux.Reasoning != nil && aux.Reasoning.Display != nil {
-		return fmt.Errorf("both reasoning_display and reasoning.display cannot be present at the same time")
+	if aux.ReasoningDisplay != nil && aux.Reasoning != nil && aux.Reasoning.Display != nil &&
+		*aux.ReasoningDisplay != *aux.Reasoning.Display {
+		return fmt.Errorf("reasoning_display (%q) conflicts with reasoning.display (%q)", *aux.ReasoningDisplay, *aux.Reasoning.Display)
 	}
 
 	if aux.ReasoningEffort != nil || aux.ReasoningMaxTokens != nil || aux.ReasoningDisplay != nil {
