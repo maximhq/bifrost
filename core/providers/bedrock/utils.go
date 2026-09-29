@@ -662,7 +662,17 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		if bedrockReq.AdditionalModelRequestFields == nil {
 			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 		}
-		if bifrostReq.Params.Reasoning.MaxTokens != nil {
+		if bifrostReq.Params.Reasoning.Type != nil && *bifrostReq.Params.Reasoning.Type == "between_tools" &&
+			schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+			// A thinking type, independent of effort: the caller's effort is forwarded as-is.
+			if thinking := anthropic.BetweenToolsThinking(caps, bifrostReq.Params.Reasoning.Effort); thinking != nil {
+				bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{"type": thinking.Type})
+			}
+			if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+				caps.SupportsNativeEffort(anthropic.DefaultSupportsNativeEffort(caps.Model())) {
+				setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+			}
+		} else if bifrostReq.Params.Reasoning.MaxTokens != nil {
 			tokenBudget := *bifrostReq.Params.Reasoning.MaxTokens
 			if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
 				// bedrock does not support dynamic reasoning budget like gemini

@@ -725,7 +725,7 @@ type AnthropicDiagnostics struct {
 }
 
 type AnthropicThinking struct {
-	Type         string  `json:"type"`                    // "enabled", "disabled", or "adaptive"
+	Type         string  `json:"type"`                    // "enabled", "disabled", "adaptive", or "between_tools"
 	BudgetTokens *int    `json:"budget_tokens,omitempty"` // Only for type "enabled" (not supported on Opus 4.7+)
 	Display      *string `json:"display,omitempty"`       // "summarized" | "omitted" — controls whether thinking content appears in the response (Opus 4.7+)
 }
