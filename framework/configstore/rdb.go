@@ -6072,12 +6072,17 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 }
 
 // GetModelConfigsByScopeAndScopeIDs retrieves model configs for a specific scope limited to the given scope IDs.
-func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+// Pass tx to read through a caller's transaction and see its uncommitted writes.
+func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error) {
 	if len(scopeIDs) == 0 {
 		return nil, nil
 	}
+	txDB := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		txDB = tx[0]
+	}
 	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
+	if err := txDB.WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
 		Where("scope = ? AND scope_id IN ?", scope, scopeIDs).
 		Find(&modelConfigs).Error; err != nil {
 		return nil, err

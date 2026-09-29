@@ -1455,7 +1455,7 @@ func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMo
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, _ ...*gorm.DB) ([]tables.TableModelConfig, error) {
 	return nil, nil
 }
 
