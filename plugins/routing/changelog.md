@@ -1,0 +1,3 @@
+- fix: rule fallbacks resolve legacy provider/model strings at route time, so custom-provider fallbacks survive a restart (#7543)
+- feat: a fallback that names no known provider is reported in the request's routing log with the rule name and the configured entry instead of being skipped silently (#7546)
+- chore: upgraded core to v1.11.0 and framework to v1.7.5
