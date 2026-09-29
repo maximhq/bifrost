@@ -97,12 +97,12 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	// Check for auth errors (401, 403)
 	statusCode := resp.StatusCode()
 	if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
-		return providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
+		return providerUtils.SetErrorLatency(parseOpenRouterError(resp), latency)
 	}
 
 	// Any 4xx/5xx error indicates the key might be invalid
 	if statusCode >= 400 {
-		return providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
+		return providerUtils.SetErrorLatency(parseOpenRouterError(resp), latency)
 	}
 
 	return nil
@@ -190,7 +190,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 			// Continue with empty response; allowed models will be backfilled below.
 			modelsFetched = false
 		} else {
-			bifrostErr := providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
+			bifrostErr := providerUtils.SetErrorLatency(parseOpenRouterError(resp), latency)
 			return nil, bifrostErr
 		}
 	}
@@ -321,7 +321,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
-		nil,
+		parseOpenRouterError,
 		provider.logger,
 	)
 }
@@ -341,7 +341,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostCon
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
-		nil,
+		parseOpenRouterError,
 		postHookRunner,
 		nil,
 		nil,
@@ -363,7 +363,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
-		nil,
+		parseOpenRouterError,
 		nil,
 		provider.logger,
 	)
@@ -388,7 +388,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		postHookRunner,
 		nil,
 		nil,
-		nil,
+		parseOpenRouterError,
 		nil,
 		nil,
 		nil,
@@ -410,7 +410,7 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
-		nil,
+		parseOpenRouterError,
 		nil,
 		provider.logger,
 	)
@@ -431,7 +431,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
-		nil,
+		parseOpenRouterError,
 		nil,
 		nil,
 		nil,
@@ -453,7 +453,7 @@ func (provider *OpenRouterProvider) Embedding(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
-		nil,
+		parseOpenRouterError,
 		provider.logger,
 	)
 }
@@ -522,7 +522,7 @@ func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key sc
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseOpenRouterError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
