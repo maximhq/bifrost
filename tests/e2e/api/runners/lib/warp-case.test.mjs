@@ -136,6 +136,16 @@ test("maxToolCalls of zero forbids every tool call", () => {
   assert.match(lib.evaluate(answered("Hi!", ["describe_filter_space"]), { maxToolCalls: 0 })[0], /made 1 tool calls, want at most 0/);
 });
 
+test("argsNone fails a call that carries a filter nobody asked for", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const narrowed = answered("x", [{ name: "query_metrics", arguments: '{"filters":{"start_time":"-7d","objects":["chat_completion"]},"group_by":"provider"}' }]);
+  assert.strictEqual(lib.evaluate(narrowed, { argsNone: [{ pattern: '"objects"' }] }).length, 1);
+  assert.deepStrictEqual(lib.evaluate(narrowed, { argsNone: [{ tool: "count_logs", pattern: '"objects"' }] }), []);
+  const plain = answered("x", [{ name: "query_metrics", arguments: '{"filters":{"start_time":"-7d"},"group_by":"provider"}' }]);
+  assert.deepStrictEqual(lib.evaluate(plain, { argsNone: [{ pattern: '"objects"' }] }), []);
+});
+
 test("argsMatch looks inside the named tool's arguments", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
@@ -201,6 +211,12 @@ test("pickAnswer types the whole deployment when a scope question does not offer
   const { pm } = fakePm();
   const q = { kind: "scope", allow_other: true, options: [{ label: "Growth team", hint: "team-growth" }, { label: "Support team", hint: "team-support" }] };
   assert.strictEqual(createWarpLib(pm).pickAnswer(q, [], "Which team uses the most tokens?"), "The whole deployment.");
+});
+
+test("pickAnswer takes the rolling week when asked calendar or rolling", () => {
+  const { pm } = fakePm();
+  const q = { question: "Which week?", options: [{ label: "This calendar week", hint: "since Monday" }, { label: "Last 7 days", hint: "-7d" }] };
+  assert.strictEqual(createWarpLib(pm).pickAnswer(q, [], "Compare spend this week to last week."), "-7d");
 });
 
 test("pickAnswer falls back to the label when an option has no hint", () => {
@@ -290,6 +306,31 @@ test("a follow-up starts from the history its chain ended with", () => {
     { role: "assistant", content: "10% of requests failed." },
     { role: "user", content: "Now break that down by provider." },
   ]);
+});
+
+test("minQuestions fails an answer given without asking first", () => {
+  const c = { name: "week", ask: "Compare spend this week to last week.", expect: { minQuestions: 1 } };
+  const question = { answer: "", tool_calls: [], finish_reason: "question", question: { question: "Which week?", options: [{ label: "This calendar week" }, { label: "Last 7 days", hint: "-7d" }] } };
+
+  const direct = fakePm();
+  let lib = createWarpLib(direct.pm);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    lib.prerequest(c);
+    direct.pm.respond(200, answered("Spend fell 87%.", ["query_metrics"]));
+    lib.test(c);
+  }
+  assert.match(direct.recorded.tests[0].message, /asked 0 question\(s\) before answering, want at least 1/);
+
+  const asked = fakePm();
+  lib = createWarpLib(asked.pm);
+  lib.prerequest(c);
+  asked.pm.respond(200, question);
+  lib.test(c);
+  lib.prerequest(c);
+  assert.strictEqual(asked.recorded.body.messages.at(-1).content, "-7d");
+  asked.pm.respond(200, answered("Spend rose 40%.", ["query_metrics"]));
+  lib.test(c);
+  assert.deepStrictEqual(asked.recorded.tests, [{ name: "week", ok: true }]);
 });
 
 test("a forbidden question is recorded as a failure, not answered", () => {

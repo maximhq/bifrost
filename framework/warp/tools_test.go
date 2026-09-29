@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"strings"
@@ -2541,4 +2542,61 @@ func TestWarpQueryMetricsIntervalReturnsBuckets(t *testing.T) {
 		"filters": map[string]any{"start_time": "-7d"}, "metrics": []any{"cost"}, "group_by": "provider", "interval": "day",
 	})
 	require.ErrorContains(t, err, "interval")
+}
+
+// "Spend by provider over the last 7 days" came back as $0.00 everywhere: the
+// objects description told the model to filter to chat_completion "to exclude
+// non-chat traffic", and the filter is an exact match on the request type, so
+// every streamed and Responses API request - all of the deployment's spend -
+// was dropped. The schema must not invite the filter, and must name the types
+// chat traffic is actually logged under.
+func TestWarpObjectsFilterIsNotInvitedForTotals(t *testing.T) {
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	require.NoError(t, sonic.UnmarshalString(FilterSchema, &schema))
+	description := schema.Properties["objects"].Description
+	require.NotContains(t, description, "Use this to exclude non-chat traffic")
+	require.Contains(t, description, "Leave it unset")
+	for _, requestType := range []schemas.RequestType{
+		schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest, schemas.ResponsesStreamRequest,
+	} {
+		require.Contains(t, description, string(requestType), "chat traffic is logged under %s too", requestType)
+	}
+}
+
+// A total narrowed by request type reads exactly like a total. Every aggregate
+// says so when objects was set, zero or not: one chat_completion row out of
+// 1,700 requests is as wrong a "spend" as none.
+func TestWarpObjectsFilterIsReportedOnAggregates(t *testing.T) {
+	cases := []struct {
+		tool string
+		args map[string]any
+	}{
+		{"count_logs", map[string]any{}},
+		{"query_metrics", map[string]any{"metrics": []any{"summary"}, "group_by": "provider"}},
+		{"query_usage_by", map[string]any{"dimension": "user"}},
+		{"query_model_performance", map[string]any{}},
+		{"render_chart", map[string]any{"kind": "bar", "metric": "cost", "group": "provider", "title": "Spend by provider"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			narrowed := maps.Clone(tc.args)
+			narrowed["filters"] = map[string]any{"start_time": "-7d", "objects": []any{"chat_completion"}}
+			result, err := runTool(t, tc.tool, &ToolDeps{logManager: &fakeLogReader{}}, narrowed)
+			require.NoError(t, err)
+			note, _ := result.(map[string]any)["request_types"].(string)
+			require.Contains(t, note, "chat_completion", "%s must name the request types it was narrowed to", tc.tool)
+			require.Contains(t, note, "responses", "%s must say what the filter left out", tc.tool)
+
+			unfiltered := maps.Clone(tc.args)
+			unfiltered["filters"] = map[string]any{"start_time": "-7d"}
+			result, err = runTool(t, tc.tool, &ToolDeps{logManager: &fakeLogReader{}}, unfiltered)
+			require.NoError(t, err)
+			require.NotContains(t, result.(map[string]any), "request_types", "%s: nothing to report without objects", tc.tool)
+		})
+	}
 }

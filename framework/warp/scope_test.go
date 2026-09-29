@@ -216,3 +216,49 @@ func TestWarpScopeAllReachesEveryUser(t *testing.T) {
 		}
 	})
 }
+
+// An admin asked "who are my top 5 users by cost" and got one row: themselves.
+// The default scope had narrowed a ranking of users to the asker's own traffic,
+// so it could only ever rank one person - while the dashboard beside it listed
+// nineteen. A ranking across people, org units or keys is a question about more than
+// the asker, so it is not defaulted to them; the store's queryscope still
+// limits it to what they may see.
+func TestWarpRankingAcrossPeopleIsNotScopedToTheCaller(t *testing.T) {
+	caller := Scope{HasIdentity: true, UserID: "u-admin"}
+	for _, dimension := range []string{"user", "team", "customer", "business_unit", "project", "virtual_key"} {
+		t.Run(dimension, func(t *testing.T) {
+			fake := &fakeLogReader{}
+			out, err := runTool(t, "query_usage_by", &ToolDeps{logManager: fake, scope: caller}, map[string]any{
+				"dimension": dimension, "filters": map[string]any{"start_time": "-7d"},
+			})
+			require.NoError(t, err)
+			require.Empty(t, fake.rankingFilters.UserIDs, "a %s ranking narrowed to the asker ranks one entity", dimension)
+			require.Equal(t, "all", out.(map[string]any)["scope"])
+
+			fake = &fakeLogReader{}
+			_, err = runTool(t, "render_chart", &ToolDeps{logManager: fake, scope: caller}, map[string]any{
+				"kind": "bar", "metric": "cost", "group": dimension, "title": "Spend", "filters": map[string]any{"start_time": "-7d"},
+			})
+			require.NoError(t, err)
+			require.Empty(t, fake.rankingFilters.UserIDs, "a bar per %s narrowed to the asker draws one bar", dimension)
+		})
+	}
+
+	// A scope the question named still wins.
+	fake := &fakeLogReader{}
+	_, err := runTool(t, "query_usage_by", &ToolDeps{logManager: fake, scope: caller}, map[string]any{
+		"dimension": "user", "filters": map[string]any{"start_time": "-7d", "team_ids": []any{"team-platform"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"team-platform"}, fake.rankingFilters.TeamIDs)
+	require.Empty(t, fake.rankingFilters.UserIDs)
+
+	// A ranking of what the traffic was, not whose it was, keeps the default:
+	// "what errors am I seeing" is about the asker.
+	fake = &fakeLogReader{}
+	_, err = runTool(t, "query_usage_by", &ToolDeps{logManager: fake, scope: caller}, map[string]any{
+		"dimension": "error_type", "filters": map[string]any{"start_time": "-7d"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"u-admin"}, fake.rankingFilters.UserIDs)
+}

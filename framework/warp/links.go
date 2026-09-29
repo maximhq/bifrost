@@ -2,6 +2,7 @@ package warp
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"regexp"
 	"slices"
@@ -412,11 +413,11 @@ type linkedDimensionRankingResult struct {
 // row gets no link rather than one that opens everyone's traffic.
 const unassignedRankingID = "unassigned"
 
-// narrowToDimension returns filters narrowed to one ranking row, or false for
+// narrowToDimension returns filters narrowed to ranking rows, or false for
 // a dimension the Logs page has no URL parameter for.
-func narrowToDimension(filters *logstore.SearchFilters, dimension logstore.RankingDimension, id string) (*logstore.SearchFilters, bool) {
+func narrowToDimension(filters *logstore.SearchFilters, dimension logstore.RankingDimension, ids ...string) (*logstore.SearchFilters, bool) {
 	narrowed := *filters
-	value := []string{id}
+	value := ids
 	switch dimension {
 	case logstore.RankingDimensionUser:
 		narrowed.UserIDs = value
@@ -470,4 +471,45 @@ func linkDimensionRankings(result *logstore.DimensionRankingResult, filters *log
 		}
 	}
 	return &linkedDimensionRankingResult{DimensionRankingResult: result, Rankings: rows}
+}
+
+// setRankingLogsLink puts logs_link on a ranking, opening the requests of the
+// rows it returned.
+//
+// The tool's own filters are the wrong link for a ranking. They select the
+// traffic that was ranked, not the entities it was ranked into, so "view all
+// users in Logs" under a ranking of every user opened the Logs page with a time
+// range and nothing else. logs_link_covers says what the link holds, since rows
+// past the limit and owner-less traffic are in the ranking's totals and not
+// behind the link. A dimension the page cannot filter on, or a ranking with no
+// linkable row, keeps the tool's filters.
+func setRankingLogsLink(out map[string]any, result *logstore.DimensionRankingResult, filters *logstore.SearchFilters, dimension logstore.RankingDimension) map[string]any {
+	var ids []string
+	unassigned := false
+	if result != nil {
+		for _, ranking := range result.Rankings {
+			switch ranking.ID {
+			case "":
+			case unassignedRankingID:
+				unassigned = true
+			default:
+				ids = append(ids, ranking.ID)
+			}
+		}
+	}
+	narrowed, ok := narrowToDimension(filters, dimension, ids...)
+	if !ok || len(ids) == 0 {
+		return setLogsLink(out, filters)
+	}
+	link := logsViewLink(narrowed)
+	if link == "" {
+		return out
+	}
+	out["logs_link"] = link
+	covers := fmt.Sprintf("the requests of the %d %s rows returned here, not every request in the window", len(ids), dimension)
+	if unassigned {
+		covers += "; Unassigned traffic has no Logs filter and is left out"
+	}
+	out["logs_link_covers"] = covers
+	return out
 }
