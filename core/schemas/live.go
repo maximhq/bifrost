@@ -309,3 +309,39 @@ type LiveTransport struct {
 	Type string `json:"type"`
 	SDP  string `json:"sdp"`
 }
+
+// LiveSessionLog is what Bifrost logs for one GPT Live session: how it ran, what was said, and
+// what the backend did on its behalf. The transport fills the session facts and the transcript;
+// the logging plugin fills the costs and the delegations it billed.
+type LiveSessionLog struct {
+	Transport         string               `json:"transport,omitempty"` // websocket or webrtc
+	ProviderSessionID string               `json:"provider_session_id,omitempty"`
+	VoiceSeconds      float64              `json:"voice_seconds"`
+	VoiceCost         *float64             `json:"voice_cost,omitempty"`
+	BackendCost       *float64             `json:"backend_cost,omitempty"`
+	UsageConfirmed    bool                 `json:"usage_confirmed"` // false when the session ended without the provider's final usage
+	Transcript        []LiveTranscriptLine `json:"transcript,omitempty"`
+	Delegations       []LiveDelegationLog  `json:"delegations,omitempty"`
+}
+
+// LiveTranscriptLine is one speaker turn of a session's transcript, on the session's timeline.
+type LiveTranscriptLine struct {
+	Role    string `json:"role"` // user or assistant
+	Text    string `json:"text"`
+	StartMs int64  `json:"start_ms,omitempty"`
+	EndMs   int64  `json:"end_ms,omitempty"`
+}
+
+// LiveDelegationLog is one task the voice model handed to the backend: the Responses calls that
+// ran it (a function call spans two), what they produced, and what they cost.
+type LiveDelegationLog struct {
+	DelegationID string             `json:"delegation_id,omitempty"` // the provider's id, shared by the task's responses
+	RequestID    string             `json:"request_id"`              // the first billing unit's id
+	ResponseIDs  []string           `json:"response_ids,omitempty"`
+	Model        string             `json:"model"`
+	StartedMs    int64              `json:"started_ms,omitempty"` // on the session's timeline
+	Usage        *BifrostLLMUsage   `json:"usage,omitempty"`
+	Cost         *float64           `json:"cost,omitempty"`
+	Output       []ResponsesMessage `json:"output,omitempty"` // the backend's output items, in order
+	Error        string             `json:"error,omitempty"`
+}
