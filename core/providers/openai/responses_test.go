@@ -3690,3 +3690,30 @@ func TestToOpenAIResponsesRequest_ForwardsComputerTool(t *testing.T) {
 		t.Fatal("expected no computer_use_preview fields on the bare computer tool")
 	}
 }
+
+// TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped: the Anthropic per-message
+// effort override (role:"system", content:[], output_config.effort) has no OpenAI
+// equivalent. Once Bifrost carries it on the neutral request, the OpenAI-shaped egress
+// (and every provider delegating to it) must drop the item instead of forwarding an
+// empty-content system message with an unknown output_config key.
+func TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Say hello."},
+		{"type":"message","role":"system","content":[],"output_config":{"effort":"low"}}
+	]`), &input))
+
+	result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5",
+		Input:    input,
+	})
+	require.NotNil(t, result)
+
+	raw, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1,
+		"effort-only system item reached the OpenAI wire: %s", raw)
+	require.NotContains(t, string(raw), "output_config",
+		"per-message output_config leaked onto the OpenAI wire: %s", raw)
+}
