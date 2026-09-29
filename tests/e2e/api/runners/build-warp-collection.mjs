@@ -46,6 +46,9 @@ const ANY_DATA = ["query_metrics", "query_usage_by", "query_model_performance", 
 const ERROR_BREAKDOWN = ["query_usage_by", "query_logs", "count_logs", "query_metrics", "get_request_trace"];
 const CONTENT = ["semantic_search_logs", "query_logs", "get_log_detail"];
 const DRILL_DOWN = ["get_log_detail", "get_request_trace"];
+// A spend or usage total covers every request type. objects is an exact match,
+// so a call that adds it on its own drops streamed and Responses API traffic.
+const NO_REQUEST_TYPE_FILTER = [{ pattern: '"objects"' }];
 // A one-sentence decline, with room for the issue-tracker link Warp offers.
 const REFUSAL_CHARS = 600;
 // The link Warp offers after declining something it cannot do.
@@ -113,11 +116,12 @@ const FOLDERS = [
     name: "Spend",
     description: "claude-3-opus is the priciest model; this week out-spends the quieter prior week.",
     cases: [
-      { id: "spend-provider", name: "Breaks down spend by provider", ask: "What did the whole deployment spend on each provider in the last 7 days?", expect: { toolsAny: ["query_metrics", "query_usage_by"], answerAll: ["anthropic", "openai", "\\$"] } },
+      { id: "spend-provider", name: "Breaks down spend by provider", ask: "What did the whole deployment spend on each provider in the last 7 days?", expect: { toolsAny: ["query_metrics", "query_usage_by"], argsNone: NO_REQUEST_TYPE_FILTER, answerAll: ["anthropic", "openai", "\\$"] } },
       { id: "spend-model", name: "Breaks down spend by model", ask: "What did the whole deployment spend on each model in the last 7 days?", expect: { toolsAny: ["query_model_performance"], answerAll: ["opus"] } },
       { id: "spend-per-request", name: "Names opus as most expensive per request", ask: "Which model is the most expensive per request this week?", expect: { toolsAny: ["query_model_performance", "query_metrics"], answerAll: ["opus"] } },
       { id: "spend-today", name: "Reports today's spend", ask: "How much has the whole deployment spent today?", expect: { toolsAny: ["query_metrics", "query_usage_by", "query_model_performance"], answerAll: ["\\$"] } },
-      { id: "spend-week-over-week", name: "Compares this week's spend to last week's", ask: "Compare the whole deployment's spend this week to last week.", expect: { toolsAny: ["query_metrics", "query_usage_by", "query_model_performance"], answerAny: ["increas|higher|more|up|rose|grew"] } },
+      { id: "spend-this-month", name: "Asks which month is meant before reporting spend", ask: "What did the whole deployment spend this month?", prefer: ["-30d|30 days"], expect: { minQuestions: 1, toolsAny: ["query_metrics", "query_usage_by", "query_model_performance"], argsNone: NO_REQUEST_TYPE_FILTER, answerAll: ["\\$"] } },
+      { id: "spend-week-over-week", name: "Compares this week's spend to last week's", ask: "Compare the whole deployment's spend this week to last week.", expect: { minQuestions: 1, toolsAny: ["query_metrics", "query_usage_by", "query_model_performance"], answerAny: ["increas|higher|more|up|rose|grew"] } },
     ],
   },
   {
@@ -141,7 +145,7 @@ const FOLDERS = [
       { id: "org-team-compare", name: "Compares two named teams", ask: "Compare Platform Engineering's traffic to Growth's this week.", expect: { toolsAny: ["query_usage_by", "query_metrics", "count_logs"], answerAll: ["Platform Engineering", "Growth"] } },
       { id: "org-top-customers", name: "Names Acme Corp as the top customer by spend", ask: "Show me the top customers by spend this week.", expect: { toolsAny: ["query_usage_by"], answerAll: ["Acme"] } },
       { id: "org-provider-head-to-head", name: "Compares providers on cost, latency and errors", ask: "Compare openai and anthropic head to head this week: cost, latency, and errors.", expect: { toolsAny: ["query_metrics", "query_model_performance"], answerAll: ["openai", "anthropic"] } },
-      { id: "org-week-over-week", name: "Compares this week to last week across metrics", ask: "Compare this week to last week across every metric you can, for the whole deployment.", expect: { toolsAny: ANY_DATA, answerAny: ["last week|previous (week|period)|prior week"] } },
+      { id: "org-week-over-week", name: "Compares this week to last week across metrics", ask: "Compare this week to last week across every metric you can, for the whole deployment.", expect: { minQuestions: 1, toolsAny: ANY_DATA, answerAny: ["last week|(previous|prior|preceding) (week|period|7 days)|7 days before|week before"] } },
     ],
   },
   {
@@ -240,7 +244,7 @@ const FOLDERS = [
         id: "chart-bar",
         name: "Charts spend by provider as a bar chart",
         ask: "Show me spend by provider over the last 7 days as a bar chart.",
-        expect: { toolsAll: ["render_chart"], maxToolCalls: 4, argsMatch: [{ tool: "render_chart", pattern: '"group":\\s*"provider"' }], answerAll: [...CHART_BLOCK, '"x":"anthropic"'], answerNone: NO_DIAGRAM },
+        expect: { toolsAll: ["render_chart"], maxToolCalls: 4, argsMatch: [{ tool: "render_chart", pattern: '"group":\\s*"provider"' }], argsNone: NO_REQUEST_TYPE_FILTER, answerAll: [...CHART_BLOCK, '"x":"anthropic"'], answerNone: NO_DIAGRAM },
       },
       {
         // The question that exposed the gap: bars ran only across groups and

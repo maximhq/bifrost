@@ -1378,6 +1378,32 @@ func TestWarpSystemPromptDistinguishesCalendarDaysFromRollingWindows(t *testing.
 	require.Contains(t, content, `"yesterday" means the previous local calendar day, not 24-48 hours ago`)
 }
 
+// "This week" names a period without settling the window: the calendar week
+// and a rolling 7 days are both fair readings. Asked on a Tuesday to compare
+// this week's spend to last week's, Warp took the calendar reading without
+// saying so and set a day and a half against a full week - $0.37 vs $2.85, an
+// 87% "decrease" the asker never meant. It is the model's call to ask, so the
+// prompt has to tell it this one is not already answered.
+func TestWarpSystemPromptAsksWhichWeekIsMeant(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, `"This week", "last week", "this month" and "last month" do not settle the window`)
+	require.Contains(t, content, "This calendar week")
+	require.Contains(t, content, "Last 7 days (-7d)")
+	// A month has the same two readings: on the 2nd, "this month" is two days
+	// by the calendar and thirty by the rolling window.
+	require.Contains(t, content, "This calendar month")
+	require.Contains(t, content, "Last 30 days (-30d)")
+	// Wording that already decides it must not cost the person a question.
+	require.Contains(t, content, `"the last 7 days", "the past week", "since Monday", "week to date"`)
+	require.Contains(t, content, `"the last 30 days", "the past month", "month to date", "in August"`)
+	// "this month" used to be the example of a period that needs no question.
+	require.NotContains(t, content, `("yesterday", "this month")`)
+	// The calendar list used to claim "this week" outright, which is what told
+	// the model it already knew.
+	require.NotContains(t, content, `For "today", "yesterday", "this week", or a named date`)
+}
+
 // The offset has to actually reach the prompt text, in the sign and padding a
 // person would type, or the calendar-boundary guidance above has nothing to
 // compute against.
