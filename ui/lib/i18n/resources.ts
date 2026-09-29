@@ -1,3 +1,4 @@
+import { ENTERPRISE_NAMESPACES, enterpriseResources } from "@enterprise/lib/i18n/resources";
 import commonEn from "@/locales/en/common.json";
 import shellEn from "@/locales/en/shell.json";
 import loginEn from "@/locales/en/login.json";
@@ -87,12 +88,13 @@ import mcpRu from "@/locales/ru/mcp.json";
 import governanceRu from "@/locales/ru/governance.json";
 import configRu from "@/locales/ru/config.json";
 
-export const NAMESPACES = ["common", "shell", "login", "observability", "models", "mcp", "governance", "config"] as const;
+export const NAMESPACES = ["common", "shell", "login", "observability", "models", "mcp", "governance", "config", ...ENTERPRISE_NAMESPACES] as const;
 
 export type I18nNamespace = (typeof NAMESPACES)[number];
 
 export const resources = {
 	en: {
+		...enterpriseResources.en,
 		common: commonEn,
 		shell: shellEn,
 		login: loginEn,
@@ -103,6 +105,7 @@ export const resources = {
 		config: configEn,
 	},
 	"zh-CN": {
+		...enterpriseResources["zh-CN"],
 		common: commonZhCN,
 		shell: shellZhCN,
 		login: loginZhCN,
@@ -113,6 +116,7 @@ export const resources = {
 		config: configZhCN,
 	},
 	"zh-TW": {
+		...enterpriseResources["zh-TW"],
 		common: commonZhTW,
 		shell: shellZhTW,
 		login: loginZhTW,
@@ -123,6 +127,7 @@ export const resources = {
 		config: configZhTW,
 	},
 	ja: {
+		...enterpriseResources.ja,
 		common: commonJa,
 		shell: shellJa,
 		login: loginJa,
@@ -133,6 +138,7 @@ export const resources = {
 		config: configJa,
 	},
 	ko: {
+		...enterpriseResources.ko,
 		common: commonKo,
 		shell: shellKo,
 		login: loginKo,
@@ -143,6 +149,7 @@ export const resources = {
 		config: configKo,
 	},
 	es: {
+		...enterpriseResources.es,
 		common: commonEs,
 		shell: shellEs,
 		login: loginEs,
@@ -153,6 +160,7 @@ export const resources = {
 		config: configEs,
 	},
 	pt: {
+		...enterpriseResources.pt,
 		common: commonPt,
 		shell: shellPt,
 		login: loginPt,
@@ -163,6 +171,7 @@ export const resources = {
 		config: configPt,
 	},
 	fr: {
+		...enterpriseResources.fr,
 		common: commonFr,
 		shell: shellFr,
 		login: loginFr,
@@ -173,6 +182,7 @@ export const resources = {
 		config: configFr,
 	},
 	de: {
+		...enterpriseResources.de,
 		common: commonDe,
 		shell: shellDe,
 		login: loginDe,
@@ -183,6 +193,7 @@ export const resources = {
 		config: configDe,
 	},
 	it: {
+		...enterpriseResources.it,
 		common: commonIt,
 		shell: shellIt,
 		login: loginIt,
@@ -193,6 +204,7 @@ export const resources = {
 		config: configIt,
 	},
 	ru: {
+		...enterpriseResources.ru,
 		common: commonRu,
 		shell: shellRu,
 		login: loginRu,
