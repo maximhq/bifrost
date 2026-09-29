@@ -177321,6 +177321,84 @@
           }
         }
       ]
+    },
+    {
+      "name": "127. Bedrock tool-result cachePoint coverage (#7614)",
+      "description": "Pins the provider wire shape: a marker on the first of two tool results must be a sibling and cover its screenshot. Nested and hoisted image layouts are accepted, but a hoisted image after the marker fails. Unit tests force the hoisting capability override; the live case uses the gateway model capabilities. This tests ordering, not minimum-token cache activation.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-5 marked screenshot followed by an unmarked tool result - #7614",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_page\",\n        \"description\": \"Inspect a page\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {}\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Inspect both results and reply OK.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_image\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_page\",\n            \"arguments\": \"{}\"\n          }\n        },\n        {\n          \"id\": \"call_text\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_page\",\n            \"arguments\": \"{}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_image\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Screenshot of the first page\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\"\n          },\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_text\",\n      \"content\": \"The second page has no screenshot.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Bedrock tool-image cache marker covers its image before a later tool result (#7614)', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  var wire = (response.extra_fields || {}).raw_request;",
+                  "  if (typeof wire === 'string') { wire = JSON.parse(wire); }",
+                  "  pm.expect(wire, 'send_back_raw_request must expose the Converse payload').to.be.an('object');",
+                  "  var users = (wire.messages || []).filter(function (m) { return m.role === 'user'; });",
+                  "  pm.expect(users.length, 'no user message in raw_request').to.be.above(0);",
+                  "  var blocks = users[users.length - 1].content;",
+                  "  var checkpoints = [], imagePositions = [], results = 0;",
+                  "  blocks.forEach(function (block, index) {",
+                  "    if (block.cachePoint) { checkpoints.push(index); }",
+                  "    if (block.image) { imagePositions.push(index); }",
+                  "    if (block.toolResult) {",
+                  "      results++;",
+                  "      (block.toolResult.content || []).forEach(function (inner) {",
+                  "        pm.expect(inner.cachePoint, 'cachePoint must never be nested in toolResult.content').to.equal(undefined);",
+                  "        if (inner.image) { imagePositions.push(index); }",
+                  "      });",
+                  "    }",
+                  "  });",
+                  "  pm.expect(results, 'both tool results must survive').to.equal(2);",
+                  "  pm.expect(checkpoints.length, 'exactly one sibling cachePoint must survive').to.equal(1);",
+                  "  pm.expect(imagePositions.length, 'the screenshot must survive').to.equal(1);",
+                  "  pm.expect(checkpoints[0], 'the marker must cover the screenshot, whether nested or hoisted').to.be.above(imagePositions[0]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
