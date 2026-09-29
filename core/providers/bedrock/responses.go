@@ -2340,6 +2340,21 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 								Summary: summary,
 							}
 						}
+					} else if typeStr == "between_tools" {
+						bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+							Type: schemas.Ptr("between_tools"),
+						}
+						if outputConfig, ok := request.AdditionalModelRequestFields.Get("output_config"); ok {
+							var effortValue interface{}
+							if outputConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(outputConfig); ok && outputConfigOrderedMap != nil {
+								effortValue, _ = outputConfigOrderedMap.Get("effort")
+							} else if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
+								effortValue = outputConfigMap["effort"]
+							}
+							if effortStr, ok := schemas.SafeExtractString(effortValue); ok {
+								bifrostReq.Params.Reasoning.Effort = schemas.Ptr(effortStr)
+							}
+						}
 					} else {
 						bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
 							Effort: schemas.Ptr("none"),
@@ -2554,7 +2569,17 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			if bedrockReq.AdditionalModelRequestFields == nil {
 				bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 			}
-			if bifrostReq.Params.Reasoning.MaxTokens != nil {
+			if bifrostReq.Params.Reasoning.Type != nil && *bifrostReq.Params.Reasoning.Type == "between_tools" &&
+				schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+				// A thinking type, independent of effort: the caller's effort is forwarded as-is.
+				if thinking := anthropic.BetweenToolsThinking(caps, bifrostReq.Params.Reasoning.Effort); thinking != nil {
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{"type": thinking.Type})
+				}
+				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+					caps.SupportsNativeEffort(anthropic.DefaultSupportsNativeEffort(caps.Model())) {
+					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+				}
+			} else if bifrostReq.Params.Reasoning.MaxTokens != nil {
 				tokenBudget := *bifrostReq.Params.Reasoning.MaxTokens
 				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
 					// bedrock does not support dynamic reasoning budget like gemini

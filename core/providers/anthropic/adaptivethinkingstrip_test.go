@@ -527,3 +527,77 @@ func TestMythosPreviewKeepsExtendedThinking(t *testing.T) {
 		}
 	})
 }
+
+// thinking:{type:"between_tools"} is forwarded where the model accepts it
+// (Sonnet 5.5) and downgraded elsewhere, so a fallback off Sonnet 5.5 does not
+// 400: "disabled" where that is accepted, "adaptive" on always-on models.
+func TestBetweenToolsThinkingStrip(t *testing.T) {
+	cases := []struct {
+		model    string
+		wantType string
+	}{
+		{"claude-sonnet-5-5", "between_tools"},
+		{"claude-sonnet-5", "disabled"},
+		{"claude-opus-4-8", "disabled"},
+		{"claude-opus-5-5", "adaptive"},
+		{"claude-fable-5", "adaptive"},
+	}
+
+	t.Run("typed_request", func(t *testing.T) {
+		for _, tc := range cases {
+			req := &AnthropicMessageRequest{
+				Model:     tc.model,
+				MaxTokens: 4096,
+				Thinking:  &AnthropicThinking{Type: "between_tools"},
+			}
+
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tc.model)
+
+			if req.Thinking == nil || req.Thinking.Type != tc.wantType {
+				t.Errorf("%s: thinking = %+v, want type %q", tc.model, req.Thinking, tc.wantType)
+			}
+		}
+	})
+
+	t.Run("raw_body", func(t *testing.T) {
+		for _, tc := range cases {
+			body := []byte(`{"model":"` + tc.model + `","max_tokens":4096,"thinking":{"type":"between_tools"}}`)
+
+			result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, tc.model)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", tc.model, err)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != tc.wantType {
+				t.Errorf("%s: thinking.type = %q, want %q; body: %s", tc.model, got, tc.wantType, string(result))
+			}
+		}
+	})
+
+	// Sonnet 5.5 rejects "disabled" like Opus 5.5; the name fallback must say so
+	// without a datasheet row.
+	t.Run("raw_disabled_on_sonnet55_is_rewritten", func(t *testing.T) {
+		body := []byte(`{"model":"claude-sonnet-5-5","max_tokens":4096,"thinking":{"type":"disabled"}}`)
+
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-sonnet-5-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.type").String(); got == "disabled" {
+			t.Errorf("thinking.type = \"disabled\" survived on Sonnet 5.5; upstream rejects it with a 400")
+		}
+	})
+
+	t.Run("datasheet_outranks_the_name_fallback", func(t *testing.T) {
+		no := false
+		setOverride(t, "claude-sonnet-5-5", schemas.ModelCapabilities{SupportsBetweenToolsThinking: &no})
+		body := []byte(`{"model":"claude-sonnet-5-5","max_tokens":4096,"thinking":{"type":"between_tools"}}`)
+
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-sonnet-5-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.type").String(); got == "between_tools" {
+			t.Errorf("thinking.type = \"between_tools\" survived a row saying otherwise; body: %s", string(result))
+		}
+	})
+}
