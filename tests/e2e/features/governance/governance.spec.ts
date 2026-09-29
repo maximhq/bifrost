@@ -130,6 +130,19 @@ test.describe('Governance - Customers', () => {
     expect(createVisible || emptyCreateVisible).toBe(true)
   })
 
+  test('should not show a limit value as the rate limit placeholder', async ({ governancePage }) => {
+    await governancePage.customersCreateBtn.click()
+    await expect(governancePage.customerDialog).toBeVisible({ timeout: 5000 })
+
+    // An empty field means no limit, so the placeholder must not read like a value.
+    for (const testId of ['customer-token-max-limit-input', 'customer-request-max-limit-input']) {
+      await expect(governancePage.customerDialog.getByTestId(testId)).toHaveAttribute('placeholder', 'No limit')
+    }
+
+    await governancePage.page.keyboard.press('Escape')
+    await expect(governancePage.customerDialog).not.toBeVisible({ timeout: 5000 })
+  })
+
   test('should create a customer', async ({ governancePage }) => {
     const customerData = createCustomerData({ name: `E2E Test Customer ${Date.now()}` })
     createdCustomers.push(customerData.name)
