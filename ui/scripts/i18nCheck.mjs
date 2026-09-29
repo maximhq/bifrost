@@ -27,8 +27,14 @@ const require = createRequire(import.meta.url);
 const ts = require("typescript");
 
 const UI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const LOCALES_DIR = path.join(UI_ROOT, "locales");
+// Enterprise catalogs arrive through the app/enterprise symlink and are checked on their own.
+const LOCALE_ROOTS = [path.join(UI_ROOT, "locales"), path.join(UI_ROOT, "app", "enterprise", "locales")].filter((dir) => fs.existsSync(dir));
 const SOURCE_LANG = "en";
+// Every root must cover every language the app ships, so a root with no `ja` directory is reported, not skipped.
+const SUPPORTED_LANGS = fs
+	.readdirSync(path.join(UI_ROOT, "locales"), { withFileTypes: true })
+	.filter((entry) => entry.isDirectory() && entry.name !== SOURCE_LANG)
+	.map((entry) => entry.name);
 const SCAN_DIRS = ["app", "components", "hooks", "lib"];
 const SKIP_PATH = /(\.test\.|\.spec\.|\.d\.ts$|\/lib\/i18n\/|\/node_modules\/)/;
 // Developer-only tooling (pool debug profiler), intentionally English.
@@ -196,11 +202,22 @@ function scanFile(filePath) {
 	return findings;
 }
 
+function isDirectory(target) {
+	try {
+		return fs.statSync(target).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 function walk(dir, out = []) {
 	if (!fs.existsSync(dir)) return out;
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
 		const full = path.join(dir, entry.name);
-		if (entry.isDirectory()) walk(full, out);
+		// app/enterprise is a symlink, which Dirent does not report as a directory.
+		// A link whose checkout was removed dangles; the build treats that as an OSS build, so skip it.
+		const isDir = entry.isDirectory() || (entry.isSymbolicLink() && isDirectory(full));
+		if (isDir) walk(full, out);
 		else if (/\.(tsx?|jsx?)$/.test(entry.name) && !SKIP_PATH.test(full) && !SKIP_FILES.has(path.relative(UI_ROOT, full))) out.push(full);
 	}
 	return out;
@@ -260,15 +277,19 @@ function pluralCategories(lang) {
 }
 
 function checkLocales() {
-	const languages = fs.readdirSync(LOCALES_DIR).filter((name) => fs.statSync(path.join(LOCALES_DIR, name)).isDirectory());
-	const namespaces = fs.readdirSync(path.join(LOCALES_DIR, SOURCE_LANG)).filter((name) => name.endsWith(".json"));
 	const report = {};
-	for (const lang of languages.filter((l) => l !== SOURCE_LANG)) {
-		const issues = { missing: [], extra: [], shape: [], placeholders: [], untranslated: [] };
+	for (const root of LOCALE_ROOTS) checkLocaleRoot(root, report);
+	return report;
+}
+
+function checkLocaleRoot(localesDir, report) {
+	const namespaces = fs.readdirSync(path.join(localesDir, SOURCE_LANG)).filter((name) => name.endsWith(".json"));
+	for (const lang of SUPPORTED_LANGS) {
+		const issues = (report[lang] ??= { missing: [], extra: [], shape: [], placeholders: [], untranslated: [] });
 		for (const ns of namespaces) {
 			const nsName = ns.replace(/\.json$/, "");
-			const source = flatten(JSON.parse(fs.readFileSync(path.join(LOCALES_DIR, SOURCE_LANG, ns), "utf8")));
-			const targetPath = path.join(LOCALES_DIR, lang, ns);
+			const source = flatten(JSON.parse(fs.readFileSync(path.join(localesDir, SOURCE_LANG, ns), "utf8")));
+			const targetPath = path.join(localesDir, lang, ns);
 			if (!fs.existsSync(targetPath)) {
 				issues.missing.push(`${nsName}:* (file missing)`);
 				continue;
@@ -312,9 +333,7 @@ function checkLocales() {
 				issues.extra.push(`${nsName}:${key}`);
 			}
 		}
-		report[lang] = issues;
 	}
-	return report;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,4 +388,4 @@ const literalCount = Object.values(literals).reduce(
 	0,
 );
 const localeCount = Object.values(locales).reduce((n, issues) => n + Object.values(issues).reduce((m, list) => m + list.length, 0), 0);
-process.exit(literalCount + localeCount > 0 ? 1 : 0);
+process.exitCode = literalCount + localeCount > 0 ? 1 : 0;
