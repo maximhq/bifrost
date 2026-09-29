@@ -117,8 +117,83 @@ func containsAnyMarker(message string, markers []string) bool {
 	return false
 }
 
+// reasoningTokenWords are the family names every upstream uses when it refuses a
+// replayed reasoning token, whatever else the sentence says. OpenAI, Azure, xAI and
+// Bedrock's OpenAI-compatible surfaces say "encrypted content" or "encrypted
+// reasoning"; Bedrock Converse says "reasoningContent"; Anthropic says "thinking" and
+// "redacted_thinking"; Gemini and Vertex say "thought signature". These are the names
+// of the field, not the provider's verdict on it, which is why they hold still while
+// the verdict wording ("invalid", "corrupted", "not valid", "could not decrypt",
+// "different region") keeps changing.
+var reasoningTokenWords = []string{"encrypted", "reasoning", "thinking", "thought"}
+
+// reasoningConfigParams are request parameters that configure reasoning rather than
+// replay it. A 400 naming one is a configuration error -- an effort level or summary
+// mode the model does not take, a thinking budget outside Anthropic's documented
+// bounds, or a thinking mode the model has retired -- and the strip never touches
+// these parameters, so the retry would only earn the same 400.
+var reasoningConfigParams = []string{
+	"reasoning.effort",
+	"reasoning_effort",
+	"reasoning.summary",
+	"reasoning_summary",
+	"budget_tokens",
+	"thinking.type",
+	"thinking_budget",
+	"thinkingbudget",
+	"thinking_level",
+	"thinkinglevel",
+	"include_thoughts",
+	"includethoughts",
+}
+
+// shouldStripReasoningAfterClientError reports whether a failed attempt earns one more
+// try with the request's replayed reasoning tokens removed.
+//
+// The gate is a 400 whose message names a reasoning token, by family word alone. It
+// deliberately does not require the upstream's verdict wording: only Anthropic
+// documents its refusal text, and every mid-conversation provider or model switch
+// (bedrock to bedrock_mantle, Azure to Mantle, a per-turn router) produced a new
+// sentence per surface that the older verdict-based matcher missed, each time handing a
+// healable 400 straight to the client. Requiring the family word keeps an unrelated
+// 400 (context length, an unsupported parameter) from spending an upstream call that
+// would only return the same error.
+//
+// A 400 is the only class where the payload is the plausible cause: 401/403 are
+// identity, 404 is routing, 429 and 5xx are transient, and the ordinary retry classes
+// already own those. The caller pairs this with stripUnverifiableReasoning, which
+// returns false when the request carries no token, so the extra attempt is spent only
+// on requests that replay one. A 400 that names the family for another reason (a
+// missing thought_signature) costs one cheap call that is rejected before inference
+// and returns the same error; a successful response is never touched, because the
+// strip runs only after a refusal.
+//
+// Two exclusions are certain to earn the same 400 again. Anthropic's documented
+// "`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be
+// modified": the strip drops those blocks. And a 400 that names a reasoning
+// configuration parameter (see reasoningConfigParams) but no replayed-token field:
+// the strip leaves the parameter in place.
+func shouldStripReasoningAfterClientError(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil || err.StatusCode == nil || *err.StatusCode != 400 {
+		return false
+	}
+	message := strings.ToLower(err.Error.Message)
+	if strings.Contains(message, "cannot be modified") {
+		return false
+	}
+	if containsAnyMarker(message, reasoningConfigParams) && !namesEncryptedReasoningField(message) {
+		return false
+	}
+	return containsAnyMarker(message, reasoningTokenWords)
+}
+
 // isEncryptedReasoningRejection reports whether err is an upstream refusal to accept
-// replayed encrypted reasoning content.
+// replayed encrypted reasoning content, as far as the known phrasings go.
+//
+// It no longer gates the fail-soft retry; shouldStripReasoningAfterClientError does,
+// on status alone. This classifier labels the retry in logs and metrics, so an
+// operator can tell a recognised token refusal from a speculative strip after an
+// unrelated 400. A miss here costs a less specific log line, not a failed turn.
 //
 // encrypted_content is bound to the identity that minted it: the item id it was
 // issued with, the API key's organization, and the serving endpoint. A gateway
