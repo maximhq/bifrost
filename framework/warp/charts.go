@@ -155,7 +155,9 @@ func renderChartTool() Tool {
 			if len(title) > 120 {
 				title = truncateText(title, 120)
 			}
-			filters, err := filterArg(args, Now(), deps.scope)
+			// One bar per user, team or key is a ranking, scoped like one.
+			group, _ := args["group"].(string)
+			filters, err := filterArg(args, Now(), rankingScope(deps.scope, group))
 			if err != nil {
 				return nil, err
 			}
@@ -238,7 +240,7 @@ func renderChartTool() Tool {
 			if len(spec.Points) == 0 {
 				out["note"] = "Nothing matched these filters, so the chart is empty. Say so rather than pasting an empty chart; widen the window or check the filter values with describe_filter_space."
 			}
-			return setLogsLink(out, linkFilters), nil
+			return noteRequestTypes(setLogsLink(out, linkFilters), filters), nil
 		},
 	}
 }

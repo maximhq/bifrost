@@ -271,6 +271,7 @@ func countLogsTool() Tool {
 				"window":             resolvedWindow(filters),
 			}
 			setLogsLink(out, filters)
+			noteRequestTypes(out, filters)
 			// A query the Logs page cannot reproduce gets no logs_link, and the
 			// guidance must not then hand over a link the result does not carry.
 			_, hasLogsLink := out["logs_link"]
@@ -418,6 +419,7 @@ func queryMetricsTool() Tool {
 				"window": resolvedWindow(filters),
 			}
 			setLogsLink(out, filters)
+			noteRequestTypes(out, filters)
 			var groupedProviders []string
 			for _, metric := range metrics {
 				switch metric {
@@ -952,7 +954,7 @@ func queryUsageByTool() Tool {
 			}
 
 			now := Now()
-			filters, err := filterArg(args, now, deps.scope)
+			filters, err := filterArg(args, now, rankingScope(deps.scope, string(dimension)))
 			if err != nil {
 				return nil, err
 			}
@@ -965,11 +967,11 @@ func queryUsageByTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 			}
-			return setLogsLink(map[string]any{
+			return noteRequestTypes(setRankingLogsLink(map[string]any{
 				"rankings": linkDimensionRankings(result, filters, dimension),
 				"scope":    scopeNote(filters, deps.scope),
 				"window":   resolvedWindow(filters),
-			}, filters), nil
+			}, result, filters, dimension), filters), nil
 		},
 	}
 }
@@ -1038,6 +1040,7 @@ func queryModelsTool() Tool {
 				"window": resolvedWindow(filters),
 			}
 			setLogsLink(out, filters)
+			noteRequestTypes(out, filters)
 
 			includePerformance, err := boolArg(args, "include_performance")
 			if err != nil {

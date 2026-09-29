@@ -142,7 +142,7 @@ const FilterSchema = `{
     "models": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success, error, or cancelled."},
     "stop_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. stop, length, content_filter, tool_calls. Call describe_filter_space to see which actually occur."},
-    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Request type, e.g. chat_completion, embedding, speech, transcription, image_generation, video_generation. Use this to exclude non-chat traffic - embeddings, speech, and image/video generation have their own cost and latency shape and otherwise get averaged in with chat requests."},
+    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Exact request types, e.g. chat_completion, chat_completion_stream, responses, responses_stream, text_completion, embedding, speech, transcription, image_generation, video_generation. Leave it unset unless the person names a request type: spend, usage and performance questions cover every type. Each value matches only itself - a streamed request is its own _stream type and the Responses API is responses, so chat_completion alone leaves out most chat traffic. For chat traffic as a whole pass chat_completion, chat_completion_stream, responses and responses_stream together."},
     "virtual_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "team_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "customer_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
@@ -683,6 +683,22 @@ func boolArg(args map[string]any, key string) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean, got %T", key, value)
 	}
 	return flag, nil
+}
+
+// noteRequestTypes marks a result that was narrowed by request type.
+//
+// objects is an exact match, and a total narrowed by it reads exactly like a
+// total. A spend question filtered to chat_completion came back as $0.00 for
+// every provider on a deployment whose traffic was all Responses API, with
+// nothing in the result to say the filter was why.
+func noteRequestTypes(out map[string]any, filters *logstore.SearchFilters) map[string]any {
+	if len(filters.Objects) == 0 {
+		return out
+	}
+	out["request_types"] = fmt.Sprintf(
+		"Only requests of type %s are counted. Every other request type is left out - streamed requests are their own _stream types, and the Responses API is responses and responses_stream - so this is not total spend, usage or traffic. Unless the person asked for this request type, drop objects and query again; otherwise say the answer covers only this type.",
+		strings.Join(filters.Objects, ", "))
+	return out
 }
 
 // filterArg parses the shared filter object every flow accepts and applies

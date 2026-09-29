@@ -16,6 +16,8 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
@@ -1167,4 +1169,22 @@ func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testi
 
 	close(done)
 	writers.Wait()
+}
+
+func TestNotificationPublisher_ResolvesPublisherSetAfterRegistration(t *testing.T) {
+	s := &BifrostHTTPServer{Config: &lib.Config{}}
+	// Captured while the notification service does not exist yet, as RegisterAPIRoutes
+	// does when Bootstrap has not run.
+	publish := s.notificationPublisher()
+	require.NotNil(t, publish, "a handler registered early must still reach the publisher set later")
+
+	var got []schemas.NotificationInput
+	s.Config.NotificationPublisher = func(_ context.Context, input schemas.NotificationInput) (*schemas.Notification, error) {
+		got = append(got, input)
+		return &schemas.Notification{}, nil
+	}
+	_, err := publish(context.Background(), schemas.NotificationInput{Title: "late"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "late", got[0].Title)
 }
