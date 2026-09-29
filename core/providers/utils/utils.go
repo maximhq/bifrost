@@ -1298,18 +1298,28 @@ func NormalizeBaseURL(networkConfig *schemas.NetworkConfig, defaultURL string) {
 }
 
 // LoggableURL returns fullURL in a form safe for logs. When the provider's base_url
-// came from an env./vault. reference, the resolved scheme and host are replaced with
-// the reference (e.g. "env.UPSTREAM_URL/v1beta/batches/123"), so the resolved endpoint
-// never reaches the logs; a literal base_url is logged as-is.
+// came from an env./vault. reference, everything the reference resolved to is replaced
+// with the reference itself (e.g. "env.UPSTREAM_URL/batches/123"), so the resolved
+// endpoint never reaches the logs; a literal base_url is logged as-is.
 func LoggableURL(baseURL *schemas.SecretVar, fullURL string) string {
 	if !baseURL.IsFromSecret() {
 		return fullURL
 	}
+	ref := baseURL.GetRawRef()
 	parsed, err := url.Parse(fullURL)
 	if err != nil || parsed.Host == "" {
-		return baseURL.GetRawRef()
+		return ref
 	}
-	return baseURL.GetRawRef() + parsed.RequestURI()
+	// The usual case: the request URL was built by appending to the resolved base_url.
+	// A reference can resolve to a path and query, not just a scheme and host, so the
+	// whole resolved prefix has to come off - leaving only the request-specific suffix.
+	if resolved := strings.TrimRight(baseURL.GetValue(), "/"); resolved != "" && strings.HasPrefix(fullURL, resolved) {
+		return ref + fullURL[len(resolved):]
+	}
+	// The URL was not built from base_url - a provider that rewrites the host for a
+	// download endpoint, say. Nothing after the host came from the reference, so
+	// dropping scheme and host is both necessary and sufficient.
+	return ref + parsed.RequestURI()
 }
 
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
