@@ -2936,6 +2936,7 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_video_per_second_4k",
 	// Costs - Other
 	"search_context_cost_per_query",
+	"web_search_cost_per_request",
 	"input_cost_per_query",
 	"code_interpreter_cost_per_session",
 	"cost_per_request",

@@ -34,7 +34,7 @@ ToolUsage:
       properties:
         num_requests:
           type: integer
-          description: Number of billable web search calls; priced at search_context_cost_per_query.
+          description: Number of billable web search calls.
 
 ChatPromptTokensDetails:
   type: object

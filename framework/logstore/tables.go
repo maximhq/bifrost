@@ -775,7 +775,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TokenUsageParsed != nil {
-		if data, err := sonic.Marshal(l.TokenUsageParsed); err != nil {
+		if data, err := sonic.Marshal(serializeTokenUsage(l.TokenUsageParsed)); err != nil {
 			return err
 		} else {
 			l.TokenUsage = string(data)
@@ -1047,6 +1047,10 @@ func (l *Log) DeserializeFields() error {
 			// Without clearing the flag the row would stay marked degraded and
 			// billing would skip a row it can now price correctly.
 			l.usageRebuiltFromColumns = false
+			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
+			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
+				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+			}
 		}
 	}
 
@@ -2660,4 +2664,24 @@ type NodeUsageAggregate struct {
 	MaxTimestamp      time.Time          `json:"max_timestamp"`       // highest log timestamp included in the aggregate
 	MaxLogID          string             `json:"max_log_id"`          // log ID tiebreaker for MaxTimestamp
 	NextCursor        NodeUsageCursor    `json:"next_cursor"`         // stable cursor for the next incremental query
+}
+
+// serializeTokenUsage converts the new tool_usage block back to completion_tokens_details.num_search_queries
+// field (which is how existing logs store it)
+func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
+	if u.ToolUsage == nil {
+		return u
+	}
+	stored := *u
+	stored.ToolUsage = nil
+	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
+		details := schemas.ChatCompletionTokensDetails{}
+		if u.CompletionTokensDetails != nil {
+			details = *u.CompletionTokensDetails
+		}
+		n := ws.NumRequests
+		details.NumSearchQueries = &n
+		stored.CompletionTokensDetails = &details
+	}
+	return &stored
 }

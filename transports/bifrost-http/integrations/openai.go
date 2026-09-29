@@ -1598,6 +1598,26 @@ type openAIResponsesResponse struct {
 	Usage *openAIResponsesUsage `json:"usage,omitempty"`
 }
 
+// MarshalJSON is required because the embedded response's own MarshalJSON would otherwise be
+// promoted and drop the flattened usage override. Like it, tool_usage goes top-level only.
+func (r openAIResponsesResponse) MarshalJSON() ([]byte, error) {
+	type responsesAlias schemas.BifrostResponsesResponse
+	resp := *r.BifrostResponsesResponse
+	usage := r.Usage
+	if usage != nil && usage.ResponsesResponseUsage != nil && usage.ResponsesResponseUsage.ToolUsage != nil {
+		if resp.ToolUsage == nil {
+			resp.ToolUsage = usage.ResponsesResponseUsage.ToolUsage
+		}
+		inner := *usage.ResponsesResponseUsage
+		inner.ToolUsage = nil
+		usage = &openAIResponsesUsage{ResponsesResponseUsage: &inner, Cost: usage.Cost}
+	}
+	return schemas.Marshal(struct {
+		*responsesAlias
+		Usage *openAIResponsesUsage `json:"usage,omitempty"`
+	}{(*responsesAlias)(&resp), usage})
+}
+
 type openAIResponsesStreamResponse struct {
 	*schemas.BifrostResponsesStreamResponse
 	Response *openAIResponsesResponse `json:"response,omitempty"`

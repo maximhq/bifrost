@@ -1004,8 +1004,8 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 
 	// Search query cost (billed on the output side)
 	searchCost := 0.0
-	if n := usage.ToolUsage.WebSearchRequests(); pricing.SearchContextCostPerQuery != nil && n > 0 {
-		searchCost = float64(n) * *pricing.SearchContextCostPerQuery
+	if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
+		searchCost = float64(usage.ToolUsage.WebSearch.NumRequests) * *pricing.WebSearchCostPerRequest
 	}
 
 	// Data residency (Anthropic inference_geo:"us") scales all token/cache costs
@@ -1215,8 +1215,8 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
 		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 
-		if n := usage.ToolUsage.WebSearchRequests(); pricing.SearchContextCostPerQuery != nil && n > 0 {
-			searchCost = float64(n) * *pricing.SearchContextCostPerQuery
+		if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
+			searchCost = float64(usage.ToolUsage.WebSearch.NumRequests) * *pricing.WebSearchCostPerRequest
 		}
 	}
 

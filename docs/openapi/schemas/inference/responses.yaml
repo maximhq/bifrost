@@ -595,6 +595,9 @@ ResponsesResponse:
       type: string
     usage:
       $ref: "#/ResponsesResponseUsage"
+    tool_usage:
+      $ref: "./usage.yaml#/ToolUsage"
+      description: Server-side tool call counts.
     extra_fields:
       $ref: "./common.yaml#/BifrostResponseExtraFields"
     search_results:
