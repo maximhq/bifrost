@@ -1,5 +1,7 @@
 package schemas
 
+import "encoding/json"
+
 // DecisionKind identifies how a single question is decided. The vocabulary
 // mirrors Typesafe's System One question types.
 type DecisionKind string
@@ -32,6 +34,7 @@ type BifrostDecisionRequest struct {
 	Questions      map[string]DecisionQuestion `json:"questions"`
 	Fallbacks      []Fallback                  `json:"fallbacks,omitempty"`
 	RawRequestBody []byte                      `json:"-"`
+	ExtraParams    map[string]interface{}      `json:"-"` // native extensions; sent only under the passthrough-extra-params flag
 }
 
 // GetRawRequestBody returns the raw request body for the decision request.
@@ -57,9 +60,10 @@ type DecisionAnswer struct {
 // Answers is keyed by question identifier; every requested question produces
 // an answer.
 type BifrostDecisionResponse struct {
-	ID          string                     `json:"id,omitempty"`
-	Model       string                     `json:"model"`
-	Answers     map[string]DecisionAnswer  `json:"answers"`
-	Usage       *BifrostLLMUsage           `json:"usage,omitempty"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ID             string                     `json:"id,omitempty"`
+	Model          string                     `json:"model"`
+	Answers        map[string]DecisionAnswer  `json:"answers"`
+	Usage          *BifrostLLMUsage           `json:"usage,omitempty"`
+	ExtraFields    BifrostResponseExtraFields `json:"extra_fields"`
+	NativeResponse json.RawMessage            `json:"-"` // provider body verbatim for native drop-in routes; never serialized
 }

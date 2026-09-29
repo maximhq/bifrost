@@ -1,28 +1,28 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
 import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
-import { ProviderSelector } from "@/components/ui/providerSelector";
-import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
-import NumberAndSelect from "@/components/ui/numberAndSelect";
-import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
-import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import MultiBudgetLines from "@/components/ui/multibudgets";
+import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import { resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
-import { budgetSignature } from "@/lib/utils/governance";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
+import { budgetSignature } from "@/lib/utils/governance";
+import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 // Side-effect import: pulls in downstream scope registrations (e.g. enterprise
 // registers "user" + user picker). The OSS-build fallback is an empty module.
-import "@enterprise/lib/registrations/modelLimitScopes";
 import { getErrorMessage, useCreateModelConfigMutation, useLazyGetModelsQuery, useUpdateModelConfigMutation } from "@/lib/store";
 import { ModelConfig } from "@/lib/types/governance";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/modelLimitScopes";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Lock } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -238,11 +238,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 				let rateLimitPayload:
 					| {
-							token_max_limit?: number | null;
-							token_reset_duration?: string | null;
-							request_max_limit?: number | null;
-							request_reset_duration?: string | null;
-					  }
+						token_max_limit?: number | null;
+						token_reset_duration?: string | null;
+						request_max_limit?: number | null;
+						request_reset_duration?: string | null;
+					}
 					| undefined;
 				if (hasRateLimit) {
 					rateLimitPayload = {
@@ -281,15 +281,15 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					budgets: budgetsPayload.length > 0 ? budgetsPayload : undefined,
 					rate_limit:
 						(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
-						(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
+							(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
 							? {
-									token_max_limit: data.tokenMaxLimit,
-									token_reset_duration:
-										data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : undefined,
-									request_max_limit: data.requestMaxLimit,
-									request_reset_duration:
-										data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : undefined,
-								}
+								token_max_limit: data.tokenMaxLimit,
+								token_reset_duration:
+									data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : undefined,
+								request_max_limit: data.requestMaxLimit,
+								request_reset_duration:
+									data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : undefined,
+							}
 							: undefined,
 				}).unwrap();
 				toast.success("Limit created successfully");
@@ -491,6 +491,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 														baseModelsWithoutProvider
 														extraOptions={ALL_MODELS_OPTION}
 														allowCustomModel
+														unfiltered
 													/>
 												</div>
 											)}

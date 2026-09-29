@@ -297,13 +297,11 @@ func TestWarpCanChatRequiresLogReader(t *testing.T) {
 	require.False(t, NewService(nil).CanChat())
 }
 
-// SetLogReader writes s.client under the lock; every reader must take it.
+// SetLogReader writes s.logs under the lock; every reader must take it.
 //
 // ReloadPlugin calls SetLogReader while requests are in flight, so an
-// unsynchronized read of s.client in chatFuncFor or Shutdown is a data race on
-// a pointer written concurrently - and beyond the race detector, a request can
-// observe a stale nil client and return ErrNoModelClient after CanChat()
-// already reported true.
+// unsynchronized read in chatFuncFor, CanChat or Shutdown is a data race on a
+// field written concurrently.
 func TestWarpServiceClientAccessIsRaceFree(t *testing.T) {
 	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
 	config := &schemas.WarpConfig{Provider: "openai", Model: "gpt-4o"}

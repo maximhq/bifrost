@@ -1926,6 +1926,9 @@ false
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
 {{- end }}
+{{- if .Values.bifrost.auditLogs.omitIpAddresses }}
+{{- $_ := set $auditLogs "omit_ip_addresses" true }}
+{{- end }}
 {{- if .Values.bifrost.auditLogs.archiveInterval }}
 {{- $_ := set $auditLogs "archive_interval" .Values.bifrost.auditLogs.archiveInterval }}
 {{- end }}

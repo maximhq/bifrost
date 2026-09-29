@@ -91,6 +91,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |
 | `allowed_origins` | array | `["*"]` | CORS allowed origins |
 | `allow_direct_keys` | boolean | `false` | Let callers bypass the key pool with `x-bf-direct-key: true` + a raw provider key |
+| `delete_expired_virtual_keys` | boolean | `false` | Daily cleanup job deletes expired virtual keys; a key's `delete_after_expire` overrides it |
 | `max_request_body_size_mb` | integer | `100` | Maximum request body in MB |
 | `whitelisted_routes` | array | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array | `[]` | Additional headers permitted for CORS/WebSocket |

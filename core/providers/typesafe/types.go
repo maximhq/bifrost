@@ -1,5 +1,13 @@
 package typesafe
 
+import (
+	"bytes"
+	"encoding/json"
+
+	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+)
+
 // Typesafe question types accepted by POST /v1/systemone.
 const (
 	TypesafeQuestionTypeNoul   = "noul"
@@ -8,26 +16,66 @@ const (
 )
 
 // TypesafeQuestion is one named question in a systemone request.
-// Instructions accepts a string, object, or array. Criteria is a map for noul
-// (optional "true"/"false" descriptions) and choice (option -> description,
-// max 255 options), and an ordered array of 2-10 level descriptions for score.
 type TypesafeQuestion struct {
 	Type         string      `json:"type"`
-	Instructions interface{} `json:"instructions,omitempty"`
-	Criteria     interface{} `json:"criteria,omitempty"`
+	Instructions interface{} `json:"instructions,omitempty"` // string, object, array, or absent
+	Criteria     interface{} `json:"criteria,omitempty"`     // map for noul/choice, ordered array for score; null descriptions allowed
 }
 
 // TypesafeDecisionRequest is the body of POST /v1/systemone.
 type TypesafeDecisionRequest struct {
-	State     interface{}                 `json:"state"`
-	Model     string                      `json:"model"`
-	Questions map[string]TypesafeQuestion `json:"questions"`
+	State       interface{}                 `json:"state"`
+	Model       string                      `json:"model"`
+	Questions   map[string]TypesafeQuestion `json:"questions"`
+	ExtraParams map[string]interface{}      `json:"-"` // native extensions (e.g. images), merged onto the wire by the provider
+	stateSet    bool                        // "state" key present on decode; keeps an explicit null distinct from absent
 }
 
-// GetExtraParams implements providerUtils.RequestBodyWithExtraParams. Typesafe
-// takes no passthrough params.
-func (r *TypesafeDecisionRequest) GetExtraParams() map[string]interface{} {
+// typesafeDecisionRequestKnownFields are the modelled top-level keys; anything
+// else is a native extension carried in ExtraParams.
+var typesafeDecisionRequestKnownFields = map[string]bool{
+	"state":     true,
+	"model":     true,
+	"questions": true,
+}
+
+// UnmarshalJSON decodes the modelled fields, records whether "state" was
+// present, and captures unknown top-level properties verbatim (compacted) so
+// they can be forwarded losslessly.
+func (r *TypesafeDecisionRequest) UnmarshalJSON(data []byte) error {
+	type Alias TypesafeDecisionRequest
+	if err := sonic.Unmarshal(data, (*Alias)(r)); err != nil {
+		return err
+	}
+	r.ExtraParams = nil
+	r.stateSet = false
+	gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if name == "state" {
+			r.stateSet = true
+		}
+		if typesafeDecisionRequestKnownFields[name] {
+			return true
+		}
+		if r.ExtraParams == nil {
+			r.ExtraParams = make(map[string]interface{})
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(value.Raw)); err == nil {
+			r.ExtraParams[name] = json.RawMessage(buf.Bytes())
+		} else {
+			r.ExtraParams[name] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
 	return nil
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams: the
+// native extensions the SDK forwarded, merged onto the wire body by
+// CheckContextAndGetRequestBody when passthrough is enabled.
+func (r *TypesafeDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // TypesafeAnswer is one answer in a systemone response. Exactly one of Noul,
@@ -57,10 +105,10 @@ type TypesafeDecisionResponse struct {
 	Usage   *TypesafeUsage            `json:"usage,omitempty"`
 }
 
-// TypesafeError is the JSON error body Typesafe returns on 401/422/429/529.
+// TypesafeError is the JSON error body Typesafe returns on 400/401/422/429/529.
 type TypesafeError struct {
 	Message string      `json:"message,omitempty"`
-	Detail  interface{} `json:"detail,omitempty"`
+	Detail  interface{} `json:"detail,omitempty"` // string, {error_type, message} object, or validation array
 	Error   *struct {
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`

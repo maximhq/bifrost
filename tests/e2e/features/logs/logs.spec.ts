@@ -18,6 +18,39 @@ test.describe('LLM Logs', () => {
       expect(statsVisible).toBe(true)
     })
 
+    test('should fit stat card trend figures at 1440px', async ({ logsPage, page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await logsPage.goto()
+
+      const figures = page.getByTestId('logs-metric-strip').getByTestId('logs-metric-trailing')
+      const count = await figures.count()
+      test.skip(count === 0, 'No trend figures rendered: the strip needs traffic in the selected window')
+      for (let i = 0; i < count; i++) {
+        const figure = figures.nth(i)
+        await expect
+          .poll(() => figure.evaluate((el) => el.scrollWidth <= el.clientWidth), {
+            message: `trend figure "${await figure.textContent()}" is truncated`,
+          })
+          .toBe(true)
+      }
+    })
+
+    test('should keep the table status row inside the visible table at 1440px', async ({ logsPage, page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await logsPage.goto()
+
+      const status = page.getByTestId('logs-table-status-row')
+      await expect(status).toBeVisible()
+      const inside = await status.evaluate((el) => {
+        const scroller = el.closest('[data-slot="table-container"]')
+        if (!scroller) return false
+        const box = el.getBoundingClientRect()
+        const view = scroller.getBoundingClientRect()
+        return box.left >= view.left && box.right <= view.right
+      })
+      expect(inside).toBe(true)
+    })
+
     test('should display filters section', async ({ logsPage }) => {
       // Check if the search input or filters button is visible
       // These are always visible when the page loads (not inside empty state)

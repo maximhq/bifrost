@@ -11,8 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { AutoSizeTextarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { formatWarpUsage } from "@/components/warp/warpStream.utils";
 import { getErrorMessage } from "@/lib/store";
-import { cn } from "@/lib/utils";
 import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import {
 	useCancelWarpBackfillMutation,
@@ -28,13 +28,13 @@ import {
 	type WarpBackfillJob,
 	type WarpConfigInput,
 } from "@/lib/types/warp";
+import { cn } from "@/lib/utils";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
-import { getExampleBaseUrl } from "@/lib/utils/port";
 import {
 	embeddingSpaceChanged,
 	normalizeWarpNamespace,
@@ -42,30 +42,7 @@ import {
 	validateWarpEmbedding,
 	type WarpEmbeddingFields,
 } from "./warpConfig.utils";
-import { isFiniteNumber, isValidBaseURL, validateWarpRetentionDays } from "./warpView.utils";
-
-/**
- * Warp talks to Bifrost itself by default.
- *
- * Pointing base_url at this deployment means Warp reaches its model through the
- * gateway, using the provider credentials already configured here. That is why
- * the API key below is optional: for the default setup there is no second
- * credential to supply.
- *
- * The /openai suffix matters. Warp sends OpenAI-shaped requests, and the
- * provider appends its own path - so the base has to be the origin's
- * OpenAI-compatible mount, giving /openai/v1/responses. Pointed at the bare
- * origin it would resolve to /v1/responses, which this server does not serve.
- * Routing through the compatibility layer is also what keeps Warp working
- * against any configured provider rather than only OpenAI.
- */
-const defaultBaseUrl = () => {
-	// On the Vite dev server the page origin is Vite, not Bifrost, so this
-	// resolves to the Go server (localhost:8080) there and to the page origin in
-	// production.
-	const origin = getExampleBaseUrl();
-	return origin ? `${origin}/openai` : "";
-};
+import { isFiniteNumber, validateWarpRetentionDays } from "./warpView.utils";
 
 /**
  * Sentinel for "any key". Radix rejects an empty-string SelectItem value, so the
@@ -83,7 +60,7 @@ const DEFAULT_HISTORY_RETENTION_DAYS = 30;
 const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
-const DEFAULT_SEARCH_THRESHOLD = 0.8;
+const DEFAULT_SEARCH_THRESHOLD = 0.7;
 const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_BACKFILL_PERIOD = "7d";
 
@@ -96,7 +73,6 @@ interface WarpFormState {
 	provider: string;
 	model: string;
 	apiKeyID: string;
-	baseURL: string;
 	maxIterations: number;
 	requestTimeoutSeconds: number;
 	historyRetentionDays: number;
@@ -122,7 +98,6 @@ const EMPTY_FORM: WarpFormState = {
 	provider: "",
 	model: "",
 	apiKeyID: "",
-	baseURL: "",
 	maxIterations: DEFAULT_MAX_ITERATIONS,
 	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
 	historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
@@ -249,6 +224,11 @@ export default function WarpView() {
 		backfillStatus?.status === "pending" || backfillStatus?.status === "running" || backfillStatus?.status === "cancelling";
 	// A live job always wins; otherwise fall back to the run that just ended.
 	const shownBackfill = backfillStatus?.id ? backfillStatus : finishedBackfill;
+	// These embedding calls skip the plugin pipeline, so they never show up in
+	// the logs - this line is the only place their spend is visible.
+	const backfillSpend = shownBackfill
+		? formatWarpUsage({ total_tokens: shownBackfill.embedding_tokens, cost: { total_cost: shownBackfill.embedding_cost } })
+		: null;
 
 	// Adopt a job discovered by the id-less request. Without this a reload during
 	// a running backfill kept polling id-less, and the moment the job finished
@@ -325,7 +305,6 @@ export default function WarpView() {
 			provider: config.provider ?? "",
 			model: config.model ?? "",
 			apiKeyID: config.api_key_id ?? "",
-			baseURL: config.base_url || defaultBaseUrl(),
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
 			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
 			historyRetentionDays: config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS,
@@ -377,7 +356,6 @@ export default function WarpView() {
 			form.provider !== (config.provider ?? "") ||
 			form.model !== (config.model ?? "") ||
 			form.apiKeyID !== (config.api_key_id ?? "") ||
-			form.baseURL !== (config.base_url || defaultBaseUrl()) ||
 			// The same fallback hydration applied, or a config stored without these
 			// fields reads as dirty the moment it loads and Save lights up before
 			// anyone has touched anything.
@@ -399,7 +377,6 @@ export default function WarpView() {
 
 	// The server enforces the same rules; checking here only saves a round trip.
 	const missingRequired = form.enabled && (!form.provider || !form.model);
-	const baseURLInvalid = form.baseURL !== "" && !isValidBaseURL(form.baseURL);
 	const iterationsInvalid = !isFiniteNumber(form.maxIterations) || form.maxIterations < 1 || form.maxIterations > 20;
 	const timeoutInvalid = !isFiniteNumber(form.requestTimeoutSeconds) || form.requestTimeoutSeconds < 1;
 	// No upper bound: the per-owner conversation cap already limits the table, so
@@ -426,7 +403,6 @@ export default function WarpView() {
 		normalizeWarpNamespace(form.namespace) === normalizeWarpNamespace(savedEmbeddingFields.namespace);
 	const invalid =
 		missingRequired ||
-		baseURLInvalid ||
 		iterationsInvalid ||
 		timeoutInvalid ||
 		retentionInvalid ||
@@ -443,7 +419,6 @@ export default function WarpView() {
 			provider: form.provider.trim(),
 			model: form.model.trim(),
 			api_key_id: form.apiKeyID,
-			base_url: form.baseURL.trim(),
 			max_iterations: form.maxIterations,
 			request_timeout_seconds: form.requestTimeoutSeconds,
 			history_retention_days: form.historyRetentionDays,
@@ -634,6 +609,7 @@ export default function WarpView() {
 										// which is Bifrost load-balancing across the whole pool.
 										keys={modelKeys}
 										value={form.model}
+										unfiltered
 										onChange={(model) => update("model", model)}
 										placeholder={form.provider ? "Search or type a model..." : "Select a provider first"}
 										disabled={!form.provider || !hasWarpUpdateAccess}
@@ -704,25 +680,6 @@ export default function WarpView() {
 											</button>
 										</p>
 									)}
-								</WarpField>
-
-								<WarpField
-									className="md:col-span-3"
-									label="Base URL"
-									htmlFor="warp-base-url"
-									hint="Defaults to this Bifrost, so Warp reuses the credentials configured here. Point it elsewhere only to call a provider directly."
-									error={baseURLInvalid ? "Enter an absolute http:// or https:// URL, with no username or password" : undefined}
-								>
-									<Input
-										id="warp-base-url"
-										type="text"
-										placeholder="https://llm.internal.example.com/v1"
-										data-testid="warp-base-url-input"
-										className={baseURLInvalid ? "border-destructive" : ""}
-										value={form.baseURL}
-										onChange={(event) => update("baseURL", event.target.value)}
-										disabled={!hasWarpUpdateAccess}
-									/>
 								</WarpField>
 							</div>
 						</WarpSection>
@@ -1161,9 +1118,12 @@ export default function WarpView() {
 												}}
 											/>
 										</div>
-										<p className="text-muted-foreground text-xs">
-											{shownBackfill.indexed} indexed · {shownBackfill.skipped} skipped · {shownBackfill.failed} failed
-										</p>
+										<div className="text-muted-foreground flex items-center justify-between gap-3 text-xs">
+											<span>
+												{shownBackfill.indexed} indexed · {shownBackfill.skipped} skipped · {shownBackfill.failed} failed
+											</span>
+											{backfillSpend && <span data-testid="warp-backfill-spend">{backfillSpend}</span>}
+										</div>
 										{shownBackfill.message && <p className="text-muted-foreground text-xs">{shownBackfill.message}</p>}
 										{shownBackfill.last_error && <p className="text-destructive text-xs">Latest error: {shownBackfill.last_error}</p>}
 									</div>

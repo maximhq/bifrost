@@ -5220,6 +5220,74 @@
           "response": []
         },
         {
+          "name": "Provider key: partial update keeps omitted fields",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ((!pm.collectionVariables.get('pkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body names only models. value, weight and blacklisted_models must keep",
+                  "// what was stored rather than reset to empty values (issue #7572).",
+                  "pm.test('Partial update returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var key = {};",
+                  "try { key = pm.response.json() || {}; } catch (e) {}",
+                  "pm.test('The sent field is applied', function () { pm.expect(key.models, pm.response.text()).to.eql(['regex:^gpt-5.*']); });",
+                  "pm.test('Omitted weight is kept', function () { pm.expect(key.weight, pm.response.text()).to.equal(1); });",
+                  "pm.test('Omitted blacklisted_models are kept', function () { pm.expect(key.blacklisted_models || [], pm.response.text()).to.include('regex:.*-preview$'); });",
+                  "pm.test('Omitted value is kept', function () {",
+                  "  var value = key.value && typeof key.value === 'object' ? key.value.value : key.value;",
+                  "  pm.expect(value, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys/{{pkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys",
+                "{{pkregex_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"models\": [\"regex:^gpt-5.*\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Provider key: delete key",
           "event": [
             {

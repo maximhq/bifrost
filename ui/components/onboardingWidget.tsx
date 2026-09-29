@@ -6,10 +6,10 @@ import {
 	HIDDEN_UNTIL_NAV_COOKIE,
 	METADATA_DISMISSED_KEY,
 	METADATA_SKIPPED_KEY,
-	type OnboardingStep as Step,
 	parseSkippedIds,
 	REMIND_LATER_COOKIE,
 	useOnboardingChecklist,
+	type OnboardingStep as Step,
 } from "@/hooks/useOnboardingChecklist";
 import { getErrorMessage, useLazyGetCoreConfigQuery } from "@/lib/store";
 import { useUpdateClientMetadataMutation } from "@/lib/store/apis/configApi";
@@ -228,16 +228,16 @@ export default function OnboardingWidget() {
 			{!isWorking && (
 				<div
 					aria-hidden
-					className="pointer-events-none fixed inset-0 z-30 bg-black/40 backdrop-blur-[1px] transition-opacity duration-200"
+					className="pointer-events-none fixed inset-0 z-[1000] bg-black/40 backdrop-blur-[1px] transition-opacity duration-200"
 				/>
 			)}
 			<Card
 				// While a step is active, keep the card visible and reachable so the
 				// user can still close, hide, or skip without completing the step.
 				className={cn(
-					"fixed right-6 bottom-4 z-40 w-[360px] gap-0 py-0 shadow-lg origin-bottom-right",
+					"fixed right-6 bottom-4 z-[1001] w-[360px] gap-0 py-0 shadow-lg origin-bottom-right",
 					"transition-all duration-300 ease-out",
-					isWorking ? "scale-95 opacity-70 hover:opacity-100" : "scale-100 opacity-100",
+					isWorking ? "scale-95 hover:opacity-100" : "scale-100 opacity-100",
 				)}
 			>
 				<CardHeader className="flex flex-row items-start justify-between gap-2 px-4 py-3">

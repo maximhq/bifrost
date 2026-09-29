@@ -4363,3 +4363,36 @@ func TestMigrationAddWarpLogEmbeddingColumnsBackfillsExistingRows(t *testing.T) 
 		OR embedding_model IS NULL OR embedding_api_key_id IS NULL OR log_vector_store_namespace IS NULL`).Scan(&nulls).Error)
 	require.Zero(t, nulls, "these columns are scanned into plain strings, so NULL breaks the read on Postgres")
 }
+
+func TestMigrationAddClientConfigDeleteExpiredVirtualKeysColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "delete_expired_virtual_keys"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "delete_expired_virtual_keys"))
+
+	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "delete_expired_virtual_keys"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_delete_expired_virtual_keys_column").Error)
+	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "delete_after_expire"),
+		"delete_after_expire column must not exist before migration")
+
+	require.NoError(t, migrationAddVirtualKeyDeleteAfterExpireColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "delete_after_expire"),
+		"delete_after_expire column should exist after migration")
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_delete_after_expire_column").Error)
+	require.NoError(t, migrationAddVirtualKeyDeleteAfterExpireColumn(ctx, db, testMigrationLogger))
+}
