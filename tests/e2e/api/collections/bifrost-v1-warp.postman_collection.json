@@ -28,11 +28,16 @@
     },
     {
       "key": "warp_lib",
-      "value": "function createWarpLib(pm) {\n  var STATE_KEY = \"__warp_state\";\n  var MAX_RETRIES = 1;\n  var MAX_QUESTIONS = 2;\n  // Tools that only discover what exists. A reply backed by these alone rests\n  // on no data - a refusal should call nothing else.\n  var DISCOVERY_TOOLS = [\"describe_filter_space\", \"ask_user\"];\n  // Options the driver prefers when Warp asks, most specific first: whole\n  // deployment for scope (nobody is identified, so there is no default), then a\n  // week for the window, which is what every seeded fact is measured over. The\n  // rolling week is tried on its own first: asked \"calendar week or last 7\n  // days?\", the seeded facts are the rolling ones whichever option is listed first.\n  var DEFAULT_PREFER = [\n    \"whole deployment|entire deployment|all traffic|everyone|all teams|everything\",\n    \"-7d|7 days|rolling\",\n    \"this week|last week\",\n    \"-24h|24 hours\",\n  ];\n\n  function readState() {\n    var raw = pm.collectionVariables.get(STATE_KEY);\n    if (!raw) return null;\n    try {\n      return JSON.parse(raw);\n    } catch (e) {\n      return null;\n    }\n  }\n\n  function saveState(state) {\n    pm.collectionVariables.set(STATE_KEY, state ? JSON.stringify(state) : \"\");\n  }\n\n  function chainKey(name) {\n    return \"__warp_chain_\" + name;\n  }\n\n  function readChain(name) {\n    var raw = pm.collectionVariables.get(chainKey(name));\n    if (!raw) return null;\n    try {\n      return JSON.parse(raw);\n    } catch (e) {\n      return null;\n    }\n  }\n\n  function freshState(c, attempt) {\n    var messages = [];\n    var conversationId = pm.variables.replaceIn(\"{{$guid}}\");\n    if (c.chain && !c.chainStart) {\n      var chain = readChain(c.chain);\n      if (chain) {\n        messages = chain.messages.slice();\n        conversationId = chain.conversation_id;\n      }\n    }\n    if (c.history) {\n      for (var i = 0; i < c.history.length; i++) {\n        var turn = c.history[i];\n        var copy = { role: turn.role, content: pm.variables.replaceIn(turn.content) };\n        if (turn.question) copy.question = true;\n        messages.push(copy);\n      }\n    }\n    messages.push({ role: \"user\", content: pm.variables.replaceIn(c.ask) });\n    return {\n      name: pm.info.requestName,\n      attempt: attempt,\n      asked: 0,\n      messages: messages,\n      conversation_id: conversationId,\n    };\n  }\n\n  // pickAnswer replies to an ask_user question the way a person clicking the\n  // dashboard would: the option's hint when it has one, else its label. An\n  // option the person's own question already named wins - asked \"what did\n  // Platform Engineering spend\", nobody then picks \"Whole deployment\". With no\n  // whole-deployment option on a scope question, they type it instead, as the\n  // question's free-text escape allows, rather than taking whatever came first.\n  function pickAnswer(question, prefer, asked) {\n    var options = (question && question.options) || [];\n    var said = String(asked || \"\").toLowerCase();\n    for (var n = 0; n < options.length; n++) {\n      var label = String(options[n].label || \"\").toLowerCase();\n      if (label.length >= 3 && said.indexOf(label) >= 0) return options[n].hint || options[n].label;\n    }\n    var patterns = (prefer || []).concat(DEFAULT_PREFER);\n    for (var p = 0; p < patterns.length; p++) {\n      var re = new RegExp(patterns[p], \"i\");\n      for (var i = 0; i < options.length; i++) {\n        var o = options[i];\n        if (re.test(o.label || \"\") || re.test(o.hint || \"\")) return o.hint || o.label;\n      }\n    }\n    var scopeQuestion = (question && question.kind === \"scope\") || /whose|scope/i.test((question && question.question) || \"\");\n    if (scopeQuestion && (!options.length || question.allow_other)) return \"The whole deployment.\";\n    if (options.length) return options[0].hint || options[0].label;\n    return \"The whole deployment, over the last 7 days.\";\n  }\n\n  // Patterns may name run-specific values ({{warp_slowest_id}}), resolved here\n  // rather than at build time since they only exist once the seeder has run.\n  function pattern(p) {\n    return new RegExp(pm.variables.replaceIn(p), \"i\");\n  }\n\n  function stripCode(text) {\n    return String(text || \"\")\n      .replace(/```[\\s\\S]*?```/g, \"\")\n      .replace(/`[^`]*`/g, \"\");\n  }\n\n  // evaluate returns the list of expectations a JSON-mode response missed.\n  function evaluate(body, expect) {\n    var e = expect || {};\n    var failures = [];\n    if (body.error) {\n      failures.push(\"error \" + body.error.code + \": \" + body.error.message);\n      return failures;\n    }\n    var calls = (body.tool_calls || []).filter(function (t) {\n      return !t.failed;\n    });\n    var names = calls.map(function (t) {\n      return t.name;\n    });\n\n    if (e.question === \"required\") {\n      if (!body.question) failures.push(\"expected an ask_user question, got an answer\");\n      else if (!body.question.options || body.question.options.length < 2)\n        failures.push(\"question carried fewer than 2 options\");\n      if (body.finish_reason !== \"question\") failures.push(\"finish_reason \" + body.finish_reason + \", want question\");\n      return failures;\n    }\n    if (e.question === \"forbidden\" && body.question) failures.push(\"asked a question: \" + body.question.question);\n\n    var finish = e.finish || [\"stop\", \"partial\"];\n    if (finish.indexOf(body.finish_reason) < 0) failures.push(\"finish_reason \" + body.finish_reason + \", want one of \" + finish.join(\"/\"));\n\n    // A \"required\" question case has already returned above; every case that\n    // reaches here, \"forbidden\" included, must have said something.\n    var answer = String(body.answer || \"\");\n    if (!answer.trim()) failures.push(\"empty answer\");\n\n    if (typeof e.maxToolCalls === \"number\" && (body.tool_calls || []).length > e.maxToolCalls)\n      failures.push(\"made \" + (body.tool_calls || []).length + \" tool calls, want at most \" + e.maxToolCalls);\n    if (e.toolsAny && !e.toolsAny.some(function (t) { return names.indexOf(t) >= 0; }))\n      failures.push(\"called none of \" + e.toolsAny.join(\", \") + \" (called: \" + (names.join(\", \") || \"nothing\") + \")\");\n    (e.toolsAll || []).forEach(function (t) {\n      if (names.indexOf(t) < 0) failures.push(\"did not call \" + t + \" (called: \" + (names.join(\", \") || \"nothing\") + \")\");\n    });\n    if (e.noDataTools) {\n      var data = names.filter(function (n) { return DISCOVERY_TOOLS.indexOf(n) < 0; });\n      if (data.length) failures.push(\"queried data for an out-of-scope question: \" + data.join(\", \"));\n    }\n    (e.argsMatch || []).forEach(function (m) {\n      var re = pattern(m.pattern);\n      var hit = calls.some(function (t) {\n        return (!m.tool || t.name === m.tool) && re.test(t.arguments || \"\");\n      });\n      if (!hit) failures.push(\"no \" + (m.tool || \"tool\") + \" call with arguments matching /\" + m.pattern + \"/\");\n    });\n    // A filter the question never asked for narrows the answer without saying so.\n    (e.argsNone || []).forEach(function (m) {\n      var re = pattern(m.pattern);\n      calls.forEach(function (t) {\n        if ((!m.tool || t.name === m.tool) && re.test(t.arguments || \"\"))\n          failures.push(t.name + \" was called with arguments matching /\" + m.pattern + \"/: \" + t.arguments);\n      });\n    });\n\n    (e.answerAll || []).forEach(function (p) {\n      if (!pattern(p).test(answer)) failures.push(\"answer lacks /\" + p + \"/\");\n    });\n    if (e.answerAny && !e.answerAny.some(function (p) { return pattern(p).test(answer); }))\n      failures.push(\"answer matches none of \" + e.answerAny.map(function (p) { return \"/\" + p + \"/\"; }).join(\" \"));\n    (e.answerNone || []).forEach(function (p) {\n      if (pattern(p).test(answer)) failures.push(\"answer contains /\" + p + \"/\");\n    });\n    if (e.answerNoneOutsideCode) {\n      var prose = stripCode(answer);\n      e.answerNoneOutsideCode.forEach(function (p) {\n        if (pattern(p).test(prose)) failures.push(\"answer repeats /\" + p + \"/ outside inline code\");\n      });\n    }\n    if (e.maxAnswerChars && answer.length > e.maxAnswerChars)\n      failures.push(\"answer is \" + answer.length + \" chars, want at most \" + e.maxAnswerChars);\n    return failures;\n  }\n\n  function prerequest(c) {\n    var state = readState();\n    if (!state || state.name !== pm.info.requestName) {\n      state = freshState(c, 0);\n      saveState(state);\n    }\n    pm.request.body.update({\n      mode: \"raw\",\n      raw: JSON.stringify({\n        messages: state.messages,\n        conversation_id: state.conversation_id,\n        stream: false,\n        timezone: \"UTC\",\n      }),\n      options: { raw: { language: \"json\" } },\n    });\n  }\n\n  function summary(body) {\n    if (!body) return \"\";\n    var tools = (body.tool_calls || []).map(function (t) {\n      return t.name + (t.failed ? \"(failed)\" : \"\");\n    });\n    return \" | tools: [\" + tools.join(\", \") + \"] | finish: \" + body.finish_reason + \" | answer: \" + String(body.answer || \"\").slice(0, 600);\n  }\n\n  function test(c) {\n    var state = readState() || freshState(c, 0);\n    var body = null;\n    var failures = [];\n    if (pm.response.code !== 200) {\n      failures.push(\"status \" + pm.response.code + \": \" + pm.response.text().slice(0, 500));\n    } else {\n      try {\n        body = pm.response.json();\n      } catch (err) {\n        failures.push(\"response is not JSON: \" + pm.response.text().slice(0, 300));\n      }\n    }\n\n    if (body && body.question && (c.expect || {}).question !== \"required\" && (c.expect || {}).question !== \"forbidden\" && state.asked < MAX_QUESTIONS) {\n      state.messages.push({ role: \"assistant\", content: body.question.question, question: true });\n      state.messages.push({ role: \"user\", content: pickAnswer(body.question, c.prefer, pm.variables.replaceIn(c.ask)) });\n      state.asked += 1;\n      saveState(state);\n      pm.execution.setNextRequest(pm.info.requestName);\n      return;\n    }\n\n    if (body) failures = failures.concat(evaluate(body, c.expect));\n    // An answer that was never preceded by the question the case exists to see.\n    var minQuestions = (c.expect || {}).minQuestions;\n    if (body && typeof minQuestions === \"number\" && state.asked < minQuestions)\n      failures.push(\"asked \" + state.asked + \" question(s) before answering, want at least \" + minQuestions);\n\n    if (failures.length && state.attempt < MAX_RETRIES) {\n      console.log(\"RETRY \" + pm.info.requestName + \": \" + failures.join(\"; \") + summary(body));\n      saveState(freshState(c, state.attempt + 1));\n      pm.execution.setNextRequest(pm.info.requestName);\n      return;\n    }\n\n    pm.test(c.name, function () {\n      if (failures.length) throw new Error(failures.join(\"; \") + summary(body));\n    });\n\n    // The chain carries on from whatever this case ended with, answered or not,\n    // so one miss does not strip the context every later follow-up relies on.\n    if (c.chain && body) {\n      var ended = state.messages.slice();\n      if (body.question) ended.push({ role: \"assistant\", content: body.question.question, question: true });\n      else if (body.answer) ended.push({ role: \"assistant\", content: body.answer });\n      pm.collectionVariables.set(chainKey(c.chain), JSON.stringify({ messages: ended, conversation_id: state.conversation_id }));\n    }\n    saveState(null);\n  }\n\n  return { prerequest: prerequest, test: test, evaluate: evaluate, pickAnswer: pickAnswer, stripCode: stripCode };\n}",
+      "value": "function createWarpLib(pm) {\n  var STATE_KEY = \"__warp_state\";\n  var MAX_RETRIES = 1;\n  var MAX_QUESTIONS = 2;\n  // Tools that only discover what exists. A reply backed by these alone rests\n  // on no data - a refusal should call nothing else.\n  var DISCOVERY_TOOLS = [\"describe_filter_space\", \"ask_user\"];\n  // Options the driver prefers when Warp asks, most specific first: whole\n  // deployment for scope (nobody is identified, so there is no default), then a\n  // week for the window, which is what every seeded fact is measured over. The\n  // rolling week is tried on its own first: asked \"calendar week or last 7\n  // days?\", the seeded facts are the rolling ones whichever option is listed first.\n  var DEFAULT_PREFER = [\n    \"whole deployment|entire deployment|all traffic|everyone|all teams|everything\",\n    \"-7d|7 days|rolling\",\n    \"this week|last week\",\n    \"-24h|24 hours\",\n  ];\n\n  function readState() {\n    var raw = pm.collectionVariables.get(STATE_KEY);\n    if (!raw) return null;\n    try {\n      return JSON.parse(raw);\n    } catch (e) {\n      return null;\n    }\n  }\n\n  function saveState(state) {\n    pm.collectionVariables.set(STATE_KEY, state ? JSON.stringify(state) : \"\");\n  }\n\n  function chainKey(name) {\n    return \"__warp_chain_\" + name;\n  }\n\n  function readChain(name) {\n    var raw = pm.collectionVariables.get(chainKey(name));\n    if (!raw) return null;\n    try {\n      return JSON.parse(raw);\n    } catch (e) {\n      return null;\n    }\n  }\n\n  function freshState(c, attempt) {\n    var messages = [];\n    var conversationId = pm.variables.replaceIn(\"{{$guid}}\");\n    if (c.chain && !c.chainStart) {\n      var chain = readChain(c.chain);\n      if (chain) {\n        messages = chain.messages.slice();\n        conversationId = chain.conversation_id;\n      }\n    }\n    if (c.history) {\n      for (var i = 0; i < c.history.length; i++) {\n        var turn = c.history[i];\n        var copy = { role: turn.role, content: pm.variables.replaceIn(turn.content) };\n        if (turn.question) copy.question = true;\n        messages.push(copy);\n      }\n    }\n    messages.push({ role: \"user\", content: pm.variables.replaceIn(c.ask) });\n    return {\n      name: pm.info.requestName,\n      attempt: attempt,\n      asked: 0,\n      messages: messages,\n      conversation_id: conversationId,\n    };\n  }\n\n  // pickAnswer replies to an ask_user question the way a person clicking the\n  // dashboard would: the option's hint when it has one, else its label. An\n  // option the person's own question already named wins - asked \"what did\n  // Platform Engineering spend\", nobody then picks \"Whole deployment\". With no\n  // whole-deployment option on a scope question, they type it instead, as the\n  // question's free-text escape allows, rather than taking whatever came first.\n  function pickAnswer(question, prefer, asked) {\n    var options = (question && question.options) || [];\n    var said = String(asked || \"\").toLowerCase();\n    for (var n = 0; n < options.length; n++) {\n      var label = String(options[n].label || \"\").toLowerCase();\n      if (label.length >= 3 && said.indexOf(label) >= 0) return options[n].hint || options[n].label;\n    }\n    var patterns = (prefer || []).concat(DEFAULT_PREFER);\n    for (var p = 0; p < patterns.length; p++) {\n      var re = new RegExp(patterns[p], \"i\");\n      for (var i = 0; i < options.length; i++) {\n        var o = options[i];\n        if (re.test(o.label || \"\") || re.test(o.hint || \"\")) return o.hint || o.label;\n      }\n    }\n    var scopeQuestion = (question && question.kind === \"scope\") || /whose|scope/i.test((question && question.question) || \"\");\n    if (scopeQuestion && (!options.length || question.allow_other)) return \"The whole deployment.\";\n    if (options.length) return options[0].hint || options[0].label;\n    return \"The whole deployment, over the last 7 days.\";\n  }\n\n  // Patterns may name run-specific values ({{warp_slowest_id}}), resolved here\n  // rather than at build time since they only exist once the seeder has run.\n  function pattern(p) {\n    return new RegExp(pm.variables.replaceIn(p), \"i\");\n  }\n\n  function stripCode(text) {\n    return String(text || \"\")\n      .replace(/```[\\s\\S]*?```/g, \"\")\n      .replace(/`[^`]*`/g, \"\");\n  }\n\n  // evaluate returns the list of expectations a JSON-mode response missed.\n  function evaluate(body, expect) {\n    var e = expect || {};\n    var failures = [];\n    if (body.error) {\n      failures.push(\"error \" + body.error.code + \": \" + body.error.message);\n      return failures;\n    }\n    var calls = (body.tool_calls || []).filter(function (t) {\n      return !t.failed;\n    });\n    var names = calls.map(function (t) {\n      return t.name;\n    });\n\n    if (e.question === \"required\") {\n      if (!body.question) failures.push(\"expected an ask_user question, got an answer\");\n      else if (!body.question.options || body.question.options.length < 2)\n        failures.push(\"question carried fewer than 2 options\");\n      if (body.finish_reason !== \"question\") failures.push(\"finish_reason \" + body.finish_reason + \", want question\");\n      return failures;\n    }\n    if (e.question === \"forbidden\" && body.question) failures.push(\"asked a question: \" + body.question.question);\n\n    var finish = e.finish || [\"stop\", \"partial\"];\n    if (finish.indexOf(body.finish_reason) < 0) failures.push(\"finish_reason \" + body.finish_reason + \", want one of \" + finish.join(\"/\"));\n\n    // A \"required\" question case has already returned above; every case that\n    // reaches here, \"forbidden\" included, must have said something.\n    var answer = String(body.answer || \"\");\n    if (!answer.trim()) failures.push(\"empty answer\");\n\n    if (typeof e.maxToolCalls === \"number\" && (body.tool_calls || []).length > e.maxToolCalls)\n      failures.push(\"made \" + (body.tool_calls || []).length + \" tool calls, want at most \" + e.maxToolCalls);\n    if (e.toolsAny && !e.toolsAny.some(function (t) { return names.indexOf(t) >= 0; }))\n      failures.push(\"called none of \" + e.toolsAny.join(\", \") + \" (called: \" + (names.join(\", \") || \"nothing\") + \")\");\n    (e.toolsAll || []).forEach(function (t) {\n      if (names.indexOf(t) < 0) failures.push(\"did not call \" + t + \" (called: \" + (names.join(\", \") || \"nothing\") + \")\");\n    });\n    if (e.toolsOnly) {\n      var others = names.filter(function (n) { return e.toolsOnly.indexOf(n) < 0; });\n      if (others.length) failures.push(\"called \" + others.join(\", \") + \", which this question has no use for (allowed: \" + e.toolsOnly.join(\", \") + \")\");\n    }\n    if (e.noDataTools) {\n      var data = names.filter(function (n) { return DISCOVERY_TOOLS.indexOf(n) < 0; });\n      if (data.length) failures.push(\"queried data for an out-of-scope question: \" + data.join(\", \"));\n    }\n    (e.argsMatch || []).forEach(function (m) {\n      var re = pattern(m.pattern);\n      var hit = calls.some(function (t) {\n        return (!m.tool || t.name === m.tool) && re.test(t.arguments || \"\");\n      });\n      if (!hit) failures.push(\"no \" + (m.tool || \"tool\") + \" call with arguments matching /\" + m.pattern + \"/\");\n    });\n    // A filter the question never asked for narrows the answer without saying so.\n    (e.argsNone || []).forEach(function (m) {\n      var re = pattern(m.pattern);\n      calls.forEach(function (t) {\n        if ((!m.tool || t.name === m.tool) && re.test(t.arguments || \"\"))\n          failures.push(t.name + \" was called with arguments matching /\" + m.pattern + \"/: \" + t.arguments);\n      });\n    });\n\n    (e.answerAll || []).forEach(function (p) {\n      if (!pattern(p).test(answer)) failures.push(\"answer lacks /\" + p + \"/\");\n    });\n    if (e.answerAny && !e.answerAny.some(function (p) { return pattern(p).test(answer); }))\n      failures.push(\"answer matches none of \" + e.answerAny.map(function (p) { return \"/\" + p + \"/\"; }).join(\" \"));\n    (e.answerNone || []).forEach(function (p) {\n      if (pattern(p).test(answer)) failures.push(\"answer contains /\" + p + \"/\");\n    });\n    if (e.answerNoneOutsideCode) {\n      var prose = stripCode(answer);\n      e.answerNoneOutsideCode.forEach(function (p) {\n        if (pattern(p).test(prose)) failures.push(\"answer repeats /\" + p + \"/ outside inline code\");\n      });\n    }\n    if (e.maxAnswerChars && answer.length > e.maxAnswerChars)\n      failures.push(\"answer is \" + answer.length + \" chars, want at most \" + e.maxAnswerChars);\n    return failures;\n  }\n\n  function prerequest(c) {\n    var state = readState();\n    if (!state || state.name !== pm.info.requestName) {\n      state = freshState(c, 0);\n      saveState(state);\n    }\n    pm.request.body.update({\n      mode: \"raw\",\n      raw: JSON.stringify({\n        messages: state.messages,\n        conversation_id: state.conversation_id,\n        stream: false,\n        timezone: \"UTC\",\n      }),\n      options: { raw: { language: \"json\" } },\n    });\n  }\n\n  function summary(body) {\n    if (!body) return \"\";\n    var tools = (body.tool_calls || []).map(function (t) {\n      return t.name + (t.failed ? \"(failed)\" : \"\");\n    });\n    return \" | tools: [\" + tools.join(\", \") + \"] | finish: \" + body.finish_reason + \" | answer: \" + String(body.answer || \"\").slice(0, 600);\n  }\n\n  function test(c) {\n    var state = readState() || freshState(c, 0);\n    var body = null;\n    var failures = [];\n    if (pm.response.code !== 200) {\n      failures.push(\"status \" + pm.response.code + \": \" + pm.response.text().slice(0, 500));\n    } else {\n      try {\n        body = pm.response.json();\n      } catch (err) {\n        failures.push(\"response is not JSON: \" + pm.response.text().slice(0, 300));\n      }\n    }\n\n    if (body && body.question && (c.expect || {}).question !== \"required\" && (c.expect || {}).question !== \"forbidden\" && state.asked < MAX_QUESTIONS) {\n      state.messages.push({ role: \"assistant\", content: body.question.question, question: true });\n      state.messages.push({ role: \"user\", content: pickAnswer(body.question, c.prefer, pm.variables.replaceIn(c.ask)) });\n      state.asked += 1;\n      saveState(state);\n      pm.execution.setNextRequest(pm.info.requestName);\n      return;\n    }\n\n    if (body) failures = failures.concat(evaluate(body, c.expect));\n    // An answer that was never preceded by the question the case exists to see.\n    var minQuestions = (c.expect || {}).minQuestions;\n    if (body && typeof minQuestions === \"number\" && state.asked < minQuestions)\n      failures.push(\"asked \" + state.asked + \" question(s) before answering, want at least \" + minQuestions);\n\n    if (failures.length && state.attempt < MAX_RETRIES) {\n      console.log(\"RETRY \" + pm.info.requestName + \": \" + failures.join(\"; \") + summary(body));\n      saveState(freshState(c, state.attempt + 1));\n      pm.execution.setNextRequest(pm.info.requestName);\n      return;\n    }\n\n    pm.test(c.name, function () {\n      if (failures.length) throw new Error(failures.join(\"; \") + summary(body));\n    });\n\n    // The chain carries on from whatever this case ended with, answered or not,\n    // so one miss does not strip the context every later follow-up relies on.\n    if (c.chain && body) {\n      var ended = state.messages.slice();\n      if (body.question) ended.push({ role: \"assistant\", content: body.question.question, question: true });\n      else if (body.answer) ended.push({ role: \"assistant\", content: body.answer });\n      pm.collectionVariables.set(chainKey(c.chain), JSON.stringify({ messages: ended, conversation_id: state.conversation_id }));\n    }\n    saveState(null);\n  }\n\n  return { prerequest: prerequest, test: test, evaluate: evaluate, pickAnswer: pickAnswer, stripCode: stripCode };\n}",
       "type": "string"
     },
     {
       "key": "backfill_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "topics_id",
       "value": "",
       "type": "string"
     }
@@ -213,6 +218,131 @@
                 {
                   "key": "id",
                   "value": "{{backfill_id}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "setup-topics",
+          "name": "Setup: compute topic clusters",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var now = new Date(pm.variables.get('warp_seed_now') || Date.now());",
+                  "pm.request.body.update({ mode: 'raw', raw: JSON.stringify({",
+                  "  start_time: new Date(now.getTime() - 16 * 86400000).toISOString(),",
+                  "  end_time: new Date(now.getTime() + 3600000).toISOString()",
+                  "}), options: { raw: { language: 'json' } } });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Topic clustering starts\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(202);",
+                  "});",
+                  "if (pm.response.code === 202) { pm.collectionVariables.set('topics_id', pm.response.json().id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/log-index/topics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "log-index",
+                "topics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "setup-topics-wait",
+          "name": "Setup: wait for topic clusters",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var attempt = parseInt(pm.collectionVariables.get('__topics_attempt') || '0', 10);",
+                  "var job = {};",
+                  "try { job = pm.response.json(); } catch (e) {}",
+                  "var done = pm.response.code === 200 && job.status === 'completed';",
+                  "var terminal = pm.response.code !== 200 || job.status === 'failed' || job.status === 'cancelled' || attempt >= 150;",
+                  "if (!done && !terminal) {",
+                  "  pm.collectionVariables.set('__topics_attempt', String(attempt + 1));",
+                  "  var start = Date.now(); while (Date.now() - start < 2000) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.set('__topics_attempt', '0');",
+                  "pm.test('Topic clustering completes', function () {",
+                  "  pm.expect(done, 'status ' + pm.response.code + ' after ' + attempt + ' polls: ' + pm.response.text()).to.be.true;",
+                  "  pm.expect(job.scanned, 'requests read: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(job.clustered, 'requests clustered').to.equal(job.scanned);",
+                  "  pm.expect(job.indexed, 'topics written').to.be.above(0);",
+                  "  pm.expect(job.failed || 0, 'topics named from their own words because the model failed: ' + job.last_error).to.equal(0);",
+                  "});",
+                  "pm.test('Topic clustering reports each topic it wrote', function () {",
+                  "  pm.expect(job.topics, pm.response.text()).to.be.an('array').with.lengthOf(job.indexed);",
+                  "  var inTopics = 0;",
+                  "  job.topics.forEach(function (topic) {",
+                  "    pm.expect(topic.label, 'topic name').to.be.a('string').and.not.empty;",
+                  "    pm.expect(topic.size, 'requests in ' + topic.label).to.be.above(0);",
+                  "    pm.expect(topic.cohesion, 'cohesion of ' + topic.label).to.be.within(0, 1.001);",
+                  "    inTopics += topic.size;",
+                  "  });",
+                  "  pm.expect(inTopics + (job.unassigned || 0), 'every request read is in a topic or counted as in none').to.equal(job.scanned);",
+                  "  var names = job.topics.map(function (topic) { return topic.label.toLowerCase(); });",
+                  "  pm.expect(names.filter(function (name, index) { return names.indexOf(name) !== index; }), 'topics sharing a name').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/warp/log-index/topics/status?id={{topics_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "log-index",
+                "topics",
+                "status"
+              ],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "{{topics_id}}"
                 }
               ]
             }
@@ -559,6 +689,132 @@
             "body": {
               "mode": "raw",
               "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "validation-topics-no-window",
+          "name": "Rejects topic clustering with no window",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Rejects topic clustering with no window\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/log-index/topics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "log-index",
+                "topics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "validation-topics-invalid-json",
+          "name": "Rejects topic clustering with a body that is not JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Rejects topic clustering with a body that is not JSON\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/log-index/topics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "log-index",
+                "topics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{"
+            }
+          }
+        },
+        {
+          "id": "validation-topics-inverted",
+          "name": "Rejects topic clustering over a window that ends before it starts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Rejects topic clustering over a window that ends before it starts\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/log-index/topics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "log-index",
+                "topics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"start_time\":\"2026-09-02T00:00:00Z\",\"end_time\":\"2026-09-01T00:00:00Z\"}"
             }
           }
         }
@@ -2068,7 +2324,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"answerAll\":[\"sample of[^.]{0,40}\\\\d[\\\\d,]*[^.]{0,40}(of|out of)[^.]{0,20}\\\\d[\\\\d,]*\",\"(not[ -]|un)representative\"]}});"
+                  "warp.prerequest({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAny\":[\"list_topics\",\"semantic_search_logs\",\"query_logs\",\"get_log_detail\"]}});"
                 ]
               }
             },
@@ -2078,7 +2334,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"answerAll\":[\"sample of[^.]{0,40}\\\\d[\\\\d,]*[^.]{0,40}(of|out of)[^.]{0,20}\\\\d[\\\\d,]*\",\"(not[ -]|un)representative\"]}});"
+                  "warp.test({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAny\":[\"list_topics\",\"semantic_search_logs\",\"query_logs\",\"get_log_detail\"]}});"
                 ]
               }
             }
@@ -4378,6 +4634,263 @@
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
                   "warp.test({\"name\":\"Declines to remember a preference\",\"ask\":\"Remember that Platform Engineering is my team so you default to it next time.\",\"expect\":{\"maxToolCalls\":2,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"I('ll| will) remember\",\"I('ve| have) (noted|saved|remembered)\",\"noted[.!]\"]}});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "folder-topics",
+      "name": "Topics",
+      "description": "Topic clusters are one snapshot: the clusters Setup computed over the seeded window, across the whole deployment, counted in requests. The overview case must be answered from list_topics in one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. The rest ask for what the snapshot cannot show - another time range, a trend, every request in a topic, a count of people. Each must say so, offer the feature-request link, and neither call list_topics again nor rebuild a breakdown by slicing the logs with other tools.",
+      "item": [
+        {
+          "id": "topics-overview",
+          "name": "Lists what people ask about from the topic clusters",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.prerequest({\"name\":\"Lists what people ask about from the topic clusters\",\"ask\":\"What are people asking about the most, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":2,\"answerAll\":[\"\\\\brequests?\\\\b\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.test({\"name\":\"Lists what people ask about from the topic clusters\",\"ask\":\"What are people asking about the most, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":2,\"answerAll\":[\"\\\\brequests?\\\\b\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "topics-past-hour",
+          "name": "Declines topics for another time range",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.prerequest({\"name\":\"Declines topics for another time range\",\"ask\":\"What topics came up in the past hour, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":2,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\"]}});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.test({\"name\":\"Declines topics for another time range\",\"ask\":\"What topics came up in the past hour, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":2,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\"]}});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "topics-trend",
+          "name": "Declines a topic trend",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.prerequest({\"name\":\"Declines a topic trend\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":2,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b(grew|growing|increased|up) (by )?\\\\d+ ?%\"]}});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.test({\"name\":\"Declines a topic trend\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":2,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b(grew|growing|increased|up) (by )?\\\\d+ ?%\"]}});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "topics-drill-down",
+          "name": "Declines to list every request in a topic",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.prerequest({\"name\":\"Declines to list every request in a topic\",\"ask\":\"List every request in the largest topic.\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"maxToolCalls\":3,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.test({\"name\":\"Declines to list every request in a topic\",\"ask\":\"List every request in the largest topic.\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"maxToolCalls\":3,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "topics-people",
+          "name": "Declines to count the people behind a topic",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.prerequest({\"name\":\"Declines to count the people behind a topic\",\"ask\":\"How many different users asked about the largest topic?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"maxToolCalls\":3,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b\\\\d+ (different |distinct |unique )?(users|people)\\\\b\"]}});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.test({\"name\":\"Declines to count the people behind a topic\",\"ask\":\"How many different users asked about the largest topic?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"maxToolCalls\":3,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b\\\\d+ (different |distinct |unique )?(users|people)\\\\b\"]}});"
                 ]
               }
             }
