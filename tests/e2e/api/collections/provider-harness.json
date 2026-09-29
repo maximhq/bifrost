@@ -176843,6 +176843,320 @@
           }
         }
       ]
+    },
+    {
+      "name": "126. Anthropic/Gemini Responses status + max_output_tokens truncation (#7601)",
+      "description": "Issue #7601: on /v1/responses the direct anthropic/* and gemini/* providers returned no `status` on any turn, and a turn cut short by max_output_tokens was indistinguishable from a complete one: no incomplete_details, and the stream terminal was response.completed. /v1/chat/completions for the same request reported finish_reason \"length\", so the signal was available.\n\nRoot cause: AnthropicMessageResponse.ToBifrostResponsesResponse / the message_stop branch of AnthropicStreamEvent.ToBifrostResponsesStream (core/providers/anthropic/responses.go) and GenerateContentResponse.ToResponsesBifrostResponsesResponse / closeGeminiOpenItems (core/providers/gemini/responses.go) set StopReason but never Status/IncompleteDetails, and hard-coded the terminal event to response.completed. Folder 17 pins the same contract for Bedrock (#4679 / #4680).\n\nCases per provider: (1) truncated non-streaming -> status incomplete + incomplete_details.reason max_output_tokens; (2) truncated streaming -> response.incomplete terminal, never response.completed; (3) short complete turn -> status completed. The Anthropic converter is shared by Vertex/Azure/Bedrock-Claude and others, and the Gemini one by Vertex, so these pin the shared path.\n\nThe Gemini streaming case sends reasoning.effort \"none\" (thinkingBudget 0): with thinking on, gemini-2.5-flash spends the whole 16-token budget on thoughts and its streaming endpoint then returns a 200 with an empty SSE body (no finishReason at all), so there is no truncation signal for the gateway to translate.",
+      "item": [
+        {
+          "name": "anthropic anthropic/claude-haiku-4-5 /v1/responses max_output_tokens truncation -> status incomplete (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 truncated turn reports status=incomplete + incomplete_details.reason=max_output_tokens - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('incomplete');",
+                  "  pm.expect(j.incomplete_details && j.incomplete_details.reason, 'incomplete_details: ' + JSON.stringify(j.incomplete_details)).to.equal('max_output_tokens');",
+                  "  var lastItem = (j.output || [])[(j.output || []).length - 1];",
+                  "  pm.expect(lastItem && lastItem.status, 'truncated output item status (was completed pre-fix): ' + JSON.stringify(j.output)).to.equal('incomplete');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic anthropic/claude-haiku-4-5 /v1/responses max_output_tokens truncation emits response.incomplete (streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 truncated stream terminates with response.incomplete, not response.completed - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'expected a response.incomplete terminal event: ' + raw.slice(-600)).to.include('response.incomplete');",
+                  "  pm.expect(raw, 'expected incomplete reason max_output_tokens: ' + raw.slice(-600)).to.include('max_output_tokens');",
+                  "  pm.expect(raw.indexOf('response.completed'), 'a truncated stream must not emit response.completed: ' + raw.slice(-600)).to.equal(-1);",
+                  "  var terms = raw.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l.indexOf('\"type\":\"response.incomplete\"') !== -1; });",
+                  "  pm.expect(terms.length, 'no response.incomplete data line: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var out = (JSON.parse(terms[terms.length - 1].slice(6)).response || {}).output || [];",
+                  "  pm.expect(out.length > 0 && out[out.length - 1].status, 'truncated output item status (was completed pre-fix): ' + JSON.stringify(out)).to.equal('incomplete');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic anthropic/claude-haiku-4-5 /v1/responses complete turn -> status completed (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 complete turn reports status=completed with no incomplete_details - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('completed');",
+                  "  pm.expect(j.incomplete_details == null, 'incomplete_details must be absent: ' + JSON.stringify(j.incomplete_details)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses max_output_tokens truncation -> status incomplete (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash truncated turn reports status=incomplete + incomplete_details.reason=max_output_tokens - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('incomplete');",
+                  "  pm.expect(j.incomplete_details && j.incomplete_details.reason, 'incomplete_details: ' + JSON.stringify(j.incomplete_details)).to.equal('max_output_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses max_output_tokens truncation emits response.incomplete (streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash truncated stream terminates with response.incomplete, not response.completed - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'expected a response.incomplete terminal event: ' + raw.slice(-600)).to.include('response.incomplete');",
+                  "  pm.expect(raw, 'expected incomplete reason max_output_tokens: ' + raw.slice(-600)).to.include('max_output_tokens');",
+                  "  pm.expect(raw.indexOf('response.completed'), 'a truncated stream must not emit response.completed: ' + raw.slice(-600)).to.equal(-1);",
+                  "  var terms = raw.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l.indexOf('\"type\":\"response.incomplete\"') !== -1; });",
+                  "  pm.expect(terms.length, 'no response.incomplete data line: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var out = (JSON.parse(terms[terms.length - 1].slice(6)).response || {}).output || [];",
+                  "  pm.expect(out.length > 0 && out[out.length - 1].status, 'truncated output item status (was completed pre-fix): ' + JSON.stringify(out)).to.equal('incomplete');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16,\"reasoning\":{\"effort\":\"none\"},\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses thinking exhausts max_output_tokens: empty upstream stream ends response.incomplete (streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash stream whose budget is spent on thinking opens with response.created and ends response.incomplete - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'expected response.created before the terminal: ' + raw.slice(0, 600)).to.include('response.created');",
+                  "  pm.expect(raw, 'expected a response.incomplete terminal (Gemini returns an empty SSE body here; pre-fix Bifrost synthesized a bare response.completed): ' + raw.slice(-600)).to.include('response.incomplete');",
+                  "  pm.expect(raw.indexOf('response.completed'), 'a stream that never finished cleanly must not emit response.completed: ' + raw.slice(-600)).to.equal(-1);",
+                  "  pm.expect(raw, 'terminal must carry status incomplete: ' + raw.slice(-600)).to.include('\"status\":\"incomplete\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses complete turn -> status completed (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash complete turn reports status=completed with no incomplete_details - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('completed');",
+                  "  pm.expect(j.incomplete_details == null, 'incomplete_details must be absent: ' + JSON.stringify(j.incomplete_details)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -1454,6 +1454,22 @@ func responsesStatusFromChatFinishReason(finishReason string) (status string, in
 	}
 }
 
+// ResponsesStatusFromFinishReason maps a Bifrost finish reason to the Responses-API
+// status and incomplete_details. mapped is false for reasons with no Responses
+// equivalent, which should leave Status unset.
+func ResponsesStatusFromFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
+	return responsesStatusFromChatFinishReason(finishReason)
+}
+
+// MarkTruncatedOutputItem sets status "incomplete" on the last output item -- the one
+// being generated when the turn was cut short -- matching OpenAI's truncated-turn shape.
+func MarkTruncatedOutputItem(output []ResponsesMessage) {
+	if len(output) == 0 {
+		return
+	}
+	output[len(output)-1].Status = Ptr(ResponsesResponseStatusIncomplete)
+}
+
 func responsesStopReasonFromChatFinishReason(finishReason *string) *string {
 	if finishReason == nil || *finishReason == "" {
 		return nil

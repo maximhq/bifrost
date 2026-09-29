@@ -862,12 +862,17 @@ Once all approved changes are applied:
    `lsof -nP -iTCP:<port> -sTCP:LISTEN` first: if it reports a listener you did not start on the
    current working tree in this session, pick another port or ask the user (never kill a
    process you did not start). Backing services must be up first: Weaviate must answer on
-   9000, otherwise start it with `docker compose -f framework/docker-compose.yml up -d weaviate`.
+   9000 (see below).
    The one acceptable listener is Bifrost you started yourself from the code under test,
    which is also the reliable way to run it, because a cold `make dev` from this config can
-   take longer than the recipe's 60s health wait:
+   take longer than the recipe's 60s health wait.
+
+   Weaviate is also a blocking precondition. `tests/integrations/python/config.json` enables a
+   `weaviate` vector store at `localhost:9000` (gRPC `localhost:50051`), so `make dev` fails to
+   bootstrap unless Weaviate is already up. Start it from the `tests/` compose file (not
+   `framework/docker-compose.yml`, see AGENTS.md gotcha 19) before `make dev`:
    ```bash
-   curl -s -o /dev/null -w "%{http_code}\n" http://localhost:9000/v1/.well-known/ready || docker compose -f framework/docker-compose.yml up -d weaviate
+   docker compose -f tests/docker-compose.yml up -d weaviate   # then retry until `curl -sf http://localhost:9000/v1/.well-known/ready` passes AND `nc -z localhost 50051` succeeds (gRPC)
    make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
