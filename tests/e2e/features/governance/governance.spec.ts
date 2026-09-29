@@ -1,3 +1,4 @@
+import { customersApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { createCustomerData, createTeamData } from './governance.data'
 
@@ -85,6 +86,41 @@ test.describe('Governance - Teams', () => {
     expect(exists).toBe(true)
     const customerCell = governancePage.getTeamRowCustomerCell(teamData.name)
     await expect(customerCell).toContainText(customerData.name)
+  })
+
+  test('customer picker reaches customers past the first page', async ({ governancePage, request }) => {
+    // The picker fetches 20 rows a page; seed more than that under one prefix.
+    const prefix = `E2E Pager ${Date.now()}`
+    const ids: string[] = []
+    try {
+      for (let i = 0; i < 23; i++) {
+        const created = await customersApi.create(request, { name: `${prefix} ${String(i).padStart(2, '0')}` })
+        ids.push((created as { customer: { id: string } }).customer.id)
+      }
+
+      await governancePage.teamsCreateBtn.click()
+      await expect(governancePage.teamDialog).toBeVisible({ timeout: 5000 })
+      await governancePage.page.getByTestId('team-customer-selector').getByRole('combobox').click()
+      const search = governancePage.page.getByPlaceholder('Search customers...')
+      await search.fill(prefix)
+
+      const options = governancePage.page.getByRole('option').filter({ hasText: prefix })
+      await expect(options).toHaveCount(20, { timeout: 10000 })
+
+      // Scrolling to the bottom loads the next page.
+      const list = governancePage.page.locator('[data-slot="search-select-list"]')
+      await expect
+        .poll(
+          async () => {
+            await list.evaluate((el) => el.scrollTo({ top: el.scrollHeight }))
+            return options.count()
+          },
+          { timeout: 10000 },
+        )
+        .toBe(23)
+    } finally {
+      for (const id of ids) await customersApi.delete(request, id)
+    }
   })
 
   test('should delete a team', async ({ governancePage }) => {
