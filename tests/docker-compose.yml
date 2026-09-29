@@ -22,6 +22,7 @@ services:
             - LOG_LEVEL=info
         ports:
             - "9000:8080"
+            - "127.0.0.1:50051:50051"  # gRPC, used by the harness config's grpc_config
         volumes:
             - weaviate_data:/var/lib/weaviate
         networks:

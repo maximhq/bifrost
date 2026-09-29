@@ -3148,6 +3148,28 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 	return AnthropicStopReason(bifrostReason)
 }
 
+// anthropicResponsesStatus derives the Responses status and incomplete_details from a
+// stop reason already converted by ConvertAnthropicFinishReasonToBifrost. refusal is a
+// content-filter stop and model_context_window_exceeded a truncation; reasons with no
+// Responses equivalent (pause_turn, compaction) leave the status unset.
+func anthropicResponsesStatus(stopReason *string) (*string, *schemas.ResponsesResponseIncompleteDetails) {
+	if stopReason == nil {
+		return nil, nil
+	}
+	reason := *stopReason
+	switch AnthropicStopReason(reason) {
+	case AnthropicStopReasonRefusal:
+		reason = "content_filter"
+	case AnthropicStopReasonModelContextWindowExceeded:
+		reason = string(schemas.BifrostFinishReasonLength)
+	}
+	status, details, mapped := schemas.ResponsesStatusFromFinishReason(reason)
+	if !mapped {
+		return nil, nil
+	}
+	return &status, details
+}
+
 // anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
 // Anthropic stop_reason, for terminal events that carry no explicit stop reason.
 func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
