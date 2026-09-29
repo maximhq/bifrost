@@ -94,11 +94,56 @@ func TestClassifyJevComplexityRequestShape(t *testing.T) {
 	assert.ElementsMatch(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, mapKeys(criteria))
 	instructions, ok := question.Instructions.(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, instructions["tier_cost_order"])
+	assert.Equal(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, instructions["tier_order"])
 
 	require.NotNil(t, proposal.Result)
 	assert.Equal(t, complexity.TierMedium, proposal.Result.Tier)
 	assert.Equal(t, complexity.MechanismJev, proposal.Mechanism)
+}
+
+// TestClassifyJevComplexityGuidance checks the request carries the shipped
+// guidance by default and the administrator's overrides list by list, while
+// the fixed question and context rule never change.
+func TestClassifyJevComplexityGuidance(t *testing.T) {
+	capture := func(jev *complexity.JevConfig) schemas.DecisionQuestion {
+		var captured *schemas.BifrostDecisionRequest
+		p := jevTestPlugin(jev, func(_ *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+			captured = req
+			return jevChoiceResponse("SIMPLE"), nil
+		})
+		p.classifyJevComplexity(jevTestContext(t), jevTestInput())
+		require.NotNil(t, captured)
+		return captured.Questions[jevComplexityQuestion]
+	}
+	defaults := configstore.DefaultComplexityJevGuidance()
+
+	shipped := capture(nil)
+	instructions := shipped.Instructions.(map[string]interface{})
+	criteria := shipped.Criteria.(map[string]interface{})
+	assert.Equal(t, map[string]interface{}{
+		"definition": defaults.Criteria[complexity.TierMedium].Definition,
+		"signals":    defaults.Criteria[complexity.TierMedium].Signals,
+		"examples":   defaults.Criteria[complexity.TierMedium].Examples,
+	}, criteria[complexity.TierMedium])
+
+	edited := capture(&complexity.JevConfig{
+		Criteria: map[string]configstore.ComplexityJevTierCriteria{
+			complexity.TierSimple:  {Definition: "custom definition"},
+			complexity.TierComplex: {Signals: []string{"custom signal"}},
+		},
+	})
+	editedInstructions := edited.Instructions.(map[string]interface{})
+	assert.Equal(t, instructions["question"], editedInstructions["question"], "the question is fixed")
+	assert.Equal(t, instructions["decision_rule"], editedInstructions["decision_rule"], "the decision rule is fixed")
+	assert.Equal(t, instructions["context_rule"], editedInstructions["context_rule"], "the context rule is fixed")
+	simpleCriteria := edited.Criteria.(map[string]interface{})[complexity.TierSimple].(map[string]interface{})
+	assert.Equal(t, "custom definition", simpleCriteria["definition"])
+	assert.Equal(t, defaults.Criteria[complexity.TierSimple].Signals, simpleCriteria["signals"])
+	complexCriteria := edited.Criteria.(map[string]interface{})[complexity.TierComplex].(map[string]interface{})
+	assert.Equal(t, []string{"custom signal"}, complexCriteria["signals"])
+	assert.Equal(t, defaults.Criteria[complexity.TierComplex].Examples, complexCriteria["examples"])
+	assert.Equal(t, defaults.Criteria[complexity.TierComplex].Definition, complexCriteria["definition"])
+	assert.NotContains(t, complexCriteria, "not_for")
 }
 
 // TestClassifyJevComplexityStateSerializesAsRoleContentArray pins the wire

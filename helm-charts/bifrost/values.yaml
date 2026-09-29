@@ -1025,6 +1025,11 @@ bifrost:
       # jev:                               # Uses the configured Typesafe provider and its enabled key
       #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
       #   timeout: "1.5s"                  # Maximum wait for one Jev decision; usage counts toward request cost and budgets
+      #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
+      #     COMPLEX:
+      #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)
+      #       signals: ["..."]             # Replaces the shipped signals (max 12 items, 300 chars each)
+      #       examples: ["..."]            # Replaces the shipped examples (same limits)
       # semantic:                          # Semantic (embedding-based) complexity classification
       #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
       #   embedding_model: "text-embedding-3-small"

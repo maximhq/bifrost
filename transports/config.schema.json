@@ -4774,6 +4774,29 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "complexity_jev_tier_criteria": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Replaces this tier's shipped definition. Omit to use the default."
+        },
+        "signals": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 300 },
+          "description": "Replaces this tier's shipped signals. Omit to use the default."
+        },
+        "examples": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 300 },
+          "description": "Replaces this tier's shipped examples. Omit to use the default."
+        }
+      },
+      "additionalProperties": false
+    },
     "otel_endpoint": {
       "type": "string",
       "anyOf": [
@@ -11708,6 +11731,16 @@
             }
           ],
           "default": "1500ms"
+        },
+        "criteria": {
+          "type": "object",
+          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+          "properties": {
+            "SIMPLE": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
+            "MEDIUM": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
+            "COMPLEX": { "$ref": "#/$defs/complexity_jev_tier_criteria" }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

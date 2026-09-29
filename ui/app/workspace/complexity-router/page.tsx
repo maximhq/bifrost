@@ -30,7 +30,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ArrowLeft, ArrowRight, ExternalLink, LoaderCircle, RotateCcw, Save, Settings2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import {
 	AnalyzerFormValues,
@@ -38,17 +38,23 @@ import {
 	countCanonicalSemanticPhrases,
 	DEFAULT_FORM_VALUES,
 	getTypesafeState,
+	isJevGuidanceDefault,
+	isJevGuidanceEmpty,
+	jevCriteriaFromDefaults,
 	isRouterConfigured,
+	jevGuidanceFormValues,
 	toAnalyzerPayload,
 	toFormValues,
 	shouldSeedLLMPrompt,
 } from "./formSchema";
 import { ClassifierStatusBadge } from "./views/classifierStatusBadge";
 import EmbeddingConfigSheet from "./views/embeddingConfigSheet";
+import JevSettingsSheet from "./views/jevSettingsSheet";
 import { SectionHeading } from "./views/formPrimitives";
 import {
 	ClassifierChoice,
 	JevFields,
+	JevGuidanceSection,
 	LLMPromptSection,
 	PhraseTierGrid,
 	SessionRoutingCard,
@@ -102,6 +108,7 @@ export default function ComplexityRouterPage() {
 	const [submitError, setSubmitError] = useState<string | null>(null);
 	const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
 	const [embeddingSheetOpen, setEmbeddingSheetOpen] = useState(false);
+	const [jevSheetOpen, setJevSheetOpen] = useState(false);
 	// The open step. Null follows the saved config: a router with nothing set
 	// up opens on the classifier choice, an existing one straight on its setup.
 	const [openStep, setOpenStep] = useState<"classifier" | "setup" | null>(null);
@@ -174,10 +181,13 @@ export default function ComplexityRouterPage() {
 
 	const isClassifierConfigured = Boolean(liveSemantic?.provider && liveSemantic?.embedding_model);
 	const isLLMFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "llm";
+	const isJevFallbackEnabled = liveClassifier === "semantic" && liveSemantic?.fallback === "jev";
+	const isJevInUse = liveClassifier === "jev" || isJevFallbackEnabled;
 	// The embedding and llm fallback fields both live behind the same sheet, so a
 	// pending edit to either would otherwise be invisible from the page.
 	// react-hook-form keeps reverted fields in dirtyFields with a false value, so
 	// the flags are what matter, not the key count.
+	const hasUnsavedJevSettingsChanges = Boolean(dirtyFields.jev?.previous_message_count || dirtyFields.jev?.timeout);
 	const hasUnsavedEmbeddingConfigChanges =
 		Object.values(dirtyFields.semantic ?? {}).some(Boolean) || Object.values(dirtyFields.llm ?? {}).some(Boolean);
 	const hasClassifier = isRouterConfigured(data) || picked;
@@ -194,10 +204,11 @@ export default function ComplexityRouterPage() {
 	// that had already recovered. It polls slowly because it is waiting on a
 	// human, where warming is polled fast to keep the progress bar moving.
 	const [statusPollInterval, setStatusPollInterval] = useState(0);
-	// Also fetched as soon as the llm fallback is enabled in the form, before any
-	// save: the endpoint carries llm_default_prompt, which seeds the prompt field
-	// and powers "Reset to default" — gating on the saved config alone left a
-	// newly enabled fallback with no default prompt until after the first save.
+	// Also fetched as soon as the llm fallback or Jev is enabled in the form,
+	// before any save: the endpoint carries llm_default_prompt and jev_defaults,
+	// which seed those editors and power "Reset to default" — gating on the
+	// saved config alone left a newly enabled classifier with no defaults until
+	// after the first save.
 	const {
 		data: semanticStatus,
 		isLoading: statusLoading,
@@ -205,7 +216,7 @@ export default function ComplexityRouterPage() {
 		isError: statusIsError,
 		refetch: refetchStatus,
 	} = useGetComplexitySemanticStatusQuery(undefined, {
-		skip: !data?.semantic && !data?.llm && !isLLMFallbackEnabled,
+		skip: !data?.semantic && !data?.llm && !isLLMFallbackEnabled && !isJevInUse,
 		pollingInterval: statusPollInterval,
 	});
 	useEffect(() => {
@@ -233,6 +244,15 @@ export default function ComplexityRouterPage() {
 	// Shipped guidance initializes untouched drafts; an empty edited prompt is
 	// valid and means "use default guidance" when saved.
 	const defaultLLMPrompt = semanticStatus?.llm_default_prompt ?? "";
+	const jevDefaults = semanticStatus?.jev_defaults;
+	const liveJevCriteria = useWatch({ control, name: "jev.criteria" });
+	// Jev's Restore defaults only refills the form: it saves like any other edit
+	// and Discard undoes it, so unlike the semantic restore it needs no dialog.
+	const isJevGuidanceAtDefaults = !jevDefaults || isJevGuidanceDefault(liveJevCriteria, jevDefaults);
+	const restoreJevDefaults = () => {
+		if (!jevDefaults) return;
+		setValue("jev.criteria", jevCriteriaFromDefaults(jevDefaults), { shouldDirty: true, shouldValidate: true });
+	};
 	const livePrompt = liveLLM?.prompt ?? "";
 
 	// Saving re-runs warmup, but what it costs depends on what changed, because
@@ -301,9 +321,18 @@ export default function ComplexityRouterPage() {
 
 	useEffect(() => {
 		if (!data || isDirty || promptEdited.current) return;
-		reset(toFormValues(data));
+		reset(toFormValues(data, jevDefaults));
 		setSubmitError(null);
-	}, [data, isDirty, reset]);
+	}, [data, isDirty, reset, jevDefaults]);
+
+	// Status usually lands after the config, so guidance the form hydrated
+	// without defaults is filled in once they arrive. Only still-empty guidance
+	// is touched, so an operator's edits are never overwritten.
+	useEffect(() => {
+		if (!data || !jevDefaults || !isJevGuidanceEmpty(getValues("jev"))) return;
+		const seeded = jevGuidanceFormValues(data.jev, jevDefaults);
+		setValue("jev.criteria", seeded.criteria, { shouldDirty: false });
+	}, [data, jevDefaults, getValues, setValue]);
 
 	// Run after saved-data hydration and read the current form value, not the
 	// previous render's value, when config and status arrive together.
@@ -314,7 +343,7 @@ export default function ComplexityRouterPage() {
 
 	const handleDiscard = () => {
 		promptEdited.current = false;
-		if (data) reset(toFormValues(data));
+		if (data) reset(toFormValues(data, jevDefaults));
 		setSubmitError(null);
 	};
 
@@ -325,7 +354,7 @@ export default function ComplexityRouterPage() {
 			.unwrap()
 			.then((defaults) => {
 				promptEdited.current = false;
-				reset(toFormValues(defaults));
+				reset(toFormValues(defaults, jevDefaults));
 				toast.success("Reset to defaults", { position: "top-right" });
 			})
 			.catch((err) => {
@@ -368,8 +397,9 @@ export default function ComplexityRouterPage() {
 			.unwrap()
 			.then((res) => {
 				promptEdited.current = false;
-				reset(toFormValues(res));
+				reset(toFormValues(res, jevDefaults));
 				setEmbeddingSheetOpen(false);
+				setJevSheetOpen(false);
 				toast.success("Configuration saved", { position: "top-right" });
 			})
 			.catch((err) => {
@@ -383,7 +413,10 @@ export default function ComplexityRouterPage() {
 	// error opens the sheet instead: those fields live in it, and the operator
 	// may never have opened it.
 	const submit = handleSubmit(onValid, (formErrors) => {
-		setEmbeddingSheetOpen(Boolean(formErrors.semantic || formErrors.llm || (formErrors.jev && liveClassifier === "semantic")));
+		// Jev guidance errors sit on the page, so only the sheet's Jev fields open it.
+		const jevSheetError = Boolean(formErrors.jev?.previous_message_count || formErrors.jev?.timeout);
+		setEmbeddingSheetOpen(Boolean(formErrors.semantic || formErrors.llm || (jevSheetError && liveClassifier === "semantic")));
+		setJevSheetOpen(jevSheetError && liveClassifier === "jev");
 	});
 
 	if (isLoading && !data) {
@@ -418,8 +451,7 @@ export default function ComplexityRouterPage() {
 	// Saving Jev as the classifier or the fallback while Typesafe cannot serve it
 	// would route every classified request into a failing call, so it waits
 	// until Typesafe is fixed.
-	const usesJev = !isSemantic || liveSemantic?.fallback === "jev";
-	const blockedOnTypesafe = usesJev && !isProviderListLoading && !typesafeReady;
+	const blockedOnTypesafe = isJevInUse && !isProviderListLoading && !typesafeReady;
 	const canSave = canUpdate && isDirty && !isResetting && !(isSubmitted && hasErrors) && !blockedOnTypesafe;
 
 	// Rendered on the page and again inside the sheet: the re-embed cost is a
@@ -446,13 +478,28 @@ export default function ComplexityRouterPage() {
 			<Alert variant="warning" data-testid="complexity-router-new-phrase-warning">
 				<TriangleAlert className="h-4 w-4" />
 				<AlertDescription>
-					Saving will embed {newPhraseCount} new reference phrase{newPhraseCount === 1 ? "" : "s"} through the selected provider. The other{" "}
-					{reusedPhraseCount} reuse the embeddings this gateway already holds.
+					Saving will embed {newPhraseCount} new reference phrase
+					{newPhraseCount === 1 ? "" : "s"} through the selected provider. The other {reusedPhraseCount} reuse the embeddings this gateway
+					already holds.
 				</AlertDescription>
 			</Alert>
 		) : null;
 
 	const reembedWarning = reembedAllWarning ?? newPhraseWarning;
+
+	// Rendered wherever Jev runs: under its settings as the primary classifier,
+	// or in the fallback slot the llm prompt otherwise uses.
+	const jevGuidance = (variant: "primary" | "fallback") => (
+		<JevGuidanceSection
+			control={control}
+			setValue={setValue}
+			errors={errors.jev}
+			canUpdate={canUpdate}
+			defaults={jevDefaults}
+			defaultsLoading={statusLoading || statusFetching}
+			variant={variant}
+		/>
+	);
 
 	const jevSettings = (
 		<div className="space-y-4" data-testid="complexity-router-jev-settings">
@@ -486,7 +533,10 @@ export default function ComplexityRouterPage() {
 
 	return (
 		<>
-			<form className="flex h-full min-h-0 w-full flex-col" onSubmit={submit} noValidate>
+			{/* no-padding-parent drops the shell's wide side padding so the step
+			    rail sits near the card's left edge, and the width it frees goes
+			    to the step content on the right. */}
+			<form className="no-padding-parent flex h-full min-h-0 w-full flex-col p-4" onSubmit={submit} noValidate>
 				{/* PageTitle renders nothing inline; its badge and description are
 				    portalled into the topbar. */}
 				<PageTitle title="Complexity Router" beta>
@@ -567,12 +617,23 @@ export default function ComplexityRouterPage() {
 												</Button>
 											</>
 										)}
-										<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
-											<a
-												href={"https://docs.getbifrost.ai/features/complexity-router"}
-												target="_blank"
-												rel="noopener noreferrer"
+										{step === "setup" && !isSemantic && (
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												onClick={() => setJevSheetOpen(true)}
+												data-testid="complexity-router-jev-settings-button"
 											>
+												<Settings2 className="size-3.5" />
+												Jev settings
+												{hasUnsavedJevSettingsChanges && (
+													<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label="Unsaved Jev settings changes" />
+												)}
+											</Button>
+										)}
+										<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
+											<a href={"https://docs.getbifrost.ai/features/complexity-router"} target="_blank" rel="noopener noreferrer">
 												<ExternalLink className="size-3.5" />
 												Docs
 											</a>
@@ -609,12 +670,12 @@ export default function ComplexityRouterPage() {
 								)}
 
 								{/* ── Step 2: Jev ── */}
-								{/* No phrases to write, so its two settings are all there is. */}
-								{step === "setup" && !isSemantic && (
-									<div className="rounded-lg border p-4" data-testid="complexity-router-jev-config">
-										{jevSettings}
-									</div>
-								)}
+								{/* The page holds the tier guidance; set-once settings live in the
+								    Jev settings sheet, as embedding settings do for semantic. The
+								    Typesafe problem stays on the page because nothing runs until
+								    it is fixed. */}
+								{step === "setup" && !isSemantic && !isProviderListLoading && <TypesafeAlert state={typesafe} />}
+								{step === "setup" && !isSemantic && jevGuidance("primary")}
 
 								{step === "setup" && <SessionRoutingCard control={control} errors={errors.session} canUpdate={canUpdate} />}
 
@@ -639,6 +700,9 @@ export default function ComplexityRouterPage() {
 										}}
 									/>
 								)}
+
+								{/* Same slot as the llm prompt: only one fallback can be on. */}
+								{step === "setup" && isJevFallbackEnabled && jevGuidance("fallback")}
 
 								{step === "setup" && reembedWarning}
 
@@ -695,7 +759,21 @@ export default function ComplexityRouterPage() {
 												? `Classifier changed to ${isSemantic ? "Semantic" : "Jev"}. Not saved yet.`
 												: ""}
 									</p>
-									{/* Restore defaults only rewrites the phrase lists, which Jev never reads. */}
+									{/* Each classifier restores only its own defaults: the semantic
+									    phrase lists, or Jev's tier guidance. */}
+									{!isSemantic && (
+										<Button
+											data-testid="complexity-router-jev-restore-defaults-button"
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={restoreJevDefaults}
+											disabled={!canUpdate || isSaving || isJevGuidanceAtDefaults}
+										>
+											<RotateCcw className="h-3.5 w-3.5" />
+											Restore defaults
+										</Button>
+									)}
 									{isSemantic && (
 										<Button
 											data-testid="complexity-router-restore-defaults-button"
@@ -753,6 +831,16 @@ export default function ComplexityRouterPage() {
 				onSave={() => void submit()}
 				submitError={submitError}
 				jevSettings={jevSettings}
+			/>
+
+			<JevSettingsSheet
+				open={jevSheetOpen && !isSemantic}
+				onOpenChange={setJevSheetOpen}
+				jevSettings={jevSettings}
+				canSave={canSave}
+				isSaving={isSaving}
+				onSave={() => void submit()}
+				submitError={submitError}
 			/>
 
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>

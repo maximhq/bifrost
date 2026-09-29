@@ -17,9 +17,25 @@ export type SemanticVectorStore = "embedded" | "vector_store";
 export type ClassifierMode = "semantic" | "jev";
 export type SemanticFallback = "none" | "llm" | "jev";
 
+export type JevTier = (typeof COMPLEXITY_TIER_VALUES)[number];
+
+// One tier's editable Jev criteria. An omitted field means the gateway sends
+// its shipped default for that field.
+export interface JevTierCriteria {
+	definition?: string;
+	signals?: string[];
+	examples?: string[];
+}
+
 export interface JevConfig {
 	previous_message_count: number;
 	timeout?: string;
+	criteria?: Partial<Record<JevTier, JevTierCriteria>>;
+}
+
+// The shipped Jev guidance, served by the status endpoint.
+export interface JevGuidanceDefaults {
+	criteria: Record<JevTier, Required<JevTierCriteria>>;
 }
 
 export interface LLMConfig {
@@ -97,6 +113,9 @@ export interface SemanticStatusInfo {
 	// seed itself and offer a reset without holding a copy that drifts from
 	// the gateway's. The fixed reinforcement is never exposed.
 	llm_default_prompt?: string;
+	// The shipped Jev per-tier criteria, served for the same reason as
+	// llm_default_prompt.
+	jev_defaults?: JevGuidanceDefaults;
 }
 
 export interface AnalyzerConfig {
@@ -181,6 +200,11 @@ export const DEFAULT_JEV_TIMEOUT_MS = 1500;
 export const DEFAULT_JEV_PREVIOUS_MESSAGE_COUNT = 1;
 export const MAX_JEV_PREVIOUS_MESSAGE_COUNT = 5;
 
+// Server-side bounds from validateComplexityJevGuidance in framework/configstore.
+export const MAX_JEV_DEFINITION_CHARACTERS = 500;
+export const MAX_JEV_CRITERIA_ITEMS = 12;
+export const MAX_JEV_CRITERIA_ITEM_CHARACTERS = 300;
+
 // The timeout is stored as a Go time.Duration — int64 nanoseconds — so this is
 // the largest whole millisecond value time.ParseDuration accepts. One more and
 // it does not parse to a very long timeout, it fails outright, which the form
@@ -195,7 +219,7 @@ export const MAX_SEMANTIC_PHRASE_CHARACTERS = 2000;
 export const MAX_SEMANTIC_PHRASES = 750;
 
 // DEFAULT_JEV_CONFIG supplies the history window and timeout for Jev requests.
-export const DEFAULT_JEV_CONFIG: Required<JevConfig> = {
+export const DEFAULT_JEV_CONFIG: Required<Pick<JevConfig, "previous_message_count" | "timeout">> = {
 	previous_message_count: DEFAULT_JEV_PREVIOUS_MESSAGE_COUNT,
 	timeout: `${DEFAULT_JEV_TIMEOUT_MS}ms`,
 };

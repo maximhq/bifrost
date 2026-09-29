@@ -2625,6 +2625,40 @@ ComplexityJevConfig:
           pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
         - type: number
           minimum: 0
+    criteria:
+      type: object
+      description: Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.
+      additionalProperties: false
+      properties:
+        SIMPLE:
+          $ref: '#/ComplexityJevTierCriteria'
+        MEDIUM:
+          $ref: '#/ComplexityJevTierCriteria'
+        COMPLEX:
+          $ref: '#/ComplexityJevTierCriteria'
+
+ComplexityJevTierCriteria:
+  type: object
+  additionalProperties: false
+  properties:
+    definition:
+      type: string
+      maxLength: 500
+      description: Replaces this tier's shipped definition. Omit to use the default.
+    signals:
+      type: array
+      maxItems: 12
+      items:
+        type: string
+        maxLength: 300
+      description: Replaces this tier's shipped signals. Omit to use the default.
+    examples:
+      type: array
+      maxItems: 12
+      items:
+        type: string
+        maxLength: 300
+      description: Replaces this tier's shipped examples. Omit to use the default.
 
 ComplexityLLMConfig:
   type: object
@@ -2712,6 +2746,25 @@ ComplexitySemanticStatus:
     llm_default_prompt:
       type: string
       description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
+    jev_defaults:
+      type: object
+      description: The shipped Jev per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.
+      properties:
+        criteria:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              definition:
+                type: string
+              signals:
+                type: array
+                items:
+                  type: string
+              examples:
+                type: array
+                items:
+                  type: string
 
 ComplexityGenerations:
   type: object
