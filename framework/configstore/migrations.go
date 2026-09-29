@@ -8247,15 +8247,14 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 
 			return nil
 		},
+		// The forward migration moves each ollama/sgl base_url onto a generated key and
+		// clears network_config.base_url, so the URL then lives only in ollama_url /
+		// sgl_url. Dropping those columns would destroy the only remaining copy and
+		// leave the generated keys behind with nothing in them, and a later forward run
+		// would mint a second default key alongside the first. The columns are additive
+		// and older binaries ignore them, so failing here is the safe outcome.
 		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "ollama_url"); err != nil {
-				return err
-			}
-			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "sgl_url"); err != nil {
-				return err
-			}
-			return nil
+			return fmt.Errorf("%s is non-rollbackable: the forward migration clears the provider base_url it moved onto a generated key, so dropping ollama_url/sgl_url would permanently lose the endpoint and strand the generated keys; the columns are additive and older binaries safely ignore them", migrationName)
 		},
 	}})
 	if err := m.Migrate(); err != nil {
