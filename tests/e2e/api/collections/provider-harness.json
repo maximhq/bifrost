@@ -173921,6 +173921,132 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "124. Gemini Responses stream keeps signed inline images (#7342 / PR #7357) (gemini-signed-image-stream)",
+      "description": "Gemini 3 image models attach a thoughtSignature to the same part as inlineData. processGeminiPart matched the standalone thoughtSignature case before the media cases, so the streamed /v1/responses path treated the part as a signature-only reasoning item and dropped the generated image (HTTP 200, image tokens billed, no image in the client response). PR #7357 processes media first and keeps the signature on the emitted content block. Each case only asserts the invariant when the model actually generated and billed an image in that run, since Gemini image generation is nondeterministic.",
+      "item": [
+        {
+          "name": "gemini gemini-3-pro-image responses streaming signed inline image preserved - #7342",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l.indexOf('[DONE]') === -1; }).map(function (l) { try { return JSON.parse(l.slice(6)); } catch (e) { return null; } }).filter(Boolean);",
+                  "pm.test('stream parsed at least one SSE event', function () { pm.expect(events.length, 'no parsable SSE data events in: ' + pm.response.text()).to.be.above(0); });",
+                  "pm.test('stream ended with response.completed', function () {",
+                  "  pm.expect(events.some(function (e) { return e.type === 'response.completed'; }), 'no response.completed event in: ' + pm.response.text()).to.eql(true);",
+                  "});",
+                  "var billed = 0;",
+                  "events.forEach(function (e) {",
+                  "  var u = (e.response || {}).usage || {};",
+                  "  var t = (u.output_tokens_details || {}).image_tokens || 0;",
+                  "  if (t > billed) billed = t;",
+                  "});",
+                  "var imageParts = events.filter(function (e) {",
+                  "  return e.type === 'response.content_part.added' && e.part && /image/.test(e.part.type || '');",
+                  "}).map(function (e) { return e.part; });",
+                  "var reasoningItems = events.filter(function (e) {",
+                  "  return e.type === 'response.output_item.added' && e.item && e.item.type === 'reasoning';",
+                  "});",
+                  "if (billed === 0 && imageParts.length === 0) {",
+                  "  // Gemini image generation is nondeterministic and occasionally answers text-only;",
+                  "  // only assert when an image was actually generated and billed this run.",
+                  "  return;",
+                  "}",
+                  "pm.test('signed inline image is emitted in the stream, not dropped', function () {",
+                  "  var withData = imageParts.filter(function (p) { return /^data:image\\//.test(p.image_url || ''); });",
+                  "  pm.expect(withData.length, 'billed ' + billed + ' image tokens but no image content part with a data: URL: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('an image signature stays attached to the image, not a standalone reasoning item', function () {",
+                  "  var signed = imageParts.filter(function (p) { return !!p.signature; });",
+                  "  if (signed.length === 0) { return; }",
+                  "  pm.expect(reasoningItems.filter(function (e) { return e.item.encrypted_content === signed[0].signature; }).length, pm.response.text()).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3-pro-image-preview\",\n  \"input\": \"Generate an image of a small red apple on a white background.\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini-3-pro-image responses unary signed inline image preserved - #7342",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var billed = ((body.usage || {}).output_tokens_details || {}).image_tokens || 0;",
+                  "if (billed === 0) {",
+                  "  // Nondeterministic text-only answer; only assert when an image was billed this run.",
+                  "  return;",
+                  "}",
+                  "pm.test('signed inline image is preserved in output, not dropped', function () {",
+                  "  var found = false;",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    (item.content || []).forEach(function (b) {",
+                  "      if (/image/.test(b.type || '') && /^data:image\\//.test(b.image_url || '')) { found = true; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(found, 'billed ' + billed + ' image tokens but no image block in: ' + pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3-pro-image-preview\",\n  \"input\": \"Generate an image of a small red apple on a white background.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
