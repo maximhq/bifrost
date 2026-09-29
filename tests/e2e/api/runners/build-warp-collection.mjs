@@ -6,7 +6,8 @@
 // runners/individual/run-newman-warp-tests.sh on a throwaway Postgres database
 // seeded by tests/cmd/seed/warpseed, with a live model. Folders:
 //
-//   Setup               configure Warp, backfill the semantic index, wait for it
+//   Setup               configure Warp, backfill the semantic index, wait for it,
+//                       then compute topic clusters over what it indexed
 //   Request validation  deterministic 400/413s - no model call is made
 //   Streaming           SSE framing of one turn
 //   Incident ... Chains standard questions, checked against what the seed pins
@@ -14,6 +15,9 @@
 //   Charts              render_chart line and bar charts, expanded server-side
 //   Capabilities        files and actions Warp cannot do: say so, offer the
 //                       feature-request link, no tool loops
+//   Topics              list_topics answers what people ask about from the
+//                       clusters Setup computed; what the snapshot cannot
+//                       show is declined with the feature-request link
 //   Unanswerable        outside Bifrost's view, missing entities, secrets, PII,
 //                       its own prompt, harmful help, legal verdicts, forecasts
 //   Guardrails          out-of-scope refusals, instruction overrides, a
@@ -56,6 +60,9 @@ const FEATURE_LINK = "github\\.com/maximhq/bifrost/issues/new";
 // A chart render_chart drew: the block, expanded server-side into a spec with
 // points - an unexpanded "chart-1" id alone would not match '"points"'.
 const CHART_BLOCK = ["```warp-chart", '"points":\\['];
+// A topic's name linked to one request: it says how many requests the topic
+// holds and opens one. Examples are linked; names are not.
+const TOPIC_NAME_LINKED = "\\|\\s*\\[[^\\]|]+\\]\\([^)]*selected_log=";
 // Wording of an off-topic decline - a greeting must never read like one.
 const REFUSAL_WORDING = ["only (answer|help with|discuss)", "outside (of )?(what|my)", "can['’]t help with that", "not able to help"];
 // A failures chart's "Open in Logs" must open the failures, not every request.
@@ -152,7 +159,9 @@ const FOLDERS = [
     name: "Conversation content",
     description: "Seeded prompts cover debugging, pricing/billing, and error explanations; searched through the semantic index the Setup folder backfills.",
     cases: [
-      { id: "content-themes", name: "Summarises what people ask about", ask: "What are people asking about most in the last 7 days?", expect: { toolsAny: CONTENT } },
+      // Topics cover the window Setup clustered, not "the last 7 days", so either
+      // the snapshot or a sample of the week's content answers this.
+      { id: "content-themes", name: "Summarises what people ask about", ask: "What are people asking about most in the last 7 days?", expect: { toolsAny: ["list_topics", ...CONTENT] } },
       { id: "content-debugging", name: "Finds debugging conversations", ask: "Find conversations about debugging code.", expect: { toolsAny: CONTENT, answerAny: ["bug|debug|panic|index|nil|get_user|code review|memory leak"] } },
       { id: "content-billing", name: "Finds pricing and billing questions", ask: "Has anyone asked about pricing or billing?", expect: { toolsAny: CONTENT, answerAny: ["refund|invoice|pricing|billing|subscription|payment"] } },
       { id: "content-error-explained", name: "Finds an assistant explaining an error", ask: "Find requests where the assistant explained an error to someone.", expect: { toolsAny: CONTENT, answerAny: ["429|rate limit|index out of range|panic|nil|error"] } },
@@ -283,6 +292,43 @@ const FOLDERS = [
       { id: "cap-schedule", name: "Declines to schedule a report", ask: "Email me this spend report every Monday morning.", expect: { maxToolCalls: 2, answerAll: [FEATURE_LINK], answerNone: NO_FAKE_ACTION } },
       { id: "cap-replay", name: "Declines to re-send a request", ask: "Re-send one of this week's failed openai requests to anthropic and tell me if it works.", expect: { maxToolCalls: 4, answerAll: [FEATURE_LINK], answerNone: NO_FAKE_ACTION } },
       { id: "cap-remember", name: "Declines to remember a preference", ask: "Remember that Platform Engineering is my team so you default to it next time.", expect: { maxToolCalls: 2, answerAll: [FEATURE_LINK], answerNone: ["I('ll| will) remember", "I('ve| have) (noted|saved|remembered)", "noted[.!]"] } },
+    ],
+  },
+  {
+    name: "Topics",
+    description:
+      "Topic clusters are one snapshot: the clusters Setup computed over the seeded window, across the whole deployment, counted in requests. The overview case must be answered from list_topics in one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. The rest ask for what the snapshot cannot show - another time range, a trend, every request in a topic, a count of people. Each must say so, offer the feature-request link, and neither call list_topics again nor rebuild a breakdown by slicing the logs with other tools.",
+    cases: [
+      {
+        id: "topics-overview",
+        name: "Lists what people ask about from the topic clusters",
+        ask: "What are people asking about the most, across the whole deployment?",
+        expect: { toolsAll: ["list_topics"], toolsOnly: ["list_topics"], maxToolCalls: 2, answerAll: ["\\brequests?\\b"], answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
+      },
+      {
+        id: "topics-past-hour",
+        name: "Declines topics for another time range",
+        ask: "What topics came up in the past hour, across the whole deployment?",
+        expect: { toolsAll: ["list_topics"], toolsOnly: ["list_topics"], maxToolCalls: 2, answerAll: [FEATURE_LINK], answerNone: [TOPIC_NAME_LINKED] },
+      },
+      {
+        id: "topics-trend",
+        name: "Declines a topic trend",
+        ask: "Which topics are growing this week compared to last week, across the whole deployment?",
+        expect: { toolsAll: ["list_topics"], toolsOnly: ["list_topics"], maxToolCalls: 2, answerAll: [FEATURE_LINK], answerNone: ["\\b(grew|growing|increased|up) (by )?\\d+ ?%"] },
+      },
+      {
+        id: "topics-drill-down",
+        name: "Declines to list every request in a topic",
+        ask: "List every request in the largest topic.",
+        expect: { toolsAll: ["list_topics"], maxToolCalls: 3, answerAll: [FEATURE_LINK] },
+      },
+      {
+        id: "topics-people",
+        name: "Declines to count the people behind a topic",
+        ask: "How many different users asked about the largest topic?",
+        expect: { toolsAll: ["list_topics"], maxToolCalls: 3, answerAll: [FEATURE_LINK], answerNone: ["\\b\\d+ (different |distinct |unique )?(users|people)\\b"] },
+      },
     ],
   },
   {
@@ -440,7 +486,60 @@ function setupFolder() {
     request("GET", url(["api", "warp", "log-index", "backfill", "status"], [{ key: "id", value: "{{backfill_id}}" }]), null),
     events(null, waitTest),
   );
-  return { id: "setup", name: "Setup", item: [configure, backfill, wait] };
+  // Topics are clustered from what the backfill indexed, over the same window.
+  const topicsTest = [
+    ...exact(202, "Topic clustering starts"),
+    "if (pm.response.code === 202) { pm.collectionVariables.set('topics_id', pm.response.json().id); }",
+  ];
+  const topics = item("setup-topics", "Setup: compute topic clusters", request("POST", url(["api", "warp", "log-index", "topics"]), {}), events(backfillPre, topicsTest));
+
+  const topicsWaitTest = [
+    "var attempt = parseInt(pm.collectionVariables.get('__topics_attempt') || '0', 10);",
+    "var job = {};",
+    "try { job = pm.response.json(); } catch (e) {}",
+    "var done = pm.response.code === 200 && job.status === 'completed';",
+    "var terminal = pm.response.code !== 200 || job.status === 'failed' || job.status === 'cancelled' || attempt >= 150;",
+    "if (!done && !terminal) {",
+    "  pm.collectionVariables.set('__topics_attempt', String(attempt + 1));",
+    "  var start = Date.now(); while (Date.now() - start < 2000) {}",
+    "  pm.execution.setNextRequest(pm.info.requestName);",
+    "  return;",
+    "}",
+    "pm.collectionVariables.set('__topics_attempt', '0');",
+    "pm.test('Topic clustering completes', function () {",
+    "  pm.expect(done, 'status ' + pm.response.code + ' after ' + attempt + ' polls: ' + pm.response.text()).to.be.true;",
+    "  pm.expect(job.scanned, 'requests read: ' + pm.response.text()).to.be.above(0);",
+    "  pm.expect(job.clustered, 'requests clustered').to.equal(job.scanned);",
+    "  pm.expect(job.indexed, 'topics written').to.be.above(0);",
+    "  pm.expect(job.failed || 0, 'topics named from their own words because the model failed: ' + job.last_error).to.equal(0);",
+    "});",
+    "pm.test('Topic clustering reports each topic it wrote', function () {",
+    "  pm.expect(job.topics, pm.response.text()).to.be.an('array').with.lengthOf(job.indexed);",
+    "  var inTopics = 0;",
+    "  job.topics.forEach(function (topic) {",
+    "    pm.expect(topic.label, 'topic name').to.be.a('string').and.not.empty;",
+    "    pm.expect(topic.size, 'requests in ' + topic.label).to.be.above(0);",
+    "    pm.expect(topic.cohesion, 'cohesion of ' + topic.label).to.be.within(0, 1.001);",
+    "    inTopics += topic.size;",
+    "  });",
+    "  pm.expect(inTopics + (job.unassigned || 0), 'every request read is in a topic or counted as in none').to.equal(job.scanned);",
+    "  var names = job.topics.map(function (topic) { return topic.label.toLowerCase(); });",
+    "  pm.expect(names.filter(function (name, index) { return names.indexOf(name) !== index; }), 'topics sharing a name').to.be.empty;",
+    "});",
+  ];
+  const topicsWait = item(
+    "setup-topics-wait",
+    "Setup: wait for topic clusters",
+    request("GET", url(["api", "warp", "log-index", "topics", "status"], [{ key: "id", value: "{{topics_id}}" }]), null),
+    events(null, topicsWaitTest),
+  );
+  return { id: "setup", name: "Setup", item: [configure, backfill, wait, topics, topicsWait] };
+}
+
+function rawTopics(id, name, body, status) {
+  const req = request("POST", url(["api", "warp", "log-index", "topics"]), null, [{ key: "Content-Type", value: "application/json" }]);
+  req.body = { mode: "raw", raw: body };
+  return item(id, name, req, events(null, exact(status, name)));
 }
 
 function rawChat(id, name, body, status, prerequest) {
@@ -465,6 +564,15 @@ function validationFolder() {
       rawChat("validation-blank-final", "Rejects a blank final message", JSON.stringify({ messages: [{ role: "user", content: "   " }], stream: false }), 400),
       rawChat("validation-conversation-id", "Rejects a conversation id over 36 characters", JSON.stringify({ messages: [{ role: "user", content: "hi" }], conversation_id: "x".repeat(37), stream: false }), 400),
       rawChat("validation-oversize", "Rejects a conversation over 256 KB", "{}", 413, oversize),
+      // Rejected before a job is queued, so exact and deterministic.
+      rawTopics("validation-topics-no-window", "Rejects topic clustering with no window", "{}", 400),
+      rawTopics("validation-topics-invalid-json", "Rejects topic clustering with a body that is not JSON", "{", 400),
+      rawTopics(
+        "validation-topics-inverted",
+        "Rejects topic clustering over a window that ends before it starts",
+        JSON.stringify({ start_time: "2026-09-02T00:00:00Z", end_time: "2026-09-01T00:00:00Z" }),
+        400,
+      ),
     ],
   };
 }
@@ -520,6 +628,7 @@ const collection = {
     { key: "warp_namespace", value: "WarpE2eLogs", type: "string" },
     { key: "warp_lib", value: createWarpLib.toString(), type: "string" },
     { key: "backfill_id", value: "", type: "string" },
+    { key: "topics_id", value: "", type: "string" },
   ],
   event: events(COLLECTION_PREREQUEST, null),
   item: [

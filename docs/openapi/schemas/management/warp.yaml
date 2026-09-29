@@ -312,6 +312,112 @@ WarpBackfillStatus:
     completed_at: { type: string, format: date-time }
   required: [status, total, scanned, indexed, skipped, failed]
 
+WarpTopicsRequest:
+  type: object
+  properties:
+    start_time:
+      type: string
+      format: date-time
+    end_time:
+      type: string
+      format: date-time
+  required: [start_time, end_time]
+
+WarpTopicsStatus:
+  type: object
+  description: |
+    A topic clustering job. It shares the backfill's counters, which mean
+    something different here: see each field.
+  properties:
+    id: { type: string }
+    status:
+      type: string
+      enum: [idle, pending, running, cancelling, completed, failed, cancelled]
+    start_time: { type: string, format: date-time }
+    end_time: { type: string, format: date-time }
+    total:
+      type: integer
+      format: int64
+      description: Requests read from the window so far. Equal to `scanned`.
+    scanned:
+      type: integer
+      format: int64
+      description: Requests read from the window. Every model call is one request.
+    indexed:
+      type: integer
+      format: int64
+      description: Topics written.
+    skipped: { type: integer, format: int64 }
+    failed:
+      type: integer
+      format: int64
+      description: |
+        Topics whose name fell back to their most common words because the
+        model could not be reached.
+    clustered:
+      type: integer
+      format: int64
+      description: Requests that were clustered.
+    assigned:
+      type: integer
+      format: int64
+      description: |
+        Requests given to the nearest topic after clustering stopped. Omitted
+        when a run clustered everything it read.
+    unassigned:
+      type: integer
+      format: int64
+      description: Requests that ended in no topic.
+    capped:
+      type: boolean
+      description: |
+        Set when the window held more requests than one run takes in. The
+        requests that were read are drawn from across the window.
+    merged:
+      type: integer
+      format: int64
+      description: Clusters folded into another for being near-duplicates.
+    merged_by_name:
+      type: integer
+      format: int64
+      description: Clusters joined after naming because they were given the same name.
+    merge_threshold:
+      type: number
+      format: double
+      description: |
+        The similarity at or above which two clusters were merged, derived
+        from the run's own clusters. Omitted when the run had nothing to
+        derive one from.
+    topics:
+      type: array
+      description: The topics the run wrote, in the order they were written.
+      items:
+        $ref: '#/WarpTopicSummary'
+    last_error: { type: string }
+    message: { type: string }
+    created_at: { type: string, format: date-time }
+    started_at: { type: string, format: date-time }
+    completed_at: { type: string, format: date-time }
+  required: [status, total, scanned, indexed, skipped, failed]
+
+WarpTopicSummary:
+  type: object
+  properties:
+    label:
+      type: string
+      description: The topic's name.
+    size:
+      type: integer
+      format: int64
+      description: Requests in the topic.
+    cohesion:
+      type: number
+      format: double
+      description: |
+        How alike the topic's requests are, from 0 to 1: their average
+        similarity to the topic's centre.
+  required: [label, size, cohesion]
+
 WarpSessionRequest:
   type: object
   properties:

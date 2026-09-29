@@ -311,6 +311,40 @@ func TestWarpTopicsJobEndpoints(t *testing.T) {
 	require.Contains(t, body, `"topics":[{"label":"Refund requests","size":9,"cohesion":0.91},{"label":"Password resets","size":3,"cohesion":0.84}]`)
 }
 
+// A topics run is refused before anything is queued when the request cannot
+// be one: no window, a body that is not JSON, a window that ends before it
+// starts, a caller who is not an administrator. And a second run is not
+// started beside one in flight - the caller is handed the one that is running.
+func TestWarpTopicsStartRefusesWhatItCannotRun(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	for name, body := range map[string]string{
+		"no window":         `{}`,
+		"not JSON":          `{`,
+		"an inverted range": `{"start_time":"2026-09-02T00:00:00Z","end_time":"2026-09-01T00:00:00Z"}`,
+		"an empty range":    `{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-01T00:00:00Z"}`,
+	} {
+		ctx := adminCtx(body)
+		handler.startTopics(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: %s", name, ctx.Response.Body())
+	}
+	require.Zero(t, jobs.createdCount(), "nothing was queued")
+
+	stranger := &fasthttp.RequestCtx{}
+	stranger.Request.SetBodyString(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startTopics(stranger)
+	require.Equal(t, fasthttp.StatusForbidden, stranger.Response.StatusCode())
+	require.Zero(t, jobs.createdCount())
+
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-running", Kind: warp.TopicsJobKind, Status: tables.SidekiqStatusRunning}
+	again := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startTopics(again)
+	require.Equal(t, fasthttp.StatusConflict, again.Response.StatusCode())
+	require.Contains(t, string(again.Response.Body()), `"id":"job-running"`)
+	require.Zero(t, jobs.createdCount())
+}
+
 // A page reload has no job id in memory and asks for "whatever is current".
 // Once a job finishes, nothing is in flight, so without a fallback the last
 // outcome, including a failure and its cause, vanishes from the settings page.
