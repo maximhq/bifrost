@@ -177321,6 +177321,249 @@
           }
         }
       ]
+    },
+    {
+      "name": "127. Mirrored reasoning shorthand + object accepted when values agree (#7659 / PR #7648) (mirrored-reasoning)",
+      "description": "Issue #7659 / PR #7648: ChatParameters.UnmarshalJSON (core/schemas/chatcompletions.go) rejected any request carrying the same reasoning directive in both spellings - the flat reasoning_effort shorthand and reasoning.effort - and the native handler surfaced that as a generic 400 \"Invalid request payload\" before routing or logging (routing_info: {}). Agents built on ai-sdk (ZCode 3.14.x / provider-utils 4.0.39) emit every vendor dialect at once for reasoning-capable models (reasoning_effort + reasoning.effort + thinking + enable_thinking), so every reasoning turn failed with retryable=false. Each field alone always decoded fine; only the mirrored pair tripped the check.\n\nThe fix accepts equal duplicates (canonicalizing onto the reasoning object, as the existing merge already did) for the effort, max_tokens and display pairs, and keeps rejecting contradictory values so a request asking for two different efforts is still a hard error instead of a silent winner-pick.\n\nCases: (1) native /v1/chat/completions with the exact ai-sdk dialect body, non-streaming -> 200 with content (pre-fix 400 Invalid request payload); (2) same, streaming -> SSE with text deltas; (3) the /openai drop-in, which is what OpenAI-SDK-based agents actually hit, with the mirrored pair -> 200; (4) anthropic/claude-haiku-4-5 with the mirrored reasoning_max_tokens + reasoning.max_tokens pair, pinning the second union pair on a wire that consumes the budget; (5) [EXPECT-400] contradictory reasoning_effort high vs reasoning.effort low -> the gateway still returns 400 Invalid request payload, pinning the protective intent. The unknown ai-sdk keys (thinking, enable_thinking) are dropped on the native route because x-bf-passthrough-extra-params is not set.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai/gpt-5-mini ai-sdk dialect (reasoning_effort + reasoning.effort equal) reaches the provider - #7659', function () {",
+                  "  pm.expect(pm.response.code, 'mirrored reasoning pair was rejected before routing (pre-fix 400 Invalid request payload): ' + pm.response.text()).to.equal(200);",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'gateway-side decode rejection leaked: ' + t.slice(0, 300)).to.not.include('Invalid request payload');",
+                  "  pm.expect(t, 'gateway-side conflict rejection leaked: ' + t.slice(0, 300)).to.not.include('conflicts with');",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+                  "  pm.expect(msg && typeof msg.content === 'string' && msg.content.length > 0, 'expected assistant text content: ' + t.slice(0, 300)).to.equal(true);",
+                  "  pm.expect(j.usage && typeof j.usage.completion_tokens === 'number', 'expected usage on the reply: ' + t.slice(0, 300)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"reasoning_effort\":\"low\",\"reasoning\":{\"effort\":\"low\"},\"thinking\":{\"type\":\"enabled\"},\"enable_thinking\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "name": "openai openai/gpt-5-mini /v1/chat/completions mirrored reasoning_effort + reasoning.effort (equal, ai-sdk dialect) accepted (non-streaming) - #7659"
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai/gpt-5-mini mirrored reasoning pair streams normally - #7659', function () {",
+                  "  pm.expect(pm.response.code, 'mirrored reasoning pair was rejected before routing (pre-fix 400 Invalid request payload): ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect((pm.response.headers.get('content-type') || ''), 'expected an SSE stream: ' + raw.slice(0, 300)).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'gateway-side decode rejection leaked: ' + raw.slice(0, 300)).to.not.include('Invalid request payload');",
+                  "  var content = '';",
+                  "  raw.split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0 || l.indexOf('[DONE]') !== -1) { return; }",
+                  "    var ev; try { ev = JSON.parse(l.slice(6)); } catch (e) { return; }",
+                  "    var d = ev.choices && ev.choices[0] && ev.choices[0].delta;",
+                  "    if (d && typeof d.content === 'string') { content += d.content; }",
+                  "  });",
+                  "  pm.expect(content.length, 'expected streamed assistant text, got none: ' + raw.slice(-600)).to.be.above(0);",
+                  "  pm.expect(raw, 'expected the [DONE] terminator: ' + raw.slice(-300)).to.include('data: [DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"reasoning_effort\":\"low\",\"reasoning\":{\"effort\":\"low\"},\"thinking\":{\"type\":\"enabled\"},\"enable_thinking\":true,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "name": "openai openai/gpt-5-mini /v1/chat/completions mirrored reasoning_effort + reasoning.effort (equal) accepted (streaming) - #7659"
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai/gpt-5-mini mirrored reasoning pair accepted on the /openai drop-in - #7659', function () {",
+                  "  pm.expect(pm.response.code, 'mirrored reasoning pair was rejected before routing (pre-fix 400 Invalid request payload): ' + pm.response.text()).to.equal(200);",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'gateway-side decode rejection leaked: ' + t.slice(0, 300)).to.not.include('Invalid request payload');",
+                  "  pm.expect(t, 'gateway-side conflict rejection leaked: ' + t.slice(0, 300)).to.not.include('conflicts with');",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+                  "  pm.expect(msg && typeof msg.content === 'string' && msg.content.length > 0, 'expected assistant text content: ' + t.slice(0, 300)).to.equal(true);",
+                  "  pm.expect(j.usage && typeof j.usage.completion_tokens === 'number', 'expected usage on the reply: ' + t.slice(0, 300)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"reasoning_effort\":\"low\",\"reasoning\":{\"effort\":\"low\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "name": "openai openai/gpt-5-mini /openai/v1/chat/completions mirrored reasoning_effort + reasoning.effort (equal) accepted (drop-in) - #7659"
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 mirrored reasoning_max_tokens + reasoning.max_tokens (equal) reaches the provider - #7659', function () {",
+                  "  pm.expect(pm.response.code, 'mirrored reasoning pair was rejected before routing (pre-fix 400 Invalid request payload): ' + pm.response.text()).to.equal(200);",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'gateway-side decode rejection leaked: ' + t.slice(0, 300)).to.not.include('Invalid request payload');",
+                  "  pm.expect(t, 'gateway-side conflict rejection leaked: ' + t.slice(0, 300)).to.not.include('conflicts with');",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+                  "  pm.expect(msg && typeof msg.content === 'string' && msg.content.length > 0, 'expected assistant text content: ' + t.slice(0, 300)).to.equal(true);",
+                  "  pm.expect(j.usage && typeof j.usage.completion_tokens === 'number', 'expected usage on the reply: ' + t.slice(0, 300)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"max_tokens\":2048,\"reasoning_max_tokens\":1024,\"reasoning\":{\"max_tokens\":1024}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "name": "anthropic anthropic/claude-haiku-4-5 /v1/chat/completions mirrored reasoning_max_tokens + reasoning.max_tokens (equal) accepted - #7659"
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai/gpt-5-mini contradictory reasoning_effort vs reasoning.effort is still rejected by the gateway - #7659', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'conflicting efforts must be a gateway 400, not silently winner-picked: ' + t.slice(0, 300)).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.error && j.error.message, 'expected the native decode rejection message: ' + t.slice(0, 300)).to.equal('Invalid request payload');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"reasoning_effort\":\"high\",\"reasoning\":{\"effort\":\"low\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "name": "[EXPECT-400] openai openai/gpt-5-mini /v1/chat/completions conflicting reasoning_effort high vs reasoning.effort low still rejected - #7659"
+        }
+      ]
     }
   ]
 }
