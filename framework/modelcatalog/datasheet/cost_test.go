@@ -789,9 +789,7 @@ func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
 			CachedReadTokens:  200,
 			CachedWriteTokens: 300,
 		},
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: bifrost.Ptr(2),
-		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 2}},
 	}
 
 	tokenCost := 500*0.00001 + 200*0.000001 + 300*0.0000125 + 100*0.00005
@@ -1200,6 +1198,24 @@ func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 		PromptTokens:     1000,
 		CompletionTokens: 500,
 		TotalTokens:      1500,
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
+	}
+
+	cost := computeTextCostTotal(&p, usage, serviceTier{})
+
+	// 1000*0.000003 + 500*0.000015 + 3*0.01 = 0.003 + 0.0075 + 0.03 = 0.0405
+	assert.InDelta(t, 0.0405, cost, 1e-12)
+}
+
+func TestComputeTextCost_DeprecatedNumSearchQueriesNotPriced(t *testing.T) {
+	p := chatPricing(0.000003, 0.000015)
+	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+
+	numQueries := 3
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
 		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
 			NumSearchQueries: &numQueries,
 		},
@@ -1207,8 +1223,8 @@ func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 
 	cost := computeTextCostTotal(&p, usage, serviceTier{})
 
-	// 1000*0.000003 + 500*0.000015 + 3*0.01 = 0.003 + 0.0075 + 0.03 = 0.0405
-	assert.InDelta(t, 0.0405, cost, 1e-12)
+	// Only tokens: 0.003 + 0.0075; search is billed from ToolUsage alone.
+	assert.InDelta(t, 0.0105, cost, 1e-12)
 }
 
 func TestComputeTextCost_NoCacheRateFallsBackToBaseInputRate(t *testing.T) {
@@ -1314,9 +1330,7 @@ func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 	}
 	numQueries := 5
 	usage := &schemas.BifrostLLMUsage{
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: &numQueries,
-		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	cost := computeRerankCostTotal(&p, usage, serviceTier{})
 	assert.InDelta(t, 0.005, cost, 1e-12)
@@ -1335,9 +1349,7 @@ func TestComputeRerankCost_BreakdownDetails(t *testing.T) {
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     10,
 		CompletionTokens: 5,
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: &numQueries,
-		},
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	cost := computeRerankCost(&p, usage, serviceTier{})
 	require.NotNil(t, cost)
@@ -3405,6 +3417,7 @@ func TestResponsesUsageToBifrostUsage_WithTokenDetails(t *testing.T) {
 			ReasoningTokens:  100,
 			NumSearchQueries: &numQueries,
 		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	result := responsesUsageToBifrostUsage(u)
 
@@ -3419,6 +3432,7 @@ func TestResponsesUsageToBifrostUsage_WithTokenDetails(t *testing.T) {
 	assert.Equal(t, 100, result.CompletionTokensDetails.ReasoningTokens)
 	require.NotNil(t, result.CompletionTokensDetails.NumSearchQueries)
 	assert.Equal(t, 2, *result.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 2, result.ToolUsage.WebSearch.NumRequests)
 }
 
 // =========================================================================

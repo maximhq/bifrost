@@ -1056,6 +1056,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = cu.ToolUsage.DeepCopy()
 
 	return usage
 }
@@ -1095,6 +1096,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = ru.ToolUsage.DeepCopy()
 
 	return usage
 }
