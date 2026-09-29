@@ -807,20 +807,19 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 	assert.Equal(t, "chain-b", decision.MatchedRuleID)
 }
 
-// TestEvaluateRoutingRules_TTFTTimeoutFollowsLastMatchedRule: the decision
-// carries the matched rule's ttft_timeout_ms, and in a chain it comes from the
-// last matched rule together with that rule's fallbacks.
-func TestEvaluateRoutingRules_TTFTTimeoutFollowsLastMatchedRule(t *testing.T) {
+// TestEvaluateRoutingRules_TTFTTimeoutFollowsSelectedTarget: the decision
+// carries the selected target's ttft_timeout_ms, and in a chain it comes from
+// the last matched rule's selected target.
+func TestEvaluateRoutingRules_TTFTTimeoutFollowsSelectedTarget(t *testing.T) {
 	newRule := func(id, expr, model string, priority int, chain bool, ttftMs *int) *configstoreTables.TableRoutingRule {
 		return &configstoreTables.TableRoutingRule{
 			ID:            id,
 			Name:          id,
 			CelExpression: expr,
 			Targets: []configstoreTables.TableRoutingTarget{
-				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr(model), Weight: 1.0},
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr(model), Weight: 1.0, TTFTTimeoutMs: ttftMs},
 			},
 			ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic"}}},
-			TTFTTimeoutMs:   ttftMs,
 			Enabled:         bifrost.Ptr(true),
 			Scope:           "global",
 			Priority:        priority,
@@ -846,6 +845,15 @@ func TestEvaluateRoutingRules_TTFTTimeoutFollowsLastMatchedRule(t *testing.T) {
 
 	t.Run("single rule", func(t *testing.T) {
 		decision := evaluate(t, newRule("ttft", "model == 'gpt-4o'", "gpt-4o", 0, false, new(1500)))
+		assert.Equal(t, 1500*time.Millisecond, decision.TTFTTimeout)
+	})
+	t.Run("only the selected target's deadline applies", func(t *testing.T) {
+		rule := newRule("two-targets", "model == 'gpt-4o'", "gpt-4o", 0, false, new(1500))
+		rule.Targets = append(rule.Targets, configstoreTables.TableRoutingTarget{
+			Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o-mini"), Weight: 0, TTFTTimeoutMs: new(9000),
+		})
+		decision := evaluate(t, rule)
+		assert.Equal(t, "gpt-4o", decision.Model)
 		assert.Equal(t, 1500*time.Millisecond, decision.TTFTTimeout)
 	})
 	t.Run("unset", func(t *testing.T) {

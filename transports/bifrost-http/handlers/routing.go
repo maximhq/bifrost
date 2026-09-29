@@ -136,6 +136,8 @@ type RoutingTarget struct {
 	Model    *string `json:"model,omitempty"`    // nil = use incoming model
 	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
 	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
+
+	TTFTTimeoutMs *int `json:"ttft_timeout_ms,omitempty"` // nil or 0 = no TTFT deadline
 }
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
@@ -147,8 +149,7 @@ type CreateRoutingRuleRequest struct {
 	CelExpression string                              `json:"cel_expression"`
 	Targets       []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
 	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
-	TTFTTimeoutMs *int                                `json:"ttft_timeout_ms,omitempty"` // nil or 0 = no TTFT deadline
-	Scope         string                              `json:"scope,omitempty"`           // Defaults to "global" if not provided
+	Scope         string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
 	ScopeID       *string                             `json:"scope_id,omitempty"`
 	Query         map[string]any                      `json:"query,omitempty"`
 	Priority      int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
@@ -163,27 +164,30 @@ type UpdateRoutingRuleRequest struct {
 	CelExpression *string                             `json:"cel_expression,omitempty"`
 	Targets       []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
 	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
-	TTFTTimeoutMs *int                                `json:"ttft_timeout_ms,omitempty"` // nil = unchanged, 0 = clear
 	Query         map[string]any                      `json:"query,omitempty"`
 	Priority      *int                                `json:"priority,omitempty"`
 	Scope         *string                             `json:"scope,omitempty"`
 	ScopeID       *string                             `json:"scope_id,omitempty"`
 }
 
-// maxRoutingTTFTTimeoutMs caps a rule's TTFT deadline; it mirrors
+// maxRoutingTTFTTimeoutMs caps a target's TTFT deadline; it mirrors
 // ttft_timeout_ms's maximum in config.schema.json.
 const maxRoutingTTFTTimeoutMs = 300000
 
-// normalizeRoutingTTFTTimeout validates a ttft_timeout_ms value from a request.
-// 0 means "no deadline" and normalizes to nil.
-func normalizeRoutingTTFTTimeout(ms *int) (*int, error) {
+// validateRoutingTTFTTimeout checks a target's ttft_timeout_ms; nil and 0 mean "no deadline".
+func validateRoutingTTFTTimeout(ms *int) error {
+	if ms != nil && (*ms < 0 || *ms > maxRoutingTTFTTimeoutMs) {
+		return fmt.Errorf("ttft_timeout_ms must be between 1 and %d (0 disables it)", maxRoutingTTFTTimeoutMs)
+	}
+	return nil
+}
+
+// nilIfZero normalizes a 0 ("no deadline") ttft_timeout_ms to nil so it is stored as NULL.
+func nilIfZero(ms *int) *int {
 	if ms == nil || *ms == 0 {
-		return nil, nil
+		return nil
 	}
-	if *ms < 0 || *ms > maxRoutingTTFTTimeoutMs {
-		return nil, fmt.Errorf("ttft_timeout_ms must be between 1 and %d (0 disables it)", maxRoutingTTFTTimeoutMs)
-	}
-	return ms, nil
+	return ms
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules
@@ -271,6 +275,9 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 		}
 		if t.KeyID != nil && *t.KeyID != "" && (t.Provider == nil || *t.Provider == "") {
 			return fmt.Errorf("key_id requires provider to be set")
+		}
+		if err := validateRoutingTTFTTimeout(t.TTFTTimeoutMs); err != nil {
+			return err
 		}
 
 		// Canonicalise identity: lowercase provider/model, treat nil == "".
@@ -611,11 +618,6 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
-	ttftTimeoutMs, err := normalizeRoutingTTFTTimeout(req.TTFTTimeoutMs)
-	if err != nil {
-		SendError(ctx, 400, err.Error())
-		return
-	}
 	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
 	if err := rules.ValidateCELExpression(req.CelExpression); err != nil {
 		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
@@ -650,10 +652,11 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 	for _, t := range req.Targets {
 		targets = append(targets, configstoreTables.TableRoutingTarget{
-			Provider: t.Provider,
-			Model:    t.Model,
-			KeyID:    t.KeyID,
-			Weight:   t.Weight,
+			Provider:      t.Provider,
+			Model:         t.Model,
+			KeyID:         t.KeyID,
+			Weight:        t.Weight,
+			TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 		})
 	}
 
@@ -679,7 +682,6 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		ScopeID:         req.ScopeID,
 		Priority:        req.Priority,
 		ParsedFallbacks: req.Fallbacks,
-		TTFTTimeoutMs:   ttftTimeoutMs,
 		ParsedQuery:     req.Query,
 	}
 
@@ -757,10 +759,11 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 		for _, t := range req.Targets {
 			newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
-				Provider: t.Provider,
-				Model:    t.Model,
-				KeyID:    t.KeyID,
-				Weight:   t.Weight,
+				Provider:      t.Provider,
+				Model:         t.Model,
+				KeyID:         t.KeyID,
+				Weight:        t.Weight,
+				TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 			})
 		}
 		rule.Targets = newTargets
@@ -777,14 +780,6 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		rule.ParsedFallbacks = req.Fallbacks
-	}
-	if req.TTFTTimeoutMs != nil {
-		ttftTimeoutMs, err := normalizeRoutingTTFTTimeout(req.TTFTTimeoutMs)
-		if err != nil {
-			SendError(ctx, 400, err.Error())
-			return
-		}
-		rule.TTFTTimeoutMs = ttftTimeoutMs
 	}
 	if req.Scope != nil && *req.Scope != "" {
 		// Validate scope value before updating

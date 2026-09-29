@@ -109573,6 +109573,15 @@
                   "exclusiveMinimum": 0,
                   "description": "Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)",
                   "example": 0.5
+                },
+                "ttft_timeout_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 300000,
+                  "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
                 }
               }
             }
@@ -109609,13 +109618,6 @@
               ]
             },
             "description": "Ordered fallback chain, tried after the selected target fails"
-          },
-          "ttft_timeout_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests this rule routes. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. Null when unset."
           },
           "scope": {
             "type": "string",
@@ -109750,6 +109752,15 @@
                   "exclusiveMinimum": 0,
                   "description": "Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)",
                   "example": 0.5
+                },
+                "ttft_timeout_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 300000,
+                  "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
                 }
               }
             }
@@ -109786,12 +109797,6 @@
               ]
             },
             "description": "Ordered fallback chain, tried after the selected target fails"
-          },
-          "ttft_timeout_ms": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 300000,
-            "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests this rule routes. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
           },
           "scope": {
             "type": "string",
@@ -109885,6 +109890,15 @@
                   "exclusiveMinimum": 0,
                   "description": "Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)",
                   "example": 0.5
+                },
+                "ttft_timeout_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 300000,
+                  "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
                 }
               }
             }
@@ -109921,12 +109935,6 @@
               ]
             },
             "description": "Ordered fallback chain, tried after the selected target fails"
-          },
-          "ttft_timeout_ms": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 300000,
-            "description": "Time-to-first-token (TTFT) deadline in milliseconds. Omit to keep the current value; 0 clears it."
           },
           "priority": {
             "type": "integer"

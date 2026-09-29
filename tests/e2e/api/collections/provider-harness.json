@@ -177747,7 +177747,7 @@
     },
     {
       "name": "129. Routing rule TTFT cutoff (ttft)",
-      "description": "Pins routing rule ttft_timeout_ms (time-to-first-token cutoff). Each case creates a request-header-scoped global rule targeting openai/gpt-4o-mini with ttft_timeout_ms=1, so the primary streaming attempt always misses its deadline, then deletes the rule. (1) Streaming with one fallback: the primary is cut off without a same-provider retry and the fallback (index 1) serves the whole stream. (2) Streaming with no fallbacks: the last attempt is never cut off, so the primary serves it. (3) Non-streaming with a fallback: the deadline applies to streams only, so the primary serves it. Before the change the routing API drops ttft_timeout_ms and case 1 is served by the primary. Requires management access (optional managementApiKey environment variable when authentication is enabled).",
+      "description": "Pins routing target ttft_timeout_ms (time-to-first-token cutoff). Each case creates a request-header-scoped global rule whose openai/gpt-4o-mini target carries ttft_timeout_ms=1, so the primary streaming attempt always misses its deadline, then deletes the rule. (1) Streaming with one fallback: the primary is cut off without a same-provider retry and the fallback (index 1) serves the whole stream. (2) Streaming with no fallbacks: the last attempt is never cut off, so the primary serves it. (3) Non-streaming with a fallback: the deadline applies to streams only, so the primary serves it. Before the change the routing API drops ttft_timeout_ms and case 1 is served by the primary. Requires management access (optional managementApiKey environment variable when authentication is enabled).",
       "item": [
         {
           "name": "openai gpt-4o-mini ttft cutoff hands over to fallback streaming",
@@ -177769,12 +177769,11 @@
                   "  scope: 'global',",
                   "  priority: Date.now() % 1000000000,",
                   "  cel_expression: '\"x-ttft-test\" in headers && headers[\"x-ttft-test\"] == \"' + marker + '\"',",
-                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1}],",
-                  "  fallbacks: ['openai/gpt-4o-mini'],",
-                  "  ttft_timeout_ms: 1",
+                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1, ttft_timeout_ms: 1}],",
+                  "  fallbacks: ['openai/gpt-4o-mini']",
                   "};",
                   "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
-                  "  pm.test('routing API accepts a rule with ttft_timeout_ms', function () {",
+                  "  pm.test('routing API accepts a target with ttft_timeout_ms', function () {",
                   "    pm.expect(err).to.equal(null);",
                   "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + response.text()).to.equal(200);",
                   "  });",
@@ -177782,7 +177781,7 @@
                   "  var created = response.json().rule;",
                   "  pm.variables.set('ttftRuleID', created.id);",
                   "  pm.test('routing API echoes ttft_timeout_ms', function () {",
-                  "    pm.expect(created.ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
+                  "    pm.expect(created.targets[0].ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
                   "  });",
                   "});"
                 ]
@@ -177874,12 +177873,11 @@
                   "  scope: 'global',",
                   "  priority: Date.now() % 1000000000,",
                   "  cel_expression: '\"x-ttft-test\" in headers && headers[\"x-ttft-test\"] == \"' + marker + '\"',",
-                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1}],",
-                  "  fallbacks: [],",
-                  "  ttft_timeout_ms: 1",
+                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1, ttft_timeout_ms: 1}],",
+                  "  fallbacks: []",
                   "};",
                   "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
-                  "  pm.test('routing API accepts a rule with ttft_timeout_ms', function () {",
+                  "  pm.test('routing API accepts a target with ttft_timeout_ms', function () {",
                   "    pm.expect(err).to.equal(null);",
                   "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + response.text()).to.equal(200);",
                   "  });",
@@ -177887,7 +177885,7 @@
                   "  var created = response.json().rule;",
                   "  pm.variables.set('ttftRuleID', created.id);",
                   "  pm.test('routing API echoes ttft_timeout_ms', function () {",
-                  "    pm.expect(created.ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
+                  "    pm.expect(created.targets[0].ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
                   "  });",
                   "});"
                 ]
@@ -177974,12 +177972,11 @@
                   "  scope: 'global',",
                   "  priority: Date.now() % 1000000000,",
                   "  cel_expression: '\"x-ttft-test\" in headers && headers[\"x-ttft-test\"] == \"' + marker + '\"',",
-                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1}],",
-                  "  fallbacks: ['openai/gpt-4o-mini'],",
-                  "  ttft_timeout_ms: 1",
+                  "  targets: [{provider: 'openai', model: 'gpt-4o-mini', weight: 1, ttft_timeout_ms: 1}],",
+                  "  fallbacks: ['openai/gpt-4o-mini']",
                   "};",
                   "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
-                  "  pm.test('routing API accepts a rule with ttft_timeout_ms', function () {",
+                  "  pm.test('routing API accepts a target with ttft_timeout_ms', function () {",
                   "    pm.expect(err).to.equal(null);",
                   "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + response.text()).to.equal(200);",
                   "  });",
@@ -177987,7 +177984,7 @@
                   "  var created = response.json().rule;",
                   "  pm.variables.set('ttftRuleID', created.id);",
                   "  pm.test('routing API echoes ttft_timeout_ms', function () {",
-                  "    pm.expect(created.ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
+                  "    pm.expect(created.targets[0].ttft_timeout_ms, JSON.stringify(created)).to.equal(1);",
                   "  });",
                   "});"
                 ]

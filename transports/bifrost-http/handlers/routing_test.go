@@ -612,17 +612,20 @@ func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
 	require.Empty(t, manager.reloaded)
 }
 
-// TestRoutingRuleTTFTTimeoutValidation pins ttft_timeout_ms on create and
-// update: 1..300000 is stored, 0 means "off" (and clears it on update),
-// omitting it on update keeps the stored value, and anything else is a 400.
-func TestRoutingRuleTTFTTimeoutValidation(t *testing.T) {
+// TestRoutingTargetTTFTTimeoutValidation pins a target's ttft_timeout_ms on
+// create and update: 1..300000 is stored, 0 means "off", targets are replaced
+// wholesale on update so omitting it there clears it, and anything else is a 400.
+func TestRoutingTargetTTFTTimeoutValidation(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
 	handler := &RoutingHandler{configStore: store, routingManager: &mockRoutingManager{}}
 
+	targets := func(ttft string) string {
+		return fmt.Sprintf(`[{"provider":"openai","model":"gpt-4o-mini","weight":1%s}]`, ttft)
+	}
 	create := func(t *testing.T, name, ttft string) (int, string) {
 		t.Helper()
-		body := fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","model":"gpt-4o-mini","weight":1}],"priority":%d%s}`, name, len(name), ttft)
+		body := fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":%s,"priority":%d}`, name, targets(ttft), len(name))
 		ctx := newTestRequestCtx(body)
 		handler.createRoutingRule(ctx)
 		var resp struct {
@@ -642,7 +645,8 @@ func TestRoutingRuleTTFTTimeoutValidation(t *testing.T) {
 		t.Helper()
 		rule, err := store.GetRoutingRule(context.Background(), id)
 		require.NoError(t, err)
-		return rule.TTFTTimeoutMs
+		require.Len(t, rule.Targets, 1)
+		return rule.Targets[0].TTFTTimeoutMs
 	}
 
 	status, id := create(t, "ttft-set", `,"ttft_timeout_ms":1500`)
@@ -659,15 +663,15 @@ func TestRoutingRuleTTFTTimeoutValidation(t *testing.T) {
 		require.Equal(t, fasthttp.StatusBadRequest, status, "create with %s", bad)
 	}
 
-	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"description":"no ttft field"}`))
-	require.Equal(t, 1500, *stored(t, id), "an update without the field must keep it")
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"description":"no targets field"}`))
+	require.Equal(t, 1500, *stored(t, id), "an update that omits targets must keep them and their deadline")
 
-	require.Equal(t, fasthttp.StatusBadRequest, update(t, id, `{"ttft_timeout_ms":999999}`))
+	require.Equal(t, fasthttp.StatusBadRequest, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":999999`)+`}`))
 	require.Equal(t, 1500, *stored(t, id), "a rejected update must not change it")
 
-	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"ttft_timeout_ms":250}`))
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":250`)+`}`))
 	require.Equal(t, 250, *stored(t, id))
 
-	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"ttft_timeout_ms":0}`))
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":0`)+`}`))
 	require.Nil(t, stored(t, id), "0 on update must clear the deadline")
 }

@@ -33,18 +33,18 @@ type Decision struct {
 	Model           string                              // Model to use (or empty to use original)
 	KeyID           string                              // Optional: pin a specific API key by UUID ("" = no pin)
 	Fallbacks       []configstoreTables.RoutingFallback // Fallback chain, each optionally pinning a provider key
-	TTFTTimeout     time.Duration                       // TTFT deadline for streaming attempts (0 = none); comes with Fallbacks from the same rule
+	TTFTTimeout     time.Duration                       // TTFT deadline for streaming attempts (0 = none); comes from the selected target
 	MatchedRuleID   string                              // ID of the rule that matched
 	MatchedRuleName string                              // Name of the rule that matched
 }
 
-// ruleTTFTTimeout converts a rule's ttft_timeout_ms into a duration; unset or
+// targetTTFTTimeout converts a target's ttft_timeout_ms into a duration; unset or
 // non-positive means no deadline.
-func ruleTTFTTimeout(rule *configstoreTables.TableRoutingRule) time.Duration {
-	if rule.TTFTTimeoutMs == nil || *rule.TTFTTimeoutMs <= 0 {
+func targetTTFTTimeout(target configstoreTables.TableRoutingTarget) time.Duration {
+	if target.TTFTTimeoutMs == nil || *target.TTFTTimeoutMs <= 0 {
 		return 0
 	}
-	return time.Duration(*rule.TTFTTimeoutMs) * time.Millisecond
+	return time.Duration(*target.TTFTTimeoutMs) * time.Millisecond
 }
 
 // GovernanceScope is who a request is governed as: the identifiers the access it carries was resolved
@@ -300,7 +300,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 					Model:           model,
 					KeyID:           keyID,
 					Fallbacks:       rule.ParsedFallbacks,
-					TTFTTimeout:     ruleTTFTTimeout(rule),
+					TTFTTimeout:     targetTTFTTimeout(target),
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
 				}

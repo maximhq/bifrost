@@ -169,7 +169,7 @@ func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
 }
 
 // TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly: a matched
-// rule's ttft_timeout_ms lands on BifrostContextKeyStreamFirstTokenTimeout,
+// target's ttft_timeout_ms lands on BifrostContextKeyStreamFirstTokenTimeout,
 // under the same restricted-write block core installs around PreRequestHook,
 // and only for streaming request types.
 func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T) {
@@ -180,10 +180,9 @@ func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T)
 		Name:          "TTFT Rule",
 		CelExpression: "model == 'gpt-4o'",
 		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0, TTFTTimeoutMs: new(1500)},
 		},
 		ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet-4-5"}}},
-		TTFTTimeoutMs:   new(1500),
 		Enabled:         bifrost.Ptr(true),
 		Scope:           "global",
 	}))

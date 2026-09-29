@@ -505,7 +505,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
 	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
 	{IDs: []string{"add_virtual_key_disable_content_logging_column"}, run: migrationAddVirtualKeyDisableContentLoggingColumn},
-	{IDs: []string{"add_ttft_timeout_ms_column_to_routing_rules"}, run: migrationAddTTFTTimeoutMsColumnToRoutingRules},
+	{IDs: []string{"add_ttft_timeout_ms_column_to_routing_targets"}, run: migrationAddTTFTTimeoutMsColumnToRoutingTargets},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14142,26 +14142,26 @@ func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *
 	return nil
 }
 
-// migrationAddTTFTTimeoutMsColumnToRoutingRules adds the nullable ttft_timeout_ms
-// column to routing_rules. Existing rules keep NULL (no TTFT deadline), and
+// migrationAddTTFTTimeoutMsColumnToRoutingTargets adds the nullable ttft_timeout_ms
+// column to routing_targets. Existing targets keep NULL (no TTFT deadline), and
 // GenerateRoutingRuleHash only hashes the field when it is set, so no
 // config_hash backfill is needed.
-func migrationAddTTFTTimeoutMsColumnToRoutingRules(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_ttft_timeout_ms_column_to_routing_rules"
+func migrationAddTTFTTimeoutMsColumnToRoutingTargets(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ttft_timeout_ms_column_to_routing_targets"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if err := addColumnIfNotExists(tx, logger, &tables.TableRoutingRule{}, "ttft_timeout_ms"); err != nil {
+			if err := addColumnIfNotExists(tx, logger, &tables.TableRoutingTarget{}, "ttft_timeout_ms"); err != nil {
 				return fmt.Errorf("failed to add column ttft_timeout_ms: %w", err)
 			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if err := dropColumnIfExists(tx, logger, &tables.TableRoutingRule{}, "ttft_timeout_ms"); err != nil {
+			if err := dropColumnIfExists(tx, logger, &tables.TableRoutingTarget{}, "ttft_timeout_ms"); err != nil {
 				return fmt.Errorf("failed to drop column ttft_timeout_ms: %w", err)
 			}
 			return nil

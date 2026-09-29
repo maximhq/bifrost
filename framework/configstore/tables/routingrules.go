@@ -36,11 +36,6 @@ type TableRoutingRule struct {
 	// Chaining
 	ChainRule bool `gorm:"not null;default:false" json:"chain_rule"` // If true, re-evaluates routing chain after this rule matches
 
-	// TTFTTimeoutMs is the time-to-first-token deadline for streaming requests
-	// this rule routes. An attempt with no first token in time is cut off and
-	// the next fallback runs; the last attempt is never cut off. nil = off.
-	TTFTTimeoutMs *int `gorm:"column:ttft_timeout_ms" json:"ttft_timeout_ms,omitempty"`
-
 	// Execution
 	Priority int `gorm:"type:int;not null;default:0;index" json:"priority"` // Lower = evaluated first within scope
 
@@ -190,6 +185,7 @@ type TableRoutingTarget struct {
 	KeyID           *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"key_id,omitempty"`   // persisted key pin
 	ProviderKeyName *string `gorm:"-" json:"provider_key_name,omitempty"`                                              // config-only alias; resolved to key_id during load
 	Weight          float64 `gorm:"not null;default:1" json:"weight"`                                                  // must sum to 1 across all targets in a rule
+	TTFTTimeoutMs   *int    `gorm:"column:ttft_timeout_ms" json:"ttft_timeout_ms,omitempty"`                           // streaming first-token deadline; nil = off
 }
 
 // TableName for TableRoutingTarget
