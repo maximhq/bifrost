@@ -1,0 +1,12 @@
+---
+title: "v2.1.44"
+description: "Helm v2.1.44 changelog - 2026-09-29"
+---
+
+<Update label="Bifrost Helm" description="v2.1.44">
+
+## Changelog
+
+- Added `bifrost.auditLogs.omitIpAddresses` (default `false`) to stop recording client IP addresses in audit logs while keeping the rest of the audit trail. IPs stored before the flag was turned on are hidden from the API, filter data, search and exports, and archive copies written after the change omit them, but they stay in the database and in archive objects already written. Renders into `audit_logs.omit_ip_addresses`.
+
+</Update>
