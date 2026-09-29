@@ -870,6 +870,18 @@ func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
 	return string(providerReason)
 }
 
+// geminiResponsesStatus derives the Responses status and incomplete_details from a
+// stop reason already converted by ConvertGeminiFinishReasonToBifrost. Error finish
+// reasons are handled by the callers (status "failed") before this is consulted.
+func geminiResponsesStatus(stopReason string) (*string, *schemas.ResponsesResponseIncompleteDetails) {
+	status, details, mapped := schemas.ResponsesStatusFromFinishReason(stopReason)
+	if !mapped {
+		// A finish reason with no Responses equivalent is not a confirmed clean finish.
+		return schemas.Ptr(schemas.ResponsesResponseStatusIncomplete), nil
+	}
+	return &status, details
+}
+
 // ConvertBifrostFinishReasonToGemini converts Bifrost canonical finish reasons back to Gemini format.
 func ConvertBifrostFinishReasonToGemini(bifrostReason string) FinishReason {
 	if geminiReason, ok := bifrostToGeminiFinishReason[bifrostReason]; ok {

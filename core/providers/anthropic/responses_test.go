@@ -668,3 +668,179 @@ func TestAnthropicSafeguardResultsUnaryRoundTrip(t *testing.T) {
 		t.Fatalf("safeguard_results dropped on typed unary round trip: %s", string(body))
 	}
 }
+
+// Issue #7601: /v1/responses on anthropic/* returned no status, and a turn cut
+// short by max_tokens was indistinguishable from a complete one. OpenAI's
+// Responses contract (and the Bedrock fix in #4679) sets status "completed" on a
+// finished turn and status "incomplete" + incomplete_details on a truncated or
+// refused one.
+func TestAnthropicResponsesStatusFromStopReason(t *testing.T) {
+	for _, tc := range []struct {
+		stopReason     AnthropicStopReason
+		wantStatus     string
+		wantIncomplete string
+	}{
+		{AnthropicStopReasonEndTurn, schemas.ResponsesResponseStatusCompleted, ""},
+		{AnthropicStopReasonStopSequence, schemas.ResponsesResponseStatusCompleted, ""},
+		{AnthropicStopReasonToolUse, schemas.ResponsesResponseStatusCompleted, ""},
+		{AnthropicStopReasonMaxTokens, schemas.ResponsesResponseStatusIncomplete, schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+		{AnthropicStopReasonModelContextWindowExceeded, schemas.ResponsesResponseStatusIncomplete, schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+		{AnthropicStopReasonRefusal, schemas.ResponsesResponseStatusIncomplete, schemas.ResponsesResponseIncompleteReasonContentFilter},
+	} {
+		t.Run(string(tc.stopReason), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp := (&AnthropicMessageResponse{
+				ID:         "msg_01",
+				Model:      "claude-sonnet-4-6",
+				Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("Rome was")}},
+				StopReason: tc.stopReason,
+				Usage:      &AnthropicUsage{InputTokens: 20, OutputTokens: 40},
+			}).ToBifrostResponsesResponse(ctx)
+
+			if resp.Status == nil || *resp.Status != tc.wantStatus {
+				t.Fatalf("status = %v, want %q", resp.Status, tc.wantStatus)
+			}
+			assertIncompleteDetails(t, resp.IncompleteDetails, tc.wantIncomplete)
+		})
+	}
+}
+
+// The streaming half of #7601: the terminal event was always response.completed
+// with no status, even when message_delta carried stop_reason max_tokens.
+func TestAnthropicResponsesStreamTerminalFromStopReason(t *testing.T) {
+	for _, tc := range []struct {
+		stopReason     AnthropicStopReason
+		wantType       schemas.ResponsesStreamResponseType
+		wantStatus     string
+		wantIncomplete string
+	}{
+		{AnthropicStopReasonEndTurn, schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesResponseStatusCompleted, ""},
+		{AnthropicStopReasonMaxTokens, schemas.ResponsesStreamResponseTypeIncomplete, schemas.ResponsesResponseStatusIncomplete, schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+	} {
+		t.Run(string(tc.stopReason), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			state := AcquireAnthropicResponsesStreamState()
+			defer ReleaseAnthropicResponsesStreamState(state)
+
+			frames := []string{
+				`{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"stop_reason":null,"usage":{"input_tokens":20,"output_tokens":1}}}`,
+				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Rome was"}}`,
+				`{"type":"content_block_stop","index":0}`,
+				`{"type":"message_delta","delta":{"stop_reason":"` + string(tc.stopReason) + `","stop_sequence":null},"usage":{"output_tokens":40}}`,
+				`{"type":"message_stop"}`,
+			}
+			var terminal *schemas.BifrostResponsesStreamResponse
+			seq := 0
+			for _, frame := range frames {
+				var chunk AnthropicStreamEvent
+				if err := sonic.Unmarshal([]byte(frame), &chunk); err != nil {
+					t.Fatalf("unmarshal %s: %v", frame, err)
+				}
+				responses, bErr, isLast := chunk.ToBifrostResponsesStream(ctx, seq, state)
+				if bErr != nil {
+					t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+				}
+				seq += len(responses)
+				if isLast && len(responses) > 0 {
+					terminal = responses[len(responses)-1]
+				}
+			}
+			if terminal == nil || terminal.Response == nil {
+				t.Fatal("stream produced no terminal event")
+			}
+			if terminal.Type != tc.wantType {
+				t.Errorf("terminal event type = %q, want %q", terminal.Type, tc.wantType)
+			}
+			if terminal.Response.Status == nil || *terminal.Response.Status != tc.wantStatus {
+				t.Errorf("terminal status = %v, want %q", terminal.Response.Status, tc.wantStatus)
+			}
+			assertIncompleteDetails(t, terminal.Response.IncompleteDetails, tc.wantIncomplete)
+		})
+	}
+}
+
+func assertIncompleteDetails(t *testing.T, got *schemas.ResponsesResponseIncompleteDetails, wantReason string) {
+	t.Helper()
+	if wantReason == "" {
+		if got != nil {
+			t.Errorf("incomplete_details = %+v, want nil", got)
+		}
+		return
+	}
+	if got == nil || got.Reason != wantReason {
+		t.Errorf("incomplete_details = %+v, want reason %q", got, wantReason)
+	}
+}
+
+// Follow-up to #7601: OpenAI marks the output item that was being written when the
+// cap hit as status "incomplete". The response-level status was fixed, but the
+// truncated message item still reported "completed".
+func TestAnthropicResponsesTruncatedOutputItemIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		stopReason AnthropicStopReason
+		want       string
+	}{
+		{AnthropicStopReasonMaxTokens, schemas.ResponsesResponseStatusIncomplete},
+		{AnthropicStopReasonEndTurn, "completed"},
+	} {
+		t.Run(string(tc.stopReason), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp := (&AnthropicMessageResponse{
+				ID: "msg_01", Model: "claude-sonnet-4-6",
+				Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("Rome was")}},
+				StopReason: tc.stopReason,
+				Usage:      &AnthropicUsage{InputTokens: 20, OutputTokens: 40},
+			}).ToBifrostResponsesResponse(ctx)
+			assertAnthropicLastOutputItemStatus(t, "non-stream", resp.Output, tc.want)
+
+			state := AcquireAnthropicResponsesStreamState()
+			defer ReleaseAnthropicResponsesStreamState(state)
+			var terminal *schemas.BifrostResponsesStreamResponse
+			seq := 0
+			for _, frame := range []string{
+				`{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"stop_reason":null,"usage":{"input_tokens":20,"output_tokens":1}}}`,
+				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Rome was"}}`,
+				`{"type":"content_block_stop","index":0}`,
+				`{"type":"message_delta","delta":{"stop_reason":"` + string(tc.stopReason) + `","stop_sequence":null},"usage":{"output_tokens":40}}`,
+				`{"type":"message_stop"}`,
+			} {
+				var chunk AnthropicStreamEvent
+				if err := sonic.Unmarshal([]byte(frame), &chunk); err != nil {
+					t.Fatalf("unmarshal %s: %v", frame, err)
+				}
+				responses, bErr, isLast := chunk.ToBifrostResponsesStream(ctx, seq, state)
+				if bErr != nil {
+					t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+				}
+				seq += len(responses)
+				if isLast && len(responses) > 0 {
+					terminal = responses[len(responses)-1]
+				}
+			}
+			if terminal == nil || terminal.Response == nil {
+				t.Fatal("stream produced no terminal event")
+			}
+			assertAnthropicLastOutputItemStatus(t, "stream terminal", terminal.Response.Output, tc.want)
+		})
+	}
+}
+
+func assertAnthropicLastOutputItemStatus(t *testing.T, label string, output []schemas.ResponsesMessage, want string) {
+	t.Helper()
+	if len(output) == 0 {
+		t.Fatalf("%s: no output items", label)
+	}
+	last := output[len(output)-1]
+	if last.Status == nil || *last.Status != want {
+		t.Errorf("%s: last output item status = %v, want %q", label, derefStatus(last.Status), want)
+	}
+}
+
+func derefStatus(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}

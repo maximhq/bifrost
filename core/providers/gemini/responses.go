@@ -311,11 +311,18 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 				return bifrostResp
 			}
+
+			// Surface truncation/filtering per the Responses contract; without Status a
+			// MAX_TOKENS turn is indistinguishable from a complete one.
+			bifrostResp.Status, bifrostResp.IncompleteDetails = geminiResponsesStatus(stopReason)
 		}
 
 		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates)
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
+		}
+		if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
+			schemas.MarkTruncatedOutputItem(bifrostResp.Output)
 		}
 
 		// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
@@ -803,24 +810,7 @@ func buildGeminiTerminalCandidate(
 		},
 	}
 
-	// Determine finish reason: prefer StopReason (Bifrost canonical), fall back to IncompleteDetails
-	if bifrostResp.StopReason != nil {
-		candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.StopReason)
-	} else if bifrostResp.IncompleteDetails != nil {
-		// Match the schema's incomplete-reason vocabulary; a literal
-		// "max_tokens" never occurs here, so truncations reported OTHER
-		// instead of MAX_TOKENS (issue #5978).
-		switch bifrostResp.IncompleteDetails.Reason {
-		case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
-			candidate.FinishReason = FinishReasonMaxTokens
-		case schemas.ResponsesResponseIncompleteReasonContentFilter:
-			candidate.FinishReason = FinishReasonSafety
-		default:
-			candidate.FinishReason = FinishReasonOther
-		}
-	} else {
-		candidate.FinishReason = FinishReasonStop
-	}
+	candidate.FinishReason = geminiFinishReasonFromResponses(bifrostResp)
 
 	// Attach grounding metadata if web search was used
 	if lastWebSearchCall != nil {
@@ -839,6 +829,33 @@ func buildGeminiTerminalCandidate(
 	}
 
 	return candidate
+}
+
+// geminiFinishReasonFromResponses picks the Gemini finish reason for a terminal
+// Responses object: StopReason (Bifrost canonical) first, then IncompleteDetails, so
+// a truncation reported only via incomplete_details still surfaces as MAX_TOKENS.
+func geminiFinishReasonFromResponses(resp *schemas.BifrostResponsesResponse) FinishReason {
+	if resp.StopReason != nil {
+		return ConvertBifrostFinishReasonToGemini(*resp.StopReason)
+	}
+	if resp.IncompleteDetails != nil {
+		// Match the schema's incomplete-reason vocabulary; a literal
+		// "max_tokens" never occurs here, so truncations reported OTHER
+		// instead of MAX_TOKENS (issue #5978).
+		switch resp.IncompleteDetails.Reason {
+		case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+			return FinishReasonMaxTokens
+		case schemas.ResponsesResponseIncompleteReasonContentFilter:
+			return FinishReasonSafety
+		default:
+			return FinishReasonOther
+		}
+	}
+	// Incomplete with no reason at all: OTHER is Gemini's "unknown reason", not a clean STOP.
+	if resp.Status != nil && *resp.Status == schemas.ResponsesResponseStatusIncomplete {
+		return FinishReasonOther
+	}
+	return FinishReasonStop
 }
 
 // extractGeminiSafetyRatings recovers []*SafetyRating from ProviderExtraFields["safetyRatings"].
@@ -1139,7 +1156,7 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		// Already handled via ContentPartAdded
 		return nil
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		if bifrostResp.Response != nil {
 			// Set model version if available
 			if bifrostResp.Response.Model != "" {
@@ -1161,12 +1178,7 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				}
 			}
 
-			// Derive finish reason from StopReason when present
-			if bifrostResp.Response.StopReason != nil {
-				candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.Response.StopReason)
-			} else {
-				candidate.FinishReason = FinishReasonStop
-			}
+			candidate.FinishReason = geminiFinishReasonFromResponses(bifrostResp.Response)
 
 			// Attach grounding metadata if we buffered web search data
 			if state.HasWebSearch && state.WebSearchCall != nil {
@@ -1259,6 +1271,11 @@ type GeminiResponsesStreamState struct {
 	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
 	SafetyRatings []*SafetyRating
 	AvgLogprobs   float64
+
+	// Finish reason from a chunk that could not close the stream (no item opened yet);
+	// FinalizeGeminiResponsesStream reports it instead of an unknown finish.
+	PendingFinishReason  FinishReason
+	PendingFinishMessage string
 
 	// Content tracking
 	HasStartedText     bool            // Whether we've started text content
@@ -1356,6 +1373,8 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.ResponseID = nil
 	state.SafetyRatings = nil
 	state.AvgLogprobs = 0
+	state.PendingFinishReason = ""
+	state.PendingFinishMessage = ""
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedCompleted = false
@@ -1432,12 +1451,6 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 
 	// First event: Emit response.created and response.in_progress
 	if !state.HasEmittedCreated {
-		// Generate message ID
-		if state.MessageID == nil {
-			messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
-			state.MessageID = &messageID
-		}
-
 		// Set model and response ID from Gemini
 		if response.ModelVersion != "" && state.Model == nil {
 			state.Model = &response.ModelVersion
@@ -1445,36 +1458,7 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		if response.ResponseID != "" && state.ResponseID == nil {
 			state.ResponseID = &response.ResponseID
 		}
-
-		// Emit response.created
-		createdResp := &schemas.BifrostResponsesResponse{
-			ID:        state.MessageID,
-			CreatedAt: state.CreatedAt,
-		}
-		if state.Model != nil {
-			createdResp.Model = *state.Model
-		}
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeCreated,
-			SequenceNumber: sequenceNumber + len(responses),
-			Response:       createdResp,
-		})
-		state.HasEmittedCreated = true
-
-		// Emit response.in_progress
-		inProgressResp := &schemas.BifrostResponsesResponse{
-			ID:        state.MessageID,
-			CreatedAt: state.CreatedAt,
-		}
-		if state.Model != nil {
-			inProgressResp.Model = *state.Model
-		}
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeInProgress,
-			SequenceNumber: sequenceNumber + len(responses),
-			Response:       inProgressResp,
-		})
-		state.HasEmittedInProgress = true
+		responses = append(responses, state.startEvents(sequenceNumber)...)
 	}
 
 	// Process candidates
@@ -1486,6 +1470,11 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 				partResponses := processGeminiPart(part, state, sequenceNumber+len(responses))
 				responses = append(responses, partResponses...)
 			}
+		}
+
+		if candidate.FinishReason != "" {
+			state.PendingFinishReason = candidate.FinishReason
+			state.PendingFinishMessage = candidate.FinishMessage
 		}
 
 		// safetyRatings/avgLogprobs only arrive on the terminal chunk, alongside finishReason.
@@ -2490,7 +2479,21 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		if isErrorFinishReason(finishReason) {
 			failedStatus := "failed"
 			completedResp.Status = &failedStatus
+		} else {
+			completedResp.Status, completedResp.IncompleteDetails = geminiResponsesStatus(stopReason)
 		}
+	} else {
+		// The upstream stream ended without ever sending a finishReason (e.g. thinking
+		// exhausted the budget and Gemini returned an empty body): not a clean finish.
+		// The reason is unknown, so incomplete_details stays nil.
+		completedResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+	}
+
+	// A truncated or filtered turn terminates with response.incomplete, not response.completed.
+	terminalType := schemas.ResponsesStreamResponseTypeCompleted
+	if completedResp.Status != nil && *completedResp.Status == schemas.ResponsesResponseStatusIncomplete {
+		terminalType = schemas.ResponsesStreamResponseTypeIncomplete
+		schemas.MarkTruncatedOutputItem(completedResp.Output)
 	}
 
 	// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
@@ -2511,7 +2514,7 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		Type:           terminalType,
 		SequenceNumber: sequenceNumber + len(responses),
 		Response:       completedResp,
 	})
@@ -2521,9 +2524,48 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	return responses
 }
 
-// FinalizeGeminiResponsesStream finalizes the stream by closing any open items and emitting completed event
+// startEvents emits response.created and response.in_progress, once per stream.
+func (state *GeminiResponsesStreamState) startEvents(sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	if state.HasEmittedCreated {
+		return nil
+	}
+	if state.MessageID == nil {
+		messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
+		state.MessageID = &messageID
+	}
+	var responses []*schemas.BifrostResponsesStreamResponse
+	for _, eventType := range []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+	} {
+		resp := &schemas.BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+		}
+		if state.Model != nil {
+			resp.Model = *state.Model
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           eventType,
+			SequenceNumber: sequenceNumber + len(responses),
+			Response:       resp,
+		})
+	}
+	state.HasEmittedCreated = true
+	state.HasEmittedInProgress = true
+	return responses
+}
+
+// FinalizeGeminiResponsesStream finalizes the stream by closing any open items and emitting
+// the terminal event. It reports a finishReason seen on a chunk that could not close the
+// stream; if none ever arrived, the terminal is response.incomplete. A stream that produced
+// no chunk at all still opens with response.created / response.in_progress.
 func FinalizeGeminiResponsesStream(state *GeminiResponsesStreamState, usage *GenerateContentResponseUsageMetadata, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
-	return closeGeminiOpenItems(state, nil, usage, sequenceNumber, "", "")
+	var responses []*schemas.BifrostResponsesStreamResponse
+	if !state.HasEmittedCompleted {
+		responses = append(responses, state.startEvents(sequenceNumber)...)
+	}
+	return append(responses, closeGeminiOpenItems(state, nil, usage, sequenceNumber+len(responses), state.PendingFinishReason, state.PendingFinishMessage)...)
 }
 
 // convertGeminiSystemInstructionToResponsesMessage converts Gemini SystemInstruction to a system role message
