@@ -1,4 +1,5 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReasonMenuItem } from "@/components/ui/disabledReason";
 import { BudgetDisplay } from "@/components/budgetDisplay";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
@@ -40,7 +41,7 @@ import {
 } from "@/lib/store";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { actionDisabledReason, formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -257,9 +258,9 @@ function VKActionsMenu({
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(hasUpdateAccess, "edit", "virtual keys")}
 						className="cursor-pointer"
-						disabled={!hasUpdateAccess}
 						data-testid={`vk-edit-btn-${vk.name}`}
 						onSelect={(e) => {
 							e.preventDefault();
@@ -269,19 +270,23 @@ function VKActionsMenu({
 					>
 						<Edit className="h-4 w-4" />
 						Edit
-					</DropdownMenuItem>
+					</DisabledReasonMenuItem>
 					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`vk-view-logs-btn-${vk.name}`}>
 						<Link to="/workspace/logs" search={{ virtual_key_ids: [vk.id] }} onClick={() => setIsOpen(false)}>
 							<ScrollText className="h-4 w-4" />
 							View logs
 						</Link>
 					</DropdownMenuItem>
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(
+							hasDeleteAccess,
+							"delete",
+							"virtual keys",
+							isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined,
+						)}
 						variant="destructive"
 						className="cursor-pointer"
-						disabled={!hasDeleteAccess || isManagedByProfile}
 						data-testid={`vk-delete-btn-${vk.name}`}
-						title={isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined}
 						onSelect={(e) => {
 							e.preventDefault();
 							setDeleteOpen(true);
@@ -290,7 +295,7 @@ function VKActionsMenu({
 					>
 						<Trash2 className="h-4 w-4" />
 						Delete
-					</DropdownMenuItem>
+					</DisabledReasonMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -901,19 +906,24 @@ export default function VirtualKeysTable({
 						{selectedCount > 0 && (
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button
-										variant="outline"
-										className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
-										onClick={() => setShowBulkRotateDialog(true)}
-										disabled={!hasUpdateAccess || isBulkRotating}
-										aria-label={`Rotate selected (${selectedCount})`}
-										data-testid="vk-bulk-rotate-btn"
-									>
-										<RotateCcw className="h-4 w-4" />
-										<span className="hidden @5xl/vk-toolbar:inline">Rotate selected ({selectedCount})</span>
-									</Button>
+									{/* A disabled button emits no pointer events, so the span carries the hover. */}
+									<span tabIndex={hasUpdateAccess ? undefined : 0} className="inline-flex">
+										<Button
+											variant="outline"
+											className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+											onClick={() => setShowBulkRotateDialog(true)}
+											disabled={!hasUpdateAccess || isBulkRotating}
+											aria-label={`Rotate selected (${selectedCount})`}
+											data-testid="vk-bulk-rotate-btn"
+										>
+											<RotateCcw className="h-4 w-4" />
+											<span className="hidden @5xl/vk-toolbar:inline">Rotate selected ({selectedCount})</span>
+										</Button>
+									</span>
 								</TooltipTrigger>
-								<TooltipContent>Rotate selected ({selectedCount})</TooltipContent>
+								<TooltipContent>
+									{actionDisabledReason(hasUpdateAccess, "rotate", "virtual keys") ?? `Rotate selected (${selectedCount})`}
+								</TooltipContent>
 							</Tooltip>
 						)}
 						<Tooltip>
@@ -934,18 +944,20 @@ export default function VirtualKeysTable({
 						</Tooltip>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button
-									className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
-									onClick={handleAddVirtualKey}
-									disabled={!hasCreateAccess}
-									aria-label="Add Virtual Key"
-									data-testid="create-vk-btn"
-								>
-									<Plus className="h-4 w-4" />
-									<span className="hidden @5xl/vk-toolbar:inline">Add Virtual Key</span>
-								</Button>
+								<span tabIndex={hasCreateAccess ? undefined : 0} className="inline-flex">
+									<Button
+										className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+										onClick={handleAddVirtualKey}
+										disabled={!hasCreateAccess}
+										aria-label="Add Virtual Key"
+										data-testid="create-vk-btn"
+									>
+										<Plus className="h-4 w-4" />
+										<span className="hidden @5xl/vk-toolbar:inline">Add Virtual Key</span>
+									</Button>
+								</span>
 							</TooltipTrigger>
-							<TooltipContent>Add Virtual Key</TooltipContent>
+							<TooltipContent>{actionDisabledReason(hasCreateAccess, "create", "virtual keys") ?? "Add Virtual Key"}</TooltipContent>
 						</Tooltip>
 					</div>
 				</div>
@@ -1051,7 +1063,9 @@ export default function VirtualKeysTable({
 													<Badge
 														variant="destructive"
 														className="text-xs"
-														title={(vk.delete_after_expire ?? deleteExpiredByDefault) ? "Deleted automatically within about a day" : undefined}
+														title={
+															(vk.delete_after_expire ?? deleteExpiredByDefault) ? "Deleted automatically within about a day" : undefined
+														}
 													>
 														{(vk.delete_after_expire ?? deleteExpiredByDefault) ? "Expired · auto-delete" : "Expired"}
 													</Badge>
