@@ -824,20 +824,16 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 // setAssistantRoleOnce puts the assistant role on the first delta of a
 // converted chat stream and clears it from later deltas. OpenAI-compatible
 // clients read the role from the first chunk only, and some concatenate a
-// repeated one. It reports whether the role has been sent.
+// repeated one. The stream converter emits a single choice per event. It
+// reports whether the role has been sent.
 func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool {
-	for i := range resp.Choices {
-		choice := resp.Choices[i].ChatStreamResponseChoice
-		if choice == nil || choice.Delta == nil {
-			continue
-		}
-		if roleSent {
-			choice.Delta.Role = nil
-			continue
-		}
-		role := string(schemas.ChatMessageRoleAssistant)
-		choice.Delta.Role = &role
-		roleSent = true
+	if len(resp.Choices) == 0 || resp.Choices[0].ChatStreamResponseChoice == nil || resp.Choices[0].Delta == nil {
+		return roleSent
 	}
-	return roleSent
+	if roleSent {
+		resp.Choices[0].Delta.Role = nil
+	} else {
+		resp.Choices[0].Delta.Role = schemas.Ptr(string(schemas.ChatMessageRoleAssistant))
+	}
+	return true
 }
