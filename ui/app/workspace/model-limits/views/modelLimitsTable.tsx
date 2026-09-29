@@ -1,4 +1,6 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -11,7 +13,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ProviderSelector } from "@/components/ui/providerSelector";
@@ -84,9 +86,9 @@ function ModelLimitActionsMenu({
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
-				<DropdownMenuItem
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(isManaged || hasUpdateAccess, "edit", "model limits")}
 					className="cursor-pointer"
-					disabled={!isManaged && !hasUpdateAccess}
 					data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -96,11 +98,16 @@ function ModelLimitActionsMenu({
 				>
 					<Edit className="h-4 w-4" />
 					{isManaged ? "View" : "Edit"}
-				</DropdownMenuItem>
-				<DropdownMenuItem
+				</DisabledReasonMenuItem>
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(
+						hasDeleteAccess,
+						"delete",
+						"model limits",
+						isManaged ? "This limit is managed by its owner and can't be deleted here." : undefined,
+					)}
 					variant="destructive"
 					className="cursor-pointer"
-					disabled={isManaged || !hasDeleteAccess}
 					data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -110,7 +117,7 @@ function ModelLimitActionsMenu({
 				>
 					<Trash2 className="h-4 w-4" />
 					Delete
-				</DropdownMenuItem>
+				</DisabledReasonMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -330,10 +337,17 @@ export default function ModelLimitsTable({
 						</Button>
 					)}
 
-					<Button className="ml-auto h-9" onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
-						<Plus className="h-4 w-4" />
-						Add Limit
-					</Button>
+					<DisabledReason reason={actionDisabledReason(hasCreateAccess, "create", "model limits")} className="ml-auto">
+						<Button
+							className="ml-auto h-9"
+							onClick={handleAddModelLimit}
+							disabled={!hasCreateAccess}
+							data-testid="model-limits-button-create"
+						>
+							<Plus className="h-4 w-4" />
+							Add Limit
+						</Button>
+					</DisabledReason>
 				</div>
 
 				<div className="mb-2 overflow-hidden rounded-sm border" data-testid="model-limits-table">
