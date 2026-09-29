@@ -36,7 +36,6 @@ type fakeLivePost struct {
 	requestID    string
 	kind         string
 	end          bool
-	unconfirmed  bool
 	delegationID string
 	resp         *schemas.BifrostResponsesResponse
 	live         *schemas.LiveSessionLog
@@ -64,7 +63,6 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 			post.requestID, _ = postCtx.Value(schemas.BifrostContextKeyRequestID).(string)
 			post.kind, _ = postCtx.Value(schemas.BifrostContextKeyLiveUnit).(string)
 			post.end, _ = postCtx.Value(schemas.BifrostContextKeyLiveSessionEnd).(bool)
-			post.unconfirmed, _ = postCtx.Value(schemas.BifrostContextKeyLiveUsageUnconfirmed).(bool)
 			post.delegationID, _ = postCtx.Value(schemas.BifrostContextKeyLiveDelegationID).(string)
 			if result != nil {
 				post.resp = result.ResponsesResponse
@@ -364,7 +362,7 @@ func TestLiveMeterMarksSessionBoundariesForPlugins(t *testing.T) {
 
 	// The voice unit closes last, carrying the session log with the transcript and the confirmed end.
 	transcript := []schemas.LiveTranscriptLine{{Role: "user", Text: "Hi there.", StartMs: 0, EndMs: 900}}
-	meter.setEnding(transcript, true)
+	meter.setEnding(transcript)
 	meter.finish(40)
 	_, posts, _ = runner.snapshot()
 	require.Len(t, posts, 3)
@@ -373,16 +371,14 @@ func TestLiveMeterMarksSessionBoundariesForPlugins(t *testing.T) {
 	last := posts[2]
 	assert.Equal(t, liveUnitVoice, last.kind)
 	assert.True(t, last.end, "the last unit ends the session")
-	assert.False(t, last.unconfirmed)
 	require.NotNil(t, last.live)
 	assert.Equal(t, transcript, last.live.Transcript)
-	assert.True(t, last.live.UsageConfirmed)
 	assert.Equal(t, "websocket", last.live.Transport)
 	assert.Equal(t, "live_abc", last.live.ProviderSessionID)
 	assert.Nil(t, last.resp.Output, "the transcript rides on the session log, not on the response")
 	assert.Equal(t, 40.0, postSeconds(t, last))
 
-	// Without a confirmed ending the final usage is flagged.
+	// A dropped session still closes its unit and carries the session log.
 	dropped := &fakeLiveRunner{}
 	droppedMeter := newTestLiveMeter(dropped)
 	require.Nil(t, droppedMeter.admit("gpt-live-1", ""))
@@ -390,9 +386,7 @@ func TestLiveMeterMarksSessionBoundariesForPlugins(t *testing.T) {
 	_, posts, _ = dropped.snapshot()
 	require.Len(t, posts, 1)
 	assert.True(t, posts[0].end)
-	assert.True(t, posts[0].unconfirmed)
 	require.NotNil(t, posts[0].live)
-	assert.False(t, posts[0].live.UsageConfirmed)
 
 	// A session that never ran ends with the error that stopped it.
 	aborted := &fakeLiveRunner{}
@@ -405,7 +399,6 @@ func TestLiveMeterMarksSessionBoundariesForPlugins(t *testing.T) {
 	assert.Equal(t, 2, cleanups)
 	assert.Equal(t, liveUnitVoice, posts[1].kind)
 	assert.True(t, posts[1].end)
-	assert.True(t, posts[1].unconfirmed)
 	require.NotNil(t, posts[1].err)
 	assert.Equal(t, "upstream refused", posts[1].err.Error.Message)
 }

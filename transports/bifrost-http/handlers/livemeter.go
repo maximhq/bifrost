@@ -52,11 +52,9 @@ type liveLane struct {
 	delegatedMs int64                      // backend: when that delegation began, on the session timeline
 }
 
-// liveEnding is how a session ended: what was said, and whether the provider confirmed the
-// final usage. It rides on the unit that closes the session.
+// liveEnding is what the unit closing the session carries: what was said.
 type liveEnding struct {
 	transcript []schemas.LiveTranscriptLine
-	confirmed  bool
 }
 
 // liveMeter bills one GPT Live session: voice seconds in windows, each backend response once.
@@ -82,7 +80,7 @@ type liveMeter struct {
 	minimumSeconds    float64               // least voice time the session bills
 	finished          bool
 	transport         string      // websocket or webrtc, for the session's log row
-	ending            *liveEnding // nil until the session ends; nil at finish means unconfirmed
+	ending            *liveEnding // nil until the session ends
 }
 
 func newLiveMeter(runner liveUnitRunner, baseCtx *schemas.BifrostContext, provider schemas.ModelProvider, key schemas.Key, sessionID string) *liveMeter {
@@ -129,11 +127,10 @@ func (m *liveMeter) setTransport(transport string) {
 	m.mu.Unlock()
 }
 
-// setEnding records what the unit closing the session carries: the transcript, and whether the
-// provider confirmed the final usage. Call it before finish.
-func (m *liveMeter) setEnding(transcript []schemas.LiveTranscriptLine, confirmed bool) {
+// setEnding records what the unit closing the session carries: the transcript. Call it before finish.
+func (m *liveMeter) setEnding(transcript []schemas.LiveTranscriptLine) {
 	m.mu.Lock()
-	m.ending = &liveEnding{transcript: transcript, confirmed: confirmed}
+	m.ending = &liveEnding{transcript: transcript}
 	m.mu.Unlock()
 }
 
@@ -371,17 +368,13 @@ func (m *liveMeter) sessionLogLocked() *schemas.LiveSessionLog {
 	log := &schemas.LiveSessionLog{Transport: m.transport, ProviderSessionID: m.providerSessionID}
 	if m.ending != nil {
 		log.Transcript = m.ending.transcript
-		log.UsageConfirmed = m.ending.confirmed
 	}
 	return log
 }
 
-// markEndLocked flags the unit that closes the session, and whether its usage is unconfirmed.
+// markEndLocked flags the unit that closes the session.
 func (m *liveMeter) markEndLocked(postCtx *schemas.BifrostContext) {
 	postCtx.SetValue(schemas.BifrostContextKeyLiveSessionEnd, true)
-	if m.ending == nil || !m.ending.confirmed {
-		postCtx.SetValue(schemas.BifrostContextKeyLiveUsageUnconfirmed, true)
-	}
 }
 
 func (m *liveMeter) runPostHooks(unit *liveBillingUnit, postCtx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {

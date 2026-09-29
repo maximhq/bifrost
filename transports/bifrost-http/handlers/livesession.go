@@ -536,7 +536,7 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 			}
 		}
 	case schemas.LiveEventSessionClosed:
-		c.meter.setEnding(c.transcript.snapshot(), true)
+		c.meter.setEnding(c.transcript.snapshot())
 		c.meter.finish(providerUtils.GetJSONField(message, "usage.seconds").Float())
 		c.markUpstreamDone()
 		return true
@@ -568,7 +568,7 @@ func (c *liveSessionController) clientLeft() {
 
 // upstreamEnded bills what OpenAI last reported when the upstream ended without session.closed.
 func (c *liveSessionController) upstreamEnded() {
-	c.meter.setEnding(c.transcript.snapshot(), false)
+	c.meter.setEnding(c.transcript.snapshot())
 	c.meter.finish(c.meter.lastReportedSeconds())
 	c.markUpstreamDone()
 }

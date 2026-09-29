@@ -319,7 +319,6 @@ type LiveSessionLog struct {
 	VoiceSeconds      float64              `json:"voice_seconds"`
 	VoiceCost         *float64             `json:"voice_cost,omitempty"`
 	BackendCost       *float64             `json:"backend_cost,omitempty"`
-	UsageConfirmed    bool                 `json:"usage_confirmed"` // false when the session ended without the provider's final usage
 	Transcript        []LiveTranscriptLine `json:"transcript,omitempty"`
 	Delegations       []LiveDelegationLog  `json:"delegations,omitempty"`
 }

@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -11,7 +12,7 @@ import (
 )
 
 // liveUnitCtx is the context the live transport gives one billing unit.
-func liveUnitCtx(sessionID, requestID, kind string, start, end, unconfirmed bool) *schemas.BifrostContext {
+func liveUnitCtx(sessionID, requestID, kind string, start, end bool) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	ctx.SetValue(schemas.BifrostContextKeyLiveSessionID, sessionID)
@@ -26,15 +27,12 @@ func liveUnitCtx(sessionID, requestID, kind string, start, end, unconfirmed bool
 	if end {
 		ctx.SetValue(schemas.BifrostContextKeyLiveSessionEnd, true)
 	}
-	if unconfirmed {
-		ctx.SetValue(schemas.BifrostContextKeyLiveUsageUnconfirmed, true)
-	}
 	return ctx
 }
 
 // liveDelegationCtx is a backend unit's context: which delegation its response ran, and when it began.
 func liveDelegationCtx(sessionID, requestID, delegationID string, startedMs int64) *schemas.BifrostContext {
-	ctx := liveUnitCtx(sessionID, requestID, "backend", false, false, false)
+	ctx := liveUnitCtx(sessionID, requestID, "backend", false, false)
 	ctx.SetValue(schemas.BifrostContextKeyLiveDelegationID, delegationID)
 	ctx.SetValue(schemas.BifrostContextKeyLiveDelegationStartMs, startedMs)
 	return ctx
@@ -85,14 +83,14 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 	require.NoError(t, err)
 
 	// The first voice unit opens the session; the row is registered under the session id.
-	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-1", "voice", true, false, false), liveStartRequest("gpt-live-1"))
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
 	require.NoError(t, err)
 	// Later units register nothing of their own.
-	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-2", "backend", false, false, false), liveStartRequest("gpt-5.6-luna"))
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-2", "backend", false, false), liveStartRequest("gpt-5.6-luna"))
 	require.NoError(t, err)
 
 	// A full voice window closes.
-	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-1", "unit-1", "voice", false, false, false), liveVoiceResponse(30, nil), nil)
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-1", "unit-1", "voice", false, false), liveVoiceResponse(30, nil), nil)
 	require.NoError(t, err)
 
 	// A delegated backend call closes with what it produced.
@@ -121,7 +119,7 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 	_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-1", "unit-6", "item_2", 0), liveBackendResponse("resp_3", continued, third), nil)
 	require.NoError(t, err)
 	// The backend lane's open unit closes empty at session end; it is not a delegation.
-	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-1", "unit-3", "backend", false, false, false), liveBackendResponse("", nil, &schemas.ResponsesResponseUsage{}), nil)
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-1", "unit-3", "backend", false, false), liveBackendResponse("", nil, &schemas.ResponsesResponseUsage{}), nil)
 	require.NoError(t, err)
 
 	// The last voice unit ends the session and carries the session log with the transcript.
@@ -129,8 +127,8 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 		{Role: "user", Text: "What's the weather in Paris?", StartMs: 0, EndMs: 1800},
 		{Role: "assistant", Text: "It's sunny in Paris.", StartMs: 4000, EndMs: 5600},
 	}
-	session := &schemas.LiveSessionLog{Transport: "websocket", ProviderSessionID: "live_abc", UsageConfirmed: true, Transcript: transcript}
-	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-1", "unit-4", "voice", false, true, false), liveVoiceResponse(7, session), nil)
+	session := &schemas.LiveSessionLog{Transport: "websocket", ProviderSessionID: "live_abc", Transcript: transcript}
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-1", "unit-4", "voice", false, true), liveVoiceResponse(7, session), nil)
 	require.NoError(t, err)
 	require.NoError(t, plugin.Cleanup())
 
@@ -159,7 +157,6 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 	assert.Equal(t, "websocket", live.Transport)
 	assert.Equal(t, "live_abc", live.ProviderSessionID)
 	assert.Equal(t, 37.0, live.VoiceSeconds)
-	assert.True(t, live.UsageConfirmed)
 	assert.Equal(t, transcript, live.Transcript)
 	require.Len(t, live.Delegations, 2, "responses group by delegation; an empty backend unit is not one")
 	delegation := live.Delegations[0]
@@ -196,12 +193,12 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 	}
 }
 
-func TestLiveSessionEndingWithoutConfirmedUsageIsFlagged(t *testing.T) {
+func TestLiveSessionEndingOnARefusalKeepsItsRow(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	require.NoError(t, err)
 
-	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-2", "unit-1", "voice", true, false, false), liveStartRequest("gpt-live-1"))
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-2", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
 	require.NoError(t, err)
 	refusal := &schemas.BifrostError{
 		StatusCode: new(402),
@@ -212,7 +209,10 @@ func TestLiveSessionEndingWithoutConfirmedUsageIsFlagged(t *testing.T) {
 			OriginalModelRequested: "gpt-live-1",
 		},
 	}
-	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-2", "unit-1", "voice", false, true, true), nil, refusal)
+	// A backend unit refused at admission ran nothing: it is the session's failure, not a delegation.
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-2", "unit-2", "backend", false, false), nil, refusal)
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-2", "unit-1", "voice", false, true), nil, refusal)
 	require.NoError(t, err)
 	require.NoError(t, plugin.Cleanup())
 
@@ -223,7 +223,50 @@ func TestLiveSessionEndingWithoutConfirmedUsageIsFlagged(t *testing.T) {
 	require.NotNil(t, root.ErrorDetailsParsed)
 	assert.Equal(t, "Budget exceeded", root.ErrorDetailsParsed.Error.Message)
 	require.NotNil(t, root.LiveSessionParsed)
-	assert.False(t, root.LiveSessionParsed.UsageConfirmed)
 	assert.Equal(t, 0.0, root.LiveSessionParsed.VoiceSeconds)
 	assert.Empty(t, root.LiveSessionParsed.Delegations)
+}
+
+func TestLiveSessionPendingEntryOutlivesIdleEviction(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	// Two sessions admitted long before the TTL: one keeps closing units, the other went silent.
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+	for _, id := range []string{"bfsess-busy", "bfsess-silent"} {
+		_, _, err = plugin.PreLLMHook(liveUnitCtx(id, id+"-unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+		require.NoError(t, err)
+		pendingVal, ok := plugin.pendingLogsEntries.Load(id)
+		require.True(t, ok)
+		pending := pendingVal.(*PendingLogData)
+		pending.CreatedAt = stale
+		pending.LastActivity.Store(stale.UnixNano())
+	}
+	// A voice window closing is the activity that keeps the busy session's entry alive.
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-busy", "bfsess-busy-unit-1", "voice", false, false), liveVoiceResponse(30, nil), nil)
+	require.NoError(t, err)
+
+	plugin.cleanupStalePendingLogs()
+	_, busy := plugin.pendingLogsEntries.Load("bfsess-busy")
+	assert.True(t, busy, "a session whose units keep closing is never idle, however old it is")
+	_, silent := plugin.pendingLogsEntries.Load("bfsess-silent")
+	assert.False(t, silent, "a session with no unit activity past the TTL is reaped")
+
+	// The busy session ends normally and lands as one row with the whole call's usage.
+	session := &schemas.LiveSessionLog{Transport: "websocket", ProviderSessionID: "live_long"}
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-busy", "bfsess-busy-unit-2", "voice", false, true), liveVoiceResponse(1000, session), nil)
+	require.NoError(t, err)
+	// The reaped session's end finds nothing to write.
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-silent", "bfsess-silent-unit-2", "voice", false, true), liveVoiceResponse(1000, session), nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	root, err := store.FindByID(context.Background(), "bfsess-busy")
+	require.NoError(t, err)
+	require.NotNil(t, root.TokenUsageParsed)
+	require.NotNil(t, root.TokenUsageParsed.AudioSeconds)
+	assert.Equal(t, 1030.0, *root.TokenUsageParsed.AudioSeconds)
+	_, err = store.FindByID(context.Background(), "bfsess-silent")
+	assert.ErrorIs(t, err, logstore.ErrNotFound)
 }
