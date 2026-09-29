@@ -172351,6 +172351,113 @@
           }
         }
       ]
+    },
+    {
+      "name": "122. OpenAI Responses drops foreign function_call item id (foreign-function-call-id)",
+      "description": "Gemini's streaming Responses converter packs the thought signature into the tool call id (<id>_ts_<sig>) and reuses that string as the function_call item id, not only call_id. OpenAI requires an input function_call item id to begin with fc, so replaying that history to /v1/responses natively or through a gemini -> openai fallback 400s with input[N].id. Fix: ToOpenAIResponsesRequest drops a function_call item id that does not begin with fc and leaves call_id untouched so the function_call_output still pairs with its call. Case 1 pins the native route; case 2 drives the real fallback (invalid gemini primary model, openai fallback) so the shared input crosses the OpenAI seam the way the report described.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini native /v1/responses: Gemini _ts_ function_call item id dropped, call_id kept - foreign-function-call-id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('No input[N].id rejection for a foreign function_call item id - foreign-function-call-id', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'OpenAI rejected the replayed function_call item id (must begin with fc): ' + body).to.not.match(/input\\[\\d+\\]\\.id/);",
+                  "  pm.expect(body.toLowerCase(), 'OpenAI rejected the replayed function_call item id: ' + body).to.not.include('begin with');",
+                  "  pm.expect(body.toLowerCase(), 'OpenAI rejected the replayed function_call item id: ' + body).to.not.include('start with');",
+                  "});",
+                  "pm.test('Replay with Gemini _ts_ function_call item id succeeds - foreign-function-call-id', function () {",
+                  "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in one short sentence.\"},{\"type\":\"function_call\",\"id\":\"call_replay_ts_QUJDREVG\",\"call_id\":\"call_replay_ts_QUJDREVG\",\"status\":\"completed\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_replay_ts_QUJDREVG\",\"output\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\"}\"}],\"max_output_tokens\":200}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini -> openai/gpt-4o-mini fallback /v1/responses: replayed _ts_ function_call item id dropped at the OpenAI seam - foreign-function-call-id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('No input[N].id rejection for a foreign function_call item id - foreign-function-call-id fallback', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'OpenAI rejected the replayed function_call item id (must begin with fc): ' + body).to.not.match(/input\\[\\d+\\]\\.id/);",
+                  "  pm.expect(body.toLowerCase(), 'OpenAI rejected the replayed function_call item id: ' + body).to.not.include('begin with');",
+                  "  pm.expect(body.toLowerCase(), 'OpenAI rejected the replayed function_call item id: ' + body).to.not.include('start with');",
+                  "});",
+                  "pm.test('Replay with Gemini _ts_ function_call item id succeeds - foreign-function-call-id fallback', function () {",
+                  "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('The openai fallback actually served the request - foreign-function-call-id fallback', function () {",
+                  "  var j = pm.response.json();",
+                  "  var ef = j.extra_fields || {};",
+                  "  var ri = ef.routing_info || {};",
+                  "  pm.expect(ri.is_fallback, 'gemini primary did not fall back, so the replay never crossed the OpenAI seam: ' + JSON.stringify(ef)).to.eql(true);",
+                  "  pm.expect(ri.provider || ef.provider, 'fallback served by an unexpected provider: ' + JSON.stringify(ef)).to.eql('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/does-not-exist-model\",\"fallbacks\":[\"openai/gpt-4o-mini\"],\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in one short sentence.\"},{\"type\":\"function_call\",\"id\":\"call_replay_ts_QUJDREVG\",\"call_id\":\"call_replay_ts_QUJDREVG\",\"status\":\"completed\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_replay_ts_QUJDREVG\",\"output\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\"}\"}],\"max_output_tokens\":200}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

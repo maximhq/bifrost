@@ -497,6 +497,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// OpenAI requires an input function_call item's id to begin with "fc". Foreign
+		// histories (e.g. Gemini streaming reuses the "<id>_ts_<sig>" call id as the item
+		// id) trip this even through a fallback. The id is optional on input, so drop it;
+		// call_id is left intact so the function_call_output still pairs with its call.
+		// message is a value copy, so the caller's input is untouched.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "fc") {
+			message.ID = nil
+		}
+
 		// OpenAI accepts role only on message input items.
 		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
 			(message.Type == nil && message.ResponsesReasoning != nil) {
