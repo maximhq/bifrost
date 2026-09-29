@@ -89,6 +89,17 @@ func dbForUpdate(db *gorm.DB) *gorm.DB {
 	return db.Clauses(clause.Locking{Strength: "UPDATE"})
 }
 
+// clientConfigAdvisoryLockKey serializes config_client writers across replicas; 1000001 is the configstore migration lock.
+const clientConfigAdvisoryLockKey = 1000002
+
+// lockClientConfigRow takes a transaction-scoped advisory lock so a concurrent DELETE+CREATE of config_client cannot hide metadata_json from the carry-forward read.
+func lockClientConfigRow(tx *gorm.DB) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return tx.Exec("SELECT pg_advisory_xact_lock(?)", clientConfigAdvisoryLockKey).Error
+}
+
 // lockBudgetOwner locks the owning governance parent before mutating a budget row.
 func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudget) error {
 	switch {
@@ -315,6 +326,9 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 	// can never set it). Reading it inside the transaction before DELETE keeps
 	// callers from clobbering UI prefs on every config write.
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockClientConfigRow(tx); err != nil {
+			return err
+		}
 		var existing tables.TableClientConfig
 		if err := dbForUpdate(tx.Select("metadata_json")).First(&existing).Error; err == nil {
 			dbConfig.MetadataJSON = existing.MetadataJSON
@@ -653,6 +667,9 @@ func mergeMetadataPatch(dst, patch map[string]any) {
 // {"key": nil} to clear, including nested keys).
 func (s *RDBConfigStore) UpdateClientMetadata(ctx context.Context, patch map[string]any) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockClientConfigRow(tx); err != nil {
+			return err
+		}
 		var existing tables.TableClientConfig
 		if err := dbForUpdate(tx).First(&existing).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
