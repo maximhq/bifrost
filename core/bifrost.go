@@ -6880,22 +6880,33 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
 		}
 
-		// Fail soft when the upstream refuses replayed encrypted reasoning. The ciphertext
+		// Fail soft on a 400 when the request replays encrypted reasoning. The ciphertext
 		// is bound to the identity that minted it (item id, organization, serving
-		// endpoint), and a gateway routinely changes that between turns -- key rotation
-		// across a multi-key pool, a fallback that served an earlier turn from another
-		// provider, or a client whose traffic starts or stops being proxied mid-session.
+		// endpoint, model family), and a gateway routinely changes that between turns:
+		// key rotation across a multi-key pool, a fallback or a user switching provider
+		// mid-conversation, or a client whose traffic starts or stops being proxied.
 		// Retrying the same payload cannot help, so drop the encrypted half and give the
 		// request one more attempt on the same key: the turn continues with summaries
-		// only instead of failing outright. Runs once per request.
+		// only instead of failing outright.
+		//
+		// The gate is a 400 that names a reasoning token by family word, not the
+		// provider's verdict sentence (see shouldStripReasoningAfterClientError):
+		// providers word the verdict differently and reword it without notice, and a
+		// missed phrasing handed a healable 400 to the client. stripUnverifiableReasoning
+		// returns false when there is nothing to strip, so the extra attempt is spent
+		// only on requests that carry a token. Runs once per request.
 		lastWasEncryptedContentStrip = false
-		if !shouldRetry && !strippedEncryptedContent && isEncryptedReasoningRejection(bifrostError) &&
+		if !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
 			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
 			extraAttempts++
 			shouldRetry = true
-			logger.Warn("upstream rejected replayed encrypted reasoning content for %s/%s; retrying once without it: %s", providerKey, model, errMessage)
+			if isEncryptedReasoningRejection(bifrostError) {
+				logger.Warn("upstream rejected replayed encrypted reasoning content for %s/%s; retrying once without it: %s", providerKey, model, errMessage)
+			} else {
+				logger.Warn("upstream returned 400 for a request to %s/%s that replays encrypted reasoning; retrying once without it in case the token is the cause: %s", providerKey, model, errMessage)
+			}
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unverifiable encrypted reasoning content from the request to %s/%s and retrying once", providerKey, model))
 		}
 

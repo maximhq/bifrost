@@ -174047,6 +174047,2802 @@
           }
         }
       ]
+    },
+    {
+      "name": "125. Encrypted reasoning provider switch (same model family, different hosting provider)",
+      "description": "Regression for a conversation whose encrypted reasoning tokens were minted by one provider and are replayed to a different provider hosting the same model family, the way a user switching Codex from bedrock/openai.gpt-5.6-luna to bedrock_mantle/openai.gpt-5.6-luna does. Every such token is bound to the identity that minted it (OpenAI org and item id, AWS account, region and surface, Anthropic model binding, Gemini model), so the second provider refuses it with HTTP 400 in its own wording: Mantle 'invalid encrypted reasoning', Bedrock 'created for a different account or model' or 'cannot be used in a different region', xAI 'Could not decrypt the provided encrypted_content', Vertex 'Thought signature is not valid', Anthropic 'Invalid `signature` in `thinking` block'. Bifrost must treat any 400 that names a reasoning token as a fail-soft trigger, strip the tokens once and retry, so the turn completes with summaries only instead of failing. Each pair has a producer that captures real output (a missing token fails the producer loudly) and two consumers that replay the same history on the other provider, unary and streaming, and require a completed response with assistant text and no refusal wording. Gemini pairs force a get_time tool call because Gemini mints a thought signature only alongside a function call; the consumers answer the call and set tool_choice none so the reply is text. Pairs: A1 (GPT): bedrock/us.openai.gpt-5.6-luna -> bedrock_mantle/openai.gpt-5.6-luna; A2 (GPT): bedrock_mantle/openai.gpt-5.6-luna -> bedrock/us.openai.gpt-5.6-luna; A3 (GPT): openai/gpt-5.6-luna -> azure/gpt-5.6-luna; A4 (GPT): azure/gpt-5.6-luna -> openai/gpt-5.6-luna; A5 (GPT): azure/gpt-5.6-luna -> bedrock_mantle/openai.gpt-5.6-luna; A6 (GPT): openai/gpt-5.6-luna -> bedrock/us.openai.gpt-5.6-luna; B1 (Claude): anthropic/claude-sonnet-4-6 -> vertex/claude-sonnet-4-6; B2 (Claude): vertex/claude-sonnet-4-6 -> anthropic/claude-sonnet-4-6; B3 (Claude): anthropic/claude-sonnet-4-6 -> bedrock/global.anthropic.claude-sonnet-4-6; B4 (Claude): bedrock/global.anthropic.claude-opus-4-8 -> bedrock_mantle/anthropic.claude-opus-4-8; B5 (Claude): bedrock_mantle/anthropic.claude-opus-4-8 -> anthropic/claude-opus-4-8; C1 (Gemini): gemini/gemini-3.7-flash -> vertex/gemini-3.7-flash; C2 (Gemini): vertex/gemini-3.7-flash -> gemini/gemini-3.7-flash; D1 (Grok): xai/grok-4-0709 -> bedrock/us.xai.grok-4.6; E1 (cross-family): openai/gpt-5.6-luna -> anthropic/claude-sonnet-4-6. Requires credentials for openai, azure (gpt-5.6-luna deployment), anthropic, vertex (Claude and Gemini), gemini, xai, bedrock and bedrock_mantle. Run with FEATURE=\"encrypted reasoning provider switch\".",
+      "item": [
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna capture encrypted reasoning (pair A1, GPT producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryA1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A1 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryA1', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna unary replay (pair A1, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A1 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna streaming replay (pair A1, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A1 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna capture encrypted reasoning (pair A2, GPT producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryA2');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A2 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryA2', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna unary replay (pair A2, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A2 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA2}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna streaming replay (pair A2, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A2 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA2}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.6-luna capture encrypted reasoning (pair A3, GPT producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryA3');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A3 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryA3', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-5.6-luna unary replay (pair A3, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A3 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA3}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-5.6-luna streaming replay (pair A3, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A3 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-5.6-luna\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA3}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-5.6-luna capture encrypted reasoning (pair A4, GPT producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryA4');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A4 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryA4', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.6-luna unary replay (pair A4, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A4 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA4}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.6-luna streaming replay (pair A4, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A4 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA4}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-5.6-luna capture encrypted reasoning (pair A5, GPT producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryA5');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A5 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryA5', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna unary replay (pair A5, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A5 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA5}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna streaming replay (pair A5, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A5 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA5}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.6-luna capture encrypted reasoning (pair A6, GPT producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryA6');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A6 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryA6', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna unary replay (pair A6, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A6 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA6}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna streaming replay (pair A6, GPT consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair A6 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryA6}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 capture encrypted reasoning (pair B1, Claude producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryB1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B1 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryB1', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"medium\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 unary replay (pair B1, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B1 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 streaming replay (pair B1, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B1 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 capture encrypted reasoning (pair B2, Claude producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryB2');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B2 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryB2', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"medium\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 unary replay (pair B2, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B2 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB2}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 streaming replay (pair B2, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B2 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB2}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 capture encrypted reasoning (pair B3, Claude producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryB3');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B3 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryB3', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"medium\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 unary replay (pair B3, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B3 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB3}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 streaming replay (pair B3, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B3 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB3}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-8 capture encrypted reasoning (pair B4, Claude producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryB4');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B4 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryB4', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-opus-4-8\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"medium\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-opus-4-8 unary replay (pair B4, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B4 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/anthropic.claude-opus-4-8\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB4}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-opus-4-8 streaming replay (pair B4, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B4 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/anthropic.claude-opus-4-8\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB4}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-opus-4-8 capture encrypted reasoning (pair B5, Claude producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryB5');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B5 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryB5', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/anthropic.claude-opus-4-8\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"medium\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-8 unary replay (pair B5, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B5 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-8\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB5}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-8 streaming replay (pair B5, Claude consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair B5 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-8\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryB5}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash capture encrypted reasoning (pair C1, Gemini producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryC1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair C1 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryC1', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}],\"tool_choice\":{\"type\":\"function\",\"name\":\"get_time\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash unary replay (pair C1, Gemini consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair C1 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-3.7-flash\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"tools\":[{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}],\"tool_choice\":\"none\",\"input\":{{switchHistoryC1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash streaming replay (pair C1, Gemini consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair C1 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-3.7-flash\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"tools\":[{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}],\"tool_choice\":\"none\",\"input\":{{switchHistoryC1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash capture encrypted reasoning (pair C2, Gemini producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryC2');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair C2 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryC2', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-3.7-flash\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}],\"tool_choice\":{\"type\":\"function\",\"name\":\"get_time\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash unary replay (pair C2, Gemini consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair C2 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"tools\":[{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}],\"tool_choice\":\"none\",\"input\":{{switchHistoryC2}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash streaming replay (pair C2, Gemini consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair C2 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"tools\":[{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}],\"tool_choice\":\"none\",\"input\":{{switchHistoryC2}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai/grok-4-0709 capture encrypted reasoning (pair D1, Grok producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryD1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair D1 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryD1', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"xai/grok-4-0709\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.xai.grok-4.6 unary replay (pair D1, Grok consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair D1 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryD1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.xai.grok-4.6 streaming replay (pair D1, Grok consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair D1 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryD1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.6-luna capture encrypted reasoning (pair E1, cross-family producer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('switchHistoryE1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair E1 producer mints real encrypted reasoning for replay on another provider', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.status, 'producer did not complete: ' + body).to.equal('completed');",
+                  "  pm.expect(response.output, 'missing producer output: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = response.output.filter(function (item) {",
+                  "    return item.type === 'reasoning' && typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoning, 'producer returned no encrypted reasoning, so there is nothing for the consumers to replay: ' + body).to.not.be.empty;",
+                  "  var history = [{role: 'user', content: \"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}];",
+                  "  response.output.forEach(function (item) { history.push(item); });",
+                  "  // Every tool call has to be answered before the next user turn, or the replay is rejected for a reason unrelated to the token.",
+                  "  response.output.filter(function (item) { return item.type === 'function_call' && item.call_id; }).forEach(function (call) {",
+                  "    history.push({type: 'function_call_output', call_id: call.call_id, output: '{\"time\":\"09:00 JST\"}'});",
+                  "  });",
+                  "  history.push({role: 'user', content: 'Now say OK.'});",
+                  "  pm.collectionVariables.set('switchHistoryE1', JSON.stringify(history));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"role\":\"user\",\"content\":\"Find the smallest positive integer that leaves remainder 2 when divided by 3, remainder 3 when divided by 5, and remainder 2 when divided by 7. Give only the integer.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 unary replay (pair E1, cross-family consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair E1 consumer completes after replaying a token minted elsewhere', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'response error: ' + body).to.not.be.ok;",
+                  "  pm.expect(response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = (response.output || []).filter(function (item) { return item.type === 'message'; }).map(function (item) {",
+                  "    return (item.content || []).filter(function (block) { return block.type === 'output_text'; }).map(function (block) { return block.text; }).join('');",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no assistant text: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"store\":false,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryE1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 streaming replay (pair E1, cross-family consumer) - encrypted reasoning provider switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pair E1 consumer stream completes without a replay error event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'streaming provider-switch replay failed: ' + body).to.equal(200);",
+                  "  var lower = body.toLowerCase();",
+                  "  [\"encrypted reasoning\",\"encrypted content\",\"thought signature\",\"redacted_thinking\",\"in `thinking` block\",\"reasoningcontent\",\"invalid_request_error\"].forEach(function (marker) {",
+                  "    pm.expect(lower, 'an upstream token refusal reached the client instead of being healed: ' + body).to.not.include(marker);",
+                  "  });",
+                  "  var events = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "    return line.slice(5).trim();",
+                  "  }).filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  var errors = events.filter(function (event) {",
+                  "    return event.error || event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete' || (event.response && event.response.error);",
+                  "  });",
+                  "  pm.expect(errors, 'SSE errors: ' + body).to.be.empty;",
+                  "  var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "  pm.expect(completed, 'no completion event: ' + body).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, 'response did not complete: ' + body).to.equal('completed');",
+                  "  var text = events.filter(function (event) { return event.type === 'response.output_text.delta'; }).map(function (event) { return event.delta || ''; }).join('');",
+                  "  pm.expect(text, 'no assistant text deltas: ' + body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"store\":false,\"stream\":true,\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":{{switchHistoryE1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
