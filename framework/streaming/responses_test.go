@@ -194,6 +194,25 @@ func TestDeepCopyResponsesStreamResponseCopiesAsync(t *testing.T) {
 	require.NotSame(t, original.Item.ResponsesToolMessage.Async, copied.Item.ResponsesToolMessage.Async)
 }
 
+// TestDeepCopyResponsesMessagePreservesBareStringAction verifies that a
+// bare-string action (e.g. image_generation_call's "generate") survives the
+// accumulator's deep copy instead of being dropped as an empty action struct.
+func TestDeepCopyResponsesMessagePreservesBareStringAction(t *testing.T) {
+	original := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeImageGenerationCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesToolCallActionStr: schemas.Ptr("generate"),
+			},
+		},
+	}
+
+	copied := deepCopyResponsesMessage(original)
+	require.NotNil(t, copied.ResponsesToolMessage.Action.ResponsesToolCallActionStr)
+	require.Equal(t, "generate", *copied.ResponsesToolMessage.Action.ResponsesToolCallActionStr)
+	require.NotSame(t, original.ResponsesToolMessage.Action.ResponsesToolCallActionStr, copied.ResponsesToolMessage.Action.ResponsesToolCallActionStr)
+}
+
 // TestBuildResponsesMessageAccumulatesReasoningSummary verifies reasoning
 // summary deltas (no content index) concatenate into a single summary entry.
 func TestBuildResponsesMessageAccumulatesReasoningSummary(t *testing.T) {
