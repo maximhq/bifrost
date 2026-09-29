@@ -114,11 +114,19 @@ export interface VirtualKey {
 	calendar_aligned?: boolean;
 	// When true, every provider is allowed; provider_configs remain optional per-provider overrides
 	allow_all_providers?: boolean;
+	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
+	// this key's traffic, false forces it on for the log store.
+	disable_content_logging?: boolean | null;
 	created_at: string;
 	updated_at: string;
+	// The third owner a key can have, alongside a team and a customer. Business units are an
+	// enterprise table this model does not preload, so its name arrives on `business_unit` below.
+	business_unit_id?: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
+	// Owning business unit, named by the enterprise build; absent in OSS and when unresolved.
+	business_unit?: { id: string; name: string };
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	// Read-only, server-computed: true when the VK is governed by an access profile.
@@ -226,12 +234,15 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
+	business_unit_id?: string;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
+	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -241,6 +252,8 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string | null;
 	customer_id?: string | null;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
+	business_unit_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
@@ -248,6 +261,7 @@ export interface UpdateVirtualKeyRequest {
 	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -336,6 +350,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only owner kind; a key names at most one owner, so this ORs with the other two. */
+	business_unit_id?: string;
 	/** Enterprise-only: filters to virtual keys assigned to this user. */
 	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;

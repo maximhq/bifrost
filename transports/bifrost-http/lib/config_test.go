@@ -372,10 +372,12 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
@@ -527,11 +529,11 @@ func (m *MockConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (
 func (m *MockConfigStore) RevokeOAuth2Session(ctx context.Context, id string) error {
 	return nil
 }
-func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
-func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
-func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
-func (m *MockConfigStore) DB() *gorm.DB                                   { return nil }
-func (m *MockConfigStore) ScopedDB(ctx context.Context) *gorm.DB          { return nil }
+func (m *MockConfigStore) Ping(ctx context.Context) error                        { return nil }
+func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error        { return nil }
+func (m *MockConfigStore) Close(ctx context.Context) error                       { return nil }
+func (m *MockConfigStore) DB() *gorm.DB                                          { return nil }
+func (m *MockConfigStore) ScopedDB(ctx context.Context, tx ...*gorm.DB) *gorm.DB { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
@@ -955,7 +957,7 @@ func (m *MockConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*
 	return nil
 }
 
-func (m *MockConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
+func (m *MockConfigStore) GetCustomer(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableCustomer, error) {
 	return nil, nil
 }
 
@@ -984,7 +986,7 @@ func (m *MockConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm
 	return nil
 }
 
-func (m *MockConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
+func (m *MockConfigStore) GetTeam(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableTeam, error) {
 	return nil, nil
 }
 
@@ -1946,6 +1948,10 @@ func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBef
 }
 
 func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
 	return nil, nil
 }
 
@@ -13863,6 +13869,107 @@ func TestSQLite_Customer_NewFromFile(t *testing.T) {
 	t.Log("✓ New customer from file added to DB with hash")
 }
 
+// A customer an access profile governs keeps the budgets it already has, whatever config.json still
+// declares for it. The file is stale, not authoritative, and every path that would write over those
+// rows - the inline reconcile, the budget_id link, and the unlink the file's silence would trigger -
+// has to leave them alone.
+func TestSQLite_Customer_GovernedByProfileKeepsItsStoredBudgets(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Customers: []tables.TableCustomer{
+			{ID: "customer-1", Name: "Test Customer", Budgets: []tables.TableBudget{
+				{ID: "customer-1-budget", MaxLimit: 100, ResetDuration: "1M"},
+			}},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	// From here on an access profile governs the customer, the way the enterprise build reports it.
+	governance.RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		if holderKind == governance.LegacyLimitHolderCustomer && holderID == "customer-1" {
+			return "Finance Cap", nil
+		}
+		return "", nil
+	})
+	defer governance.RegisterLegacyLimitGuard(nil)
+
+	// The file changes - a new budget declared for the same customer, and the customer itself edited so
+	// the reconcile takes the update path.
+	configData.Governance.Customers[0].Name = "Renamed Customer"
+	configData.Governance.Customers[0].Budgets = []tables.TableBudget{
+		{ID: "customer-1-budget-from-file", MaxLimit: 999, ResetDuration: "1M"},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	var stored tables.TableBudget
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "customer-1-budget").First(&stored).Error,
+		"the budget the customer already had was deleted while a profile governed it")
+	require.NotNil(t, stored.CustomerID, "the stored budget was unlinked from the customer it belongs to")
+	assert.Equal(t, "customer-1", *stored.CustomerID)
+
+	var fromFile int64
+	require.NoError(t, config2.ConfigStore.DB().Model(&tables.TableBudget{}).
+		Where("id = ?", "customer-1-budget-from-file").Count(&fromFile).Error)
+	assert.Zero(t, fromFile, "config.json's budget was applied to a customer an access profile governs")
+}
+
+// The rate-limit rows are written before the customers that link them, so a governed customer's row
+// has to be known to be off-limits before the file's version of it is applied.
+func TestSQLite_Customer_GovernedByProfileKeepsItsStoredRateLimit(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		RateLimits: []tables.TableRateLimit{
+			{ID: "customer-1-rl", TokenMaxLimit: int64Ptr(1000), TokenResetDuration: stringPtr("1m")},
+		},
+		Customers: []tables.TableCustomer{
+			{ID: "customer-1", Name: "Test Customer", RateLimitID: stringPtr("customer-1-rl")},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		if holderKind == governance.LegacyLimitHolderCustomer && holderID == "customer-1" {
+			return "Finance Cap", nil
+		}
+		return "", nil
+	})
+	defer governance.RegisterLegacyLimitGuard(nil)
+
+	// The file raises the cap on the row the governed customer links.
+	configData.Governance.RateLimits[0].TokenMaxLimit = int64Ptr(999999)
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	var stored tables.TableRateLimit
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "customer-1-rl").First(&stored).Error)
+	require.NotNil(t, stored.TokenMaxLimit)
+	assert.EqualValues(t, 1000, *stored.TokenMaxLimit,
+		"config.json's rate limit was written onto the row a governed customer links")
+}
+
 // TestSQLite_Customer_HashMismatch_FileSync tests file sync when hash differs
 func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	initTestLogger()
@@ -22492,4 +22599,133 @@ func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vmcps, 1, "duplicate name with a different ID must be deduped")
 	require.Equal(t, "Dup", vmcps[0].Name)
+}
+
+// lockableLogStore records the locker a ClickHouse-backed store would receive.
+type lockableLogStore struct {
+	logstore.LogStore
+	locker logstore.DistributedLocker
+}
+
+func (s *lockableLogStore) SetDistributedLocker(locker logstore.DistributedLocker) {
+	s.locker = locker
+}
+
+// A ClickHouse logs store shared by several replicas only serializes Warp
+// history writes if it is handed the config-store lock at startup.
+func TestAttachWarpHistoryLock(t *testing.T) {
+	initTestLogger()
+	store := &lockableLogStore{}
+	attachWarpHistoryLock(&Config{ConfigStore: createTestSQLiteConfigStore(t, t.TempDir()), LogsStore: store})
+	require.IsType(t, &configstore.DistributedLockManager{}, store.locker)
+
+	// No config store means nothing shared to lock on.
+	bare := &lockableLogStore{}
+	attachWarpHistoryLock(&Config{LogsStore: bare})
+	require.Nil(t, bare.locker)
+}
+
+// Warp ships behind a feature flag that is off until an operator turns it on.
+// registerFeatureFlags runs on every LoadConfig, and tests call LoadConfig many
+// times per process, so a second registration must not surface as an error.
+func TestRegisterFeatureFlags_WarpIsRegisteredOffAndIdempotent(t *testing.T) {
+	require.NoError(t, registerFeatureFlags(context.Background()))
+	require.NoError(t, registerFeatureFlags(context.Background()), "re-registering on a later LoadConfig must not fail")
+
+	def, ok := featureflags.LookupDef(FeatureFlagWarp)
+	require.True(t, ok, "warp flag must be registered")
+	require.False(t, def.Default, "Warp must be off unless an operator enables it")
+	require.False(t, def.EnterpriseOnly)
+
+	store, err := featureflags.New(featureflags.Config{})
+	require.NoError(t, err)
+	require.False(t, store.IsEnabled(FeatureFlagWarp))
+	_, err = store.Set(context.Background(), FeatureFlagWarp, true)
+	require.NoError(t, err)
+	require.True(t, store.IsEnabled(FeatureFlagWarp))
+}
+
+// governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
+// fallback goes through RoutingFallback.UnmarshalJSON.
+func governanceWithRoutingFallbacks(t *testing.T, fallbacksJSON string) *configstore.GovernanceConfig {
+	t.Helper()
+	var governance configstore.GovernanceConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"routing_rules":[{"id":"rr-1","name":"rr","cel_expression":"true","scope":"global",`+
+		`"targets":[{"provider":"openai","weight":1}],"fallbacks":`+fallbacksJSON+`}]}`), &governance))
+	return &governance
+}
+
+// TestResolveGovernanceKeyReferences_RoutingFallbacks pins config.json provider_key_name resolution
+// for routing-rule fallbacks: a name resolves to that provider's key_id and the alias is dropped,
+// other entries are untouched, and every invalid combination fails the load.
+func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	// Key names are unique across providers; the lookup still checks the name belongs to the fallback's provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Vertex, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-vertex-prod", Name: "Vertex Prod", Value: *schemas.NewSecretVar("sk-v"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	config := &Config{ConfigStore: store}
+
+	t.Run("resolves names per provider and leaves other entries alone", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",`+
+			`{"provider":"vertex","model":"gemini-2.5-pro","provider_key_name":"Vertex Prod"},`+
+			`{"provider":"anthropic","provider_key_name":" Anthropic Prod "},`+
+			`{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, config, governance))
+
+		got := governance.RoutingRules[0].ParsedFallbacks
+		require.Len(t, got, 4)
+		want := []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			{Provider: schemas.Vertex, Model: "gemini-2.5-pro", KeyID: "k-vertex-prod"},
+			{Provider: schemas.Anthropic, KeyID: "k-anthropic-prod"},
+			{Provider: schemas.Anthropic, Model: "claude-sonnet-4", KeyID: "k-explicit"},
+		}
+		for i, fb := range got {
+			assert.Equal(t, want[i], fb.Resolved(), "fallback %d", i)
+			assert.Nil(t, fb.ProviderKeyName, "fallback %d kept its config-only alias", i)
+		}
+
+		// What gets stored: the resolved key_id, never the alias, and legacy strings untouched.
+		data, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.Equal(t, `["openai/gpt-4o",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-vertex-prod"},`+
+			`{"provider":"anthropic","model":"","key_id":"k-anthropic-prod"},{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`, string(data))
+	})
+
+	errorCases := []struct {
+		name      string
+		fallbacks string
+		wantErr   string
+	}{
+		{name: "unknown key name", fallbacks: `[{"provider":"vertex","provider_key_name":"Missing"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key name that belongs to another provider", fallbacks: `[{"provider":"anthropic","provider_key_name":"Vertex Prod"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key_id together with provider_key_name", fallbacks: `[{"provider":"vertex","key_id":"k","provider_key_name":"Vertex Prod"}]`, wantErr: "cannot set key_id together with provider_key_name"},
+		{name: "provider_key_name without a provider", fallbacks: `[{"provider_key_name":"Vertex Prod"}]`, wantErr: "requires provider to be set"},
+	}
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := resolveGovernanceKeyReferences(ctx, config, governanceWithRoutingFallbacks(t, tc.fallbacks))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), `"rr-1"`, "the error must name the rule")
+		})
+	}
+
+	t.Run("a name reference without a config store fails the load", func(t *testing.T) {
+		err := resolveGovernanceKeyReferences(ctx, &Config{}, governanceWithRoutingFallbacks(t, `[{"provider":"vertex","provider_key_name":"Vertex Prod"}]`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "require config store")
+	})
+
+	t.Run("rules without name references need no config store", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",{"provider":"vertex","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, &Config{}, governance))
+		assert.Equal(t, schemas.Fallback{Provider: schemas.Vertex, KeyID: "k-explicit"}, governance.RoutingRules[0].ParsedFallbacks[1].Resolved())
+	})
 }

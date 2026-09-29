@@ -333,7 +333,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validating framework config
+	// Validating framework config. An empty pricing_url or model_parameters_url
+	// (what the UI sends when the field is cleared) resets it to the default.
+	if payload.FrameworkConfig.PricingURL != nil && strings.TrimSpace(*payload.FrameworkConfig.PricingURL) == "" {
+		payload.FrameworkConfig.PricingURL = bifrost.Ptr(modelcatalog.DefaultPricingURL)
+	}
+	if payload.FrameworkConfig.ModelParametersURL != nil && strings.TrimSpace(*payload.FrameworkConfig.ModelParametersURL) == "" {
+		payload.FrameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
+	}
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
@@ -341,7 +348,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
+	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.ModelParametersURL); err != nil {
 			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
@@ -776,12 +783,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
+	// URLs were already normalized and checked for accessibility above.
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
-		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
-			return
-		}
 		frameworkConfig.PricingURL = payload.FrameworkConfig.PricingURL
 		shouldReloadFrameworkConfig = true
 	}
@@ -792,22 +795,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
-	if payload.FrameworkConfig.ModelParametersURL != nil {
-		effectiveModelParamsURL := *payload.FrameworkConfig.ModelParametersURL
-		if effectiveModelParamsURL == "" {
-			effectiveModelParamsURL = modelcatalog.DefaultModelParametersURL
-		}
-		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
-			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
-				if err := checkURLAccessibility(effectiveModelParamsURL); err != nil {
-					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
-					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
-					return
-				}
-			}
-			frameworkConfig.ModelParametersURL = &effectiveModelParamsURL
-			shouldReloadFrameworkConfig = true
-		}
+	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != *frameworkConfig.ModelParametersURL {
+		frameworkConfig.ModelParametersURL = payload.FrameworkConfig.ModelParametersURL
+		shouldReloadFrameworkConfig = true
 	}
 	if payload.FrameworkConfig.MCPLibraryURL != nil {
 		effectiveMCPLibraryURL := *payload.FrameworkConfig.MCPLibraryURL
@@ -851,21 +841,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				LiveModelsSyncInterval: frameworkConfig.LiveModelsSyncInterval,
 			},
 		}
-		// Publish the new config under the write lock: other request goroutines
-		// read this pointer through LiveModelsSyncInterval and UpdateSyncConfig.
-		// A whole new struct is swapped in rather than mutated in place, which is
-		// what lets readers use the pointer after releasing the lock. Scoped to
-		// the assignment alone — the store write and reload below take the read
-		// lock themselves, and sync.RWMutex is not reentrant.
-		h.store.Mu.Lock()
-		h.store.FrameworkConfig = updatedFrameworkConfig
-		h.store.Mu.Unlock()
-		// Saving framework config
+		// Persist first so a failed store write leaves the runtime config
+		// untouched and in step with the database.
 		if err := h.store.ConfigStore.UpdateFrameworkConfig(ctx, frameworkConfig); err != nil {
 			logger.Warn("failed to save framework configuration: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save framework configuration: %v", err))
 			return
 		}
+		// Publish the new config under the write lock: other request goroutines
+		// read this pointer through LiveModelsSyncInterval and UpdateSyncConfig.
+		// A whole new struct is swapped in rather than mutated in place, which is
+		// what lets readers use the pointer after releasing the lock. Scoped to
+		// the assignment alone — the reload below takes the read lock itself,
+		// and sync.RWMutex is not reentrant.
+		h.store.Mu.Lock()
+		h.store.FrameworkConfig = updatedFrameworkConfig
+		h.store.Mu.Unlock()
 		// Reloading pricing manager
 		h.configManager.UpdateSyncConfig(ctx)
 	}

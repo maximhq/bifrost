@@ -347,6 +347,34 @@ test.describe('Virtual Key Management', () => {
     expect(vkExists).toBe(true)
   })
 
+  test('should set and clear content logging for a virtual key', async ({ virtualKeysPage }) => {
+    const vkName = `Content Logging VK ${Date.now()}`
+    const vkData = createVirtualKeyData({
+      name: vkName,
+      contentLogging: 'disabled',
+    })
+
+    managementVKs.push(vkName)
+    await virtualKeysPage.createVirtualKey(vkData)
+
+    // The choice made on create is what the editor shows when the key is reopened.
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getContentLogging()).toBe('disabled')
+    await virtualKeysPage.closeSheet()
+
+    // Back to inherit: the update sends null, and the editor must not read that as "off".
+    await virtualKeysPage.editVirtualKey(vkName, { contentLogging: 'inherit' })
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getContentLogging()).toBe('inherit')
+    await virtualKeysPage.closeSheet()
+
+    // And the third state is a decision of its own, distinct from inherit.
+    await virtualKeysPage.editVirtualKey(vkName, { contentLogging: 'enabled' })
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getContentLogging()).toBe('enabled')
+    await virtualKeysPage.closeSheet()
+  })
+
   test('should delete virtual key', async ({ virtualKeysPage }) => {
     const vkName = `Delete Test VK ${Date.now()}`
     const vkData = createVirtualKeyData({ name: vkName })

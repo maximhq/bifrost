@@ -1,8 +1,18 @@
 providers:
   get:
     operationId: listProviders
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List all providers
-    description: Returns a list of all configured providers with their configurations and status.
+    description: |
+      Returns a list of all configured providers with their configurations and status.
     tags:
       - Providers
     security:
@@ -20,8 +30,18 @@ providers:
 
   post:
     operationId: addProvider
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add a new provider
-    description: Adds a new provider with the specified configuration.
+    description: |
+      Adds a new provider with the specified configuration.
     tags:
       - Providers
     requestBody:
@@ -54,8 +74,18 @@ providers:
 providers-by-name:
   get:
     operationId: getProvider
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a specific provider
-    description: Returns the configuration for a specific provider.
+    description: |
+      Returns the configuration for a specific provider.
     tags:
       - Providers
     parameters:
@@ -88,6 +118,15 @@ providers-by-name:
 
   put:
     operationId: updateProvider
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a provider
     description: |
       Updates a provider's configuration. Expects ALL fields to be provided,
@@ -124,8 +163,18 @@ providers-by-name:
 
   delete:
     operationId: deleteProvider
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a provider
-    description: Removes a provider from the configuration.
+    description: |
+      Removes a provider from the configuration.
     tags:
       - Providers
     parameters:
@@ -159,8 +208,18 @@ providers-by-name:
 provider-keys:
   get:
     operationId: listProviderKeys
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List keys for a provider
-    description: Returns all keys configured for a specific provider.
+    description: |
+      Returns all keys configured for a specific provider.
     tags:
       - Providers
     parameters:
@@ -193,6 +252,15 @@ provider-keys:
 
   post:
     operationId: createProviderKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create a key for a provider
     description: |
       Creates a new API key for the specified provider. The key `id` is auto-generated
@@ -243,8 +311,18 @@ provider-keys:
 provider-key-by-id:
   get:
     operationId: getProviderKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a specific key for a provider
-    description: Returns a single key for the specified provider.
+    description: |
+      Returns a single key for the specified provider.
     tags:
       - Providers
     parameters:
@@ -283,6 +361,15 @@ provider-key-by-id:
 
   put:
     operationId: updateProviderKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a key for a provider
     description: |
       Updates an existing key. Send the full key object. Redacted values sent back
@@ -332,8 +419,18 @@ provider-key-by-id:
 
   delete:
     operationId: deleteProviderKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a key from a provider
-    description: Deletes a key from the specified provider. Returns the deleted key.
+    description: |
+      Deletes a key from the specified provider. Returns the deleted key.
     tags:
       - Providers
     parameters:
@@ -373,8 +470,18 @@ provider-key-by-id:
 keys:
   get:
     operationId: listKeys
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List all keys
-    description: Returns a list of all configured API keys across all providers.
+    description: |
+      Returns a list of all configured API keys across all providers.
     tags:
       - Providers
     security:
@@ -395,6 +502,15 @@ keys:
 models:
   get:
     operationId: listModelsManagement
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List models
     description: |
       Lists available models with optional filtering by query, provider, or keys.
@@ -448,6 +564,15 @@ models:
 models-details:
   get:
     operationId: listModelDetailsManagement
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List model details
     description: |
       Lists available models with capability metadata, when available from the model catalog, with optional filtering by query, provider, or keys.
@@ -501,6 +626,15 @@ models-details:
 models-parameters:
   get:
     operationId: getModelParameters
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model parameters
     description: >-
       Returns the available parameter definitions for a model. The model ID
@@ -536,8 +670,18 @@ models-parameters:
 models-base:
   get:
     operationId: listBaseModels
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List base models
-    description: Returns a list of base models from the model catalog.
+    description: |
+      Returns a list of base models from the model catalog.
     tags:
       - Providers
     parameters:

@@ -433,6 +433,9 @@ func newFakeGithub(t *testing.T) *fakeGithub {
 		}
 		status := int(f.installationStatus.Load())
 		w.Header().Set("Content-Type", "application/json")
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "7")
+		}
 		w.WriteHeader(status)
 		if status != http.StatusCreated && status != http.StatusOK {
 			_, _ = fmt.Fprint(w, `{"message":"upstream said no"}`)
@@ -446,6 +449,9 @@ func newFakeGithub(t *testing.T) *fakeGithub {
 		f.copilotHits.Add(1)
 		status := int(f.copilotStatus.Load())
 		w.Header().Set("Content-Type", "application/json")
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "7")
+		}
 		w.WriteHeader(status)
 		if status != http.StatusOK {
 			_, _ = fmt.Fprint(w, `{"message":"upstream said no"}`)
@@ -661,6 +667,20 @@ func TestFailureBackoff(t *testing.T) {
 		require.NotNil(t, bErr)
 		require.NotNil(t, bErr.AllowFallbacks)
 		assert.False(t, *bErr.AllowFallbacks)
+	})
+
+	t.Run("a rate-limited exchange carries the retry hint", func(t *testing.T) {
+		installation := newFakeGithub(t)
+		installation.installationStatus.Store(http.StatusTooManyRequests)
+		_, bErr := installation.mint(installation.resolve(t, "backoff-3"), noopLogger{})
+		require.NotNil(t, bErr)
+		assert.Equal(t, int64(7000), bErr.ExtraFields.RetryAfter)
+
+		copilot := newFakeGithub(t)
+		copilot.copilotStatus.Store(http.StatusTooManyRequests)
+		_, bErr = copilot.mint(copilot.resolve(t, "backoff-4"), noopLogger{})
+		require.NotNil(t, bErr)
+		assert.Equal(t, int64(7000), bErr.ExtraFields.RetryAfter)
 	})
 
 	t.Run("backoff grows and clamps", func(t *testing.T) {

@@ -258,3 +258,38 @@ func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
 	access := g.Access()
 	return access != nil && unusablePermit(access) == nil
 }
+
+// AppendAllProviderPermits completes a permit that grants every provider. Such a permit names none,
+// so the providers it grants by the flag alone are materialised here, from what the deployment has
+// configured, and the permit then carries its whole grant in one readable list.
+//
+// Doing it at permit construction rather than where a consumer reads the permit is what keeps every
+// consumer honest: enumerating provider permits and asking whether the permit allows a provider give
+// the same answer, so a listing cannot refuse what the request path admits. Built per request, so a
+// provider added after the permit was last written is granted by the same rule.
+//
+// A provider the permit already names keeps its own entry: those are overrides, and the flag widens
+// the set rather than relaxing them. A materialised entry narrows nothing - every model, every key,
+// nothing blocked - and carries no weight, because a weight is a routing preference a provider
+// config expresses and this one expresses none.
+func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []string) []schemas.ProviderPermit {
+	named := make(map[string]struct{}, len(permits))
+	for i := range permits {
+		named[permits[i].Provider] = struct{}{}
+	}
+	for _, provider := range configured {
+		if provider == "" {
+			continue
+		}
+		if _, dup := named[provider]; dup {
+			continue
+		}
+		named[provider] = struct{}{}
+		permits = append(permits, schemas.ProviderPermit{
+			Provider:      provider,
+			AllowedModels: schemas.WhiteList{"*"},
+			KeyIDs:        schemas.WhiteList{"*"},
+		})
+	}
+	return permits
+}

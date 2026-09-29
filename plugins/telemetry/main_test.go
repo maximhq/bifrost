@@ -6,6 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -374,22 +377,36 @@ func TestMetricsEnabledGating(t *testing.T) {
 
 // TestMarshalConfigForStorageKeepsToggles guards the hand-maintained storage whitelist
 // (Config.MarshalForStorage's configStorage struct): a toggle added to Config must be
-// added there too, or it is silently dropped on save and the UI reverts it. Regression
-// test for overhead_breakdown_enabled, which was initially dropped this way.
+// added there too, or it is silently dropped on save and the UI reverts it. Every *bool
+// field on Config is enumerated by reflection so a new toggle cannot escape this test,
+// which is how overhead_breakdown_enabled and later user_labels_enabled both regressed.
 func TestMarshalConfigForStorageKeepsToggles(t *testing.T) {
 	p := newTestPlugin(t)
-	out, err := p.MarshalConfigForStorage(map[string]any{
-		"overhead_breakdown_enabled": true,
-		"metrics_enabled":            false,
-	})
-	if err != nil {
-		t.Fatalf("MarshalConfigForStorage: %v", err)
-	}
-	if v, ok := out["overhead_breakdown_enabled"].(bool); !ok || !v {
-		t.Errorf("overhead_breakdown_enabled dropped by storage: got %v (%T), want true", out["overhead_breakdown_enabled"], out["overhead_breakdown_enabled"])
-	}
-	if v, ok := out["metrics_enabled"].(bool); !ok || v {
-		t.Errorf("metrics_enabled = %v, want false to survive storage round-trip", out["metrics_enabled"])
+	ct := reflect.TypeOf(Config{})
+	for i := 0; i < ct.NumField(); i++ {
+		f := ct.Field(i)
+		if f.Type.Kind() != reflect.Ptr || f.Type.Elem().Kind() != reflect.Bool {
+			continue
+		}
+		key := strings.Split(f.Tag.Get("json"), ",")[0]
+		if key == "" || key == "-" {
+			t.Fatalf("Config.%s is a toggle with no json tag", f.Name)
+		}
+		// Both values: omitempty would hide a dropped field if only false were sent.
+		for _, want := range []bool{true, false} {
+			out, err := p.MarshalConfigForStorage(map[string]any{key: want})
+			if err != nil {
+				t.Fatalf("MarshalConfigForStorage(%s=%v): %v", key, want, err)
+			}
+			got, ok := out[key].(bool)
+			if !ok {
+				t.Errorf("%s dropped by storage whitelist (Config.%s): got %v (%T), want %v", key, f.Name, out[key], out[key], want)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %v after storage round-trip, want %v", key, got, want)
+			}
+		}
 	}
 }
 
@@ -600,6 +617,152 @@ func TestApplyCustomLabels(t *testing.T) {
 				if got[k] != v {
 					t.Errorf("label %q = %q, want %q", k, got[k], v)
 				}
+			}
+		})
+	}
+}
+
+// TestSpliceLabelValues pins the final label-value ordering produced for the latency,
+// error, and cache-hit metrics: default labels first, then the metric's extra values
+// (is_success / status_code+error_type / cache_type), then the custom labels. Metric
+// vectors match values to label names purely by position, so any reordering here
+// silently attributes values to the wrong labels.
+func TestSpliceLabelValues(t *testing.T) {
+	defaults := []string{"openai", "gpt-4o", "chat"} // provider, model, method
+	custom := []string{"team-a", "env-prod"}         // custom dimension labels
+	base := append(append([]string{}, defaults...), custom...)
+
+	tests := []struct {
+		name   string
+		in     []string
+		extras []string
+		want   []string
+	}{
+		{
+			name:   "latency is_success between defaults and custom labels",
+			in:     base,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true", "team-a", "env-prod"},
+		},
+		{
+			name:   "error status_code and error_type keep their order",
+			in:     base,
+			extras: []string{"429", "rate_limit"},
+			want:   []string{"openai", "gpt-4o", "chat", "429", "rate_limit", "team-a", "env-prod"},
+		},
+		{
+			name:   "cache_type between defaults and custom labels",
+			in:     base,
+			extras: []string{"semantic"},
+			want:   []string{"openai", "gpt-4o", "chat", "semantic", "team-a", "env-prod"},
+		},
+		{
+			name:   "no custom labels appends extras at the end",
+			in:     defaults,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true"},
+		},
+		{
+			name:   "no extras returns the input unchanged",
+			in:     base,
+			extras: nil,
+			want:   []string{"openai", "gpt-4o", "chat", "team-a", "env-prod"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := slices.Clone(tt.in)
+			got := spliceLabelValues(tt.in, len(defaults), tt.extras...)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("spliceLabelValues() = %v, want %v", got, tt.want)
+			}
+			if !slices.Equal(tt.in, before) {
+				t.Errorf("input mutated: %v, was %v", tt.in, before)
+			}
+		})
+	}
+}
+
+// gaugeValue gathers the named gauge family and returns the value of the single series whose
+// labels all match, and whether such a series exists at all (a key the plugin never touched
+// has no series, which is the "unchanged" the docs promise for model failures).
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) (float64, bool) {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			matched := 0
+			for _, lp := range m.GetLabel() {
+				if want, ok := labels[lp.GetName()]; ok && lp.GetValue() == want {
+					matched++
+				}
+			}
+			if matched == len(labels) {
+				return m.GetGauge().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// TestProviderKeyUpSkipsModelAndRegionFailures pins the bifrost_provider_key_up contract the
+// docs describe: a failed attempt marks its key 0, except when the failure says nothing about
+// the key's health: a model this key cannot reach or that was retired (model_access,
+// model_gone), or a region block that may be the gateway's location (region_blocked). Those
+// leave the key's gauge untouched. The key that finally served is marked 1 either way.
+func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
+	cases := []struct {
+		name       string
+		class      schemas.FailureClass
+		failReason string
+		status     int
+		wantSeries bool
+	}{
+		{"credential failure marks the key down", schemas.FailureClassCredential, "authentication_error", 401, true},
+		{"rate limit marks the key down", schemas.FailureClassRateLimit, "rate_limit_error", 429, true},
+		{"model_access leaves the key untouched", schemas.FailureClassModelAccess, "model_access_error", 404, false},
+		{"model_gone leaves the key untouched", schemas.FailureClassModelGone, "model_retired_error", 404, false},
+		{"region_blocked leaves the key untouched", schemas.FailureClassRegionBlocked, "region_blocked_error", 400, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(t)
+			resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}}
+			resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+
+			status := tc.status
+			failReason := tc.failReason
+			ctx := newHookContext(schemas.ChatCompletionRequest)
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-b")
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "Key B")
+			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 1)
+			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+				{Attempt: 0, KeyID: "key-a", KeyName: "Key A", FailReason: &failReason, FailureClass: tc.class, StatusCode: &status, TriggeredRotation: true},
+				{Attempt: 1, KeyID: "key-b", KeyName: "Key B"},
+			})
+			if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+			// The key-health writes precede this counter in the same goroutine.
+			waitForCounter(t, p.registry, "bifrost_upstream_requests_total", 1)
+
+			got, ok := gaugeValue(t, p.registry, "bifrost_provider_key_up", map[string]string{"provider": "openai", "key_id": "key-a", "key_name": "Key A"})
+			if tc.wantSeries && (!ok || got != 0) {
+				t.Errorf("key-a gauge present=%v value=%v after %s failure, want 0", ok, got, tc.class)
+			}
+			if !tc.wantSeries && ok {
+				t.Errorf("key-a gauge set to %v after %s failure, want untouched (no series): that failure says nothing about the key's health", got, tc.class)
+			}
+			if got, ok := gaugeValue(t, p.registry, "bifrost_provider_key_up", map[string]string{"provider": "openai", "key_id": "key-b", "key_name": "Key B"}); !ok || got != 1 {
+				t.Errorf("key-b gauge present=%v value=%v, want 1 for the key that served", ok, got)
 			}
 		})
 	}

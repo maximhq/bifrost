@@ -82,17 +82,16 @@ func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 		callCount++
 	})
 
-	checker := NewClientConnectionChecker(manager, config.ID, 0, false, &MockLogger{})
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
 	mapping := map[string]string{"echo": "echo-server"}
 
-	checker.writeBackTools(0, tools, mapping)
+	manager.writeBackDiscoveredTools(config.ID, 0, tools, mapping)
 	require.Equal(t, 1, callCount)
 
-	checker.writeBackTools(0, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-server"})
+	manager.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-server"})
 	assert.Equal(t, 1, callCount, "an unchanged tick must not re-fire")
 
-	checker.writeBackTools(0, map[string]schemas.ChatTool{}, map[string]string{})
+	manager.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{}, map[string]string{})
 	assert.Equal(t, 2, callCount, "the server legitimately losing all its tools is still a genuine change")
 }
 

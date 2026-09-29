@@ -285,6 +285,165 @@ func TestAzureResponsesOutputPreamble(t *testing.T) {
 	}
 }
 
+// OpenAI models emit startup events (response.created, in_progress, an empty
+// role delta) before an in-stream error on every host that serves them, not
+// only Azure. A retryable error must retry; a terminal one (an overload, which
+// OpenAI sends with no HTTP status) must return synchronously so the provider
+// fallback runs, instead of being forwarded inside an already-committed stream.
+func TestOpenAIModelsRetryAfterStartupEvents(t *testing.T) {
+	responsesPreamble := func() []*schemas.BifrostStreamChunk {
+		return []*schemas.BifrostStreamChunk{
+			{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeCreated,
+			}},
+			{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeInProgress,
+			}},
+		}
+	}
+	chatPreamble := func() []*schemas.BifrostStreamChunk {
+		return []*schemas.BifrostStreamChunk{{
+			BifrostChatResponse: &schemas.BifrostChatResponse{
+				Choices: []schemas.BifrostResponseChoice{{
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
+							Role: schemas.Ptr("assistant"),
+						},
+					},
+				}},
+			},
+		}}
+	}
+	requests := []struct {
+		name        string
+		requestType schemas.RequestType
+		preamble    func() []*schemas.BifrostStreamChunk
+	}{
+		{"responses", schemas.ResponsesStreamRequest, responsesPreamble},
+		{"chat", schemas.ChatCompletionStreamRequest, chatPreamble},
+	}
+	failures := []struct {
+		name      string
+		err       func() *schemas.BifrostError
+		retryable bool
+	}{
+		{"rate_limit", func() *schemas.BifrostError {
+			return createBifrostError("rate limit exceeded", nil, nil, false)
+		}, true},
+		// Shape of an in-stream OpenAI overload after conversion: no status code.
+		{"overloaded", func() *schemas.BifrostError {
+			return &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "The server is overloaded. Please try again later.",
+					Type:    schemas.Ptr("server_error"),
+					Code:    schemas.Ptr("server_is_overloaded"),
+				},
+			}
+		}, false},
+	}
+	hosts := []struct {
+		provider     schemas.ModelProvider
+		baseProvider schemas.ModelProvider // set on ctx as the worker does for custom providers
+		model        string
+		checkStartup bool
+	}{
+		{schemas.OpenAI, "", "gpt-4o", true},
+		{schemas.Bedrock, "", "openai.gpt-oss-120b-1:0", true},
+		{schemas.BedrockMantle, "", "gpt-oss-120b", true},
+		{schemas.Vertex, "", "openai/gpt-oss-20b", true},
+		{schemas.ModelProvider("astra-openai"), "", "gpt-5", true},
+		// OpenAI upstreams whose model ids carry no OpenAI family marker.
+		{schemas.OpenAI, "", "preamble-error", true},
+		{schemas.ModelProvider("astra"), schemas.OpenAI, "astra-large", true},
+		// Non-OpenAI families outside Azure keep first-chunk behavior.
+		{schemas.Vertex, "", "gemini-2.5-pro", false},
+	}
+
+	for _, host := range hosts {
+		for _, req := range requests {
+			for _, failure := range failures {
+				name := string(host.provider) + "/" + host.model + "/" + req.name + "/" + failure.name
+				t.Run(name, func(t *testing.T) {
+					parent, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+					ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+					if host.baseProvider != "" {
+						ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, host.baseProvider)
+					}
+					config := createTestConfig(1, time.Millisecond, time.Millisecond)
+					logger := NewDefaultLogger(schemas.LogLevelError)
+					attempts := 0
+					success := &schemas.BifrostStreamChunk{
+						BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+							Type: schemas.ResponsesStreamResponseTypeCompleted,
+						},
+					}
+
+					handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+						attempts++
+						stream := make(chan *schemas.BifrostStreamChunk, 4)
+						if attempts == 1 {
+							for _, chunk := range req.preamble() {
+								stream <- chunk
+							}
+							stream <- &schemas.BifrostStreamChunk{BifrostError: failure.err()}
+						} else {
+							stream <- success
+						}
+						close(stream)
+						return stream, nil
+					}
+
+					stream, err := executeRequestWithRetries(
+						ctx, config, handler, nil, req.requestType,
+						host.provider, host.model, nil, logger,
+					)
+
+					switch {
+					case !host.checkStartup:
+						// The first startup event commits the stream; the error stays inside it.
+						if err != nil || attempts != 1 {
+							t.Fatalf("expected first-chunk behavior (stream, 1 attempt), got err=%v attempts=%d", err, attempts)
+						}
+						for range stream {
+						}
+
+					case failure.retryable:
+						if err != nil || attempts != 2 {
+							t.Fatalf("expected retry to succeed (2 attempts), got err=%v attempts=%d", err, attempts)
+						}
+						select {
+						case chunk := <-stream:
+							if chunk != success {
+								t.Fatal("expected successful attempt; failed preamble must not escape")
+							}
+						case <-parent.Done():
+							t.Fatal("timed out waiting for successful retry")
+						}
+
+					default:
+						// Terminal on this provider: must surface synchronously so the
+						// caller's fallback chain runs, not ride inside the stream.
+						if err == nil {
+							for range stream {
+							}
+							t.Fatal("overload after startup events was committed into the stream; fallback cannot run")
+						}
+						if attempts != 1 {
+							t.Fatalf("expected 1 attempt for a non-retryable error, got %d", attempts)
+						}
+						if err.AllowFallbacks != nil && !*err.AllowFallbacks {
+							t.Fatal("overload must stay fallback-eligible")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestAzureChatRetriesAfterStartupEvents(t *testing.T) {
 	parent, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
