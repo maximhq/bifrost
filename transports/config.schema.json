@@ -10476,6 +10476,11 @@
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "omit_ip_addresses": {
+          "type": "boolean",
+          "description": "Stop recording client IP addresses in audit logs while keeping every other field. When true, new events are stored without request_ip or initiator host, and IPs from rows written before the setting was enabled are hidden from the API, filter data, search, exports and object storage archives. Existing database rows are not rewritten. Use this where employee privacy rules or works council agreements forbid tracking IPs. Default: false",
+          "default": false
+        },
         "archive_interval": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))*$",

@@ -135,7 +135,7 @@ func (m *mockRotateConfigStore) GetModelConfig(_ context.Context, scope string, 
 
 // GetModelConfigsByScopeAndScopeIDs returns the stored configs matching the scope and scope IDs,
 // mirroring the bulk load hydrateVKGovernance performs.
-func (m *mockRotateConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, scope string, scopeIDs []string) ([]configstoreTables.TableModelConfig, error) {
+func (m *mockRotateConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, scope string, scopeIDs []string, _ ...*gorm.DB) ([]configstoreTables.TableModelConfig, error) {
 	idset := make(map[string]bool, len(scopeIDs))
 	for _, id := range scopeIDs {
 		idset[id] = true
@@ -1853,7 +1853,7 @@ func (m *mockQuotaConfigStore) GetVirtualKeyQuotaByValue(_ context.Context, _ st
 	return cloneTestVirtualKey(m.vk), nil
 }
 
-func (m *mockQuotaConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, scope string, scopeIDs []string) ([]configstoreTables.TableModelConfig, error) {
+func (m *mockQuotaConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, scope string, scopeIDs []string, _ ...*gorm.DB) ([]configstoreTables.TableModelConfig, error) {
 	if m.modelConfigsErr != nil {
 		return nil, m.modelConfigsErr
 	}

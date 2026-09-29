@@ -2535,7 +2535,9 @@ export function LogDetailView({
 														}
 													/>
 												)}
-												{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
+												{reasoning.max_tokens != null && (
+													<LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />
+												)}
 											</div>
 										</div>
 									</>

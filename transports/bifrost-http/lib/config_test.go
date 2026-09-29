@@ -1455,7 +1455,7 @@ func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMo
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, _ ...*gorm.DB) ([]tables.TableModelConfig, error) {
 	return nil, nil
 }
 
@@ -22736,4 +22736,37 @@ func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
 		require.NoError(t, resolveGovernanceKeyReferences(ctx, &Config{}, governance))
 		assert.Equal(t, schemas.Fallback{Provider: schemas.Vertex, KeyID: "k-explicit"}, governance.RoutingRules[0].ParsedFallbacks[1].Resolved())
 	})
+}
+
+// Reconciliation writes carry metadata_json forward inside UpdateClientConfig's transaction, so UI
+// flags survive a restart that re-syncs the client section without any restore step afterwards.
+func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}, tempDir)
+	configData.Client = &configstore.ClientConfig{LogRetentionDays: 30}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NoError(t, config1.ConfigStore.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true}))
+	config1.Close(ctx)
+
+	// A changed client section forces the reconciliation write on the next start.
+	configData.Client = &configstore.ClientConfig{LogRetentionDays: 7}
+	createConfigFile(t, tempDir, configData)
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	cfg, err := config2.ConfigStore.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.LogRetentionDays, "the file change must reach the store")
+	metadata, err := config2.ConfigStore.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
 }

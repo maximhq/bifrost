@@ -1493,6 +1493,7 @@ bifrost:
   auditLogs:
     disabled: false
     hmacKey: ""
+    # omitIpAddresses: false  # Don't record client IPs (e.g. for works council requirements); IPs already stored are hidden, not deleted
     # Object storage archival for audit events (optional). A background job copies events to
     # object storage one closed time window at a time as JSONL parts plus a manifest:
     #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/part-00000.jsonl[.gz] (+ manifest.json[.gz])
