@@ -1,3 +1,0 @@
-- fix: startup resets and the periodic reset worker start through StartResetWorkers after all governance state is hydrated, so a calendar-aligned budget is never reset on a creation-anchored boundary during boot (#7637)
-- fix: team-owned budgets and rate limits keep the team's calendar_aligned value after a restart or config reload (#7615)
-- chore: upgraded core to v1.11.0 and framework to v1.7.5
