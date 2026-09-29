@@ -96,6 +96,16 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
+// VertexAWSWorkloadIdentityConfig matching Go's schemas.VertexAWSWorkloadIdentityConfig:
+// GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ...).
+export interface VertexAWSWorkloadIdentityConfig {
+	audience: SecretVar;
+	service_account_email?: SecretVar;
+	token_lifetime_seconds?: number;
+	aws_region?: SecretVar;
+	aws_role_arn?: SecretVar;
+}
+
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
 	project_id: SecretVar;
@@ -103,15 +113,27 @@ export interface VertexKeyConfig {
 	region: SecretVar;
 	auth_credentials?: SecretVar;
 	force_single_region?: boolean;
+	aws_workload_identity?: VertexAWSWorkloadIdentityConfig;
 }
 
+// Seed for the "Workload Identity (AWS)" tab. The lifetime is left unset so the server default
+// (3600s) applies unless the user types one.
+export const DefaultVertexAWSWorkloadIdentityConfig: VertexAWSWorkloadIdentityConfig = {
+	audience: { value: "", ref: "" },
+	service_account_email: { value: "", ref: "" },
+	aws_region: { value: "", ref: "" },
+	aws_role_arn: { value: "", ref: "" },
+} as const satisfies VertexAWSWorkloadIdentityConfig;
+
+// aws_workload_identity is deliberately absent here: an empty block would otherwise be sent to
+// the API on every save. The tab seeds it from DefaultVertexAWSWorkloadIdentityConfig on demand.
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_id: { value: "", ref: "" },
 	project_number: { value: "", ref: "" },
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
 	force_single_region: false,
-} as const satisfies Required<VertexKeyConfig>;
+} as const satisfies Required<Omit<VertexKeyConfig, "aws_workload_identity">>;
 
 export interface S3BucketConfig {
 	bucket_name: string;
