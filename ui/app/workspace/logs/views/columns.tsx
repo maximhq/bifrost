@@ -150,6 +150,10 @@ export function getMessage(log?: LogEntry) {
 	if (log?.object === "list_models") {
 		return "N/A";
 	}
+	// A metadata lookup has no message body; keep the error summary when it failed.
+	if (log?.object === "model_retrieve") {
+		return log.content_summary || "N/A";
+	}
 	if (log?.object === "realtime.turn") {
 		const messages = getRealtimeTurnMessages(log);
 		const parts = [
