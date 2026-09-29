@@ -4443,12 +4443,36 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
 		return true
 	}
+	if invokeIngressThinkingNeedsInvokePath(ctx, request.Params.Reasoning) {
+		return true
+	}
 	for _, tool := range request.Params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
 		}
 	}
 	return false
+}
+
+// invokeIngressThinkingNeedsInvokePath reports whether a request from the
+// InvokeModel-shaped ingress (BedrockContextKeyAnthropicInvokeIngress) has
+// thinking on. Converse TokenUsage has no thinking-token breakdown, while
+// InvokeModel returns usage.output_tokens_details.thinking_tokens, so such a
+// request is served by InvokeModel to keep the count the client asked for
+// (#7649). Thinking disabled (effort "none") or absent stays on Converse, and
+// so does every other ingress: /v1 and /bedrock converse callers never see
+// the marker. Callers gate on the Anthropic model family first.
+func invokeIngressThinkingNeedsInvokePath(ctx *schemas.BifrostContext, reasoning *schemas.ResponsesParametersReasoning) bool {
+	if ctx == nil || reasoning == nil {
+		return false
+	}
+	if marked, _ := ctx.Value(BedrockContextKeyAnthropicInvokeIngress).(bool); !marked {
+		return false
+	}
+	if reasoning.Effort != nil && *reasoning.Effort == "none" {
+		return false
+	}
+	return true
 }
 
 // invokeURL builds https://<bedrock-runtime host>/model/<model>/<action> using

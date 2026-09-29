@@ -1037,6 +1037,14 @@ func cacheControlTTLFromJSON(cacheControl gjson.Result) *string {
 }
 
 // convertAnthropicTools converts Anthropic-format tools to Bedrock ToolConfig.
+// BedrockContextKeyAnthropicInvokeIngress marks a request that arrived on the
+// InvokeModel-shaped ingress (/bedrock/model/{id}/invoke and its stream sibling).
+// The transport sets it; responsesUsesAnthropicInvokePath reads it to send
+// Anthropic-family requests with thinking on to InvokeModel upstream, because
+// Converse TokenUsage carries no thinking-token breakdown (#7649). Requests
+// from every other ingress keep their Converse routing.
+const BedrockContextKeyAnthropicInvokeIngress schemas.BifrostContextKey = "bedrock-anthropic-invoke-ingress"
+
 // Anthropic tools are: [{"name": "...", "description": "...", "input_schema": {...}}]
 func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	toolsSlice, ok := r.Tools.([]interface{})
@@ -1534,9 +1542,26 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 			CacheCreationInputTokens: usage.CacheWriteInputTokens,
 		}
+		// Thinking tokens are already inside OutputTokens on both sides, so only the
+		// breakdown is added; OutputTokens is left untouched (#7649).
+		if thinking := invokeThinkingTokens(resp.Usage); thinking > 0 {
+			result.Usage.OutputTokensDetails = &BedrockInvokeMessagesOutputTokensDetails{ThinkingTokens: thinking}
+		}
 	}
 
 	return result
+}
+
+// invokeThinkingTokens returns the extended-thinking token count Bifrost holds for a
+// response, or 0 when there is none. The Bedrock InvokeModel upstream path fills
+// OutputTokensDetails.ReasoningTokens through the shared anthropic handlers; Converse
+// never reports the figure, so Converse-backed responses yield 0 and the Anthropic-shaped
+// egress omits output_tokens_details exactly as Anthropic does for non-thinking responses.
+func invokeThinkingTokens(usage *schemas.ResponsesResponseUsage) int {
+	if usage == nil || usage.OutputTokensDetails == nil {
+		return 0
+	}
+	return usage.OutputTokensDetails.ReasoningTokens
 }
 
 // toBedrockInvokeAI21Response converts BifrostResponsesResponse to AI21 Jamba format.
@@ -1786,6 +1811,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				if usage.CacheWriteInputTokens > 0 {
 					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
 				}
+				if thinking := invokeThinkingTokens(resp.Response.Usage); thinking > 0 {
+					usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
+				}
 				msgStart["message"].(map[string]interface{})["usage"] = usageMap
 			}
 		}
@@ -1998,6 +2026,10 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			if usage.CacheWriteInputTokens > 0 {
 				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			// Native Anthropic reports the thinking breakdown on message_delta (#7649).
+			if thinking := invokeThinkingTokens(resp.Response.Usage); thinking > 0 {
+				usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
 			}
 			messageDelta["usage"] = usageMap
 		}

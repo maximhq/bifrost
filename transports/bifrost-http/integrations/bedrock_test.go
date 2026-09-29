@@ -1356,3 +1356,40 @@ func createTestBifrostContextWithProvider(provider schemas.ModelProvider) *schem
 	bifrostCtx.SetValue(bifrostContextKeyProvider, provider)
 	return bifrostCtx
 }
+
+// Test_createBedrockInvokeRouteConfig_MarksAnthropicInvokeIngress is the transport half of
+// #7649. AWS Converse never reports a thinking-token breakdown, so a request that arrives on
+// the InvokeModel-shaped ingress with thinking requested has to be served by InvokeModel
+// upstream to keep usage.output_tokens_details.thinking_tokens. The ingress cannot pick the
+// upstream API itself (that is the provider's call), so it marks the context and the Bedrock
+// provider's routing predicate keys on the marker. Both invoke routes must set it.
+func Test_createBedrockInvokeRouteConfig_MarksAnthropicInvokeIngress(t *testing.T) {
+	marker := schemas.BifrostContextKey("bedrock-anthropic-invoke-ingress")
+	body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"}}`
+
+	for _, tc := range []struct {
+		name  string
+		route RouteConfig
+	}{
+		{name: "invoke", route: createBedrockInvokeRouteConfig("/bedrock", &mockHandlerStore{})},
+		{name: "invoke-with-response-stream", route: createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", &mockHandlerStore{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &bedrock.BedrockInvokeRequest{}
+			require.NoError(t, sonic.Unmarshal([]byte(body), req))
+			req.ModelID = "bedrock/global.anthropic.claude-sonnet-5"
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+
+			bifrostReq, err := tc.route.RequestConverter(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostReq.ResponsesRequest)
+			require.NotNil(t, bifrostReq.ResponsesRequest.Params)
+			require.NotNil(t, bifrostReq.ResponsesRequest.Params.Reasoning, "thinking must survive the ingress conversion")
+
+			marked, _ := ctx.Value(marker).(bool)
+			assert.True(t, marked, "the InvokeModel-shaped ingress must mark the context so the Bedrock provider can route thinking requests to InvokeModel upstream")
+		})
+	}
+}
