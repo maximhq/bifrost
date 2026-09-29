@@ -47648,7 +47648,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_haiku_4_5_8780d962', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -47688,6 +47689,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_haiku_4_5_8780d962') || 'null');",
+                  "pm.test(\"Bedrock invoke: tool+system cache_control reads from cache (Haiku 4.5, turn 2) - #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('invoke request with tool+system cache_control succeeds (turn 2) - #5629', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -48422,7 +48427,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_haiku_4_5_d8146fdd', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -48462,6 +48468,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_haiku_4_5_d8146fdd') || 'null');",
+                  "pm.test(\"Bedrock invoke: cache_control on a plain message content block reads from cache (Haiku 4.5, turn 2) - #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke: cache_control on a plain message content block reads from cache (Haiku 4.5, turn 2) - #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -48522,7 +48532,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_haiku_4_5_107430d3', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -48562,6 +48573,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_haiku_4_5_107430d3') || 'null');",
+                  "pm.test(\"Bedrock invoke: cache_control nested inside tool_result content reads from cache (Haiku 4.5, turn 2) - #5560 / #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke: cache_control nested inside tool_result content reads from cache (Haiku 4.5, turn 2) - #5560 / #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -48622,7 +48637,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_sonnet_4_6_e2247bcf', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -48662,6 +48678,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_sonnet_4_6_e2247bcf') || 'null');",
+                  "pm.test(\"Bedrock invoke: cache_control on a plain message content block reads from cache (Sonnet 4.6, turn 2) - #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke: cache_control on a plain message content block reads from cache (Sonnet 4.6, turn 2) - #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -48722,7 +48742,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_sonnet_4_6_b05647f6', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -48762,6 +48783,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_sonnet_4_6_b05647f6') || 'null');",
+                  "pm.test(\"Bedrock invoke: cache_control nested inside tool_result content reads from cache (Sonnet 4.6, turn 2) - #5560 / #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke: cache_control nested inside tool_result content reads from cache (Sonnet 4.6, turn 2) - #5560 / #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -48822,7 +48847,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_opus_4_7_7c9d9193', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -48862,6 +48888,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_opus_4_7_7c9d9193') || 'null');",
+                  "pm.test(\"Bedrock invoke: cache_control on a plain message content block reads from cache (Opus 4.7, turn 2) - #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke: cache_control on a plain message content block reads from cache (Opus 4.7, turn 2) - #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -48922,7 +48952,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_opus_4_7_2f4f9744', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -48962,6 +48993,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_opus_4_7_2f4f9744') || 'null');",
+                  "pm.test(\"Bedrock invoke: cache_control nested inside tool_result content reads from cache (Opus 4.7, turn 2) - #5560 / #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke: cache_control nested inside tool_result content reads from cache (Opus 4.7, turn 2) - #5560 / #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49022,7 +49057,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_haiku_4_5_b22f477c', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49062,6 +49098,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_haiku_4_5_b22f477c') || 'null');",
+                  "pm.test(\"Bedrock invoke: cache_control nested in one of two parallel tool_result blocks reads from cache (Haiku 4.5, turn 2) - #5560 / #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke: cache_control nested in one of two parallel tool_result blocks reads from cache (Haiku 4.5, turn 2) - #5560 / #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49122,7 +49162,8 @@
                   "  var details = (body.usage || {}).prompt_tokens_details || {};",
                   "  var cacheTokens = (details.cached_tokens || 0) + (details.cache_write_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(body.usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_mantle_via_v1_opus_4_8_8cd9951c', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49161,6 +49202,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_mantle_via_v1_opus_4_8_8cd9951c') || 'null');",
+                  "pm.test(\"Bedrock Mantle via /v1: cache_control on a plain message content block reads from cache (Opus 4.8, turn 2) - #5629 cross-provider sanity: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock Mantle via /v1: cache_control on a plain message content block reads from cache (Opus 4.8, turn 2) - #5629 cross-provider sanity succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49221,7 +49266,8 @@
                   "  var details = (body.usage || {}).prompt_tokens_details || {};",
                   "  var cacheTokens = (details.cached_tokens || 0) + (details.cache_write_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(body.usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_mantle_via_v1_opus_4_8_366affeb', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49260,6 +49306,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_mantle_via_v1_opus_4_8_366affeb') || 'null');",
+                  "pm.test(\"Bedrock Mantle via /v1: cache_control nested inside tool_result content reads from cache (Opus 4.8, turn 2) - #5560 / #5629 cross-provider sanity: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock Mantle via /v1: cache_control nested inside tool_result content reads from cache (Opus 4.8, turn 2) - #5560 / #5629 cross-provider sanity succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49328,7 +49378,8 @@
                   "  var usage = (messageDelta && messageDelta.usage) || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_with_response_stream_haiku_4_5_113e9af6', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49368,6 +49419,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_with_response_stream_haiku_4_5_113e9af6') || 'null');",
+                  "pm.test(\"Bedrock invoke-with-response-stream: cache_control on a plain message content block reads from cache (Haiku 4.5, turn 2) - #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke-with-response-stream: cache_control on a plain message content block reads from cache (Haiku 4.5, turn 2) - #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49444,7 +49499,8 @@
                   "  var usage = (messageDelta && messageDelta.usage) || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_invoke_with_response_stream_haiku_4_5_0929e4e7', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49484,6 +49540,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_invoke_with_response_stream_haiku_4_5_0929e4e7') || 'null');",
+                  "pm.test(\"Bedrock invoke-with-response-stream: cache_control nested inside tool_result content reads from cache (Haiku 4.5, turn 2) - #5560 / #5629: turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock invoke-with-response-stream: cache_control nested inside tool_result content reads from cache (Haiku 4.5, turn 2) - #5560 / #5629 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49558,7 +49618,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cacheWriteInputTokens || 0) + (usage.cacheReadInputTokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_haiku_4_5_959ae46e', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49598,6 +49659,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_haiku_4_5_959ae46e') || 'null');",
+                  "pm.test(\"Bedrock converse: cachePoint on a plain message content block reads from cache (Haiku 4.5, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse: cachePoint on a plain message content block reads from cache (Haiku 4.5, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49658,7 +49723,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cacheWriteInputTokens || 0) + (usage.cacheReadInputTokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_haiku_4_5_a3c16ba6', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49698,6 +49764,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_haiku_4_5_a3c16ba6') || 'null');",
+                  "pm.test(\"Bedrock converse: cachePoint nested inside toolResult content reads from cache (Haiku 4.5, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse: cachePoint nested inside toolResult content reads from cache (Haiku 4.5, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49758,7 +49828,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cacheWriteInputTokens || 0) + (usage.cacheReadInputTokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_sonnet_4_6_41122758', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49798,6 +49869,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_sonnet_4_6_41122758') || 'null');",
+                  "pm.test(\"Bedrock converse: cachePoint on a plain message content block reads from cache (Sonnet 4.6, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse: cachePoint on a plain message content block reads from cache (Sonnet 4.6, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49858,7 +49933,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cacheWriteInputTokens || 0) + (usage.cacheReadInputTokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_sonnet_4_6_6ddfddc5', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49898,6 +49974,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_sonnet_4_6_6ddfddc5') || 'null');",
+                  "pm.test(\"Bedrock converse: cachePoint nested inside toolResult content reads from cache (Sonnet 4.6, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse: cachePoint nested inside toolResult content reads from cache (Sonnet 4.6, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -49958,7 +50038,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cacheWriteInputTokens || 0) + (usage.cacheReadInputTokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_opus_4_7_353ce494', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -49998,6 +50079,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_opus_4_7_353ce494') || 'null');",
+                  "pm.test(\"Bedrock converse: cachePoint on a plain message content block reads from cache (Opus 4.7, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse: cachePoint on a plain message content block reads from cache (Opus 4.7, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50058,7 +50143,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cacheWriteInputTokens || 0) + (usage.cacheReadInputTokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_opus_4_7_6d2cd59d', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50098,6 +50184,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_opus_4_7_6d2cd59d') || 'null');",
+                  "pm.test(\"Bedrock converse: cachePoint nested inside toolResult content reads from cache (Opus 4.7, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse: cachePoint nested inside toolResult content reads from cache (Opus 4.7, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50158,7 +50248,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cacheWriteInputTokens || 0) + (usage.cacheReadInputTokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_haiku_4_5_63b696b4', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50198,6 +50289,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_haiku_4_5_63b696b4') || 'null');",
+                  "pm.test(\"Bedrock converse: cachePoint nested in one of two parallel toolResult blocks reads from cache (Haiku 4.5, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse: cachePoint nested in one of two parallel toolResult blocks reads from cache (Haiku 4.5, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50259,7 +50354,8 @@
                   "pm.test('converse-stream turn 1 (Haiku 4.5): cachePoint on an ordinary content block creates a Bedrock cache entry (turn 1: creates a cache entry)', function () {",
                   "  var cacheTokens = (parseInt(cw, 10) || 0) + (parseInt(cr, 10) || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored: ' + rawText.slice(-500)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_stream_haiku_4_5_0334ac0a', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50299,6 +50395,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_stream_haiku_4_5_0334ac0a') || 'null');",
+                  "pm.test(\"Bedrock converse-stream: cachePoint on a plain message content block reads from cache (Haiku 4.5, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse-stream: cachePoint on a plain message content block reads from cache (Haiku 4.5, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50359,7 +50459,8 @@
                   "pm.test('converse-stream turn 1 (Haiku 4.5): cachePoint nested inside a toolResult\\'s own content creates a Bedrock cache entry (turn 1: creates a cache entry)', function () {",
                   "  var cacheTokens = (parseInt(cw, 10) || 0) + (parseInt(cr, 10) || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored: ' + rawText.slice(-500)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_bedrock_converse_stream_haiku_4_5_4a4367cd', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50399,6 +50500,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_bedrock_converse_stream_haiku_4_5_4a4367cd') || 'null');",
+                  "pm.test(\"Bedrock converse-stream: cachePoint nested inside toolResult content reads from cache (Haiku 4.5, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Bedrock converse-stream: cachePoint nested inside toolResult content reads from cache (Haiku 4.5, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50456,7 +50561,8 @@
                   "pm.test('Azure turn 1: large prompt succeeds, priming automatic prefix caching (no explicit marker needed)', function () {",
                   "  var body = pm.response.json();",
                   "  pm.expect(body.usage, JSON.stringify(body.usage)).to.be.an('object');",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_azure_gpt_4o_b8ffb790', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50508,6 +50614,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_azure_gpt_4o_b8ffb790') || 'null');",
+                  "pm.test(\"Azure: automatic prompt caching read (gpt-4o, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Azure automatic prompt caching read succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50591,7 +50701,8 @@
                   "  var details = (body.usage || {}).prompt_tokens_details || {};",
                   "  var cacheTokens = (details.cached_tokens || 0) + (details.cache_write_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(body.usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_vertex_claude_via_v1_opus_4_7_1e9201fe', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50630,6 +50741,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_vertex_claude_via_v1_opus_4_7_1e9201fe') || 'null');",
+                  "pm.test(\"Vertex Claude via /v1: cache_control on a plain message content block reads from cache (Opus 4.7, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Vertex Claude via /v1: cache_control on a plain message content block reads from cache (Opus 4.7, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50690,7 +50805,8 @@
                   "  var details = (body.usage || {}).prompt_tokens_details || {};",
                   "  var cacheTokens = (details.cached_tokens || 0) + (details.cache_write_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(body.usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_vertex_claude_via_v1_opus_4_7_ca9355bd', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50729,6 +50845,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_vertex_claude_via_v1_opus_4_7_ca9355bd') || 'null');",
+                  "pm.test(\"Vertex Claude via /v1: cache_control nested inside tool_result content reads from cache (Opus 4.7, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Vertex Claude via /v1: cache_control nested inside tool_result content reads from cache (Opus 4.7, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50789,7 +50909,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_anthropic_native_haiku_4_5_76f3dfab', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50836,6 +50957,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_anthropic_native_haiku_4_5_76f3dfab') || 'null');",
+                  "pm.test(\"Anthropic native: cache_control on a plain message content block reads from cache (Haiku 4.5, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Anthropic native: cache_control on a plain message content block reads from cache (Haiku 4.5, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -50903,7 +51028,8 @@
                   "  var usage = body.usage || {};",
                   "  var cacheTokens = (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);",
                   "  pm.expect(cacheTokens, 'expected a cache breakpoint to be honored, usage=' + JSON.stringify(usage)).to.be.above(0);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_anthropic_native_haiku_4_5_0e71dece', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -50950,6 +51076,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_anthropic_native_haiku_4_5_0e71dece') || 'null');",
+                  "pm.test(\"Anthropic native: cache_control nested inside tool_result content reads from cache (Haiku 4.5, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('Anthropic native: cache_control nested inside tool_result content reads from cache (Haiku 4.5, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -51015,7 +51145,8 @@
                   "var body = pm.response.json();",
                   "pm.test('OpenAI turn 1 (gpt-4o-mini): large non-system user content primes automatic prefix caching (turn 1: primes automatic prefix caching)', function () {",
                   "  pm.expect(body.usage, JSON.stringify(body.usage)).to.be.an('object');",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_openai_gpt_4o_mini_67b9a7fd', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -51059,6 +51190,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_openai_gpt_4o_mini_67b9a7fd') || 'null');",
+                  "pm.test(\"OpenAI: automatic caching on a plain (non-system) message content block, read (gpt-4o-mini, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('OpenAI: automatic caching on a plain (non-system) message content block, read (gpt-4o-mini, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
@@ -51118,7 +51253,8 @@
                   "var body = pm.response.json();",
                   "pm.test('OpenAI turn 1 (gpt-4o-mini): a large tool-result message in history primes automatic prefix caching (turn 1: primes automatic prefix caching)', function () {",
                   "  pm.expect(body.usage, JSON.stringify(body.usage)).to.be.an('object');",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.set('cacheTurn1_openai_gpt_4o_mini_d1f9ff71', JSON.stringify((typeof body !== 'undefined' && body && body.usage) || {}));"
                 ],
                 "type": "text/javascript"
               }
@@ -51162,6 +51298,10 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "var turn1 = JSON.parse(pm.collectionVariables.get('cacheTurn1_openai_gpt_4o_mini_d1f9ff71') || 'null');",
+                  "pm.test(\"OpenAI: automatic caching across a tool-call turn with a large tool result, read (gpt-4o-mini, turn 2): turn 1 ran first in this newman process\", function () {",
+                  "  pm.expect(turn1, 'turn 1 recorded no usage - it was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);",
+                  "});",
                   "pm.test('OpenAI: automatic caching across a tool-call turn with a large tool result, read (gpt-4o-mini, turn 2) succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",

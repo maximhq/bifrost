@@ -2547,9 +2547,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ "$$IS_DEFERRED" = "1" ]; then PICK_SAW_DEFERRED=1; \
 		else MAIN_FEATURES="$${MAIN_FEATURES:+$$MAIN_FEATURES,}$$k"; fi; \
 	done; \
+	: "Two separate decisions. CACHE_PASS: do the cache-parity rows run at all (in their own"; \
+	: "sequential newman). CARVE_OUT: are they kept out of the parallel forks. They used to be one"; \
+	: "flag, and that is how a menu pick without cache-parity ran every cache anchor anyway: the"; \
+	: "pick is an OR of modality aliases, 'chat' matches any request carrying messages, so the"; \
+	: "anchors rode in as chat rows - once per fork, and cost-sliced away from their write rounds."; \
+	: "Those rows are per-process state twice over (the collection-level pre-request script mints"; \
+	: "{{pcNonce}} once per newman process, and the rounds hand their counters to each other through"; \
+	: "collectionVariables), so a read round in a different process than its write round starts"; \
+	: "cold, writes again, and fails on read=0 for a reason that has nothing to do with the cache."; \
 	if [ -n "$$PICKED_FEATURES" ]; then \
+		: "The menu is the one place a deselected cache-parity means: do not run them anywhere."; \
 		CACHE_PASS=$$PICK_SAW_DEFERRED; \
 	elif [ -z "$(RERUN_FAILED)" ] && [ -z "$(FOLDER)" ] && [ -z "$(FEATURE)" ]; then \
+		CACHE_PASS=1; \
+	elif [ "$(or $(PARALLEL),1)" != "0" ]; then \
+		: "FEATURE/FOLDER/RERUN_FAILED are predicates that may well select cache rows. In parallel"; \
+		: "mode those rows must not be forked, so the cache pass runs them - ANDed with the same"; \
+		: "predicate, so it replays only what the scope selected, and skips itself when that is none."; \
+		: "PARALLEL=0 is one process in collection order, where a cell's rounds already share a"; \
+		: "nonce, so it keeps the row-level selection in the main pass."; \
 		CACHE_PASS=1; \
 	fi; \
 	if [ "$$CACHE_PASS" = "1" ] && [ -n "$$PICKED_FEATURES" ] && [ -z "$$MAIN_FEATURES" ]; then SKIP_MAIN=1; fi; \
@@ -2564,13 +2581,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "cache-parity rows out of the main pass via EXCLUDE_FLAG and then never replay them, silently"; \
 	: "dropping the third of the smoke set that exists to catch a dropped cache breakpoint."; \
 	if [ -n "$${SMOKE_MANIFEST:-}" ] && [ -z "$(RERUN_FAILED)" ]; then CACHE_PASS=1; SKIP_MAIN=0; fi; \
+	: "Computed last, after SMOKE has had its say: a parallel run always carves the cache rows out"; \
+	: "of the forks, whether or not a cache pass follows (a deselected menu pick: neither)."; \
+	CARVE_OUT=$$CACHE_PASS; \
+	if [ "$(or $(PARALLEL),1)" != "0" ]; then CARVE_OUT=1; fi; \
 	EXCLUDE_FLAG=""; \
-	if [ "$$CACHE_PASS" = "1" ]; then \
+	if [ "$$CARVE_OUT" = "1" ]; then \
 		EXCLUDE_FLAG="--exclude-feature-any cache-parity"; \
-		say "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows match every provider fork, so running them in the parallel pass would repeat each request once per fork).$(NC)"; \
+		if [ "$$CACHE_PASS" = "1" ]; then \
+			say "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows are per-process state, so the parallel forks would slice a cell's rounds apart and repeat each request once per fork).$(NC)"; \
+		else \
+			say "$(CYAN)cache-parity not selected - its rows are kept out of the parallel forks and do not run.$(NC)"; \
+		fi; \
 	fi; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
+	: "The main pass merges its shards over tmp/newman-report.json before the cache pass runs, so"; \
+	: "a rerun's selection for that pass is read from a snapshot taken now. Dot-prefixed so the"; \
+	: "tmp/newman-report-*.json merge glob never sweeps it in."; \
+	rm -f tmp/.newman-report-prior.json; \
+	if [ -n "$(RERUN_FAILED)" ] && [ -f tmp/newman-report.json ]; then cp -f tmp/newman-report.json tmp/.newman-report-prior.json; fi; \
 	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ] || [ -n "$$SMOKE_MANIFEST" ]; }; then \
 		say "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, smoke=$${SMOKE_MANIFEST:--}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
@@ -2716,7 +2746,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			: "Serialized with flock because slimming a big report takes several GB and shards finish together."; \
 			: "Only reports over 20MB are touched, and a failed slim leaves the original untouched."; \
 			if command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 && [ -f tmp/newman-merge.jq ] && [ "$$(stat -c %s "$$NS_REPORT" 2>/dev/null || echo 0)" -gt 20971520 ]; then \
-				flock tmp/.slim.lock sh -c 'jq -s -f tmp/newman-merge.jq "$$1" > "$$1.slim" && [ -s "$$1.slim" ] && mv -f "$$1.slim" "$$1" || rm -f "$$1.slim"' _ "$$NS_REPORT"; \
+				flock tmp/.slim.lock sh -c 'jq -c -s -f tmp/newman-merge.jq "$$1" > "$$1.slim" && [ -s "$$1.slim" ] && mv -f "$$1.slim" "$$1" || rm -f "$$1.slim"' _ "$$NS_REPORT"; \
 			fi; \
 			return $$NS_RC; \
 		}; \
@@ -2905,10 +2935,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			for f in $$MERGE_MAIN $$MERGE_RETRY; do \
 				MERGE_N=$$((MERGE_N + 1)); \
 				o="$$(printf 'tmp/.merge-slim/%04d.json' $$MERGE_N)"; \
-				jq -s -f tmp/newman-merge.jq "$$f" > "$$o" || { MERGE_OK=0; say "$(YELLOW)Slimming $$f failed$(NC)"; break; }; \
+				jq -c -s -f tmp/newman-merge.jq "$$f" > "$$o" || { MERGE_OK=0; say "$(YELLOW)Slimming $$f failed$(NC)"; break; }; \
 				MERGE_SLIM="$$MERGE_SLIM $$o"; \
 			done; \
-			if [ "$$MERGE_OK" = "1" ] && jq -s -f tmp/newman-merge.jq $$MERGE_SLIM > tmp/.newman-report-merged.json; then \
+			if [ "$$MERGE_OK" = "1" ] && jq -c -s -f tmp/newman-merge.jq $$MERGE_SLIM > tmp/.newman-report-merged.json; then \
 				mv -f tmp/.newman-report-merged.json tmp/newman-report.json; \
 			else \
 				rm -f tmp/.newman-report-merged.json; \
@@ -2975,7 +3005,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli.log; fi; \
 		if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report.json ]; then \
 			say "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
-			jq -s -f tmp/newman-merge.jq tmp/newman-report.json > tmp/.newman-report-sanitized.json \
+			jq -c -s -f tmp/newman-merge.jq tmp/newman-report.json > tmp/.newman-report-sanitized.json \
 				&& mv -f tmp/.newman-report-sanitized.json tmp/newman-report.json \
 				&& rm -f tmp/.newman-report.slim.json \
 				|| { rm -f tmp/.newman-report-sanitized.json; say "$(YELLOW)Report sanitize failed; tmp/newman-report.json left as-is (may exceed the viewer's 512MB parse limit).$(NC)"; }; \
@@ -2984,16 +3014,25 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$$CACHE_PASS" = "1" ]; then \
 		say "$(CYAN)Cache parity pass (sequential, single newman - these rows match every provider fork)...$(NC)"; \
 		rm -f tmp/harness-cache-filtered.json; \
+		: "cache-parity is the AND selector, so a FEATURE predicate narrows it: FEATURE is appended,"; \
+		: "not replaced, and 'cache-parity,gemini' stays narrower than 'cache-parity'. A menu pick"; \
+		: "is deliberately NOT forwarded - this pass only runs on the menu path when cache-parity"; \
+		: "itself was picked, and then every cache row is wanted, not the ones that also look like"; \
+		: "'streaming'."; \
+		CACHE_FEATURE="cache-parity"; \
+		if [ -n "$(FEATURE)" ]; then CACHE_FEATURE="cache-parity,$(FEATURE)"; fi; \
 		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
 			--source tmp/harness-augmented.json \
 			--out tmp/harness-cache-filtered.json \
-			--feature-any cache-parity \
-			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			--feature "$$CACHE_FEATURE" \
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
+			$(if $(RERUN_FAILED),--rerun-failed --report tmp/.newman-report-prior.json,) \
 			$(if $(PROVIDER),--provider $(PROVIDER),) || { say "$(RED)Cache parity filter step failed$(NC)"; }; \
 		CACHE_COUNT="$$(grep -c '"request":' tmp/harness-cache-filtered.json 2>/dev/null || true)"; CACHE_COUNT="$${CACHE_COUNT:-0}"; \
-		if [ -f tmp/harness-cache-filtered.json ] && budget_ok "$$CACHE_COUNT" cache-parity; then \
+		if [ "$$CACHE_COUNT" -eq 0 ]; then \
+			say "$(CYAN)Cache parity pass: the scope selects no cache-parity row - nothing to replay.$(NC)"; \
+		elif [ -f tmp/harness-cache-filtered.json ] && budget_ok "$$CACHE_COUNT" cache-parity; then \
 			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 			: > tmp/newman-cli-cache-parity.log; \
 			add_pass '{"t":"pass","id":"cache-parity","mode":"sequential","log":"tmp/newman-cli-cache-parity.log","collection":"tmp/harness-cache-filtered.json"}'; \
@@ -3024,7 +3063,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli-cache-parity.log; fi; \
 			if [ "$$CACHE_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
 			if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report-cache-parity.json ]; then \
-				jq -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-cache-parity.json > tmp/newman-report-combined.json \
+				jq -c -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-cache-parity.json > tmp/newman-report-combined.json \
 					&& mv tmp/newman-report-combined.json tmp/newman-report.json \
 					|| say "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
 			fi; \
