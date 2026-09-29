@@ -1885,7 +1885,7 @@ func isSpeechRequest(req *gemini.GeminiGenerationRequest) bool {
 }
 
 // isTranscriptionRequest checks if the request is for audio transcription (speech-to-text)
-// Transcription is detected by the presence of audio input in parts, but NOT if it's a speech request
+// Transcription is detected by the presence of inline audio input in parts, but NOT if it's a speech request
 func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 	// If this is already detected as a speech request, it's not transcription
 	// This handles the edge case of bidirectional audio (input + output)
@@ -1893,21 +1893,41 @@ func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 		return false
 	}
 
-	// Check all contents for audio input
+	// Only inline audio counts. The transcription path carries its input as
+	// bytes (BifrostTranscriptionRequest.Input.File), and a fileData part is a
+	// URI the gateway never fetches, so routing one here produced a request with
+	// no audio at all and failed with "transcription input not provided". URL
+	// audio is ordinary multimodal generation, the same as a video or PDF part.
+	//
+	// A non-audio URI disqualifies the request for the same reason: the
+	// transcription converter keeps only text and inline audio, so that part
+	// would be silently dropped on the way upstream.
+	return inlineAudioPart(req) && !hasNonAudioFilePart(req)
+}
+
+// inlineAudioPart reports whether any part carries inline audio bytes.
+func inlineAudioPart(req *gemini.GeminiGenerationRequest) bool {
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
-			// Check for inline audio data
 			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
-				return true
-			}
-
-			// Check for file-based audio data
-			if part.FileData != nil && isAudioMimeType(part.FileData.MIMEType) {
 				return true
 			}
 		}
 	}
+	return false
+}
 
+// hasNonAudioFilePart reports whether any part references a non-audio URI. The
+// transcription converter keeps only text and inline audio, so such a part
+// would be dropped on the way upstream.
+func hasNonAudioFilePart(req *gemini.GeminiGenerationRequest) bool {
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part.FileData != nil && !isAudioMimeType(part.FileData.MIMEType) {
+				return true
+			}
+		}
+	}
 	return false
 }
 

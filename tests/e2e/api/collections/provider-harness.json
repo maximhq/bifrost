@@ -131062,6 +131062,68 @@
           ]
         },
         {
+          "name": "52.C1b https:// audio on /genai generateContent -> gemini (stays generation)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\": [{\"parts\": [{\"text\": \"Describe this audio in one short sentence.\"}, {\"fileData\": {\"mimeType\": \"audio/mpeg\", \"fileUri\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/audio/pixel.mp3\"}}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression for #7508: a fileData audio part is a URI the gateway never",
+                  "// fetches, so isTranscriptionRequest used to route this generateContent",
+                  "// call onto the transcription path, which then rejected it with",
+                  "// \"transcription input not provided for transcription stream request\".",
+                  "// A non-2xx here IS the regression, so this row asserts the status",
+                  "// itself rather than deferring to the collection-level 2xx test.",
+                  "pm.test('URL audio stays on the generation path', function () {",
+                  "  pm.expect(pm.response.code, 'URL audio was routed to transcription instead of generation: ' +",
+                  "    (pm.response.text() || '').slice(0, 300)).to.be.within(200, 299);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var parts = ((((j.candidates || [])[0] || {}).content || {}).parts) || [];",
+                  "var out = parts.map(function (p) { return p.text || ''; }).join('');",
+                  "pm.test('audio reached the model', function () {",
+                  "  pm.expect(String(out).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(out), 'model reported it could not read the audio: ' +",
+                  "    String(out).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "52.C2 https:// video -> vertex/gemini-2.5-flash (inlined, not forwarded)",
           "request": {
             "method": "POST",
