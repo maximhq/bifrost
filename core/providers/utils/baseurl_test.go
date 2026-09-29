@@ -80,8 +80,20 @@ func TestLoggableURL(t *testing.T) {
 		t.Setenv("BIFROST_TEST_LOGGABLE_BASE_URL", "https://secret-host.example.com/v1beta")
 		base := schemas.NewSecretVar("env.BIFROST_TEST_LOGGABLE_BASE_URL")
 		got := LoggableURL(base, "https://secret-host.example.com/v1beta/batches/123:cancel?alt=media")
-		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL/v1beta/batches/123:cancel?alt=media", got)
+		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL/batches/123:cancel?alt=media", got)
 		assert.NotContains(t, got, "secret-host")
+		// The reference resolved to a path as well as a host, so the path must not
+		// survive either - only the suffix the request itself added.
+		assert.NotContains(t, got, "/v1beta")
+	})
+
+	t.Run("a resolved path and query are stripped, not just the host", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_LOGGABLE_BASE_URL", "https://secret-host.example.com/tenants/acme/v1?token=abc")
+		base := schemas.NewSecretVar("env.BIFROST_TEST_LOGGABLE_BASE_URL")
+		got := LoggableURL(base, "https://secret-host.example.com/tenants/acme/v1?token=abc/models")
+		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL/models", got)
+		assert.NotContains(t, got, "acme")
+		assert.NotContains(t, got, "token=abc")
 	})
 
 	t.Run("reference-resolved base_url hides a rewritten host too", func(t *testing.T) {
