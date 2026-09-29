@@ -7103,6 +7103,7 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				// The region is a public identifier, not a credential — surface it in plaintext.
 				cfg.Region = *cfg.Region.RedactedIfSecret()
 				cfg.AuthCredentials = *cfg.AuthCredentials.Redacted()
+				cfg.AWSWorkloadIdentity = cfg.AWSWorkloadIdentity.Redacted()
 				configStoreKey.VertexKeyConfig = &cfg
 			}
 			if key.ReplicateKeyConfig != nil {

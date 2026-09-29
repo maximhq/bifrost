@@ -627,6 +627,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
+			vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
 		}
 
