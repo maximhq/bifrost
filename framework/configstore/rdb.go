@@ -295,6 +295,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		LoggingHeaders:                        config.LoggingHeaders,
 		WhitelistedRoutes:                     config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
+		DeleteExpiredVirtualKeys:              config.DeleteExpiredVirtualKeys,
 		HiddenRequestTypes:                    config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
@@ -591,6 +592,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		LoggingHeaders:                        dbConfig.LoggingHeaders,
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
+		DeleteExpiredVirtualKeys:              dbConfig.DeleteExpiredVirtualKeys,
 		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
@@ -3542,6 +3544,67 @@ const virtualKeyInternalPageSize = 1000
 // bind parameter per row and exceeds PostgreSQL's 65535-parameter limit at scale.
 const modelConfigInternalPageSize = 1000
 
+// ListExpiredVirtualKeysForDeletion returns the keys the daily cleanup job may delete:
+// expires_at has passed and delete_after_expire is true, or unset when the client-wide
+// default (includeUnset) says expired keys are deleted. Only the columns the job needs
+// are selected; it re-fetches each key before deleting it.
+func (s *RDBConfigStore) ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error) {
+	var keys []tables.TableVirtualKey
+	query := s.DB().WithContext(ctx).
+		Select("id", "name", "expires_at", "delete_after_expire").
+		Where("expires_at IS NOT NULL AND expires_at <= ?", now.UTC())
+	if includeUnset {
+		query = query.Where("delete_after_expire = ? OR delete_after_expire IS NULL", true)
+	} else {
+		query = query.Where("delete_after_expire = ?", true)
+	}
+	err := query.
+		Order("expires_at ASC, id ASC").
+		Find(&keys).Error
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// DeleteExpiredVirtualKey deletes the key only if it is still expired and eligible
+// under the row lock, returning the deleted row, or nil when it no longer qualifies.
+// A key without its own flag is deleted only if includeUnset and the client default
+// read inside the transaction both allow it.
+func (s *RDBConfigStore) DeleteExpiredVirtualKey(ctx context.Context, id string, now time.Time, includeUnset bool) (*tables.TableVirtualKey, error) {
+	var deleted *tables.TableVirtualKey
+	err := s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		var vk tables.TableVirtualKey
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&vk, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if vk.DeleteAfterExpire == nil && includeUnset {
+			// The job scanned with the default on; an admin may have turned it off since.
+			var clientCfg tables.TableClientConfig
+			err := txDB.WithContext(ctx).Select("delete_expired_virtual_keys").First(&clientCfg).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			includeUnset = err == nil && clientCfg.DeleteExpiredVirtualKeys
+		}
+		if !vk.IsExpiredAt(now) || !vk.DeletesAfterExpire(includeUnset) {
+			return nil
+		}
+		if err := s.DeleteVirtualKey(ctx, id, txDB); err != nil {
+			return err
+		}
+		deleted = &vk
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
 	var allVirtualKeys []tables.TableVirtualKey
@@ -3932,7 +3995,7 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			}
 		}
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "business_unit_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "disable_content_logging", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
+			Select("name", "description", "value", "is_active", "expires_at", "delete_after_expire", "team_id", "customer_id", "business_unit_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "disable_content_logging", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
