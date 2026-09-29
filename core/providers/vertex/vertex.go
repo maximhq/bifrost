@@ -241,11 +241,19 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 		}
 		tokenSource = ts
 	} else if authCredentials.GetValue() == "" {
-		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find default credentials in environment: %w", err)
+		// GOOGLE_APPLICATION_CREDENTIALS may name a gcloud-generated AWS external_account JSON.
+		// Route it through the SDK-backed federation so IRSA / Pod Identity work under ADC too.
+		if ts, ok, err := awsFederatedTokenSourceFromADCFile(context.Background()); err != nil {
+			return nil, err
+		} else if ok {
+			tokenSource = ts
+		} else {
+			creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find default credentials in environment: %w", err)
+			}
+			tokenSource = creds.TokenSource
 		}
-		tokenSource = creds.TokenSource
 	} else {
 		jsonData := []byte(authCredentials.GetValue())
 
@@ -276,11 +284,20 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 			return nil, fmt.Errorf("unsupported or restricted credential type: %s", meta.Type)
 		}
 
-		conf, err := google.CredentialsFromJSONWithType(context.Background(), jsonData, credType, cloudPlatformScope)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create credentials from auth credentials JSON: %w", err)
+		if credType == google.ExternalAccount && isAWSExternalAccountJSON(jsonData) {
+			// Google's built-in AWS credential source ignores IRSA / Pod Identity; use the SDK chain.
+			ts, err := newAWSFederatedTokenSourceFromJSON(context.Background(), jsonData)
+			if err != nil {
+				return nil, err
+			}
+			tokenSource = ts
+		} else {
+			conf, err := google.CredentialsFromJSONWithType(context.Background(), jsonData, credType, cloudPlatformScope)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create credentials from auth credentials JSON: %w", err)
+			}
+			tokenSource = conf.TokenSource
 		}
-		tokenSource = conf.TokenSource
 	}
 
 	// Cache the token source. If another goroutine raced and stored first, use
