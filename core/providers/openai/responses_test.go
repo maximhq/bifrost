@@ -4203,7 +4203,7 @@ func TestFilterUnsupportedToolsKeepsShell(t *testing.T) {
 		},
 	}
 
-	req.filterUnsupportedTools(true)
+	req.filterUnsupportedTools(true, schemas.OpenAI)
 
 	if len(req.Tools) != 1 || req.Tools[0].Type != schemas.ResponsesToolTypeShell {
 		t.Fatalf("shell tool must survive the filter; got %+v", req.Tools)
@@ -4397,6 +4397,64 @@ func TestNamespaceAllowedCallersStripped(t *testing.T) {
 }
 
 // TestFilterUnsupportedToolsKeepsBareOpenAITools locks the two bare tool types in
+// TestFilterUnsupportedToolsDropsShellOnBedrockMantle pins the drop. Mantle serves no
+// model that accepts the shell tool - its own error enumerates the types it takes and
+// omits shell - so forwarding it is always a 400.
+func TestFilterUnsupportedToolsDropsShellOnBedrockMantle(t *testing.T) {
+	shellTool := schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeShell,
+		ResponsesToolShell: &schemas.ResponsesToolShell{
+			Environment: &schemas.ResponsesToolShellEnvironment{Type: "local"},
+		},
+	}
+	applyPatchTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeApplyPatch}
+	functionTool := schemas.ResponsesTool{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  schemas.Ptr("get_price"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+	}
+
+	newReq := func() *OpenAIResponsesRequest {
+		return &OpenAIResponsesRequest{
+			ResponsesParameters: schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{shellTool, applyPatchTool, functionTool},
+			},
+		}
+	}
+
+	types := func(tools []schemas.ResponsesTool) []schemas.ResponsesToolType {
+		out := make([]schemas.ResponsesToolType, 0, len(tools))
+		for _, tool := range tools {
+			out = append(out, tool.Type)
+		}
+		return out
+	}
+
+	t.Run("dropped on bedrock_mantle", func(t *testing.T) {
+		req := newReq()
+		req.filterUnsupportedTools(true, schemas.BedrockMantle)
+		got := types(req.Tools)
+		for _, toolType := range got {
+			if toolType == schemas.ResponsesToolTypeShell {
+				t.Fatalf("shell must not reach mantle; got %v", got)
+			}
+		}
+		// Only shell goes: apply_patch is accepted on every gpt-5.x/gpt-6 model there,
+		// so dropping it would break requests that work today.
+		if len(got) != 2 || got[0] != schemas.ResponsesToolTypeApplyPatch || got[1] != schemas.ResponsesToolTypeFunction {
+			t.Fatalf("only shell may be dropped; got %v", got)
+		}
+	})
+
+	t.Run("kept on openai", func(t *testing.T) {
+		req := newReq()
+		req.filterUnsupportedTools(true, schemas.OpenAI)
+		if got := types(req.Tools); len(got) != 3 || got[0] != schemas.ResponsesToolTypeShell {
+			t.Fatalf("shell must survive on openai; got %v", got)
+		}
+	})
+}
+
 // OpenAI's Tool union that carry no fields of their own. Both used to be stripped
 // before the request left Bifrost: apply_patch is accepted by OpenAI today, and
 // programmatic_tool_calling is what turns allowed_callers: ["programmatic"] on.
@@ -4447,7 +4505,7 @@ func TestFilterUnsupportedToolsKeepsBareOpenAITools(t *testing.T) {
 		},
 	}
 
-	req.filterUnsupportedTools(true)
+	req.filterUnsupportedTools(true, schemas.OpenAI)
 
 	if len(req.Tools) != 2 {
 		t.Fatalf("both bare tools must survive the filter; got %+v", req.Tools)
