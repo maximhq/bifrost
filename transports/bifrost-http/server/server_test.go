@@ -18,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
@@ -37,7 +38,7 @@ func (s *reloadVirtualKeyConfigStore) GetVirtualKey(context.Context, string) (*c
 }
 
 // GetModelConfigsByScopeAndScopeIDs returns no scoped model configs.
-func (s *reloadVirtualKeyConfigStore) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string) ([]configstoreTables.TableModelConfig, error) {
+func (s *reloadVirtualKeyConfigStore) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string, ...*gorm.DB) ([]configstoreTables.TableModelConfig, error) {
 	return nil, nil
 }
 
