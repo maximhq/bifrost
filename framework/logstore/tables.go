@@ -289,6 +289,7 @@ type Log struct {
 	VideoDownloadOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDownloadResponse
 	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
+	LiveSession             string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.LiveSessionLog
 	// Debug spelling is retained for the persisted cache and guardrail columns.
 	CacheDebug        string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheMetadata
 	GuardrailDebug    string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailMetadata
@@ -428,6 +429,7 @@ type Log struct {
 	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
+	LiveSessionParsed           *schemas.LiveSessionLog                 `gorm:"-" json:"live_session,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
 	OverheadBreakdownParsed     []OverheadBucket                        `gorm:"-" json:"overhead_breakdown,omitempty"`
 	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
@@ -739,6 +741,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.VideoDeleteOutput = string(data)
+		}
+	}
+
+	if l.LiveSessionParsed != nil {
+		if data, err := sonic.Marshal(l.LiveSessionParsed); err != nil {
+			return err
+		} else {
+			l.LiveSession = string(data)
 		}
 	}
 
@@ -1089,6 +1099,12 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.VideoDeleteOutput), &l.VideoDeleteOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoDeleteOutputParsed = nil
+		}
+	}
+
+	if l.LiveSession != "" {
+		if err := sonic.Unmarshal([]byte(l.LiveSession), &l.LiveSessionParsed); err != nil {
+			l.LiveSessionParsed = nil
 		}
 	}
 

@@ -321,6 +321,13 @@ const (
 	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
 	BifrostContextKeySkipBudgetAndRateLimits             BifrostContextKey = "bifrost-skip-budget-and-rate-limits"              // bool (set by bifrost for read-only requests like list models that don't consume quota)
 	BifrostContextKeySessionContinuation                 BifrostContextKey = "bifrost-session-continuation"                     // bool (a billing unit of an already-admitted session, e.g. a GPT Live window; not checked or counted as a request)
+	BifrostContextKeyLiveSessionID                       BifrostContextKey = "bifrost-live-session-id"                          // string (set by the live transport on every billing unit: the session the unit belongs to; logging folds units into one row per session)
+	BifrostContextKeyLiveUnit                            BifrostContextKey = "bifrost-live-unit"                                // string (set by the live transport: "voice" for a window of voice seconds, "backend" for one delegated Responses call)
+	BifrostContextKeyLiveSessionStart                    BifrostContextKey = "bifrost-live-session-start"                       // bool (set by the live transport on the unit that opens the session)
+	BifrostContextKeyLiveSessionEnd                      BifrostContextKey = "bifrost-live-session-end"                         // bool (set by the live transport on the unit that closes the session; its response output is the transcript)
+	BifrostContextKeyLiveUsageUnconfirmed                BifrostContextKey = "bifrost-live-usage-unconfirmed"                   // bool (set by the live transport when the session ended without the provider's final usage)
+	BifrostContextKeyLiveDelegationID                    BifrostContextKey = "bifrost-live-delegation-id"                       // string (set by the live transport on a backend unit: the delegation its response ran)
+	BifrostContextKeyLiveDelegationStartMs               BifrostContextKey = "bifrost-live-delegation-start-ms"                 // int64 (set by the live transport on a backend unit: when its delegation began, on the session timeline)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
 	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
@@ -1194,6 +1201,7 @@ type BifrostResponse struct {
 	VideoGenerationResponse       *BifrostVideoGenerationResponse
 	VideoDownloadResponse         *BifrostVideoDownloadResponse
 	VideoListResponse             *BifrostVideoListResponse
+	LiveSession                   *LiveSessionLog // GPT Live: what a session's closing unit reports for its log row
 	VideoDeleteResponse           *BifrostVideoDeleteResponse
 	FileUploadResponse            *BifrostFileUploadResponse
 	FileListResponse              *BifrostFileListResponse

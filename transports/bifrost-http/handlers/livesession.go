@@ -347,6 +347,123 @@ type liveSessionController struct {
 	refusalOnce      sync.Once
 	drainMu          sync.Mutex
 	drainTimer       *time.Timer
+	transcript       liveTranscript // written on the upstream pump only
+	startedAt        time.Time      // when session.started arrived: zero of the session timeline
+
+	delegationMu    sync.Mutex
+	delegations     map[string]*liveDelegationRecord // a delegation's output so far, until its terminal event
+	callDelegations map[string]string                // function call id → delegation, until the app answers it
+}
+
+// liveDelegationRecord is what the relay has seen of one delegation since it was created.
+type liveDelegationRecord struct {
+	startedMs int64
+	items     []schemas.ResponsesMessage
+}
+
+const (
+	// liveDelegationMaxItems bounds what is kept of one delegation's output before it completes.
+	liveDelegationMaxItems = 32
+	// liveDelegationMaxCalls bounds the function calls remembered while the app runs them.
+	liveDelegationMaxCalls = 64
+)
+
+// sessionClockMs is the session timeline now, in ms since session.started.
+func (c *liveSessionController) sessionClockMs() int64 {
+	if c.startedAt.IsZero() {
+		return 0
+	}
+	return time.Since(c.startedAt).Milliseconds()
+}
+
+func (c *liveSessionController) delegationLocked(id string) *liveDelegationRecord {
+	if c.delegations == nil {
+		c.delegations = make(map[string]*liveDelegationRecord)
+	}
+	record := c.delegations[id]
+	if record == nil {
+		record = &liveDelegationRecord{}
+		c.delegations[id] = record
+	}
+	return record
+}
+
+// noteDelegationCreated stamps a delegation with its place on the session timeline.
+func (c *liveSessionController) noteDelegationCreated(message []byte) {
+	id := providerUtils.GetJSONField(message, "delegation.id").Str
+	if id == "" {
+		return
+	}
+	c.delegationMu.Lock()
+	defer c.delegationMu.Unlock()
+	if record := c.delegationLocked(id); record.startedMs == 0 {
+		record.startedMs = c.sessionClockMs()
+	}
+}
+
+// recordDelegationItem keeps a finished output item (a message, a tool call) for the delegation's
+// log entry; reasoning items carry nothing readable and are dropped.
+func (c *liveSessionController) recordDelegationItem(message []byte) {
+	event, err := schemas.ParseLiveEvent(message)
+	if err != nil || event.DelegationID == nil || event.Event == nil || event.Event.Response == nil || event.Event.Response.Item == nil {
+		return
+	}
+	item := event.Event.Response.Item
+	if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeReasoning {
+		return
+	}
+	c.delegationMu.Lock()
+	defer c.delegationMu.Unlock()
+	if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall && item.ResponsesToolMessage != nil && item.ResponsesToolMessage.CallID != nil {
+		if c.callDelegations == nil {
+			c.callDelegations = make(map[string]string)
+		}
+		if len(c.callDelegations) < liveDelegationMaxCalls {
+			c.callDelegations[*item.ResponsesToolMessage.CallID] = *event.DelegationID
+		}
+	}
+	c.appendDelegationItemLocked(*event.DelegationID, *item)
+}
+
+func (c *liveSessionController) appendDelegationItemLocked(id string, item schemas.ResponsesMessage) {
+	record := c.delegationLocked(id)
+	if len(record.items) >= liveDelegationMaxItems {
+		return
+	}
+	record.items = append(record.items, item)
+}
+
+// recordFunctionOutput keeps the result the app sends for a function call, so the delegation's
+// log shows the call, its result and the answer that followed.
+func (c *liveSessionController) recordFunctionOutput(message []byte) {
+	if providerUtils.GetJSONField(message, "item.type").Str != string(schemas.ResponsesMessageTypeFunctionCallOutput) {
+		return
+	}
+	var item schemas.ResponsesMessage
+	if err := schemas.Unmarshal([]byte(providerUtils.GetJSONField(message, "item").Raw), &item); err != nil || item.ResponsesToolMessage == nil || item.ResponsesToolMessage.CallID == nil {
+		return
+	}
+	c.delegationMu.Lock()
+	defer c.delegationMu.Unlock()
+	id, ok := c.callDelegations[*item.ResponsesToolMessage.CallID]
+	if !ok {
+		return
+	}
+	delete(c.callDelegations, *item.ResponsesToolMessage.CallID)
+	c.appendDelegationItemLocked(id, item)
+}
+
+// takeDelegation returns what was seen of a delegation and forgets it; its terminal event has
+// arrived. A later response of the same delegation starts a new record.
+func (c *liveSessionController) takeDelegation(id string) ([]schemas.ResponsesMessage, int64) {
+	c.delegationMu.Lock()
+	defer c.delegationMu.Unlock()
+	record := c.delegations[id]
+	if record == nil {
+		return nil, 0
+	}
+	delete(c.delegations, id)
+	return record.items, record.startedMs
 }
 
 // fromClient returns the client frame to forward upstream, or false when it was refused (the
@@ -362,6 +479,8 @@ func (c *liveSessionController) fromClient(message []byte) ([]byte, bool) {
 		return checked, true
 	case schemas.LiveEventSessionClose:
 		c.closeOnce.Do(c.startDrainTimer)
+	case schemas.LiveEventResponseItemCreate:
+		c.recordFunctionOutput(message)
 	}
 	return message, true
 }
@@ -371,7 +490,10 @@ func (c *liveSessionController) fromClient(message []byte) ([]byte, bool) {
 func (c *liveSessionController) fromUpstream(message []byte) bool {
 	switch schemas.LiveEventTypeOf(message) {
 	case schemas.LiveEventSessionStarted:
+		c.startedAt = time.Now()
 		c.meter.setProviderSessionID(providerUtils.GetJSONField(message, "session.id").Str)
+	case schemas.LiveEventDelegationCreated:
+		c.noteDelegationCreated(message)
 	case schemas.LiveEventSessionUpdated:
 		// A sideband can switch the backend too; the primary bills whatever the session now runs.
 		if model := providerUtils.GetJSONField(message, "session.delegation.responses.model").Str; model != "" {
@@ -379,28 +501,52 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 				c.endForRefusal(refusal)
 			}
 		}
+	case schemas.LiveEventInputTranscriptDelta:
+		c.appendTranscript("user", message)
+	case schemas.LiveEventOutputTranscriptDelta:
+		c.appendTranscript("assistant", message)
 	case schemas.LiveEventUsageUpdated:
 		if refusal := c.meter.onUsage(providerUtils.GetJSONField(message, "usage.seconds").Float()); refusal != nil {
 			c.endForRefusal(refusal)
 		}
 	case schemas.LiveEventResponseEvent:
 		switch schemas.ResponsesStreamResponseType(providerUtils.GetJSONField(message, "event.type").Str) {
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			c.recordDelegationItem(message)
 		case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete, schemas.ResponsesStreamResponseTypeFailed:
 			event, err := schemas.ParseLiveEvent(message)
-			if err != nil || event.Event == nil || event.Event.Response == nil {
+			if err != nil || event.Event == nil || event.Event.Response == nil || event.Event.Response.Response == nil {
 				logger.Warn("live session: failed to read backend usage from response.event: %v", err)
 				return false
 			}
-			if refusal := c.meter.onBackendResponse(event.Event.Response.Response); refusal != nil {
+			response := event.Event.Response.Response
+			var delegationID string
+			var startedMs int64
+			if event.DelegationID != nil {
+				delegationID = *event.DelegationID
+				var items []schemas.ResponsesMessage
+				items, startedMs = c.takeDelegation(delegationID)
+				// The terminal event carries no output on the live socket; the items arrived one by one.
+				if len(response.Output) == 0 {
+					response.Output = items
+				}
+			}
+			if refusal := c.meter.onBackendResponse(response, delegationID, startedMs); refusal != nil {
 				c.endForRefusal(refusal)
 			}
 		}
 	case schemas.LiveEventSessionClosed:
+		c.meter.setEnding(c.transcript.snapshot(), true)
 		c.meter.finish(providerUtils.GetJSONField(message, "usage.seconds").Float())
 		c.markUpstreamDone()
 		return true
 	}
 	return false
+}
+
+// appendTranscript records one transcript fragment with its place on the session timeline.
+func (c *liveSessionController) appendTranscript(role string, message []byte) {
+	c.transcript.append(role, providerUtils.GetJSONField(message, "delta").Str, providerUtils.GetJSONField(message, "start_ms").Int(), providerUtils.GetJSONField(message, "end_ms").Int())
 }
 
 // forwardToClient sends an upstream frame to the client; a client that cannot be reached is
@@ -422,6 +568,7 @@ func (c *liveSessionController) clientLeft() {
 
 // upstreamEnded bills what OpenAI last reported when the upstream ended without session.closed.
 func (c *liveSessionController) upstreamEnded() {
+	c.meter.setEnding(c.transcript.snapshot(), false)
 	c.meter.finish(c.meter.lastReportedSeconds())
 	c.markUpstreamDone()
 }

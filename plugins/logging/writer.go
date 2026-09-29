@@ -42,6 +42,8 @@ type PendingLogData struct {
 	// chunks are not reaped before they finish. Atomic because the cleanup
 	// goroutine reads it concurrently with per-chunk PostLLMHook writes.
 	LastActivity atomic.Int64
+	// Live is set for a GPT Live session's row: what its units have folded into it so far.
+	Live *liveSessionState
 }
 
 // pendingInjectEntries wraps a slice of log entries so it can be used with sync.Map.

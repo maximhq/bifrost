@@ -2192,6 +2192,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
+//   - All providers: live requests retry in "realtime" mode, where the datasheet feed files GPT Live models.
 //
 // The method acquires a read lock for the duration of the lookup.
 //
@@ -2299,6 +2300,15 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	if hasFallbackMode {
 		s.logger.Debug("primary lookup failed, trying the same model in %s mode", fallbackMode)
 		pricing, ok = s.pricingData[makeKey(model, provider, fallbackMode)]
+		if ok {
+			return &pricing, true
+		}
+	}
+
+	// The feed files GPT Live models under the Realtime API's mode.
+	if requestType == schemas.LiveRequest {
+		s.logger.Debug("primary lookup failed, trying realtime mode for the same live model")
+		pricing, ok = s.pricingData[makeKey(model, provider, "realtime")]
 		if ok {
 			return &pricing, true
 		}
