@@ -123,6 +123,17 @@ describe("ProviderFormSchema github-copilot credentials", () => {
 			expect(parsed.success).toBe(false);
 		});
 
+		it.each([
+			["installation_id", "env.not-numeric"],
+			["repository_id", "vault.not-numeric"],
+			["private_key", "vault.not-a-pem"],
+			["private_key", "env.not-a-pem"],
+		])("format-checks a literal %s that only looks like a reference (%s)", (field, value) => {
+			// With no ref the server stores the value as plain text, so a reference-shaped
+			// literal is not a mask and must not skip the format check.
+			expect(parse({ github_copilot_key_config: appConfig({ [field]: literal(value) }) }).success).toBe(false);
+		});
+
 		it("does not format-check environment references", () => {
 			// Their values resolve on the server, so judging their shape here would reject
 			// every legitimate headless configuration.

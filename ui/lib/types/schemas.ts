@@ -268,7 +268,14 @@ const isSecretVarRef = (v: { value?: string; ref?: string; type?: string } | und
 // A stored secret comes back from the API masked ("******" or "1234****...****5678"), and the
 // edit form round-trips that mask untouched so the server keeps the original. Judging the
 // mask's shape would fail every edit of a key whose credentials were not all retyped.
-const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => isRedacted(v?.value ?? "");
+//
+// isRedacted also treats env./vault. prefixes as hidden, but here references live in `ref`.
+// With no ref the server stores an "env.x" value as plain text, so it gets checked like one.
+const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	const value = v?.value ?? "";
+	if (value.startsWith("env.") || value.startsWith("vault.")) return false;
+	return isRedacted(value);
+};
 
 const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
 	if (!isSecretVarSet(v)) return true; // presence is checked separately
