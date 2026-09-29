@@ -221,6 +221,35 @@ func TestWarpTopicsJobClustersLabelsAndStores(t *testing.T) {
 
 // A recompute replaces the previous topics rather than piling onto them, so
 // the list never shows a stale cluster beside a fresh one.
+// A missing embedding provider or model is a Warp that is not set up, which
+// the start route answers with 503; only a bad time range is the caller's 400.
+func TestBuildTopicsJobMetaErrorClasses(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	build := func(row *tables.TableWarpConfig, end time.Time) error {
+		service := NewService(nil,
+			WithConfigStore(&recordingStore{row: row}), WithLogReader(&semanticLogReader{}),
+			WithVectorStore(newFakeWarpVectorStore()),
+		)
+		defer service.Shutdown()
+		_, err := service.BuildTopicsJobMeta(context.Background(), start, end)
+		return err
+	}
+
+	noProvider := validWarpConfigRow()
+	noProvider.EmbeddingProvider = ""
+	noModel := validWarpConfigRow()
+	noModel.EmbeddingModel = ""
+	for name, row := range map[string]*tables.TableWarpConfig{"no embedding provider": noProvider, "no embedding model": noModel} {
+		err := build(row, start.Add(time.Hour))
+		require.ErrorIs(t, err, ErrUnavailable, name)
+		require.NotErrorIs(t, err, ErrInvalidConfig, name)
+	}
+
+	err := build(validWarpConfigRow(), start)
+	require.ErrorIs(t, err, ErrInvalidConfig, "an empty window is the caller's error")
+	require.NotErrorIs(t, err, ErrUnavailable)
+}
+
 func TestWarpTopicsJobReplacesPreviousTopics(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	vectors := newFakeWarpVectorStore()

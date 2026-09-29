@@ -446,7 +446,9 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 
 // BuildTopicsJobMeta freezes the window and embedding space for one run. It
 // reuses the backfill's checkpoint shape so the same status endpoint and the
-// same progress card serve both jobs.
+// same progress card serve both jobs. A config without an embedding provider
+// or model is ErrUnavailable from Config, not ErrInvalidConfig: IsConfigured
+// requires both, so only the time range is a caller error here.
 func (s *Service) BuildTopicsJobMeta(ctx context.Context, start, end time.Time) (string, error) {
 	if s.vectorStore == nil || s.logs == nil || s.store == nil {
 		return "", ErrUnavailable
@@ -454,9 +456,6 @@ func (s *Service) BuildTopicsJobMeta(ctx context.Context, start, end time.Time) 
 	config, err := s.Config(ctx)
 	if err != nil {
 		return "", err
-	}
-	if !config.IsConfigured() || config.EmbeddingProvider == "" || config.EmbeddingModel == "" {
-		return "", fmt.Errorf("%w: configure an embedding provider and model before computing topics", ErrInvalidConfig)
 	}
 	if !end.After(start) {
 		return "", fmt.Errorf("%w: end_time must be after start_time", ErrInvalidConfig)
