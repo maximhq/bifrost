@@ -155,7 +155,7 @@ func (provider *TypesafeProvider) fetchNativeCatalog(ctx *schemas.BifrostContext
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + typesafeModelsPath)
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + typesafeModelsPath)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
