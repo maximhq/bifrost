@@ -1974,6 +1974,25 @@ test-cli: install-gotestsum ## Run CLI tests
 # the single most important line in the output.
 CLI_HARNESS_FILTER = awk '/^=== /||/^[ \t]*--- (PASS|FAIL|SKIP)[: ]/||/^(PASS|FAIL)$$/||/^ok[ \t]/||/^FAIL\t/||/unsupported for /||/not configured in bifrost/{next} {print; fflush()}'
 
+test-live: install-gotestsum ## Run GPT Live e2e tests against a running gateway (Usage: make test-live [TESTCASE=TestName|PATTERN=substring] [LIVE_UPSTREAM=fake|real] [BIFROST_BASE_URL=http://localhost:8080]; fake mode: start the gateway with APP_DIR=$$(pwd)/tests/live)
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running GPT Live e2e tests ($${LIVE_UPSTREAM:-fake} upstream)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		$(ECHO) "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; exit 1; \
+	fi; \
+	RUN_FLAG=""; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/live.xml"; \
+	cd tests/live && GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 900s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
 run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Prints one line per cell plus a progress table; MIRROR=1 adds the raw CLI stream, VERBOSE=1 adds go test -v. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [MIRROR=1] [VERBOSE=1] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \

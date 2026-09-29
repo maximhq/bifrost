@@ -212,6 +212,9 @@ func TestLiveSessionEndingWithoutConfirmedUsageIsFlagged(t *testing.T) {
 			OriginalModelRequested: "gpt-live-1",
 		},
 	}
+	// A backend unit refused at admission ran nothing: it is the session's failure, not a delegation.
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-2", "unit-2", "backend", false, false, false), nil, refusal)
+	require.NoError(t, err)
 	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-2", "unit-1", "voice", false, true, true), nil, refusal)
 	require.NoError(t, err)
 	require.NoError(t, plugin.Cleanup())
