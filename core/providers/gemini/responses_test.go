@@ -445,3 +445,182 @@ func TestConvertResponsesMessagesToGeminiContents_FunctionOutputRefKeyStaysOpaqu
 		}
 	})
 }
+
+// The code_interpreter tool has to reach Gemini as its codeExecution tool, or the model
+// never runs code at all and the response-side conversion has nothing to convert.
+func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
+	t.Run("code_interpreter becomes codeExecution", func(t *testing.T) {
+		tools, err := convertResponsesToolsToGemini([]schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{},
+			},
+		}, false, schemas.Gemini, "gemini-2.5-flash")
+		if err != nil {
+			t.Fatalf("convertResponsesToolsToGemini error: %v", err)
+		}
+		if len(tools) != 1 || tools[0].CodeExecution == nil {
+			t.Fatalf("tools = %+v, want one entry carrying CodeExecution", tools)
+		}
+	})
+
+	// Same mixed-tool restriction as Google Search: a function tool the model cannot
+	// otherwise invoke wins over the server-side tool.
+	t.Run("dropped alongside a function tool", func(t *testing.T) {
+		tools, err := convertResponsesToolsToGemini([]schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{},
+			},
+			{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("get_weather"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			},
+		}, false, schemas.Gemini, "gemini-2.5-flash")
+		if err != nil {
+			t.Fatalf("convertResponsesToolsToGemini error: %v", err)
+		}
+		for _, tool := range tools {
+			if tool.CodeExecution != nil {
+				t.Fatalf("CodeExecution survived alongside a function tool: %+v", tools)
+			}
+		}
+		if len(tools) != 1 || len(tools[0].FunctionDeclarations) != 1 {
+			t.Fatalf("tools = %+v, want the function declaration to survive", tools)
+		}
+	})
+
+	t.Run("round-trips back to code_interpreter", func(t *testing.T) {
+		got := convertGeminiToolsToResponsesTools([]Tool{{CodeExecution: &ToolCodeExecution{}}})
+		if len(got) != 1 || got[0].Type != schemas.ResponsesToolTypeCodeInterpreter {
+			t.Fatalf("tools = %+v, want one code_interpreter tool", got)
+		}
+	})
+}
+
+// executableCode and codeExecutionResult arrive as two sibling parts. They must land as
+// one structured code_interpreter_call carrying code and outputs, not as prose text —
+// that is the shape OpenAI and Anthropic already produce.
+func TestGeminiCodeExecutionPartsBecomeCodeInterpreterCall(t *testing.T) {
+	out := convertGeminiCandidatesToResponsesOutput([]*Candidate{
+		{Content: &Content{Role: "model", Parts: []*Part{
+			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "print(6*7)"}},
+			{CodeExecutionResult: &CodeExecutionResult{Outcome: OutcomeOK, Output: "42\n"}},
+		}}},
+	})
+
+	var calls []schemas.ResponsesMessage
+	for _, msg := range out {
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCodeInterpreterCall {
+			calls = append(calls, msg)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("code_interpreter_call count = %d, want 1 (output: %+v)", len(calls), out)
+	}
+	if calls[0].ResponsesToolMessage == nil {
+		t.Fatalf("call carries no tool message: %+v", calls[0])
+	}
+	ci := calls[0].ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+	if ci == nil || ci.Code == nil || *ci.Code != "print(6*7)" {
+		t.Fatalf("code = %+v, want print(6*7)", ci)
+	}
+	if len(ci.Outputs) != 1 || ci.Outputs[0].ResponsesCodeInterpreterOutputLogs == nil ||
+		ci.Outputs[0].ResponsesCodeInterpreterOutputLogs.Logs != "42\n" {
+		t.Fatalf("outputs = %+v, want one logs output of %q", ci.Outputs, "42\n")
+	}
+}
+
+// A failed run still carries its output; the outcome is prefixed rather than dropped.
+func TestGeminiCodeExecutionFailureKeepsOutput(t *testing.T) {
+	out := convertGeminiCandidatesToResponsesOutput([]*Candidate{
+		{Content: &Content{Role: "model", Parts: []*Part{
+			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "1/0"}},
+			{CodeExecutionResult: &CodeExecutionResult{Outcome: OutcomeFailed, Output: "ZeroDivisionError"}},
+		}}},
+	})
+	last := out[len(out)-1]
+	if last.ResponsesToolMessage == nil || last.ResponsesToolMessage.ResponsesCodeInterpreterToolCall == nil {
+		t.Fatalf("last item is not a code_interpreter_call: %+v", last)
+	}
+	ci := last.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+	if len(ci.Outputs) != 1 || ci.Outputs[0].ResponsesCodeInterpreterOutputLogs == nil ||
+		ci.Outputs[0].ResponsesCodeInterpreterOutputLogs.Logs != "Error: ZeroDivisionError" {
+		t.Fatalf("outputs = %+v, want the failure prefixed", ci.Outputs)
+	}
+}
+
+// Streaming previously dropped both parts on the floor, so a streamed code execution
+// reached the client as nothing at all.
+func TestGeminiResponsesStreamEmitsCodeInterpreterCall(t *testing.T) {
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+	chunk := &GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
+			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "print(6*7)"}},
+			{CodeExecutionResult: &CodeExecutionResult{Outcome: OutcomeOK, Output: "42\n"}},
+		}}}},
+	}
+	events, bErr := chunk.ToBifrostResponsesStream(0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+	}
+
+	var added, done *schemas.BifrostResponsesStreamResponse
+	for _, event := range events {
+		if event.Item == nil || event.Item.Type == nil ||
+			*event.Item.Type != schemas.ResponsesMessageTypeCodeInterpreterCall {
+			continue
+		}
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+			added = event
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			done = event
+		}
+	}
+	if added == nil || done == nil {
+		t.Fatalf("want an added and a done code_interpreter_call event, got %d events", len(events))
+	}
+	if added.ItemID == nil || done.ItemID == nil || *added.ItemID != *done.ItemID {
+		t.Fatalf("item IDs differ between added and done: %v / %v", added.ItemID, done.ItemID)
+	}
+	ci := done.Item.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+	if ci.Code == nil || *ci.Code != "print(6*7)" {
+		t.Fatalf("code = %+v, want print(6*7)", ci.Code)
+	}
+	if len(ci.Outputs) != 1 || ci.Outputs[0].ResponsesCodeInterpreterOutputLogs.Logs != "42\n" {
+		t.Fatalf("outputs = %+v, want one logs output", ci.Outputs)
+	}
+	// The closed item must also reach response.completed's Output array.
+	if state.OutputItems[*done.OutputIndex] == nil {
+		t.Fatalf("closed call was not recorded for response.completed")
+	}
+}
+
+// A stream that ends after the code but before its result must still close the item,
+// or the client is left with an item that never completes.
+func TestGeminiResponsesStreamClosesDanglingCodeInterpreterCall(t *testing.T) {
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+	chunk := &GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content:      &Content{Role: "model", Parts: []*Part{{ExecutableCode: &ExecutableCode{Code: "print(1)"}}}},
+			FinishReason: FinishReasonStop,
+		}},
+	}
+	events, bErr := chunk.ToBifrostResponsesStream(0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+	}
+	for _, event := range events {
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && event.Item != nil &&
+			event.Item.Type != nil && *event.Item.Type == schemas.ResponsesMessageTypeCodeInterpreterCall {
+			return
+		}
+	}
+	t.Fatalf("dangling code_interpreter_call was never closed (%d events)", len(events))
+}
