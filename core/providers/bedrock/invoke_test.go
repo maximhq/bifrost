@@ -2034,3 +2034,36 @@ func TestResponsesUsesAnthropicInvokePath_InvokeIngressThinking(t *testing.T) {
 		require.False(t, responsesUsesAnthropicInvokePath(newCtx(true), newReq("us.amazon.nova-pro-v1:0", adaptive)))
 	})
 }
+
+// Issue #7601: a truncated or filtered Responses stream ends with response.incomplete.
+// The invoke-with-response-stream egress handled only response.completed, so the
+// terminal message_delta/message_stop pair was dropped, and its incomplete_details
+// fallback leaked the Responses vocabulary ("max_output_tokens") as an Anthropic
+// stop_reason.
+func TestToAnthropicInvokeStreamBytes_IncompleteEmitsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		reason string
+		want   string
+	}{
+		{schemas.ResponsesResponseIncompleteReasonMaxOutputTokens, "max_tokens"},
+		{schemas.ResponsesResponseIncompleteReasonContentFilter, "refusal"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeIncomplete,
+				Response: &schemas.BifrostResponsesResponse{
+					IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: tc.reason},
+				},
+			}
+			frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+			require.NoError(t, err)
+			require.Len(t, frames, 2, "expected message_delta + message_stop")
+
+			var messageDelta map[string]interface{}
+			require.NoError(t, json.Unmarshal(frames[0], &messageDelta))
+			delta, ok := messageDelta["delta"].(map[string]interface{})
+			require.True(t, ok, "message_delta must carry a delta object")
+			assert.Equal(t, tc.want, delta["stop_reason"])
+		})
+	}
+}

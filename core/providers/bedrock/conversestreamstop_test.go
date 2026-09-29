@@ -253,3 +253,54 @@ func TestConverseStreamReasoningBlockEmitsContentBlockStop(t *testing.T) {
 		t.Errorf(`contentBlockStop payloads: want [{"contentBlockIndex":0}], got %v`, stops)
 	}
 }
+
+// Issue #7601: Anthropic, Gemini, OpenAI and Bedrock itself end a truncated or filtered
+// Responses stream with response.incomplete. The Converse egress handled only
+// response.completed, so that terminal was dropped: no messageStop, no stopReason, no
+// usage. It must close the stream with the Bedrock-vocabulary stop reason instead.
+func TestConverseStreamIncompleteEmitsMessageStop(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response *schemas.BifrostResponsesResponse
+		want     string
+	}{
+		{"stop reason length", &schemas.BifrostResponsesResponse{
+			StopReason:        schemas.Ptr("length"),
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+		}, "max_tokens"},
+		{"incomplete_details only: max_output_tokens", &schemas.BifrostResponsesResponse{
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+		}, "max_tokens"},
+		{"incomplete_details only: content_filter", &schemas.BifrostResponsesResponse{
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter},
+		}, "content_filtered"},
+		// An Anthropic refusal carries both fields; Bedrock has no "refusal" stop reason.
+		{"anthropic refusal: stop reason and content_filter details", &schemas.BifrostResponsesResponse{
+			StopReason:        schemas.Ptr("refusal"),
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter},
+		}, "content_filtered"},
+		{"anthropic refusal: stop reason only", &schemas.BifrostResponsesResponse{
+			StopReason: schemas.Ptr("refusal"),
+		}, "content_filtered"},
+		// An unrecognized reason must never leak into messageStop; fall back to a valid value.
+		{"unrecognized incomplete reason, no stop reason", &schemas.BifrostResponsesResponse{
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "quota_exceeded"},
+		}, "end_turn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event, err := ToBedrockConverseStreamResponse(&schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeIncomplete,
+				Response: tc.response,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if event == nil || event.StopReason == nil {
+				t.Fatalf("response.incomplete produced no messageStop (event=%+v)", event)
+			}
+			if *event.StopReason != tc.want {
+				t.Errorf("stopReason = %q, want %q", *event.StopReason, tc.want)
+			}
+		})
+	}
+}

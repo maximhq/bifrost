@@ -84043,6 +84043,61 @@
                   ]
                 },
                 {
+                  "name": "47.10.A native /v1/chat/completions -> openai/gpt-4o-mini bare base64 file_data with file_type becomes a data URL",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var body = pm.response.text() || '';",
+                          "pm.test('bare-base64 file_data reaches the provider as a data URL', function () {",
+                          "  pm.expect(body, 'provider rejected bare base64 file_data: ' + body.slice(0, 500)).to.not.match(/Invalid base64 data URL|Expected a base64-encoded data URL/i);",
+                          "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 500)).to.equal(200);",
+                          "  var json = pm.response.json();",
+                          "  var raw = (json.extra_fields || {}).raw_request;",
+                          "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                          "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
+                          "  var fileData = String((((raw.messages || [])[0].content || []).filter(function (p) { return p.type === 'file'; }).map(function (p) { return p.file.file_data; })[0]) || '');",
+                          "  pm.expect(fileData.indexOf('data:application/pdf;base64,'), 'outbound file_data was not a PDF data URL: ' + fileData.slice(0, 80)).to.equal(0);",
+                          "  pm.expect(JSON.stringify(raw), 'file_type is a Bifrost extension and must not reach the wire').to.not.include('\"file_type\"');",
+                          "  var reply = String(((((json.choices || [])[0] || {}).message || {}).content) || '');",
+                          "  pm.expect(reply, 'model did not read the document: ' + reply.slice(0, 300)).to.include('4217');",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      },
+                      {
+                        "key": "x-bf-send-back-raw-request",
+                        "value": "true"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the invoice number in the attached document? Reply with just the number.\"},{\"type\":\"file\",\"file\":{\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcwMCBUZCAoSU5WT0lDRSA0MjE3IFRvdGFsIGR1ZSA1OC40MCBVU0QpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\"filename\":\"invoice.pdf\",\"file_type\":\"application/pdf\"}}]}]}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
                   "name": "47.10.A native /v1/chat/completions -> anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
@@ -140653,6 +140708,115 @@
           }
         },
         {
+          "name": "databricks/databricks-gemini-3-8-flash /v1/chat/completions bare base64 file_data with file_type becomes a data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('bare-base64 file_data reaches the provider as a data URL', function () {",
+                  "  pm.expect(body, 'provider rejected bare base64 file_data: ' + body.slice(0, 500)).to.not.match(/Invalid base64 data URL|Expected a base64-encoded data URL/i);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = (json.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
+                  "  var fileData = String((((raw.messages || [])[0].content || []).filter(function (p) { return p.type === 'file'; }).map(function (p) { return p.file.file_data; })[0]) || '');",
+                  "  pm.expect(fileData.indexOf('data:application/pdf;base64,'), 'outbound file_data was not a PDF data URL: ' + fileData.slice(0, 80)).to.equal(0);",
+                  "  pm.expect(JSON.stringify(raw), 'file_type is a Bifrost extension and must not reach the wire').to.not.include('\"file_type\"');",
+                  "  var reply = String(((((json.choices || [])[0] || {}).message || {}).content) || '');",
+                  "  pm.expect(reply, 'model did not read the document: ' + reply.slice(0, 300)).to.include('4217');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"databricks/databricks-gemini-3-8-flash\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the invoice number in the attached document? Reply with just the number.\"},{\"type\":\"file\",\"file\":{\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcwMCBUZCAoSU5WT0lDRSA0MjE3IFRvdGFsIGR1ZSA1OC40MCBVU0QpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\"filename\":\"invoice.pdf\",\"file_type\":\"application/pdf\"}}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gemini-3-8-flash /v1/responses bare base64 input_file with file_type becomes a data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('bare-base64 file_data reaches the provider as a data URL', function () {",
+                  "  pm.expect(body, 'provider rejected bare base64 file_data: ' + body.slice(0, 500)).to.not.match(/Invalid base64 data URL|Expected a base64-encoded data URL/i);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = (json.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
+                  "  var fileData = String((((raw.input || [])[0].content || []).filter(function (p) { return p.type === 'input_file'; }).map(function (p) { return p.file_data; })[0]) || '');",
+                  "  pm.expect(fileData.indexOf('data:application/pdf;base64,'), 'outbound file_data was not a PDF data URL: ' + fileData.slice(0, 80)).to.equal(0);",
+                  "  pm.expect(JSON.stringify(raw), 'file_type is a Bifrost extension and must not reach the wire').to.not.include('\"file_type\"');",
+                  "  var reply = String(((json.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('')) || '');",
+                  "  pm.expect(reply, 'model did not read the document: ' + reply.slice(0, 300)).to.include('4217');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"databricks/databricks-gemini-3-8-flash\",\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"What is the invoice number in the attached document? Reply with just the number.\"},{\"type\":\"input_file\",\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcwMCBUZCAoSU5WT0lDRSA0MjE3IFRvdGFsIGR1ZSA1OC40MCBVU0QpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\"filename\":\"invoice.pdf\",\"file_type\":\"application/pdf\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
           "name": "databricks/databricks-gemini-3-8-flash /anthropic/v1/messages Claude Code multi-block system",
           "event": [
             {
@@ -176845,7 +177009,321 @@
       ]
     },
     {
-      "name": "126. MCP Gateway Preserves Rich Tool Results (#7666)",
+      "name": "126. Anthropic/Gemini Responses status + max_output_tokens truncation (#7601)",
+      "description": "Issue #7601: on /v1/responses the direct anthropic/* and gemini/* providers returned no `status` on any turn, and a turn cut short by max_output_tokens was indistinguishable from a complete one: no incomplete_details, and the stream terminal was response.completed. /v1/chat/completions for the same request reported finish_reason \"length\", so the signal was available.\n\nRoot cause: AnthropicMessageResponse.ToBifrostResponsesResponse / the message_stop branch of AnthropicStreamEvent.ToBifrostResponsesStream (core/providers/anthropic/responses.go) and GenerateContentResponse.ToResponsesBifrostResponsesResponse / closeGeminiOpenItems (core/providers/gemini/responses.go) set StopReason but never Status/IncompleteDetails, and hard-coded the terminal event to response.completed. Folder 17 pins the same contract for Bedrock (#4679 / #4680).\n\nCases per provider: (1) truncated non-streaming -> status incomplete + incomplete_details.reason max_output_tokens; (2) truncated streaming -> response.incomplete terminal, never response.completed; (3) short complete turn -> status completed. The Anthropic converter is shared by Vertex/Azure/Bedrock-Claude and others, and the Gemini one by Vertex, so these pin the shared path.\n\nThe Gemini streaming case sends reasoning.effort \"none\" (thinkingBudget 0): with thinking on, gemini-2.5-flash spends the whole 16-token budget on thoughts and its streaming endpoint then returns a 200 with an empty SSE body (no finishReason at all), so there is no truncation signal for the gateway to translate.",
+      "item": [
+        {
+          "name": "anthropic anthropic/claude-haiku-4-5 /v1/responses max_output_tokens truncation -> status incomplete (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 truncated turn reports status=incomplete + incomplete_details.reason=max_output_tokens - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('incomplete');",
+                  "  pm.expect(j.incomplete_details && j.incomplete_details.reason, 'incomplete_details: ' + JSON.stringify(j.incomplete_details)).to.equal('max_output_tokens');",
+                  "  var lastItem = (j.output || [])[(j.output || []).length - 1];",
+                  "  pm.expect(lastItem && lastItem.status, 'truncated output item status (was completed pre-fix): ' + JSON.stringify(j.output)).to.equal('incomplete');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic anthropic/claude-haiku-4-5 /v1/responses max_output_tokens truncation emits response.incomplete (streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 truncated stream terminates with response.incomplete, not response.completed - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'expected a response.incomplete terminal event: ' + raw.slice(-600)).to.include('response.incomplete');",
+                  "  pm.expect(raw, 'expected incomplete reason max_output_tokens: ' + raw.slice(-600)).to.include('max_output_tokens');",
+                  "  pm.expect(raw.indexOf('response.completed'), 'a truncated stream must not emit response.completed: ' + raw.slice(-600)).to.equal(-1);",
+                  "  var terms = raw.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l.indexOf('\"type\":\"response.incomplete\"') !== -1; });",
+                  "  pm.expect(terms.length, 'no response.incomplete data line: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var out = (JSON.parse(terms[terms.length - 1].slice(6)).response || {}).output || [];",
+                  "  pm.expect(out.length > 0 && out[out.length - 1].status, 'truncated output item status (was completed pre-fix): ' + JSON.stringify(out)).to.equal('incomplete');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic anthropic/claude-haiku-4-5 /v1/responses complete turn -> status completed (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 complete turn reports status=completed with no incomplete_details - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('completed');",
+                  "  pm.expect(j.incomplete_details == null, 'incomplete_details must be absent: ' + JSON.stringify(j.incomplete_details)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses max_output_tokens truncation -> status incomplete (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash truncated turn reports status=incomplete + incomplete_details.reason=max_output_tokens - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('incomplete');",
+                  "  pm.expect(j.incomplete_details && j.incomplete_details.reason, 'incomplete_details: ' + JSON.stringify(j.incomplete_details)).to.equal('max_output_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses max_output_tokens truncation emits response.incomplete (streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash truncated stream terminates with response.incomplete, not response.completed - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'expected a response.incomplete terminal event: ' + raw.slice(-600)).to.include('response.incomplete');",
+                  "  pm.expect(raw, 'expected incomplete reason max_output_tokens: ' + raw.slice(-600)).to.include('max_output_tokens');",
+                  "  pm.expect(raw.indexOf('response.completed'), 'a truncated stream must not emit response.completed: ' + raw.slice(-600)).to.equal(-1);",
+                  "  var terms = raw.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l.indexOf('\"type\":\"response.incomplete\"') !== -1; });",
+                  "  pm.expect(terms.length, 'no response.incomplete data line: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var out = (JSON.parse(terms[terms.length - 1].slice(6)).response || {}).output || [];",
+                  "  pm.expect(out.length > 0 && out[out.length - 1].status, 'truncated output item status (was completed pre-fix): ' + JSON.stringify(out)).to.equal('incomplete');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16,\"reasoning\":{\"effort\":\"none\"},\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses thinking exhausts max_output_tokens: empty upstream stream ends response.incomplete (streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash stream whose budget is spent on thinking opens with response.created and ends response.incomplete - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'expected response.created before the terminal: ' + raw.slice(0, 600)).to.include('response.created');",
+                  "  pm.expect(raw, 'expected a response.incomplete terminal (Gemini returns an empty SSE body here; pre-fix Bifrost synthesized a bare response.completed): ' + raw.slice(-600)).to.include('response.incomplete');",
+                  "  pm.expect(raw.indexOf('response.completed'), 'a stream that never finished cleanly must not emit response.completed: ' + raw.slice(-600)).to.equal(-1);",
+                  "  pm.expect(raw, 'terminal must carry status incomplete: ' + raw.slice(-600)).to.include('\"status\":\"incomplete\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\",\"max_output_tokens\":16,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses complete turn -> status completed (non-streaming) - #7601",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-2.5-flash complete turn reports status=completed with no incomplete_details - #7601', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status (was null pre-fix): ' + pm.response.text()).to.equal('completed');",
+                  "  pm.expect(j.incomplete_details == null, 'incomplete_details must be absent: ' + JSON.stringify(j.incomplete_details)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "127. MCP Gateway Preserves Rich Tool Results (#7666)",
       "description": "Regression for #7666. The provider-independent /mcp gateway used to rebuild an upstream CallToolResult as one text block, dropping images, audio, embedded resources, resource links, structuredContent, _meta, and isError. The local sse_mcp fixture exposes rich_result over examples/mcps/remote-test-server; this case asserts the complete JSON-RPC result survives the gateway. Run the fixture before this focused harness case.",
       "item": [
         {
