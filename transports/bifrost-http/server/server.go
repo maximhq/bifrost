@@ -544,7 +544,35 @@ func (s *BifrostHTTPServer) ExecuteChatMCPTool(ctx context.Context, toolCall *sc
 // ExecuteRawMCPTool executes an MCP tool call and preserves the protocol-native result.
 func (s *BifrostHTTPServer) ExecuteRawMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*mcp.CallToolResult, *schemas.BifrostError) {
 	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	return s.Client.ExecuteRawMCPTool(bifrostCtx, toolCall)
+	// transports is also published as a standalone module and may temporarily
+	// depend on a core release from before raw MCP execution was added. Keep the
+	// cross-module call optional so GOWORK=off builds remain valid during that
+	// release window.
+	if client, ok := any(s.Client).(interface {
+		ExecuteRawMCPTool(*schemas.BifrostContext, *schemas.ChatAssistantMessageToolCall) (*mcp.CallToolResult, *schemas.BifrostError)
+	}); ok {
+		return client.ExecuteRawMCPTool(bifrostCtx, toolCall)
+	}
+
+	message, bifrostErr := s.Client.ExecuteChatMCPTool(bifrostCtx, toolCall)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	var text strings.Builder
+	if message != nil && message.Content != nil {
+		if message.Content.ContentStr != nil {
+			text.WriteString(*message.Content.ContentStr)
+		} else {
+			for _, block := range message.Content.ContentBlocks {
+				if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
+					text.WriteString(*block.Text)
+				}
+			}
+		}
+	}
+	result := mcp.NewToolResultText(text.String())
+	result.IsError = message != nil && message.ChatToolMessage != nil && message.ChatToolMessage.IsError != nil && *message.ChatToolMessage.IsError
+	return result, nil
 }
 
 // ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses message.
