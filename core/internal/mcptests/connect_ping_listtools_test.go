@@ -3,6 +3,9 @@ package mcptests
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -606,4 +609,242 @@ func TestMCPGate_NoPluginsConfigured_OpStillRuns(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "client should be registered")
+}
+
+// =============================================================================
+// SERVER INSTRUCTIONS
+// =============================================================================
+//
+// These drive a real MCP initialize handshake rather than a stub, which is the
+// point: the unit tests in core/mcp assert the aggregation given a list of
+// instructions, but they hand that list to the aggregator directly. Nothing
+// there proves the string actually survives the handshake, lands on the client
+// state, and is scoped by the same rules that narrow tools.
+
+// buildInProcessServerWithInstructions mirrors buildInProcessServer but returns
+// the server's own usage guidance from initialize. Empty instructions is a case
+// worth building too: a server that advertises none must contribute no heading.
+func buildInProcessServerWithInstructions(t *testing.T, name, instructions string) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer(name, "1.0.0",
+		server.WithToolCapabilities(true),
+		server.WithInstructions(instructions),
+	)
+	echoTool := mcpgo.NewTool("echo",
+		mcpgo.WithDescription("Echo tool"),
+		mcpgo.WithString("message", mcpgo.Required(), mcpgo.Description("message")),
+	)
+	s.AddTool(echoTool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		msg, _ := req.GetArguments()["message"].(string)
+		return mcpgo.NewToolResultText(msg), nil
+	})
+	return s
+}
+
+// addInstructionsClient registers one in-process client advertising the given
+// instructions and returns nothing — assertions read back through the manager.
+func addInstructionsClient(t *testing.T, manager *mcp.MCPManager, clientName, instructions string) {
+	t.Helper()
+	cfg := inProcessClientConfig(clientName, buildInProcessServerWithInstructions(t, clientName+"-srv", instructions))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
+}
+
+func TestConnectHook_PostHookCarriesServerInstructions(t *testing.T) {
+	t.Parallel()
+
+	plugin := NewTestConnectPlugin()
+	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
+
+	cfg := inProcessClientConfig("instructions_gate",
+		buildInProcessServerWithInstructions(t, "instructions-srv", "Call describe_policy first."))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
+
+	post := plugin.GetPostHookCalls()
+	require.Len(t, post, 1)
+	resp := post[0].ConnectResponse
+	require.NotNil(t, resp)
+	// Sibling of ServerInfo on the wire, not nested inside it.
+	assert.Equal(t, "Call describe_policy first.", resp.Instructions,
+		"PostConnectionHook must observe what the upstream advertised at initialize")
+}
+
+func TestServerInstructions_AggregatedAcrossClientsInNameOrder(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	// Registered out of order on purpose: the aggregate is sorted by client name,
+	// not by registration or map iteration order.
+	addInstructionsClient(t, manager, "zeta_client", "Zeta rule: never echo secrets.")
+	addInstructionsClient(t, manager, "alpha_client", "Alpha rule: check permissions first.")
+
+	got := manager.GetAggregatedServerInstructions(context.Background())
+
+	assert.Equal(t,
+		"<mcp_server name=\"alpha_client\">\nAlpha rule: check permissions first.\n</mcp_server>\n\n"+
+			"<mcp_server name=\"zeta_client\">\nZeta rule: never echo secrets.\n</mcp_server>",
+		got)
+}
+
+// The security-relevant case, end to end: a caller narrowed to one client must
+// not be handed another client's guidance. Scoping rides on GetToolPerClient, so
+// this pins that the real include-clients path reaches the instructions too.
+func TestServerInstructions_WithheldForClientsTheCallerCannotSee(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	addInstructionsClient(t, manager, "alpha_client", "Alpha rule: check permissions first.")
+	addInstructionsClient(t, manager, "zeta_client", "Zeta rule: never echo secrets.")
+
+	ctx := context.WithValue(context.Background(), schemas.MCPContextKeyIncludeClients, []string{"alpha_client"})
+	got := manager.GetAggregatedServerInstructions(ctx)
+
+	assert.Contains(t, got, "Alpha rule")
+	assert.NotContains(t, got, "Zeta rule", "a narrowed caller must not read an ungranted server's instructions")
+	assert.NotContains(t, got, "zeta_client", "not even the block tag may leak the server's existence")
+}
+
+// A server advertising none contributes nothing — not a bare heading, and not an
+// empty section that a client would have to special-case.
+func TestServerInstructions_ServerAdvertisingNoneContributesNoHeading(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	addInstructionsClient(t, manager, "quiet_client", "")
+	addInstructionsClient(t, manager, "loud_client", "Loud rule: say something.")
+
+	got := manager.GetAggregatedServerInstructions(context.Background())
+
+	assert.Equal(t, "<mcp_server name=\"loud_client\">\nLoud rule: say something.\n</mcp_server>", got)
+	assert.NotContains(t, got, "quiet_client")
+}
+
+func TestServerInstructions_EmptyWhenNoClientAdvertisesAny(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	addInstructionsClient(t, manager, "quiet_one", "")
+	addInstructionsClient(t, manager, "quiet_two", "")
+
+	// Empty, so the gateway renders an absent field rather than an empty one.
+	assert.Equal(t, "", manager.GetAggregatedServerInstructions(context.Background()))
+}
+
+// startInstructionsServer launches one examples/mcps/instructions-test-server
+// process advertising the given name and instructions, and returns its /mcp URL.
+// Skips the calling test when the fixture has not been built, matching how the
+// other binary-backed fixtures here behave (see remoteserver_test.go).
+func startInstructionsServer(t *testing.T, name, instructions string) string {
+	t.Helper()
+
+	root, err := bifrostRootDir()
+	require.NoError(t, err)
+	bin := filepath.Join(root, "..", "examples", "mcps", "instructions-test-server", "bin", "instructions-test-server")
+	if _, statErr := os.Stat(bin); statErr != nil {
+		t.Skip("instructions-test-server not built (run `make setup-mcp-tests`)")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	port, err := freePort(ctx)
+	if err != nil {
+		cancel()
+		t.Fatalf("allocate port: %v", err)
+	}
+
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("MCP_HTTP_PORT=%d", port),
+		fmt.Sprintf("MCP_SERVER_NAME=%s", name),
+		// Set explicitly even when empty: the fixture treats an unset variable as
+		// "use the default text" and an empty one as "advertise nothing".
+		fmt.Sprintf("MCP_INSTRUCTIONS=%s", instructions),
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		cancel()
+		t.Fatalf("start instructions-test-server: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	if err := waitForPort(ctx, port, 10*time.Second); err != nil {
+		t.Fatalf("instructions-test-server port %d never came up: %v", port, err)
+	}
+	return fmt.Sprintf("http://localhost:%d/mcp", port)
+}
+
+// TestServerInstructions_OverHTTPTransport is the one case here that crosses a
+// real network transport and a real server process, rather than an in-process
+// handshake. It is also what keeps examples/mcps/instructions-test-server honest:
+// without it that fixture is only ever run by hand.
+func TestServerInstructions_OverHTTPTransport(t *testing.T) {
+	t.Parallel()
+
+	alphaURL := startInstructionsServer(t, "alpha", "Alpha rule: check permissions first.")
+	betaURL := startInstructionsServer(t, "beta", "Beta rule: never echo secrets.")
+
+	alphaCfg := GetSampleHTTPClientConfig(alphaURL)
+	alphaCfg.ID, alphaCfg.Name = "http_alpha_id", "http_alpha"
+	betaCfg := GetSampleHTTPClientConfig(betaURL)
+	betaCfg.ID, betaCfg.Name = "http_beta_id", "http_beta"
+
+	manager := setupMCPManager(t, alphaCfg, betaCfg)
+
+	got := manager.GetAggregatedServerInstructions(context.Background())
+	assert.Equal(t,
+		"<mcp_server name=\"http_alpha\">\nAlpha rule: check permissions first.\n</mcp_server>\n\n"+
+			"<mcp_server name=\"http_beta\">\nBeta rule: never echo secrets.\n</mcp_server>",
+		got, "instructions must survive the HTTP initialize handshake and aggregate in name order")
+
+	// Same scoping guarantee as the in-process case, across the real transport.
+	scoped := manager.GetAggregatedServerInstructions(
+		context.WithValue(context.Background(), schemas.MCPContextKeyIncludeClients, []string{"http_alpha"}))
+	assert.Contains(t, scoped, "Alpha rule")
+	assert.NotContains(t, scoped, "Beta rule")
+}
+
+// Instructions ride alongside tools from the same handshake, so a server that advertises them
+// must still list and execute its tools normally. This pins that the capture path did not
+// disturb discovery or execution — the failure mode would be a server whose guidance arrives
+// but whose tools do not.
+func TestServerInstructions_DoNotDisturbToolDiscoveryOrExecution(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	addInstructionsClient(t, manager, "talkative", "Talkative rule: echo politely.")
+
+	bf := setupBifrost(t)
+	bf.SetMCPManager(manager)
+	ctx := createTestContext()
+
+	// The instructions are captured...
+	require.Contains(t, manager.GetAggregatedServerInstructions(ctx), "Talkative rule")
+
+	// ...and the same client's tool is still discoverable...
+	var found bool
+	for _, tool := range manager.GetAvailableTools(ctx) {
+		if tool.Function != nil && tool.Function.Name == "talkative-echo" {
+			found = true
+		}
+	}
+	require.True(t, found, "a client advertising instructions must still publish its tools")
+
+	// ...and still executes.
+	name := "talkative-echo"
+	id := "call-1"
+	typ := "function"
+	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID: &id, Type: &typ,
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name: &name, Arguments: `{"message":"LOOPCHECK"}`,
+		},
+	})
+	require.Nil(t, bifrostErr, "tool execution should succeed alongside instructions")
+	require.NotNil(t, result)
+	require.NotNil(t, result.Content)
+	require.NotNil(t, result.Content.ContentStr)
+	assert.Contains(t, *result.Content.ContentStr, "LOOPCHECK")
 }

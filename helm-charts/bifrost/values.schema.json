@@ -747,6 +747,18 @@
                   "type": "boolean",
                   "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
                   "default": false
+                },
+                "maxInstructionsPerClient": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Byte bound on a single MCP server's forwarded instructions. Longer text is truncated with a notice. 0 uses the built-in default of 4096.",
+                  "default": 0
+                },
+                "maxInstructionsTotal": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools. 0 uses the built-in default of 16384.",
+                  "default": 0
                 }
               }
             },

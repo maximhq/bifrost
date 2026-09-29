@@ -597,6 +597,10 @@ bifrost:
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
       # How far an upstream MCP server's initialize instructions travel:
       # off (default, dropped), gateway (/mcp handshake only), all (also injected into LLM requests)
+      # bifrost.mcp.toolManagerConfig.maxInstructionsPerClient -- byte bound per MCP server; 0 = default (4096)
+      # maxInstructionsPerClient: 0
+      # bifrost.mcp.toolManagerConfig.maxInstructionsTotal -- byte bound on the whole aggregate; 0 = default (16384)
+      # maxInstructionsTotal: 0
 
   # Plugins configuration
   plugins:
