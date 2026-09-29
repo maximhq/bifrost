@@ -42,7 +42,7 @@ func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, c
 				MCPClientID:         config.ID,
 				MCPClientName:       config.Name,
 				SubjectTokenMissing: true,
-				Message:             fmt.Sprintf("Authentication required for %s: this server uses your identity token, so the request must be authenticated with one. Retry with your identity-provider credential.", config.Name),
+				Message:             subjectTokenMissingMessage(ctx, config.Name),
 			}
 		}
 		var rejected *schemas.TokenExchangeRejectedError
@@ -59,6 +59,24 @@ func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, c
 	}
 
 	return bearerHeader(accessToken), nil
+}
+
+// subjectTokenMissingMessage explains why there was no identity-provider token to exchange, as
+// precisely as the request can say. The auth layer that handled the inbound credential is the only
+// thing that knows whether a token was presented and rejected or never presented, and it records a
+// rejection under BifrostContextKeyMCPInboundBearerOmitted. A caller who sent a token and is told to
+// send one has nothing to act on; naming what happened to it does.
+func subjectTokenMissingMessage(ctx *schemas.BifrostContext, clientName string) string {
+	var reason schemas.MCPInboundBearerOmittedReason
+	if ctx != nil {
+		reason, _ = ctx.Value(schemas.BifrostContextKeyMCPInboundBearerOmitted).(schemas.MCPInboundBearerOmittedReason)
+	}
+	switch reason {
+	case schemas.MCPInboundBearerRejected:
+		return fmt.Sprintf("Authentication required for %s: this server uses your identity token, but the identity-provider token on this request was rejected. Sign in to your identity provider again, and check that the token was issued for the application this deployment is configured with.", clientName)
+	default:
+		return fmt.Sprintf("Authentication required for %s: this server uses your identity token, so the request must carry one. Send your identity-provider access token as the Authorization bearer and retry.", clientName)
+	}
 }
 
 func (r *tokenExchangeResolver) RequiresPerCallConnection() bool { return true }

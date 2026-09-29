@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -118,6 +119,31 @@ func TestComplexitySemanticConfigNormalizedDefaults(t *testing.T) {
 	assert.Equal(t, DefaultComplexitySemanticTimeout, normalized.Timeout)
 	assert.Equal(t, ComplexitySemanticVectorStoreEmbedded, normalized.VectorStore)
 	require.NoError(t, normalized.Validate())
+}
+
+// TestComplexityConfigNormalizedProviderCase pins that built-in provider names
+// are canonicalized to lowercase while custom provider names keep their case,
+// since custom providers are registered (and looked up) under their exact name.
+func TestComplexityConfigNormalizedProviderCase(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		want     schemas.ModelProvider
+	}{
+		{name: "standard provider is lowercased", provider: " OpenAI ", want: "openai"},
+		{name: "custom provider keeps its case", provider: " DeepInfra-Embeddings ", want: "DeepInfra-Embeddings"},
+		{name: "lowercase custom provider is unchanged", provider: "deepinfra-embeddings", want: "deepinfra-embeddings"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			semantic := testSemanticConfig()
+			semantic.Provider = tt.provider
+			assert.Equal(t, tt.want, semantic.normalized().Provider)
+
+			llm := &ComplexityLLMConfig{Provider: tt.provider, Model: "gpt-4.1-mini"}
+			assert.Equal(t, tt.want, llm.normalized().Provider)
+		})
+	}
 }
 
 func TestComplexitySemanticConfigValidation(t *testing.T) {

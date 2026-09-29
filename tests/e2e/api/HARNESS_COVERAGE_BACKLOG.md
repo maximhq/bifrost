@@ -193,7 +193,7 @@ Sources:
 - [ ] **Additional model response field paths** (`additionalModelResponseFieldPaths`)
 - [ ] **Prompt variables** (`promptVariables: { var: { text } }`) — for managed prompts
 - [ ] **Performance config** (`performanceConfig: { latency: "standard" | "optimized" }`)
-- [ ] **Request metadata** (`requestMetadata: { ... }`) — for billing tags
+- [x] **Request metadata** (`requestMetadata: { ... }`) — Anthropic and PydanticAI ingress, folder 113
 
 ### InvokeModel API (`POST /model/{modelId}/invoke`)
 

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -1290,6 +1291,12 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	}
 
 	// Map standard parameters
+	if params.N != nil {
+		if *params.N < 1 || *params.N > math.MaxInt32 {
+			return config, fmt.Errorf("n must be between 1 and %d for Gemini candidateCount, got %d", math.MaxInt32, *params.N)
+		}
+		config.CandidateCount = int32(*params.N)
+	}
 	if params.Stop != nil {
 		config.StopSequences = params.Stop
 	}

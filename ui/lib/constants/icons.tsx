@@ -64,7 +64,17 @@ export const ProviderIcons = {
 	},
 
 	azure: ({ className = "" }: IconProps) => {
-		return <img src="/images/azure.webp" alt="azure" width={14} height={14} loading="lazy" decoding="async" className={className} />;
+		return (
+			<img
+				src="/images/azure.webp"
+				alt="azure"
+				width={14}
+				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 	bedrock: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -453,7 +463,17 @@ export const ProviderIcons = {
 	},
 
 	sgl: ({ className = "" }: IconProps) => {
-		return <img src="/images/sgl.webp" alt="sgl" width={14} height={14} loading="lazy" decoding="async" className={className} />;
+		return (
+			<img
+				src="/images/sgl.webp"
+				alt="sgl"
+				width={14}
+				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 	openai: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -649,7 +669,17 @@ export const ProviderIcons = {
 		);
 	},
 	nebius: ({ className = "" }: IconProps) => {
-		return <img src="/images/nebius.webp" alt="nebius" width={14} height={14} loading="lazy" decoding="async" className={className} />;
+		return (
+			<img
+				src="/images/nebius.webp"
+				alt="nebius"
+				width={14}
+				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 	xai: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -821,7 +851,15 @@ export const ProviderIcons = {
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
-		return <img src="/images/databricks.svg" alt="databricks" width={resolvedSize} height={resolvedSize} className={className} />;
+		return (
+			<img
+				src="/images/databricks.svg"
+				alt="databricks"
+				width={resolvedSize}
+				height={resolvedSize}
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 	// GitHub Copilot's goggles mark. The source art is fill="#fff", which disappears on the
 	// light theme, so the fill is bound to currentColor and the icon follows the surrounding
@@ -883,12 +921,39 @@ export const RoutingEngineUsedIcons = {
 
 export type RoutingEngineType = keyof typeof RoutingEngineUsedIcons;
 
-// Helper component to render provider icons
+// Edge-to-edge marks read larger than the padded ones at the same box size; scale them back
+// optically, leaving the layout box alone. Classes are spelled out so Tailwind can see them.
+const OPTICAL_SCALE: Partial<Record<keyof typeof ProviderIcons, string>> = {
+	azure: "scale-[0.82]",
+	sgl: "scale-[0.82]",
+	nebius: "scale-[0.82]",
+	databricks: "scale-[0.86]",
+};
+
 export const RenderProviderIcon = ({ provider, ...props }: IconProps & { provider: keyof typeof ProviderIcons }) => {
 	const { resolvedTheme } = useTheme();
 	const IconComponent = ProviderIcons[provider];
-	return IconComponent ? IconComponent({ ...props, theme: resolvedTheme, className: cn("w-5 h-5 shrink-0", props.className) }) : null;
+	return IconComponent
+		? IconComponent({
+				...props,
+				theme: resolvedTheme,
+				className: cn("w-5 h-5 shrink-0", OPTICAL_SCALE[provider], props.className),
+			})
+		: null;
 };
 
 export type ProviderIconType = keyof typeof ProviderIcons;
+
+// A custom provider has no mark of its own, so it borrows the one for the wire format it
+// speaks. Without the fallback RenderProviderIcon draws nothing at all for it.
+export const resolveProviderIconKey = (name: string, baseProviderType?: string): ProviderIconType | undefined => {
+	// Own-property checks, not `in`: `in` walks the prototype chain, so a provider named
+	// `__proto__` or `toString` would resolve to something off Object.prototype that
+	// RenderProviderIcon then calls as a component.
+	const candidate = (hasIcon(name) ? name : baseProviderType) as ProviderIconType | undefined;
+	return candidate && hasIcon(candidate) ? candidate : undefined;
+};
+
+const hasIcon = (name: string) => Object.prototype.hasOwnProperty.call(ProviderIcons, name);
+
 export default ProviderIcons;

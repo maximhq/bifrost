@@ -3,6 +3,7 @@ package utils
 import (
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -495,6 +496,12 @@ func TestParseDecisionAnswersNormalizesNearOneDistributions(t *testing.T) {
 	if score := answers["severity"].Value.(float64); math.Abs(score-wantScore) > 1e-9 {
 		t.Errorf("score = %v, want normalized expected value %v", score, wantScore)
 	}
+	// Exactly 5% below one is within the documented tolerance despite binary
+	// floating-point rounding of decimal probabilities.
+	boundary := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.9,"b":0.05}},"severity":{"value":2,"confidence":0.8,"probabilities":{"0":0,"1":0.05,"2":0.95}}}`
+	if _, err := ParseDecisionAnswers([]byte(boundary), questions); err != nil {
+		t.Fatalf("distribution at the tolerance boundary should be accepted: %v", err)
+	}
 	tooFar := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.8,"b":0.1}},"severity":{"value":2,"confidence":0.8,"probabilities":{"0":0,"1":0.05,"2":0.95}}}`
 	if _, err := ParseDecisionAnswers([]byte(tooFar), questions); err == nil || !strings.Contains(err.Error(), "sum") {
 		t.Fatalf("distribution far from one must be rejected, got %v", err)
@@ -558,5 +565,139 @@ func TestBuildDecisionToolName(t *testing.T) {
 	}
 	if tool.ResponsesToolFunction == nil || tool.ResponsesToolFunction.Parameters == nil {
 		t.Errorf("tool function params missing: %+v", tool)
+	}
+}
+
+// flattenedQuestions mirrors the harness decision-emulation matrix request that
+// openrouter/anthropic/claude-opus-4.1 answered in flattened form.
+func flattenedQuestions() map[string]schemas.DecisionQuestion {
+	q := map[string]schemas.DecisionQuestion{}
+	for _, name := range []string{
+		"expresses_urgency", "has_attached_evidence", "is_angry", "is_billing_related", "is_first_time_issue",
+		"is_frustrated", "is_long_time_customer", "is_polite", "is_repeat_contact", "is_satisfied",
+		"mentions_competitor", "mentions_data_loss", "mentions_refund", "mentions_specific_amount",
+		"reports_product_crash", "requests_human_response", "threatens_cancellation", "threatens_chargeback",
+		"threatens_public_complaint", "willing_to_wait",
+	} {
+		q[name] = schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: name}
+	}
+	choice := func(opts ...string) schemas.DecisionQuestion {
+		criteria := map[string]any{}
+		for _, o := range opts {
+			criteria[o] = o
+		}
+		return schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "pick", Criteria: criteria}
+	}
+	score := func(n int) schemas.DecisionQuestion {
+		levels := make([]any, n)
+		for i := range levels {
+			levels[i] = strconv.Itoa(i)
+		}
+		return schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "rate", Criteria: levels}
+	}
+	q["category"] = choice("billing", "bug", "account", "other")
+	q["contact_channel"] = choice("email", "phone", "chat", "social")
+	q["customer_tier"] = choice("free", "pro", "enterprise")
+	q["primary_emotion"] = choice("anger", "confusion", "sadness", "joy")
+	q["recommended_action"] = choice("issue_refund", "request_more_info", "close_ticket", "ignore")
+	q["sentiment"] = choice("positive", "neutral", "negative")
+	q["churn_risk"] = score(4)
+	q["customer_satisfaction"] = score(5)
+	q["severity"] = score(4)
+	q["urgency"] = score(4)
+	return q
+}
+
+// flattenedOpus41Args is the verbatim emit_decision arguments returned by
+// openrouter/anthropic/claude-opus-4.1 (captured 2026-09-23). The model flattened
+// every nested answer object into the top level, leaked its XML
+// "<parameter name=...>" syntax into the first field, and repeated
+// "confidence"/"probabilities" as duplicate keys.
+const flattenedOpus41Args = `{"category": "<parameter name=\"choice\">billing", "confidence": 1.0, "probabilities": {"account":0.0,"billing":1.0,"bug":0.0,"other":0.0}, "churn_risk": "<parameter name=\"value\">3", "confidence": 0.95, "probabilities": {"0":0.0,"1":0.0,"2":0.05,"3":0.95}, "contact_channel": "<parameter name=\"choice\">email", "confidence": 1.0, "probabilities": {"chat":0.0,"email":1.0,"phone":0.0,"social":0.0}, "customer_satisfaction": "<parameter name=\"value\">0", "confidence": 1.0, "probabilities": {"0":1.0,"1":0.0,"2":0.0,"3":0.0,"4":0.0}, "customer_tier": "<parameter name=\"choice\">pro", "confidence": 1.0, "probabilities": {"enterprise":0.0,"free":0.0,"pro":1.0}, "expresses_urgency": "<parameter name=\"value\">1.0", "confidence": 1.0, "has_attached_evidence": "<parameter name=\"value\">1.0", "confidence": 1.0, "is_angry": "<parameter name=\"value\">1.0", "confidence": 0.95, "is_billing_related": "<parameter name=\"value\">1.0", "confidence": 1.0, "is_first_time_issue": "<parameter name=\"value\">0.0", "confidence": 1.0, "is_frustrated": "<parameter name=\"value\">1.0", "confidence": 1.0, "is_long_time_customer": "<parameter name=\"value\">1.0", "confidence": 1.0, "is_polite": "<parameter name=\"value\">0.0", "confidence": 0.95, "is_repeat_contact": "<parameter name=\"value\">1.0", "confidence": 1.0, "is_satisfied": "<parameter name=\"value\">0.0", "confidence": 1.0, "mentions_competitor": "<parameter name=\"value\">1.0", "confidence": 1.0, "mentions_data_loss": "<parameter name=\"value\">0.0", "confidence": 1.0, "mentions_refund": "<parameter name=\"value\">1.0", "confidence": 1.0, "mentions_specific_amount": "<parameter name=\"value\">1.0", "confidence": 1.0, "primary_emotion": "<parameter name=\"choice\">anger", "confidence": 0.95, "probabilities": {"anger":0.95,"confusion":0.0,"joy":0.0,"sadness":0.05}, "recommended_action": "<parameter name=\"choice\">issue_refund", "confidence": 0.95, "probabilities": {"close_ticket":0.0,"ignore":0.0,"issue_refund":0.95,"request_more_info":0.05}, "reports_product_crash": "<parameter name=\"value\">0.0", "confidence": 1.0, "requests_human_response": "<parameter name=\"value\">1.0", "confidence": 1.0, "sentiment": "<parameter name=\"choice\">negative", "confidence": 1.0, "probabilities": {"negative":1.0,"neutral":0.0,"positive":0.0}, "severity": "<parameter name=\"value\">3", "confidence": 0.95, "probabilities": {"0":0.0,"1":0.0,"2":0.05,"3":0.95}, "threatens_cancellation": "<parameter name=\"value\">1.0", "confidence": 1.0, "threatens_chargeback": "<parameter name=\"value\">1.0", "confidence": 1.0, "threatens_public_complaint": "<parameter name=\"value\">1.0", "confidence": 1.0, "urgency": "<parameter name=\"value\">3", "confidence": 1.0, "probabilities": {"0":0.0,"1":0.0,"2":0.0,"3":1.0}, "willing_to_wait": "<parameter name=\"value\">0.0", "confidence": 1.0}`
+
+func TestParseDecisionAnswersRecoversFlattenedParameterTags(t *testing.T) {
+	answers, err := ParseDecisionAnswers([]byte(flattenedOpus41Args), flattenedQuestions())
+	if err != nil {
+		t.Fatalf("flattened answers must be recovered: %v", err)
+	}
+	if len(answers) != 30 {
+		t.Fatalf("expected 30 answers, got %d", len(answers))
+	}
+	if answers["category"].Value != "billing" || answers["category"].Probabilities["billing"] != 1 {
+		t.Errorf("category = %+v", answers["category"])
+	}
+	if answers["is_polite"].Value != 0.0 || *answers["is_polite"].Confidence != 0.95 {
+		t.Errorf("is_polite = %+v", answers["is_polite"])
+	}
+	if answers["is_angry"].Value != 1.0 || *answers["is_angry"].Confidence != 0.95 {
+		t.Errorf("is_angry = %+v", answers["is_angry"])
+	}
+	// Score derives from its own distribution: 2*0.05 + 3*0.95 = 2.95.
+	if math.Abs(answers["churn_risk"].Value.(float64)-2.95) > 1e-9 || *answers["churn_risk"].Confidence != 0.95 {
+		t.Errorf("churn_risk = %+v", answers["churn_risk"])
+	}
+	if answers["primary_emotion"].Value != "anger" || answers["primary_emotion"].Probabilities["sadness"] != 0.05 {
+		t.Errorf("primary_emotion = %+v", answers["primary_emotion"])
+	}
+}
+
+// The same model sometimes pads the leaked tag with whitespace, as in
+// `{"category": "  <parameter name=...` (seen 2026-09-24 on
+// openrouter/anthropic/claude-opus-4.1).
+func TestParseDecisionAnswersRecoversWhitespacePaddedParameterTags(t *testing.T) {
+	args := `{"category": "  <parameter name=\"choice\">billing", "confidence": 1.0, "probabilities": {"billing":1,"bug":0,"other":0}, "is_frustrated": "\n<parameter name=\"value\">0.9", "confidence": 0.8, "urgency": "\t <parameter name=\"value\">2", "confidence": 0.6, "probabilities": {"0":0.1,"1":0.1,"2":0.8}}`
+	answers, err := ParseDecisionAnswers([]byte(args), mixedQuestions())
+	if err != nil {
+		t.Fatalf("whitespace-padded answers must be recovered: %v", err)
+	}
+	if answers["category"].Value != "billing" || *answers["category"].Confidence != 1.0 {
+		t.Errorf("category = %+v", answers["category"])
+	}
+	if answers["is_frustrated"].Value != 0.9 || *answers["is_frustrated"].Confidence != 0.8 {
+		t.Errorf("is_frustrated = %+v", answers["is_frustrated"])
+	}
+	if *answers["urgency"].Confidence != 0.6 {
+		t.Errorf("urgency = %+v", answers["urgency"])
+	}
+}
+
+func TestParseDecisionAnswersFlattenedRejections(t *testing.T) {
+	q := mixedQuestions()
+	cases := map[string]struct {
+		args    string
+		wantSub string
+	}{
+		// The recovered answers still pass through every normal check.
+		"recovered choice missing probabilities": {
+			args:    `{"category": "<parameter name=\"choice\">billing", "confidence": 1.0, "is_frustrated": "<parameter name=\"value\">0.9", "urgency": "<parameter name=\"value\">2", "confidence": 0.6, "probabilities": {"0":0.1,"1":0.1,"2":0.8}}`,
+			wantSub: "missing probabilities",
+		},
+		"field before any question": {
+			args:    `{"confidence": 1.0, "category": "<parameter name=\"choice\">billing", "confidence": 1.0, "probabilities": {"billing":1,"bug":0,"other":0}}`,
+			wantSub: "not a JSON object",
+		},
+		"field repeated within one answer": {
+			args:    `{"is_frustrated": "<parameter name=\"value\">0.9", "value": 0.1}`,
+			wantSub: "not a JSON object",
+		},
+		"unknown top-level key": {
+			args:    `{"is_frustrated": "<parameter name=\"value\">0.9", "mood": "bad"}`,
+			wantSub: "not a JSON object",
+		},
+		"string answer without a parameter tag": {
+			args:    `{"is_frustrated": "0.9"}`,
+			wantSub: "not a JSON object",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseDecisionAnswers([]byte(tc.args), q)
+			if err == nil {
+				t.Fatalf("expected rejection for %q", name)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantSub)
+			}
+		})
 	}
 }

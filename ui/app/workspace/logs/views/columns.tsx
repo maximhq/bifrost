@@ -31,6 +31,9 @@ export interface LogsTableMeta {
 	expandedChainIds: Set<string>;
 	loadingChainIds: Set<string>;
 	onToggleChain: (log: LogEntry) => void;
+	expandedSessionIds: Set<string>;
+	loadingSessionIds: Set<string>;
+	onToggleSession: (log: LogEntry) => void;
 }
 
 function batchAccountingDisplay(log: LogEntry): { model: string; usage: LLMUsage } | null {
@@ -209,7 +212,16 @@ export function getMessage(log?: LogEntry) {
 	return "";
 }
 
-export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: LogEntry; contentClassName?: string }) {
+export function LogMessageCell({
+	log,
+	contentClassName = "max-w-full",
+	compact = false,
+}: {
+	log: LogEntry;
+	contentClassName?: string;
+	/** Table rows are a fixed height, so a realtime turn's lines tighten to fit two of them instead of being cut mid-line. */
+	compact?: boolean;
+}) {
 	const input = getMessage(log);
 	const isLargePayload = log.is_large_payload_request || log.is_large_payload_response;
 	const realtimeMessages = log.object === "realtime.turn" ? getRealtimeTurnMessages(log) : null;
@@ -226,7 +238,13 @@ export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: 
 			)}
 			{realtimeMessages &&
 			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
-				<div className={cn(contentClassName, "font-mono text-sm font-normal leading-5")}>
+				<div
+					className={cn(
+						contentClassName,
+						"font-mono font-normal",
+						compact ? "max-h-[30px] overflow-hidden text-[11px] leading-[15px]" : "text-sm leading-5",
+					)}
+				>
 					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
 					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
 					{realtimeMessages.assistantToolCall ? (
@@ -252,8 +270,11 @@ export const createColumns = (
 	metadataKeys: string[] = [],
 	customAppIcons: Record<string, string> = {},
 	groupedView = false,
+	onFilterBySessionId?: (sessionId: string) => void,
 ): ColumnDef<LogEntry>[] => {
-	// Chevron that expands a fallback chain in the grouped view. Child rows get a
+	// Expander for the grouped view. The control fills the cell, and the cell
+	// itself toggles rather than opening the sheet (see the logs page's
+	// onRowClick), so the whole column reads as one hit target. Child rows get a
 	// corner connector instead so the hierarchy stays readable in any column order.
 	const expandColumn: ColumnDef<LogEntry>[] = groupedView
 		? [
@@ -264,8 +285,46 @@ export const createColumns = (
 					cell: ({ row, table }) => {
 						const meta = table.options.meta as LogsTableMeta | undefined;
 						const log = row.original as DisplayLogEntry;
-						if (log.__chainChild) {
-							return <CornerDownRight className="text-muted-foreground/70 mx-auto size-3.5" />;
+						// A session member keeps its own chain chevron, so the tree can be
+						// walked a level deeper. Every other nested row is a leaf.
+						if (log.__chainChild && !(log.__rowKind === "session-member" && (log.child_count ?? 0) > 0)) {
+							return (
+								<div className="flex h-full w-full items-center justify-center">
+									<CornerDownRight className="text-muted-foreground/70 size-3.5 shrink-0" />
+								</div>
+							);
+						}
+						// Session grouping wins on a top-level row: the session chevron
+						// lists the session's other requests and this row's own attempts
+						// together, so nothing becomes unreachable by taking this branch.
+						const sessionCount = log.session_child_count ?? 0;
+						if (!log.__chainChild && sessionCount > 0 && meta) {
+							const isExpanded = meta.expandedSessionIds.has(log.id);
+							const isLoading = meta.loadingSessionIds.has(log.id) || meta.loadingChainIds.has(log.id);
+							return (
+								<button
+									type="button"
+									data-testid="log-session-expand-btn"
+									aria-label={
+										isExpanded
+											? "Collapse this session"
+											: `Expand ${sessionCount} more request${sessionCount === 1 ? "" : "s"} in this session`
+									}
+									aria-expanded={isExpanded}
+									className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
+									onClick={(event) => {
+										event.stopPropagation();
+										meta.onToggleSession(log);
+									}}
+								>
+									{isLoading ? (
+										<Loader2 className="size-3.5 shrink-0 animate-spin" />
+									) : (
+										<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
+									)}
+									<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{sessionCount}</span>
+								</button>
+							);
 						}
 						const childCount = log.child_count ?? 0;
 						if (!childCount || !meta) return null;
@@ -279,18 +338,18 @@ export const createColumns = (
 								// here too, and calling that an "attempt" misreads what it is.
 								aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
 								aria-expanded={isExpanded}
-								className="text-muted-foreground hover:text-foreground absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center gap-1 rounded-sm transition-colors"
+								className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
 								onClick={(event) => {
 									event.stopPropagation();
 									meta.onToggleChain(log);
 								}}
 							>
 								{isLoading ? (
-									<Loader2 className="size-3.5 animate-spin" />
+									<Loader2 className="size-3.5 shrink-0 animate-spin" />
 								) : (
-									<ChevronRight className={cn("size-3.5 transition-transform", isExpanded && "rotate-90")} />
+									<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
 								)}
-								<span className="font-mono text-[10.5px] tabular-nums">{childCount}</span>
+								<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{childCount}</span>
 							</button>
 						);
 					},
@@ -317,7 +376,7 @@ export const createColumns = (
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
-			size: 130,
+			size: 150,
 			cell: ({ row }) => {
 				const timestamp = row.original.timestamp;
 				const date = timestamp ? new Date(timestamp) : null;
@@ -355,7 +414,7 @@ export const createColumns = (
 			accessorKey: "input",
 			header: "Message",
 			size: 350,
-			cell: ({ row }) => <LogMessageCell log={row.original} />,
+			cell: ({ row }) => <LogMessageCell log={row.original} compact />,
 		},
 		{
 			accessorKey: "model",
@@ -432,6 +491,23 @@ export const createColumns = (
 			),
 			size: 190,
 			cell: ({ row }) => {
+				const sessionCount = row.original.session_child_count ?? 0;
+				if (sessionCount > 0 && !(row.original as DisplayLogEntry).__chainChild) {
+					// Same two-line shape as a normal token cell: a collapsed session row
+					// has to be exactly as tall as the rows it expands into, or the table
+					// jumps every time one is opened.
+					return (
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<div className="flex flex-col items-start gap-0.5 pl-4 leading-tight">
+									<span className="font-mono text-[12px] tabular-nums">{formatCompactNumber(row.original.session_total_tokens ?? 0)}</span>
+									<span className="text-muted-foreground font-mono text-[10.5px] tabular-nums">{sessionCount + 1} requests</span>
+								</div>
+							</TooltipTrigger>
+							<TooltipContent>Total across {sessionCount + 1} requests in this session. Expand the row to see them.</TooltipContent>
+						</Tooltip>
+					);
+				}
 				const tokenUsage = row.original.token_usage ?? batchAccountingDisplay(row.original)?.usage;
 				if (!tokenUsage) {
 					return <div className="pl-4 font-mono text-xs">N/A</div>;
@@ -474,6 +550,19 @@ export const createColumns = (
 			),
 			size: 120,
 			cell: ({ row }) => {
+				// A collapsed session stands for every request in it, so the cell
+				// reads as the session's total rather than the first turn's cost.
+				const sessionCount = row.original.session_child_count ?? 0;
+				if (sessionCount > 0 && !(row.original as DisplayLogEntry).__chainChild) {
+					return (
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<div className="pl-4 font-mono text-sm tabular-nums">{formatCost(row.original.session_total_cost ?? 0)}</div>
+							</TooltipTrigger>
+							<TooltipContent>Total across {sessionCount + 1} requests in this session. Expand the row to see them.</TooltipContent>
+						</Tooltip>
+					);
+				}
 				if (row.original.cost == null) {
 					const batchCost = row.original.batch_debug?.accounting?.cost;
 					if (batchCost != null) {
@@ -514,6 +603,31 @@ export const createColumns = (
 	];
 
 	const attributionColumns: ColumnDef<LogEntry>[] = [
+		{
+			id: "session",
+			header: "Session",
+			size: 170,
+			cell: ({ row }) => {
+				const sessionId = row.original.session_id;
+				if (!sessionId) return <div className="font-mono text-xs">-</div>;
+				if (!onFilterBySessionId) {
+					return <TruncatedLabel className="font-mono text-xs">{sessionId}</TruncatedLabel>;
+				}
+				return (
+					<button
+						type="button"
+						data-testid="log-session-filter-btn"
+						className="hover:text-foreground cursor-pointer text-left"
+						onClick={(event) => {
+							event.stopPropagation();
+							onFilterBySessionId(sessionId);
+						}}
+					>
+						<TruncatedLabel className="font-mono text-xs">{sessionId}</TruncatedLabel>
+					</button>
+				);
+			},
+		},
 		{
 			id: "service_tier",
 			header: "Service Tier",

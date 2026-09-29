@@ -87,12 +87,14 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		CustomLabels             []string            `json:"custom_labels,omitempty"`
 		MetricsEnabled           *bool               `json:"metrics_enabled,omitempty"`
 		OverheadBreakdownEnabled *bool               `json:"overhead_breakdown_enabled,omitempty"`
+		UserLabelsEnabled        *bool               `json:"user_labels_enabled,omitempty"`
 		PushGateway              *pushGatewayStorage `json:"push_gateway,omitempty"`
 	}
 	storage := configStorage{
 		CustomLabels:             c.CustomLabels,
 		MetricsEnabled:           c.MetricsEnabled,
 		OverheadBreakdownEnabled: c.OverheadBreakdownEnabled,
+		UserLabelsEnabled:        c.UserLabelsEnabled,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -287,38 +289,27 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
-// userLabelNames are appended to defaultBifrostLabelNames when
-// user_labels_enabled is set.
-var userLabelNames = []string{"user_id", "user_name"}
+// userLabelNames are the unbounded dimensions, added when user_labels_enabled is
+// set. Derived, so promoting a dimension to that tier needs no edit here.
+var userLabelNames = func() []string {
+	safe := map[string]bool{}
+	for _, n := range schemas.MetricSafeEnrichmentDimNames() {
+		safe[n] = true
+	}
+	var out []string
+	for _, n := range schemas.HighCardinalityMetricEnrichmentDimNames() {
+		if !safe[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
 
-// defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
-// bifrost.* metrics. It is a package var (not an Init local) so the connector-
-// parity conformance test can assert it against the shared enrichment registry
-// (core/schemas). Metric-tier dimensions only — no high-cardinality (user, arrays).
-var defaultBifrostLabelNames = []string{
-	"provider",
-	"model",
-	"alias",
-	"method",
-	"virtual_key_id",
-	"virtual_key_name",
-	"routing_engine_used",
-	"routing_rule_id",
-	"routing_rule_name",
-	"complexity_tier",
-	"complexity_mechanism",
-	"selected_key_id",
-	"selected_key_name",
-	"fallback_index",
-	"team_id",
-	"team_name",
-	"customer_id",
-	"customer_name",
-	"business_unit_id",
-	"business_unit_name",
-	"project_id",
-	"project_name",
-}
+// defaultBifrostLabelNames is derived from schemas.EnrichmentDims, not hand-listed
+// — the registry used to be advisory and each connector kept its own copy, which
+// is how Splunk fell 2 dimensions behind. Bounded dimensions only; the unbounded
+// ones are opt-in via user_labels_enabled.
+var defaultBifrostLabelNames = schemas.MetricSafeEnrichmentDimNames()
 
 // defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
 // dimensions available in the hook plus the governance identity. No network_transport
@@ -652,7 +643,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_key_rotation_events_total",
-			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate-limit/auth/billing/permission) that triggered a switch to a different key on the next retry.",
+			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate limit, rejected credential, exhausted quota, model access, retired model, region block) that triggered a switch to a different key on the next retry.",
 		},
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
@@ -1198,10 +1189,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A request is scoped to at most one project, so there is no plural form to canonicalize.
 	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
 	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
+	app := schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent))
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
 		"provider":             string(provider),
+		"app":                  app,
 		"model":                model,
 		"alias":                alias,
 		"method":               string(requestType),
@@ -1289,15 +1282,18 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		// Emit one rotation counter increment per attempt that actually caused a key swap on the
-		// next try (per-key failure — rate-limit/auth/billing/permission — with retries remaining).
-		// Mark the key unhealthy on any failure, since key health is per-failure not per-rotation.
+		// next try (a per-key failure with a key left to move to). Mark the key unhealthy on any
+		// failure, since key health is per-failure not per-rotation, except when the failure says
+		// nothing about the key's health: a request for a model this key cannot reach, or a
+		// region block that may be the gateway's own location. The walk past those would
+		// otherwise mark every key in the pool down on one caller's typo or one blocked egress.
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), model, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
 			}
-			if record.FailReason != nil {
+			if record.FailReason != nil && record.FailureClass != schemas.FailureClassModelAccess && record.FailureClass != schemas.FailureClassModelGone && record.FailureClass != schemas.FailureClassRegionBlocked {
 				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
 		}

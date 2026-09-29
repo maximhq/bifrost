@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1684,5 +1685,115 @@ func TestToResponsesMessages_EncryptedReasoningMarshalsSummaryAsArray(t *testing
 	}
 	if strings.Contains(string(encoded), `"summary":null`) {
 		t.Fatalf("summary must never marshal as null: %s", encoded)
+	}
+}
+
+// Every response family carrying a Usage must be reachable through
+// NormalizedUsage, or be listed as a known exclusion. DecisionResponse was added
+// to the logging plugin's switch but not here, so decision rows silently lost
+// their token counts.
+func TestNormalizedUsageCoversEveryUsageBearingFamily(t *testing.T) {
+	handled := map[string]bool{}
+	for _, name := range normalizedUsageFamilies {
+		handled[name] = true
+	}
+	// Pre-existing gaps, present in the hand-rolled switch this replaced too.
+	// Streams are accumulated into their non-stream family before they reach a
+	// logging or span path; video has never been wired to either.
+	knownExcluded := map[string]string{
+		"SpeechStreamResponse":          "accumulated into SpeechResponse",
+		"TranscriptionStreamResponse":   "accumulated into TranscriptionResponse",
+		"ImageGenerationStreamResponse": "accumulated into ImageGenerationResponse",
+		"VideoGenerationResponse":       "never wired to logging or spans",
+	}
+
+	rt := reflect.TypeOf(BifrostResponse{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if !strings.HasSuffix(f.Name, "Response") || f.Type.Kind() != reflect.Ptr {
+			continue
+		}
+		inner := f.Type.Elem()
+		if inner.Kind() != reflect.Struct {
+			continue
+		}
+		if _, hasUsage := inner.FieldByName("Usage"); !hasUsage {
+			continue
+		}
+		if handled[f.Name] {
+			if _, excluded := knownExcluded[f.Name]; excluded {
+				t.Errorf("%s is both handled and listed as excluded", f.Name)
+			}
+			continue
+		}
+		if _, excluded := knownExcluded[f.Name]; !excluded {
+			t.Errorf("%s carries a Usage field but NormalizedUsage does not read it; "+
+				"a request of that family would report zero tokens", f.Name)
+		}
+	}
+	// A stale exclusion is drift too.
+	for name := range knownExcluded {
+		if _, ok := rt.FieldByName(name); !ok {
+			t.Errorf("knownExcluded lists %s, which is no longer a BifrostResponse field", name)
+		}
+	}
+}
+
+// normalizedUsageFamilies lists what NormalizedUsage reads.
+var normalizedUsageFamilies = []string{
+	"TextCompletionResponse", "ChatResponse", "ResponsesResponse", "CompactionResponse",
+	"EmbeddingResponse", "RerankResponse", "DecisionResponse", "TranscriptionResponse",
+	"SpeechResponse", "ImageGenerationResponse", "PassthroughResponse",
+}
+
+// A provider may report total_tokens: 0 alongside real input/output counts.
+// Speech derived the total in that case; transcription only did so when the
+// pointer was nil, so it returned zero. Both now agree.
+func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
+	i64 := func(v int) *int { return &v }
+
+	for _, tc := range []struct {
+		name      string
+		resp      *BifrostResponse
+		wantTotal int
+	}{
+		{
+			"transcription, total reported zero",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(0)},
+			}},
+			10,
+		},
+		{
+			"transcription, total nil",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3)},
+			}},
+			10,
+		},
+		{
+			"transcription, total reported and correct",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(10)},
+			}},
+			10,
+		},
+		{
+			"transcription, provider total wins when non-zero",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(99)},
+			}},
+			99,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := tc.resp.NormalizedUsage()
+			if u == nil {
+				t.Fatal("NormalizedUsage returned nil")
+			}
+			if u.TotalTokens != tc.wantTotal {
+				t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, tc.wantTotal)
+			}
+		})
 	}
 }

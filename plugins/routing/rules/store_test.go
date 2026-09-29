@@ -6,6 +6,7 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +29,7 @@ func TestRuleStore_CreateAndRetrieve(t *testing.T) {
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4"), Weight: 1.0},
 		},
 		Fallbacks:       nil,
-		ParsedFallbacks: []string{"azure/gpt-4-turbo"},
+		ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "azure", Model: "gpt-4-turbo"}}},
 		Scope:           "global",
 		ScopeID:         nil,
 		Priority:        10,
@@ -48,7 +49,7 @@ func TestRuleStore_CreateAndRetrieve(t *testing.T) {
 			{Provider: bifrost.Ptr("azure"), Weight: 1.0},
 		},
 		Fallbacks:       nil,
-		ParsedFallbacks: []string{"groq/mixtral-8x7b"},
+		ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "groq", Model: "mixtral-8x7b"}}},
 		Scope:           "team",
 		ScopeID:         &teamID,
 		Priority:        20,

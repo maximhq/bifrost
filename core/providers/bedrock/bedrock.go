@@ -217,8 +217,8 @@ func isStreamTransportError(err error) bool {
 // camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
 // in-stream exception members) to a retryable HTTP status code. These exceptions
 // are transient and should be retried — the retry gate in executeRequestWithRetries
-// checks StatusCode against transientServerStatusCodes (500, 502, 503, 504) for
-// same-key retries and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+// classifies the StatusCode (ClassifyFailure): 500, 502, 503 and 504 retry on the same
+// key, 429 rotates to the next one.
 //
 // Some AWS exceptions have a native status code the gate does not recognize
 // (modelStreamErrorException=424, modelTimeoutException=408); they are mapped to
@@ -4383,6 +4383,32 @@ func toolNeedsAnthropicInvokePath(toolType string, deferLoading *bool) bool {
 	return deferLoading != nil && *deferLoading
 }
 
+// safeguardsSurviveStrip reports whether the shared Anthropic strip gate would
+// keep safeguards for this model. Only supported requests need InvokeModel,
+// where the native field and its required beta are assembled together.
+func safeguardsSurviveStrip(ctx *schemas.BifrostContext, model string) bool {
+	capModel := schemas.ResolveCanonicalModel(ctx, model)
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, capModel)
+	return anthropic.ProviderFeatures[schemas.Bedrock].Safeguards &&
+		caps.SupportsSafeguards(anthropic.DefaultSupportsSafeguards(schemas.Bedrock, caps.Model()))
+}
+
+// extraParamsHasSafeguards accepts opaque JSON and programmatic parameter values.
+func extraParamsHasSafeguards(extraParams map[string]interface{}) bool {
+	v, exists := extraParams["safeguards"]
+	if !exists || v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case json.RawMessage:
+		return len(val) > 0
+	case []byte:
+		return len(val) > 0
+	default:
+		return true
+	}
+}
+
 func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) bool {
 	if request == nil || request.Params == nil {
 		return false
@@ -4392,6 +4418,9 @@ func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.B
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
+	}
+	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+		return true
 	}
 	for _, tool := range request.Params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
@@ -4410,6 +4439,9 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
+	}
+	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+		return true
 	}
 	for _, tool := range request.Params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {

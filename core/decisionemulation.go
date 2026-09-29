@@ -3,6 +3,8 @@ package bifrost
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -43,6 +45,19 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	if req == nil || len(req.Questions) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("decision request requires at least one question")
 	}
+	// Extensions the caller asked to reach the wire (e.g. images) have no
+	// meaning to an emulating chat model; refusing beats a silent text-only
+	// answer.
+	if len(req.ExtraParams) > 0 && ctx != nil {
+		if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); passthrough {
+			keys := make([]string, 0, len(req.ExtraParams))
+			for key := range req.ExtraParams {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			return nil, providerUtils.NewBifrostBadRequestError("decision emulation cannot honor native request extensions (" + strings.Join(keys, ", ") + "); route the request to a provider that serves them natively")
+		}
+	}
 
 	tool, err := providerUtils.BuildDecisionResponsesTool(req.Questions)
 	if err != nil {
@@ -57,12 +72,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 
 	instructions := decisionSystemPrompt
 	userRole := schemas.ResponsesInputMessageRoleUser
-	// Force a tool call with the "required" mode rather than a named-function
-	// choice: emit_decision is the only tool, so "required" obliges the model to
-	// call it, and the string mode is accepted by every provider (OpenAI,
-	// Anthropic, and OpenAI-compatible ones like Perplexity that reject the
-	// named-function tool_choice object).
-	requiredChoice := string(schemas.ResponsesToolChoiceTypeRequired)
+	toolChoice := decisionToolChoice(ctx, req.Provider, req.Model)
 	responsesReq := &schemas.BifrostResponsesRequest{
 		Provider: req.Provider,
 		Model:    req.Model,
@@ -75,7 +85,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		Params: &schemas.ResponsesParameters{
 			Instructions: &instructions,
 			Tools:        []schemas.ResponsesTool{*tool},
-			ToolChoice:   &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &requiredChoice},
+			ToolChoice:   &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &toolChoice},
 		},
 	}
 
@@ -116,6 +126,21 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	decision.ExtraFields.Provider = req.Provider
 	decision.ExtraFields.OriginalModelRequested = req.Model
 	return decision, nil
+}
+
+// decisionToolChoice picks the tool_choice that forces the emit_decision call.
+// It prefers the "required" mode over a named-function choice: emit_decision is
+// the only tool, so "required" obliges the model to call it, and the string mode
+// is accepted by OpenAI, Anthropic, and OpenAI-compatible providers like
+// Perplexity that reject the named-function object. Bedrock Mantle's
+// OpenAI-compatible surface is the exception: it accepts only "auto" for gpt-oss
+// ("Supported options: [auto]"), so the call there rests on the system prompt,
+// and extraction already accepts a lone call or a JSON text body.
+func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) string {
+	if provider == schemas.BedrockMantle && !schemas.IsAnthropicModelFamily(ctx, model) {
+		return string(schemas.ResponsesToolChoiceTypeAuto)
+	}
+	return string(schemas.ResponsesToolChoiceTypeRequired)
 }
 
 // decisionStateText renders the state into a message body.

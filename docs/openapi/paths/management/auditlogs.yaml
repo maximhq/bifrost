@@ -8,6 +8,14 @@ audit-logs:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List audit logs
     description: |
       Retrieves CADF-compliant audit log events with filtering, search, and
@@ -204,6 +212,14 @@ audit-logs-filterdata:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get audit log filter data
     description: |
       Returns the distinct values available for each audit log filter dimension,
@@ -250,6 +266,14 @@ audit-logs-export:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Export audit logs
     description: |
       Streams audit log events matching the supplied filters as a downloadable
@@ -335,8 +359,17 @@ audit-logs-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get audit log by ID
-    description: Retrieves a single audit log event by its unique ID.
+    description: |
+      Retrieves a single audit log event by its unique ID.
     tags:
       - Audit Logs
     parameters:
@@ -373,6 +406,14 @@ audit-logs-verify:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AuditLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Verify audit log signature
     description: |
       Recomputes the HMAC-SHA256 signature for a single audit log event and

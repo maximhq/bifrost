@@ -17,6 +17,7 @@ import {
 	formatRelativePast,
 	formatTokenExpiry,
 	missingHeaderKeys,
+	shouldSuggestReplacementClient,
 } from "@/lib/utils/mcpCredential";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Link } from "@tanstack/react-router";
@@ -74,6 +75,13 @@ function OAuthCredentialBlock({ mcpClient }: Props) {
 					<Row label="Status">
 						<CredentialStatusBadge status={credential.status} />
 						{credential.status === "needs_reauth" && <Hint>{copy.needsReauth}</Hint>}
+						{credential.status === "needs_reauth" &&
+							shouldSuggestReplacementClient(mcpClient.config.auth_type, credential.status_reason) && (
+								<Hint>
+									The provider rejected Bifrost&apos;s client itself, not just this token, so redoing consent with it will fail the same
+									way. Use Reauthorize with a new client from the server&apos;s actions menu to register a replacement first.
+								</Hint>
+							)}
 						{credential.status_reason && (
 							<div
 								className="text-muted-foreground mt-1 font-mono text-[11px] break-words"

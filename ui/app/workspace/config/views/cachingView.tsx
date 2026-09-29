@@ -2,12 +2,12 @@ import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { EmbeddingSupportedProviders, getProviderLabel } from "@/lib/constants/logs";
+import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	useCreatePluginMutation,
@@ -19,6 +19,7 @@ import {
 import { CacheConfig, EditorCacheConfig, ModelProvider, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { cn } from "@/lib/utils";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -133,6 +134,7 @@ export default function CachingView() {
 	const embeddingProviders = useMemo(() => providers.filter(supportsEmbedding), [providers]);
 
 	const [updatePlugin, { isLoading: isUpdating }] = useUpdatePluginMutation();
+	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [createPlugin, { isLoading: isCreating }] = useCreatePluginMutation();
 	const isSaving = isUpdating || isCreating;
 
@@ -305,14 +307,21 @@ export default function CachingView() {
 								place, no redeploy needed.{" "}
 							</p>
 						</div>
-						<Switch
-							id="enable-caching"
-							data-testid="caching-enable-switch"
-							size="md"
-							checked={cachingActive}
-							disabled={!isVectorStoreEnabled || isSaving}
-							onCheckedChange={handleToggle}
-						/>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>
+									<Switch
+										id="enable-caching"
+										data-testid="caching-enable-switch"
+										size="md"
+										checked={cachingActive}
+										disabled={!isVectorStoreEnabled || isSaving || !hasSettingsUpdateAccess}
+										onCheckedChange={handleToggle}
+									/>
+								</span>
+							</TooltipTrigger>
+							{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
+						</Tooltip>
 					</div>
 
 					{providersLoading ? (
@@ -382,41 +391,28 @@ export default function CachingView() {
 											<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 												<div className="space-y-2">
 													<Label htmlFor="provider">Configured Providers</Label>
-													<Select
-														value={cacheConfig.provider}
-														onValueChange={(value: ModelProviderName) =>
+													<ProviderSelector
+														inputId="provider"
+														data-testid="caching-provider-select"
+														filter={supportsEmbedding}
+														value={cacheConfig.provider ?? ""}
+														onChange={(value: string) =>
 															updateLocal({
-																provider: value,
+																provider: value as ModelProviderName,
 																embedding_model: value === cacheConfig.provider ? cacheConfig.embedding_model : "",
 															})
 														}
-													>
-														<SelectTrigger className="w-full" data-testid="caching-provider-select">
-															<SelectValue placeholder="Select provider" />
-														</SelectTrigger>
-														<SelectContent>
-															{embeddingProviders
-																.filter((provider) => provider.name)
-																.map((provider) => (
-																	<SelectItem key={provider.name} value={provider.name}>
-																		<div className="flex items-center gap-2">
-																			<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
-																			<span>{getProviderLabel(provider.name)}</span>
-																		</div>
-																	</SelectItem>
-																))}
-														</SelectContent>
-													</Select>
+													/>
 												</div>
 												<div className="space-y-2">
 													<Label htmlFor="embedding_model">Embedding Model*</Label>
-													<ModelMultiselect
+													<ModelSelector
 														inputId="embedding_model"
 														data-testid="caching-embedding-model-select"
-														isSingleSelect
 														provider={cacheConfig.provider || undefined}
 														value={cacheConfig.embedding_model ?? ""}
 														onChange={(model) => updateLocal({ embedding_model: model })}
+														allowCustomModel
 														placeholder={cacheConfig.provider ? "Search or type an embedding model..." : "Select a provider first"}
 														disabled={!cacheConfig.provider}
 													/>
@@ -663,13 +659,20 @@ export default function CachingView() {
 							</div>
 
 							<div className="flex justify-end pt-2">
-								<Button
-									data-testid="caching-save-button"
-									onClick={handleSave}
-									disabled={!hasUnsavedConfigChanges || isSaving || Boolean(validationError)}
-								>
-									{isSaving ? "Saving..." : "Save Changes"}
-								</Button>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>
+											<Button
+												data-testid="caching-save-button"
+												onClick={handleSave}
+												disabled={!hasUnsavedConfigChanges || isSaving || Boolean(validationError) || !hasSettingsUpdateAccess}
+											>
+												{isSaving ? "Saving..." : "Save Changes"}
+											</Button>
+										</span>
+									</TooltipTrigger>
+									{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
+								</Tooltip>
 							</div>
 						</>
 					)}

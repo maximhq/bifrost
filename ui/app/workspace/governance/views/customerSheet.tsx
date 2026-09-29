@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -64,6 +65,13 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 };
 
 export default function CustomerSheet({ open, onOpenChange, customer, onSuccess }: CustomerSheetProps) {
+	// Enterprise governs a customer's keys with an access profile, so a customer's own budgets and
+	// rate limits are the legacy system: not offered to a customer that has none, since the way to
+	// fund a new one is a profile. A customer that already has them keeps them editable here - the
+	// deployment is running on them, and taking editing away would leave it able only to migrate or
+	// delete, with no way back.
+	const hasLegacyLimits = !!customer && ((customer.budgets?.length ?? 0) > 0 || !!customer.rate_limit);
+	const editsLimits = !IS_ENTERPRISE || hasLegacyLimits;
 	const isEditing = !!customer;
 	const [initialState, setInitialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer));
 	const [formData, setFormData] = useState<CustomerFormData>({
@@ -169,24 +177,32 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			new Validator([
 				Validator.required(formData.name.trim(), "Customer name is required"),
 				Validator.custom(formData.isDirty, "No changes to save"),
-				Validator.custom(!hasDuplicateDuration, "Each budget must have a unique reset period"),
-				...(formData.budgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && b.max_limit < 0.01)
-					? [Validator.custom(false, "Budget max limit must be greater than $0.01")]
-					: []),
-				...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
+				// Limits are only editable here when this build owns them. In enterprise they are the
+				// access profile's, the fields are hidden, and the form still carries whatever the
+				// customer already has - validating that would block an unrelated rename behind a
+				// legacy value the operator cannot reach.
+				...(editsLimits
 					? [
-							Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
-							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
-						]
-					: []),
-				...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
-					? [
-							Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
-							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+							Validator.custom(!hasDuplicateDuration, "Each budget must have a unique reset period"),
+							...(formData.budgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && b.max_limit < 0.01)
+								? [Validator.custom(false, "Budget max limit must be greater than $0.01")]
+								: []),
+							...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
+								? [
+										Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
+										Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+									]
+								: []),
+							...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
+								? [
+										Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
+										Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+									]
+								: []),
 						]
 					: []),
 			]),
-		[formData, hasDuplicateDuration, tokenMaxLimitNum, requestMaxLimitNum],
+		[editsLimits, formData, hasDuplicateDuration, tokenMaxLimitNum, requestMaxLimitNum],
 	);
 
 	const updateField = <K extends keyof CustomerFormData>(field: K, value: CustomerFormData[K]) => {
@@ -217,7 +233,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			return;
 		}
 
-		if (budgetsChanged()) {
+		if (editsLimits && budgetsChanged()) {
 			resetPrompt.ask(true);
 			return;
 		}
@@ -230,7 +246,10 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration, reset_config: b.reset_config }));
 
 		try {
-			if (isEditing && customer) {
+			if (isEditing && customer && !editsLimits) {
+				await updateCustomer({ customerId: customer.id, data: { name: formData.name } }).unwrap();
+				toast.success("Customer updated successfully");
+			} else if (isEditing && customer) {
 				const updateData: UpdateCustomerRequest = {
 					name: formData.name,
 					calendar_aligned: formData.calendarAligned,
@@ -258,15 +277,14 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 				await updateCustomer({ customerId: customer.id, data: updateData }).unwrap();
 				toast.success("Customer updated successfully");
 			} else {
-				const createData: CreateCustomerRequest = {
-					name: formData.name,
-					calendar_aligned: formData.calendarAligned,
-					budgets: budgetRequests,
-				};
+				const createData: CreateCustomerRequest = editsLimits
+					? { name: formData.name, calendar_aligned: formData.calendarAligned, budgets: budgetRequests }
+					: { name: formData.name };
 
 				if (
-					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
-					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)
+					editsLimits &&
+					((tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
+						(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null))
 				) {
 					createData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
@@ -336,32 +354,34 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								</div>
 							</div>
 
-							<MultiBudgetLines
-								data-testid="customer-budgets"
-								label="Budget Limits"
-								lines={formData.budgets}
-								onChange={(lines) => updateField("budgets", lines)}
-							/>
+							{editsLimits && (
+								<>
+									<MultiBudgetLines
+										data-testid="customer-budgets"
+										label="Budget Limits"
+										lines={formData.budgets}
+										onChange={(lines) => updateField("budgets", lines)}
+									/>
 
-							<NumberAndSelect
-								id="tokenMaxLimit"
-								label="Maximum Tokens"
-								value={formData.tokenMaxLimit}
-								selectValue={formData.tokenResetDuration}
-								onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
-								onChangeSelect={(value) => updateField("tokenResetDuration", value)}
-								options={resetDurationOptions}
-							/>
+									<NumberAndSelect
+										id="tokenMaxLimit"
+										label="Maximum Tokens"
+										value={formData.tokenMaxLimit}
+										selectValue={formData.tokenResetDuration}
+										onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
+										onChangeSelect={(value) => updateField("tokenResetDuration", value)}
+										options={resetDurationOptions}
+									/>
 
-							<NumberAndSelect
-								id="requestMaxLimit"
-								label="Maximum Requests"
-								value={formData.requestMaxLimit}
-								selectValue={formData.requestResetDuration}
-								onChangeNumber={(value) => updateField("requestMaxLimit", value)}
-								onChangeSelect={(value) => updateField("requestResetDuration", value)}
-								options={resetDurationOptions}
-							/>
+									<NumberAndSelect
+										id="requestMaxLimit"
+										label="Maximum Requests"
+										value={formData.requestMaxLimit}
+										selectValue={formData.requestResetDuration}
+										onChangeNumber={(value) => updateField("requestMaxLimit", value)}
+										onChangeSelect={(value) => updateField("requestResetDuration", value)}
+										options={resetDurationOptions}
+									/>
 
 							{showCalendarAlignToggle && (
 								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
@@ -381,6 +401,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 										data-testid="customer-calendar-aligned-toggle"
 									/>
 								</div>
+							)}
+								</>
 							)}
 
 							<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>

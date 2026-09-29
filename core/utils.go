@@ -24,64 +24,6 @@ const (
 	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
 )
 
-// transientServerStatusCodes are upstream-side failures unrelated to the credential —
-// retried with the *same* key (a different credential gains nothing against a flaky
-// server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
-var transientServerStatusCodes = map[int]bool{
-	500: true, // Internal Server Error
-	502: true, // Bad Gateway
-	503: true, // Service Unavailable
-	504: true, // Gateway Timeout
-	// 529 — Anthropic's overloaded_error ("The API is temporarily overloaded",
-	// docs.claude.com/en/api/errors), also surfaced by Bedrock Mantle's Claude
-	// endpoint. It reflects capacity across all callers rather than anything about
-	// this credential, so it retries on the same key instead of rotating: rotating
-	// would burn every key on a condition none of them can avoid.
-	529: true,
-}
-
-// perKeyFailureStatusCodes are failures bound to the specific key/account rather than
-// the request. On these, executeRequestWithRetries rotates to the next available key
-// (if any) instead of retrying the same key. Request-bound 4xx (400/404/422/...) are
-// intentionally excluded — rotating would just burn every key on the same bad request.
-//
-// Split further inside the retry loop:
-//   - 429 → transient per-key (rate limit) → tracked in usedKeyIDs, may be retried later
-//   - 401/402/403 → permanent per-key (auth/billing/permission) → tracked in deadKeyIDs,
-//     never retried within the same request.
-var perKeyFailureStatusCodes = map[int]bool{
-	401: true, // Unauthorized — bad / revoked API key
-	402: true, // Payment Required — billing issue on this key's account
-	403: true, // Forbidden — key lacks permission or is org-level blocked
-	429: true, // Too Many Requests — this key is rate-limited, another may have capacity
-}
-
-// Define rate limit error message patterns (case-insensitive)
-var rateLimitPatterns = []string{
-	"rate limit",
-	"rate_limit",
-	"ratelimit",
-	"too many requests",
-	"quota exceeded",
-	"quota_exceeded",
-	"request limit",
-	"throttled",
-	"throttling",
-	"rate exceeded",
-	"limit exceeded",
-	"requests per",
-	"rpm exceeded",
-	"tpm exceeded",
-	"tokens per minute",
-	"requests per minute",
-	"requests per second",
-	"api rate limit",
-	"usage limit",
-	"concurrent requests limit",
-	"burst_rate",
-	"rate increased",
-}
-
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
 // Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
@@ -273,25 +215,6 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		}
 	}
 	return nil
-}
-
-// IsRateLimitErrorMessage checks if an error message indicates a rate limit issue
-func IsRateLimitErrorMessage(errorMessage string) bool {
-	if errorMessage == "" {
-		return false
-	}
-
-	// Convert to lowercase for case-insensitive matching
-	lowerMessage := strings.ToLower(errorMessage)
-
-	// Check if any rate limit pattern is found in the error message
-	for _, pattern := range rateLimitPatterns {
-		if strings.Contains(lowerMessage, pattern) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a

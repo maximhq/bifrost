@@ -213,7 +213,7 @@ export default function VirtualMCPsTable({
 				</div>
 				<Button onClick={onCreate} data-testid="virtual-mcp-create-btn">
 					<Plus className="h-4 w-4" />
-					New Virtual MCP
+					Add Virtual MCP
 				</Button>
 			</div>
 
@@ -246,9 +246,9 @@ export default function VirtualMCPsTable({
 												<span className="text-muted-foreground text-sm">
 													No Virtual MCPs yet. Create one to bundle tools from your MCP servers into a single endpoint.
 												</span>
-												<Button variant="outline" size="sm" onClick={onCreate}>
+												<Button size="sm" onClick={onCreate}>
 													<Plus className="h-4 w-4" />
-													New Virtual MCP
+													Add Virtual MCP
 												</Button>
 											</div>
 										)}

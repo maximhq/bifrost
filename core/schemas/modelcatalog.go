@@ -22,4 +22,18 @@ type ModelInfoProvider interface {
 	// *modelcatalog.ModelCatalog already has a CalculateCost method with a
 	// different signature; a plugin-facing ctx.CalculateCost wraps this.
 	CalculateRequestCost(ctx *BifrostContext, resp *BifrostResponse) float64
+
+	// CalculateRequestCostBreakdown returns the per-category cost breakdown of
+	// a completed response: input (text, audio, image, cache read, cache
+	// write, per-request surcharge), output (text, audio, image, reasoning,
+	// citation, search queries) and additional (guardrail, MCP, semantic cache,
+	// routing), resolving governance pricing overrides from ctx. TotalCost
+	// equals CalculateRequestCost for the same response. Returns nil when
+	// there is nothing billable.
+	//
+	// The returned value is owned by the caller. Carries the Request infix
+	// for the same reason as CalculateRequestCost: *modelcatalog.ModelCatalog
+	// already has a CalculateCostBreakdown with a different signature; the
+	// plugin-facing ctx.CalculateCostBreakdown wraps this.
+	CalculateRequestCostBreakdown(ctx *BifrostContext, resp *BifrostResponse) *BifrostCost
 }

@@ -3,6 +3,13 @@ package tables
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // TestVirtualKeyProviderConfigKeyIDs pins KeyIDs' actual empty-Keys semantics, which the Keys
@@ -94,6 +101,88 @@ func TestVirtualKeyAssignedUserSerialization(t *testing.T) {
 		// The rest of the key must still serialize normally.
 		if _, ok := m["id"]; !ok {
 			t.Fatal("expected the remaining fields to survive the omission")
+		}
+	})
+}
+
+// TestVirtualKeyOwnerMutualExclusion pins that a key belongs to at most one owner. The owner is
+// what decides whose money a request spends and whose access profile the key answers to, so a key
+// claiming two of them has no answer to either question.
+//
+// Every pair is exercised rather than just the team/customer one the check originally covered:
+// business_unit_id joined team_id and customer_id as an owner, and a pairwise check is exactly the
+// kind that leaves a new pair unguarded.
+func TestVirtualKeyOwnerMutualExclusion(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&TableVirtualKey{}))
+
+	ptr := func(s string) *string { return &s }
+	newKey := func(name string) TableVirtualKey {
+		return TableVirtualKey{
+			ID:    name,
+			Name:  name,
+			Value: *schemas.NewSecretVar("sk-bf-" + name),
+		}
+	}
+
+	t.Run("one owner is allowed", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			apply func(*TableVirtualKey)
+		}{
+			{"team", func(vk *TableVirtualKey) { vk.TeamID = ptr("team-1") }},
+			{"customer", func(vk *TableVirtualKey) { vk.CustomerID = ptr("cust-1") }},
+			{"business unit", func(vk *TableVirtualKey) { vk.BusinessUnitID = ptr("bu-1") }},
+			{"none", func(vk *TableVirtualKey) {}},
+		} {
+			vk := newKey("solo-" + tc.name)
+			tc.apply(&vk)
+			require.NoError(t, db.Create(&vk).Error, "a key owned by %s alone must save", tc.name)
+		}
+	})
+
+	t.Run("a blank owner id is no owner", func(t *testing.T) {
+		// JSON decoding turns "team_id": "" into a pointer to an empty string. Counted as an owner it
+		// would store an owner nothing resolves, and would make a body naming one real owner beside a
+		// blank one read as two.
+		vk := newKey("blank-owner")
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = ptr(""), ptr("   "), ptr("bu-1")
+		require.NoError(t, db.Create(&vk).Error, "blank owner ids must not count as owners")
+
+		var stored TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", vk.ID).Error)
+		assert.Nil(t, stored.TeamID, "a blank team id is stored as no team")
+		assert.Nil(t, stored.CustomerID, "a whitespace customer id is stored as no customer")
+		require.NotNil(t, stored.BusinessUnitID)
+		assert.Equal(t, "bu-1", *stored.BusinessUnitID, "the one real owner survives")
+	})
+
+	t.Run("two owners are rejected", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			apply func(*TableVirtualKey)
+		}{
+			{"team and customer", func(vk *TableVirtualKey) {
+				vk.TeamID, vk.CustomerID = ptr("team-1"), ptr("cust-1")
+			}},
+			{"team and business unit", func(vk *TableVirtualKey) {
+				vk.TeamID, vk.BusinessUnitID = ptr("team-1"), ptr("bu-1")
+			}},
+			{"customer and business unit", func(vk *TableVirtualKey) {
+				vk.CustomerID, vk.BusinessUnitID = ptr("cust-1"), ptr("bu-1")
+			}},
+			{"all three", func(vk *TableVirtualKey) {
+				vk.TeamID, vk.CustomerID, vk.BusinessUnitID = ptr("team-1"), ptr("cust-1"), ptr("bu-1")
+			}},
+		} {
+			vk := newKey("dual-" + tc.name)
+			tc.apply(&vk)
+			err := db.Create(&vk).Error
+			require.Error(t, err, "a key owned by %s must be rejected", tc.name)
+			assert.Contains(t, err.Error(), "more than one of team, customer or business unit")
 		}
 	})
 }

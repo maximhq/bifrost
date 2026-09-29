@@ -196,6 +196,20 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							)}
 
+							{typeof virtualKey.disable_content_logging === "boolean" && (
+								<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+									<span className="text-muted-foreground text-sm">Content logging</span>
+									<div className="col-span-2">
+										<Badge
+											variant={virtualKey.disable_content_logging ? "secondary" : "default"}
+											data-testid="vk-details-content-logging-badge"
+										>
+											{virtualKey.disable_content_logging ? "Off for this key" : "On for this key"}
+										</Badge>
+									</div>
+								</div>
+							)}
+
 							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 								<span className="text-muted-foreground text-sm">Created</span>
 								<div className="col-span-2 text-sm">
