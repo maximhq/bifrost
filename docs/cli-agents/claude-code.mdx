@@ -6,6 +6,10 @@ icon: "star-of-life"
 
 [Claude Code](https://code.claude.com/docs/en/overview) connects to Bifrost through Bifrost's Anthropic-compatible endpoint. Claude Code treats Bifrost as an [LLM gateway](https://code.claude.com/docs/en/llm-gateway): it sends every model request to `ANTHROPIC_BASE_URL` with a Bifrost credential instead of an Anthropic login.
 
+<Tip>
+Using Bifrost Edge? Gateway mode maintains the configuration below and uses a provider key selected by Bifrost. **Require Anthropic login** preserves native application login but does not make that credential the gateway-mode inference credential. Subscription pass-through preserves Claude Code's native credential and catalog, then routes captured inference through Bifrost's `/anthropic_passthrough` endpoint. See [Edge routing modes](/edge/supported-applications#edge-routing-modes).
+</Tip>
+
 **Tested on Claude Code versions:**
 
 | Version | Released   |
@@ -120,6 +124,10 @@ To keep billing on a Claude Pro, Max, Team, or Enterprise subscription while Bif
 ```
 
 Claude Code sends its subscription token as `Authorization: Bearer sk-ant-oat…`. On the `/anthropic` route, Bifrost forwards that token to Anthropic instead of selecting a provider key, and uses `x-bf-vk` for governance. Do not set `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, or `apiKeyHelper` in this mode; any of them replaces the subscription login. Subscription usage limits still apply.
+
+<Note>
+Use the regular `/anthropic` route for this manual configuration. With Bifrost Edge, use **subscription pass-through** when the user's native credential should fund inference; Edge routes that traffic through `/anthropic_passthrough` and requires direct API keys to be enabled. **Require Anthropic login** by itself only preserves native login while gateway mode continues to use a Bifrost-selected provider key. See [Edge routing modes](/edge/supported-applications#edge-routing-modes).
+</Note>
 
 ## Dynamic credentials with apiKeyHelper
 
