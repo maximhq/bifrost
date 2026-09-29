@@ -671,6 +671,75 @@ func (s *ClickHouseLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context)
 	return s.chDeleteWhere(ctx, "webhook_deliveries", "expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC())
 }
 
+// --- User-agent mappings ---
+//
+// Create is inherited: a plain INSERT is correct (ids are UUIDs assigned by
+// the logging plugin, so ReplacingMergeTree never sees a second version it
+// should not). List reads under the DSN-level final=1 and only normalizes the
+// logo column (see below). Update and Delete are overridden because the
+// inherited GORM paths become ALTER mutations that never report rows
+// affected, which turned every mutation of an existing row into
+// gorm.ErrRecordNotFound.
+
+// ListUserAgentMappings reads through the inherited query and normalizes an
+// absent logo to nil. The logo column is a non-nullable String in ClickHouse,
+// so a mapping stored without one reads back as an empty slice where the SQL
+// stores return nil; callers and the wire (`json:"logo,omitempty"`) treat both
+// as "no logo", and this keeps the Go-level result identical across backends.
+func (s *ClickHouseLogStore) ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error) {
+	mappings, err := s.RDBLogStore.ListUserAgentMappings(ctx, activeOnly)
+	if err != nil {
+		return nil, err
+	}
+	for i := range mappings {
+		if len(mappings[i].Logo) == 0 {
+			mappings[i].Logo = nil
+		}
+	}
+	return mappings, nil
+}
+
+// UpdateUserAgentMapping rewrites a mapping row via read-modify-write. It
+// returns gorm.ErrRecordNotFound for an unknown id, the same sentinel the SQL
+// stores return, which the HTTP handler maps to 404.
+func (s *ClickHouseLogStore) UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error {
+	defer s.lockRMW("user_agent_mappings", id)()
+	var existing UserAgentMapping
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	existing.Pattern = mapping.Pattern
+	existing.MatchType = mapping.MatchType
+	existing.App = mapping.App
+	existing.Logo = mapping.Logo
+	existing.LogoMime = mapping.LogoMime
+	existing.IsActive = mapping.IsActive
+	// GORM Create keeps a non-zero UpdatedAt, so the re-insert would otherwise
+	// carry the previous version's timestamp forward.
+	existing.UpdatedAt = time.Now().UTC()
+	if err := s.chReinsert(ctx, &existing); err != nil {
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	return nil
+}
+
+// DeleteUserAgentMapping removes a mapping with a lightweight delete. The
+// count-then-delete in chDeleteWhere supplies the rows-affected check the SQL
+// stores get from the driver.
+func (s *ClickHouseLogStore) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	n, err := s.chDeleteWhere(ctx, "user_agent_mappings", "id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", err)
+	}
+	if n == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 // UpdateAsyncJob applies a column->value map to an async job row via
 // read-modify-write.
 func (s *ClickHouseLogStore) UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error {
