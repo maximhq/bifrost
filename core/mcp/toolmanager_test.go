@@ -2,12 +2,63 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestExecuteToolPreservesRawMCPResult(t *testing.T) {
+	const rawResult = `{
+		"_meta":{"fixture":"mcp-gateway-rich-result"},
+		"content":[
+			{"type":"text","text":"Attachment report.pdf"},
+			{"type":"image","data":"aW1hZ2U=","mimeType":"image/png"},
+			{"type":"audio","data":"YXVkaW8=","mimeType":"audio/wav"},
+			{"type":"resource","resource":{"uri":"gmail-attachment://message/report.pdf","mimeType":"application/pdf","blob":"JVBERi0xLjQK"}},
+			{"type":"resource_link","uri":"ui://attachment/report.pdf","name":"report.pdf","description":"Open the attachment","mimeType":"application/pdf"}
+		],
+		"structuredContent":{"filename":"report.pdf","size":606},
+		"isError":true
+	}`
+
+	state, toolName := newAuthRetryClientState("gmail", "download_attachment", nil, nil)
+	transport := &fakeCallToolTransport{callResults: []json.RawMessage{json.RawMessage(rawResult)}}
+	conn := client.NewClient(transport, client.WithSession())
+	manager := newAuthRetryToolsManager(&authRetryClientManager{state: state, acquireConn: conn}, &authRetryCredStore{})
+
+	response, err := manager.ExecuteTool(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		newAuthRetryToolCallRequest(toolName),
+		conn,
+		state.ExecutionConfig,
+		state.ToolNameMapping,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteTool returned an error: %v", err)
+	}
+	if response == nil || response.MCPToolResult == nil {
+		t.Fatalf("expected the protocol-native tool result, got %+v", response)
+	}
+
+	gotJSON, err := json.Marshal(response.MCPToolResult)
+	if err != nil {
+		t.Fatalf("marshal preserved result: %v", err)
+	}
+	var got, want any
+	if err := json.Unmarshal(gotJSON, &got); err != nil {
+		t.Fatalf("unmarshal preserved result: %v", err)
+	}
+	if err := json.Unmarshal([]byte(rawResult), &want); err != nil {
+		t.Fatalf("unmarshal expected result: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("preserved result mismatch\n got: %s\nwant: %s", gotJSON, rawResult)
+	}
+}
 
 // =============================================================================
 // HELPERS

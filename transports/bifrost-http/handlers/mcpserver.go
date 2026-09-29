@@ -38,6 +38,14 @@ type MCPToolManager interface {
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
 
+// MCPRawToolManager is implemented by tool managers that can retain the
+// protocol-native CallToolResult. Keeping it separate preserves compatibility
+// with alternate MCPToolManager implementations, which continue to use the
+// text fallback below.
+type MCPRawToolManager interface {
+	ExecuteRawMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*mcp.CallToolResult, *schemas.BifrostError)
+}
+
 // MCPGatewayAdmitter decides whether a /mcp request may be served, and what it may reach. It runs
 // the request through the same governance funnel every tool execution passes, so a caller is told at
 // initialize and tools/list exactly what tools/call would tell them, by the same rules.
@@ -390,7 +398,27 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 				},
 			}
 
-			// Execute the tool via tool executor
+			// Preserve the upstream result when the manager supports protocol-native
+			// execution. This keeps binary content, resources, structuredContent,
+			// metadata, and isError intact across the MCP-to-MCP gateway.
+			if rawToolManager, ok := h.toolManager.(MCPRawToolManager); ok {
+				toolResult, err := rawToolManager.ExecuteRawMCPTool(ctx, &toolCall)
+				if err != nil {
+					logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
+					if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
+						return mcp.NewToolResultError(mcpAuthRequiredToolResult(authReq)), nil
+					}
+					return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
+				}
+				if toolResult == nil {
+					return mcp.NewToolResultError("Tool execution returned no result"), nil
+				}
+				logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
+				return toolResult, nil
+			}
+
+			// Backwards-compatible fallback for tool managers that expose only the
+			// model-facing chat result.
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
 				logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))

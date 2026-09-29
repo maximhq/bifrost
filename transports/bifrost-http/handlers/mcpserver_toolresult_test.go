@@ -1,11 +1,40 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
+
+type richToolResultManager struct {
+	result *mcp.CallToolResult
+}
+
+func (m *richToolResultManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
+	return nil
+}
+
+func (m *richToolResultManager) ExecuteChatMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	text := "Attachment report.pdf"
+	return &schemas.ChatMessage{
+		Role:    schemas.ChatMessageRoleTool,
+		Content: &schemas.ChatMessageContent{ContentStr: &text},
+	}, nil
+}
+
+func (m *richToolResultManager) ExecuteResponsesMCPTool(context.Context, *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	return nil, nil
+}
+
+// ExecuteRawMCPTool returns the protocol-native result used by the gateway path.
+func (m *richToolResultManager) ExecuteRawMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*mcp.CallToolResult, *schemas.BifrostError) {
+	return m.result, nil
+}
 
 // A tool result for an auth-required error points the caller at a page when there is one to open,
 // and otherwise carries the resolver's own message. Exchange never has a page: the fix is to the
@@ -84,4 +113,69 @@ func TestMCPAuthRequiredToolResult(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPGatewayPreservesRawToolResult(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	want := &mcp.CallToolResult{
+		Result: mcp.Result{Meta: &mcp.Meta{AdditionalFields: map[string]any{
+			"fixture": "mcp-gateway-rich-result",
+		}}},
+		Content: []mcp.Content{
+			mcp.TextContent{Type: mcp.ContentTypeText, Text: "Attachment report.pdf"},
+			mcp.ImageContent{Type: mcp.ContentTypeImage, Data: "aW1hZ2U=", MIMEType: "image/png"},
+			mcp.AudioContent{Type: mcp.ContentTypeAudio, Data: "YXVkaW8=", MIMEType: "audio/wav"},
+			mcp.EmbeddedResource{
+				Type: mcp.ContentTypeResource,
+				Resource: mcp.BlobResourceContents{
+					URI:      "gmail-attachment://message/report.pdf",
+					MIMEType: "application/pdf",
+					Blob:     "JVBERi0xLjQK",
+				},
+			},
+			mcp.ResourceLink{
+				Type:        mcp.ContentTypeLink,
+				URI:         "ui://attachment/report.pdf",
+				Name:        "report.pdf",
+				Description: "Open the attachment",
+				MIMEType:    "application/pdf",
+			},
+		},
+		StructuredContent: map[string]any{
+			"filename": "report.pdf",
+			"size":     float64(606),
+		},
+		IsError: true,
+	}
+	manager := &richToolResultManager{result: want}
+	handler := &MCPServerHandler{toolManager: manager}
+	toolName := "gmail-download_attachment"
+	server := handler.buildServer([]schemas.ChatTool{{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:       toolName,
+			Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+		},
+	}})
+
+	response := server.HandleMessage(context.Background(), []byte(`{
+		"jsonrpc":"2.0",
+		"id":1,
+		"method":"tools/call",
+		"params":{"name":"gmail-download_attachment","arguments":{}}
+	}`))
+	require.NotNil(t, response)
+
+	responseJSON, err := json.Marshal(response)
+	require.NoError(t, err)
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(responseJSON, &envelope))
+	require.NotEmpty(t, envelope.Result, "response: %s", responseJSON)
+
+	wantJSON, err := json.Marshal(want)
+	require.NoError(t, err)
+	require.JSONEq(t, string(wantJSON), string(envelope.Result))
 }

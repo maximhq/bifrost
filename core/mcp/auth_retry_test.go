@@ -100,6 +100,7 @@ type fakeCallToolTransport struct {
 	callCount         int
 	callErrs          []error
 	callResultIsError []bool
+	callResults       []json.RawMessage
 }
 
 func (f *fakeCallToolTransport) Start(_ context.Context) error { return nil }
@@ -118,8 +119,13 @@ func (f *fakeCallToolTransport) SendRequest(_ context.Context, request transport
 		return nil, f.callErrs[idx]
 	}
 
-	isError := idx < len(f.callResultIsError) && f.callResultIsError[idx]
-	result := json.RawMessage(fmt.Sprintf(`{"content":[{"type":"text","text":"ok"}],"isError":%t}`, isError))
+	var result json.RawMessage
+	if idx < len(f.callResults) && f.callResults[idx] != nil {
+		result = f.callResults[idx]
+	} else {
+		isError := idx < len(f.callResultIsError) && f.callResultIsError[idx]
+		result = json.RawMessage(fmt.Sprintf(`{"content":[{"type":"text","text":"ok"}],"isError":%t}`, isError))
+	}
 	return &transport.JSONRPCResponse{JSONRPC: "2.0", ID: request.ID, Result: result}, nil
 }
 

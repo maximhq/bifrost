@@ -637,7 +637,7 @@ func (m *ToolsManager) ExecuteTool(
 	now := time.Now()
 
 	// Execute the tool in Chat format (internal execution format)
-	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig, toolNameMapping)
+	chatResult, mcpToolResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig, toolNameMapping)
 	if err != nil {
 		return nil, err
 	}
@@ -654,8 +654,9 @@ func (m *ToolsManager) ExecuteTool(
 	switch request.RequestType {
 	case schemas.MCPRequestTypeChatToolCall:
 		return &schemas.BifrostMCPResponse{
-			ChatMessage: chatResult,
-			ExtraFields: extraFields,
+			ChatMessage:   chatResult,
+			MCPToolResult: mcpToolResult,
+			ExtraFields:   extraFields,
 		}, nil
 	case schemas.MCPRequestTypeResponsesToolCall:
 		// Validate chatResult is not nil before conversion
@@ -668,6 +669,7 @@ func (m *ToolsManager) ExecuteTool(
 		}
 		return &schemas.BifrostMCPResponse{
 			ResponsesMessage: responsesMessage,
+			MCPToolResult:    mcpToolResult,
 			ExtraFields:      extraFields,
 		}, nil
 	default:
@@ -684,13 +686,13 @@ func (m *ToolsManager) executeToolInternal(
 	clientConn *client.Client,
 	executionConfig *schemas.MCPClientConfig,
 	toolNameMapping map[string]string,
-) (*schemas.ChatMessage, string, string, error) {
+) (*schemas.ChatMessage, *mcp.CallToolResult, string, string, error) {
 	toolName := *toolCall.Function.Name
 
 	// Check if this is a code mode tool and delegate to CodeMode implementation
 	if m.codeMode != nil && m.codeMode.IsCodeModeTool(toolName) {
 		msg, err := m.codeMode.ExecuteTool(ctx, *toolCall)
-		return msg, "", toolName, err
+		return msg, nil, "", toolName, err
 	}
 
 	// The caller (MCPManager.prepareToolExecution → executeToolWithHooks /
@@ -705,7 +707,7 @@ func (m *ToolsManager) executeToolInternal(
 		arguments = map[string]interface{}{}
 	} else {
 		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-			return nil, "", "", fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+			return nil, nil, "", "", fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
 		}
 	}
 
@@ -769,7 +771,7 @@ func (m *ToolsManager) executeToolInternal(
 
 		// Sentinel-wrapped so the gate can classify error.type (timeout vs tool_error).
 		if toolCtx.Err() == context.DeadlineExceeded {
-			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", toolExecutionTimeout, toolName, ErrMCPToolTimeout)
+			return nil, nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", toolExecutionTimeout, toolName, ErrMCPToolTimeout)
 		}
 
 		// Two failures are worth reacting to instead of surfacing an opaque
@@ -810,7 +812,7 @@ func (m *ToolsManager) executeToolInternal(
 				// as a failure the same way, not be silently swallowed just
 				// because the retry itself succeeded at the transport level.
 				retryIsToolError := retryResponse != nil && retryResponse.IsError
-				return createToolResponseMessage(*toolCall, responseText, retryIsToolError), executionConfig.Name, sanitizedToolName, nil
+				return createToolResponseMessage(*toolCall, responseText, retryIsToolError), retryResponse, executionConfig.Name, sanitizedToolName, nil
 			}
 		}
 
@@ -825,9 +827,9 @@ func (m *ToolsManager) executeToolInternal(
 		// have been the caller's own rather than toolExecutionTimeout; the
 		// original cause is kept instead.
 		if recoveryExhaustedBudget {
-			return nil, "", "", fmt.Errorf("MCP tool call for %s ran out of time during recovery: %v: %w", toolName, callErr, ErrMCPToolTimeout)
+			return nil, nil, "", "", fmt.Errorf("MCP tool call for %s ran out of time during recovery: %v: %w", toolName, callErr, ErrMCPToolTimeout)
 		}
-		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
+		return nil, nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
 	}
 
 	// Extract text from MCP response
@@ -838,7 +840,7 @@ func (m *ToolsManager) executeToolInternal(
 	// failure rather than as ordinary result text. toolResponse is nil-checked for
 	// the same reason extractTextFromMCPResponse checks it above.
 	isToolError := toolResponse != nil && toolResponse.IsError
-	return createToolResponseMessage(*toolCall, responseText, isToolError), executionConfig.Name, sanitizedToolName, nil
+	return createToolResponseMessage(*toolCall, responseText, isToolError), toolResponse, executionConfig.Name, sanitizedToolName, nil
 }
 
 // attemptCallFailureRecovery reacts to a live tool call that failed for a

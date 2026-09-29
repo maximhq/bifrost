@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -266,6 +267,73 @@ func (m *MCPManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *sche
 		}
 	}
 	return result.ChatMessage, nil
+}
+
+// ExecuteRawTool executes an MCP tool call through the same plugin, permission,
+// credential, retry, and tracing path as ExecuteChatTool, while retaining the
+// upstream protocol result for MCP-to-MCP gateway callers.
+func (m *MCPManager) ExecuteRawTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*mcp.CallToolResult, *schemas.BifrostError) {
+	if toolCall == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: "toolCall cannot be nil"},
+			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest},
+		}
+	}
+
+	mcpRequest := getMCPRequest()
+	mcpRequest.RequestType = schemas.MCPRequestTypeChatToolCall
+	mcpRequest.ChatAssistantMessageToolCall = toolCall
+	defer releaseMCPRequest(mcpRequest)
+
+	result, bErr := m.executeToolWithHooks(ctx, mcpRequest, schemas.ChatCompletionRequest)
+	if bErr != nil {
+		return nil, bErr
+	}
+	if result == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: "MCP tool execution returned nil result"},
+			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest},
+		}
+	}
+	if result.MCPToolResult != nil {
+		mcpToolResult, ok := result.MCPToolResult.(*mcp.CallToolResult)
+		if !ok {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error:          &schemas.ErrorField{Message: "MCP tool execution returned an invalid protocol result"},
+				ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest},
+			}
+		}
+		return mcpToolResult, nil
+	}
+	if result.ChatMessage != nil {
+		return chatMessageToMCPToolResult(result.ChatMessage), nil
+	}
+	return nil, &schemas.BifrostError{
+		IsBifrostError: false,
+		Error:          &schemas.ErrorField{Message: "MCP tool execution returned no tool result"},
+		ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest},
+	}
+}
+
+func chatMessageToMCPToolResult(message *schemas.ChatMessage) *mcp.CallToolResult {
+	var resultText string
+	if message.Content != nil {
+		if message.Content.ContentStr != nil {
+			resultText = *message.Content.ContentStr
+		} else {
+			for _, block := range message.Content.ContentBlocks {
+				if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
+					resultText += *block.Text
+				}
+			}
+		}
+	}
+	result := mcp.NewToolResultText(resultText)
+	result.IsError = message.ChatToolMessage != nil && message.ChatToolMessage.IsError != nil && *message.ChatToolMessage.IsError
+	return result
 }
 
 // ExecuteResponsesTool executes an MCP tool call and returns the result as a responses
