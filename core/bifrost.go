@@ -67,6 +67,10 @@ type ChannelMessage struct {
 	Err            chan schemas.BifrostError
 	queueSpan      schemas.SpanHandle // "queue-wait" span opened at enqueue, closed when a worker dequeues (or on release if the send never landed)
 	sentAt         time.Time          // set by the worker immediately before sending the result/error, so tryRequest can measure the worker->caller goroutine-hop latency ("worker-handoff")
+	// firstTokenTimeout is this stream attempt's TTFT deadline, or 0 for none.
+	// handleStreamRequest decides it per attempt (never on the last one), so it
+	// travels on the message rather than on the context the attempts share.
+	firstTokenTimeout time.Duration
 	// handoff arbitrates who owns the terminal value of a NON-streaming request.
 	// Response/Err are cap-1 channels drained on acquire, so the worker's send is
 	// always ready; once the caller's context ends, ctx.Done() is ready too and a
@@ -1459,20 +1463,8 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 			},
 		}
 	}
-	if req.State == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "state not provided for decision request",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:            schemas.DecisionRequest,
-				Provider:               req.Provider,
-				OriginalModelRequested: req.Model,
-				ResolvedModelUsed:      req.Model,
-			},
-		}
-	}
+	// A nil state is forwarded as JSON null: the TypeSafe SDKs allow it and the
+	// endpoint decides whether it is acceptable.
 	if len(req.Questions) == 0 {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -5587,7 +5579,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
 
-	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
+	// TTFT deadline: every attempt but the last gets it, so a slow provider hands
+	// over to the next fallback while the last one always runs to an answer.
+	firstTokenTimeout, _ := ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout).(time.Duration)
+	attemptFirstTokenTimeout := func(hasLaterFallback bool) time.Duration {
+		if !hasLaterFallback || firstTokenTimeout <= 0 {
+			return 0
+		}
+		return firstTokenTimeout
+	}
+
+	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req, attemptFirstTokenTimeout(len(fallbacks) > 0))
 	if primaryErr != nil {
 		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
 		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
@@ -5646,7 +5648,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		}
 
 		// Try the fallback provider
-		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
+		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq, attemptFirstTokenTimeout(i < len(fallbacks)-1))
 		// Layer on Primary/IsFallback on errors. For the success case the
 		// result is a chan of stream chunks emitted asynchronously — those
 		// chunks already carry per-attempt RoutingInfo populated upstream,
@@ -5985,7 +5987,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 
 // tryStreamRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
-func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+//
+// firstTokenTimeout is this attempt's TTFT deadline; 0 disables it.
+func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, firstTokenTimeout time.Duration) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	provider, model, _ := req.GetRequestFields()
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
@@ -6179,6 +6183,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
+	msg.firstTokenTimeout = firstTokenTimeout
 	bifrost.endCoreSpan(preEnqueueSpan)
 
 	// Open the queue-wait span; the worker closes it when it dequeues the message.
@@ -6318,6 +6323,38 @@ var errAllKeysFiltered = errors.New("all eligible keys are temporarily suppresse
 //     grants one attempt beyond max_retries, so a pool is walked even at the default of 0.
 //
 // Network/5xx errors reuse the same key since they are transient server issues, not per-key.
+// settleAttemptAbort ends one stream attempt's TTFT deadline once its
+// first-chunk check has settled, and returns the attempt's error.
+//
+// A header wait the deadline cut short surfaces from the provider as whatever
+// its client made of the closed socket (a network error, or a cancellation on
+// net/http). It is relabelled as the TTFT miss it is, so the retry loop stops
+// and the next fallback runs. The handle is cleared only now: the first-chunk
+// check has waited for a cut-off stream to drain, so no provider goroutine of
+// this attempt can still be looking for it.
+func settleAttemptAbort(ctx *schemas.BifrostContext, abort *providerUtils.AttemptAbort, bifrostError *schemas.BifrostError, providerKey schemas.ModelProvider, model string) *schemas.BifrostError {
+	abort.Disarm()
+	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
+	if bifrostError == nil || !abort.Fired() {
+		return bifrostError
+	}
+	if !isFirstTokenTimeoutError(bifrostError) {
+		bifrostError = providerUtils.NewFirstTokenTimeoutError(abort.Timeout())
+	}
+	if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
+		reason := schemas.FirstTokenTimeoutErrorCode
+		trail[len(trail)-1].FailReason = &reason
+		ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+	}
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("TTFT timeout: %s/%s produced no first token within %s; cutting off the attempt", providerKey, model, abort.Timeout()))
+	return bifrostError
+}
+
+// isFirstTokenTimeoutError reports whether err is a TTFT miss.
+func isFirstTokenTimeoutError(err *schemas.BifrostError) bool {
+	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == schemas.FirstTokenTimeoutErrorCode
+}
+
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
@@ -6730,9 +6767,13 @@ func executeRequestWithRetries[T any](
 		// Checked after requestHandler so the key's resolved alias decides the
 		// model family.
 		baseProvider := schemas.ResolveBaseProvider(ctx, providerKey)
+		// An attempt with a TTFT deadline holds startup events on every
+		// provider: only real output (text, reasoning, tool calls, audio,
+		// images, a finish reason or usage) counts as the first token.
+		attemptAbort := providerUtils.AttemptAbortFromContext(ctx)
 		checkPreamble := isStreamRequest &&
 			(baseProvider == schemas.Azure || baseProvider == schemas.OpenAI ||
-				schemas.IsOpenAIModelFamily(ctx, model))
+				schemas.IsOpenAIModelFamily(ctx, model) || attemptAbort != nil)
 		prevCheckedPreamble = checkPreamble
 		emptyStream := false
 		if bifrostError == nil {
@@ -6778,6 +6819,9 @@ func executeRequestWithRetries[T any](
 					result = any(checkedStream).(T)
 				}
 			}
+		}
+		if attemptAbort != nil {
+			bifrostError = settleAttemptAbort(ctx, attemptAbort, bifrostError, providerKey, model)
 		}
 
 		// Check if result is a streaming channel - if so, defer span completion
@@ -6892,22 +6936,33 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
 		}
 
-		// Fail soft when the upstream refuses replayed encrypted reasoning. The ciphertext
+		// Fail soft on a 400 when the request replays encrypted reasoning. The ciphertext
 		// is bound to the identity that minted it (item id, organization, serving
-		// endpoint), and a gateway routinely changes that between turns -- key rotation
-		// across a multi-key pool, a fallback that served an earlier turn from another
-		// provider, or a client whose traffic starts or stops being proxied mid-session.
+		// endpoint, model family), and a gateway routinely changes that between turns:
+		// key rotation across a multi-key pool, a fallback or a user switching provider
+		// mid-conversation, or a client whose traffic starts or stops being proxied.
 		// Retrying the same payload cannot help, so drop the encrypted half and give the
 		// request one more attempt on the same key: the turn continues with summaries
-		// only instead of failing outright. Runs once per request.
+		// only instead of failing outright.
+		//
+		// The gate is a 400 that names a reasoning token by family word, not the
+		// provider's verdict sentence (see shouldStripReasoningAfterClientError):
+		// providers word the verdict differently and reword it without notice, and a
+		// missed phrasing handed a healable 400 to the client. stripUnverifiableReasoning
+		// returns false when there is nothing to strip, so the extra attempt is spent
+		// only on requests that carry a token. Runs once per request.
 		lastWasEncryptedContentStrip = false
-		if !shouldRetry && !strippedEncryptedContent && isEncryptedReasoningRejection(bifrostError) &&
+		if !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
 			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
 			extraAttempts++
 			shouldRetry = true
-			logger.Warn("upstream rejected replayed encrypted reasoning content for %s/%s; retrying once without it: %s", providerKey, model, errMessage)
+			if isEncryptedReasoningRejection(bifrostError) {
+				logger.Warn("upstream rejected replayed encrypted reasoning content for %s/%s; retrying once without it: %s", providerKey, model, errMessage)
+			} else {
+				logger.Warn("upstream returned 400 for a request to %s/%s that replays encrypted reasoning; retrying once without it in case the token is the cause: %s", providerKey, model, errMessage)
+			}
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unverifiable encrypted reasoning content from the request to %s/%s and retrying once", providerKey, model))
 		}
 
@@ -7426,6 +7481,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// returned to the pool via its deferred finalizer.
 		if IsStreamRequestType(req.RequestType) {
 			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				// Arm this attempt's TTFT deadline before the provider dials: it
+				// covers the header wait and the first output chunk. The retry loop
+				// disarms and clears it once the first-chunk check settles.
+				if abort := providerUtils.NewAttemptAbort(req.firstTokenTimeout); abort != nil {
+					req.Context.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
+				}
 				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
 					resolvedModel = aliasConfig.ModelID
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
@@ -9237,6 +9298,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.ResponseStream = nil
 	msg.Err = nil
 	msg.queueSpan = nil
+	msg.firstTokenTimeout = 0
 	bifrost.channelMessagePool.Put(msg)
 }
 

@@ -883,6 +883,64 @@ func TestAuthMiddleware_TempTokenEncodedTraversal(t *testing.T) {
 	}
 }
 
+// The two failure modes must stay distinguishable, and a caller that presented
+// no token must learn nothing about whether the feature is on.
+func TestAuthMiddleware_TempTokenUnauthorizedCodes(t *testing.T) {
+	const token = "test-scoped-token"
+	const flowID = "flow-123"
+	route := oauth2ConsentScope.AllowedRoutes[0]
+	path := strings.ReplaceAll(route.Path, oauth2ConsentScope.ResourceIDInPath, flowID)
+
+	for _, tc := range []struct {
+		name     string
+		enabled  bool
+		token    string
+		wantCode string
+	}{
+		{"feature disabled", false, token, TempTokenAuthDisabledCode},
+		{"token rejected", true, "unknown-token", TempTokenRejectedCode},
+		{"no token stays opaque", false, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &traversalTokenStore{row: tables.TempToken{
+				ID: "token-123", TokenHash: encrypt.HashSHA256(token),
+				Scope: oauth2ConsentScope.Name, ResourceID: flowID, ExpiresAt: time.Now().Add(time.Hour),
+			}}
+			am := newTraversalAuthMiddleware()
+			am.tempTokensService = temptoken.NewService(store, temptoken.NewRegistry())
+			if err := RegisterTempTokenScopes(am.tempTokensService); err != nil {
+				t.Fatal(err)
+			}
+			am.UpdateTempTokenAuthEnabled(tc.enabled)
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(route.Method)
+			ctx.Request.SetRequestURI(path)
+			if tc.token != "" {
+				ctx.Request.Header.Set("X-Bifrost-Temp-Token", tc.token)
+			}
+			am.APIMiddleware()(func(*fasthttp.RequestCtx) {
+				t.Fatal("protected handler must not run")
+			})(ctx)
+
+			if got := ctx.Response.StatusCode(); got != fasthttp.StatusUnauthorized {
+				t.Fatalf("expected 401, got %d", got)
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+				t.Fatalf("decode body %q: %v", ctx.Response.Body(), err)
+			}
+			if body.Error.Code != tc.wantCode {
+				t.Fatalf("expected code %q, got %q", tc.wantCode, body.Error.Code)
+			}
+		})
+	}
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})

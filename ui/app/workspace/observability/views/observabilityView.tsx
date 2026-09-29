@@ -167,7 +167,7 @@ export default function ObservabilityView() {
 									aria-disabled={tab.disabled ? true : undefined}
 									aria-current={selectedPluginId === tab.id ? "page" : undefined}
 									className={cn(
-										"mb-1 flex max-h-[32px] w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
+										"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
 										tab.disabled ? "opacity-50" : "",
 										selectedPluginId === tab.id
 											? "bg-secondary opacity-100 hover:opacity-100"
@@ -183,7 +183,8 @@ export default function ObservabilityView() {
 										if (isMobile) setMobileDetailOpen(true);
 									}}
 								>
-									<div className="w-[24px]">{tab.icon}</div> {tab.name}
+									<div className="w-[24px] shrink-0">{tab.icon}</div>
+									<span className="min-w-0 truncate">{tab.name}</span>
 									{tab.tag && (
 										<Badge variant="secondary" className="text-muted-foreground ml-auto text-[10px] font-medium">
 											{tab.tag.toUpperCase()}

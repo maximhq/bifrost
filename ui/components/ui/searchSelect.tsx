@@ -43,6 +43,8 @@ interface SearchSelectSyncProps<T extends SearchSelectOption = SearchSelectOptio
 	isLoading?: never;
 	isError?: never;
 	errorMessage?: never;
+	loadMoreErrorMessage?: never;
+	onRetry?: never;
 }
 
 interface SearchSelectAsyncProps<T extends SearchSelectOption = SearchSelectOption> extends SearchSelectBaseProps<T> {
@@ -52,9 +54,21 @@ interface SearchSelectAsyncProps<T extends SearchSelectOption = SearchSelectOpti
 	isLoading?: boolean;
 	isError?: boolean;
 	errorMessage?: string;
+	/** Shown under the options when a later page failed, so the rows already loaded stay visible. */
+	loadMoreErrorMessage?: string;
+	/** Retries the failed request from the error row. */
+	onRetry?: () => void;
 }
 
 type SearchSelectProps<T extends SearchSelectOption = SearchSelectOption> = SearchSelectSyncProps<T> | SearchSelectAsyncProps<T>;
+
+function RetryButton({ onRetry }: { onRetry: () => void }) {
+	return (
+		<button type="button" className="text-foreground ml-2 underline underline-offset-2" onClick={onRetry} data-testid="search-select-retry">
+			Retry
+		</button>
+	);
+}
 
 function DefaultEntryView({ option }: { option: SearchSelectOption }) {
 	return (
@@ -100,6 +114,8 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 	const isLoading = isAsync ? (props.isLoading ?? false) : false;
 	const isError = isAsync ? (props.isError ?? false) : false;
 	const errorMessage = isAsync ? (props.errorMessage ?? "Failed to load.") : "";
+	const loadMoreErrorMessage = isAsync ? props.loadMoreErrorMessage : undefined;
+	const onRetry = isAsync ? props.onRetry : undefined;
 
 	const [internalOpen, setInternalOpen] = React.useState(false);
 	const [search, setSearch] = React.useState("");
@@ -217,7 +233,10 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 								))}
 							</div>
 						) : isError ? (
-							<div className="text-destructive py-6 text-center text-sm">{errorMessage}</div>
+							<div className="text-destructive py-6 text-center text-sm">
+								{errorMessage}
+								{onRetry && <RetryButton onRetry={onRetry} />}
+							</div>
 						) : (
 							<>
 								<CommandPrimitive.Empty className="text-muted-foreground py-6 text-center text-sm">{emptyMessage}</CommandPrimitive.Empty>
@@ -237,6 +256,12 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 								{isLoadingMore && (
 									<div className="flex justify-center py-2">
 										<Loader2 className="size-4 animate-spin opacity-50" />
+									</div>
+								)}
+								{!isLoadingMore && loadMoreErrorMessage && (
+									<div className="text-destructive py-2 text-center text-sm" data-testid="search-select-load-more-error">
+										{loadMoreErrorMessage}
+										{onRetry && <RetryButton onRetry={onRetry} />}
 									</div>
 								)}
 							</>

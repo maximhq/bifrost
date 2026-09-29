@@ -3,6 +3,8 @@ package bifrost
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -42,6 +44,19 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 ) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	if req == nil || len(req.Questions) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("decision request requires at least one question")
+	}
+	// Extensions the caller asked to reach the wire (e.g. images) have no
+	// meaning to an emulating chat model; refusing beats a silent text-only
+	// answer.
+	if len(req.ExtraParams) > 0 && ctx != nil {
+		if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); passthrough {
+			keys := make([]string, 0, len(req.ExtraParams))
+			for key := range req.ExtraParams {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			return nil, providerUtils.NewBifrostBadRequestError("decision emulation cannot honor native request extensions (" + strings.Join(keys, ", ") + "); route the request to a provider that serves them natively")
+		}
 	}
 
 	tool, err := providerUtils.BuildDecisionResponsesTool(req.Questions)

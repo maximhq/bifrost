@@ -13,7 +13,7 @@ const NumberAndSelect = ({
 	onChangeSelect,
 	options,
 	labelClassName,
-	placeholder = "100",
+	placeholder = "No limit",
 	dataTestId,
 	inputClassName,
 }: {

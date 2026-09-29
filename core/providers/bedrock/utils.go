@@ -178,6 +178,7 @@ var (
 		"length":         "max_tokens",
 		"tool_calls":     "tool_use",
 		"content_filter": "content_filtered",
+		"refusal":        "content_filtered", // Anthropic refusal; not a valid Converse stopReason
 	}
 )
 
@@ -195,6 +196,19 @@ func convertBedrockStopReason(stopReason string) string {
 		return reason
 	}
 	return stopReason
+}
+
+// bedrockStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// Converse stop reason, for terminal events that carry no explicit stop reason. ok is
+// false for a reason with no Converse equivalent, which must not reach messageStop.
+func bedrockStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) (reason string, ok bool) {
+	switch details.Reason {
+	case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+		return "max_tokens", true
+	case schemas.ResponsesResponseIncompleteReasonContentFilter:
+		return "content_filtered", true
+	}
+	return "", false
 }
 
 // convertBifrostToBedrockStopReason converts a Bifrost stop reason back to Bedrock format.
@@ -1744,6 +1758,7 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 		// request (#7003): disambiguate via the request-scoped namer.
 		document.Name = docNamer.name(document.Name)
 		blocks := []BedrockContentBlock{{Document: document}}
+		// Cache point must be in a separate block (#7613)
 		if block.CacheControl != nil {
 			blocks = append(blocks, BedrockContentBlock{
 				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),

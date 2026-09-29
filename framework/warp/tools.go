@@ -94,6 +94,9 @@ type ToolDeps struct {
 	// and reports itself unavailable rather than the caller getting a nil-
 	// pointer panic.
 	governance GovernanceReader
+	// charts holds what render_chart drew this turn, so the answer's chart
+	// blocks can be expanded from it. Built per turn with the rest of deps.
+	charts *chartRegistry
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -139,7 +142,7 @@ const FilterSchema = `{
     "models": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success, error, or cancelled."},
     "stop_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. stop, length, content_filter, tool_calls. Call describe_filter_space to see which actually occur."},
-    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Request type, e.g. chat_completion, embedding, speech, transcription, image_generation, video_generation. Use this to exclude non-chat traffic - embeddings, speech, and image/video generation have their own cost and latency shape and otherwise get averaged in with chat requests."},
+    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Exact request types, e.g. chat_completion, chat_completion_stream, responses, responses_stream, text_completion, embedding, speech, transcription, image_generation, video_generation. Leave it unset unless the person names a request type: spend, usage and performance questions cover every type. Each value matches only itself - a streamed request is its own _stream type and the Responses API is responses, so chat_completion alone leaves out most chat traffic. For chat traffic as a whole pass chat_completion, chat_completion_stream, responses and responses_stream together."},
     "virtual_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "team_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "customer_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
@@ -168,7 +171,7 @@ const FilterSchema = `{
     "parent_request_id": {"type": "string", "minLength": 1, "description": "Requests spawned by this request, e.g. the fallback attempts of one call."},
     "missing_cost_only": {"type": "boolean", "description": "Only successful requests whose cost could not be computed."},
     "error_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's error classification on failed requests, e.g. invalid_request_error, overloaded_error - the ids a query_usage_by error_type ranking returns. This is how to fetch the rows behind one row of that ranking."},
-    "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values."},
+    "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values. overloaded_error and rate_limit_error are error types - put them in error_types, never here."},
     "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
@@ -682,6 +685,22 @@ func boolArg(args map[string]any, key string) (bool, error) {
 	return flag, nil
 }
 
+// noteRequestTypes marks a result that was narrowed by request type.
+//
+// objects is an exact match, and a total narrowed by it reads exactly like a
+// total. A spend question filtered to chat_completion came back as $0.00 for
+// every provider on a deployment whose traffic was all Responses API, with
+// nothing in the result to say the filter was why.
+func noteRequestTypes(out map[string]any, filters *logstore.SearchFilters) map[string]any {
+	if len(filters.Objects) == 0 {
+		return out
+	}
+	out["request_types"] = fmt.Sprintf(
+		"Only requests of type %s are counted. Every other request type is left out - streamed requests are their own _stream types, and the Responses API is responses and responses_stream - so this is not total spend, usage or traffic. Unless the person asked for this request type, drop objects and query again; otherwise say the answer covers only this type.",
+		strings.Join(filters.Objects, ", "))
+	return out
+}
+
 // filterArg parses the shared filter object every flow accepts and applies
 // the caller's default scope.
 //
@@ -1034,6 +1053,7 @@ func buildToolsFor(searcher *SemanticSearcher) []Tool {
 		queryMetricsTool(),
 		queryUsageByTool(),
 		queryModelsTool(),
+		renderChartTool(),
 		describeFilterSpaceTool(),
 		describeVirtualKeyTool(),
 		askUserToolDef(),

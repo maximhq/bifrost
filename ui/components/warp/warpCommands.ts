@@ -1,11 +1,4 @@
-/**
- * Slash commands for the Warp composer.
- *
- * Kept as data rather than a switch in the composer so the menu and the
- * behaviour cannot drift: the list below is both what gets shown and what gets
- * matched, so a command can never appear in the menu without running, or run
- * without appearing.
- */
+// One list drives both the menu and matching, so a command cannot show without running or vice versa.
 
 export type WarpCommandID = "clear";
 
@@ -18,32 +11,18 @@ export interface WarpCommand {
 
 export const WARP_COMMANDS: WarpCommand[] = [{ id: "clear", name: "clear", description: "Start a new conversation" }];
 
-/**
- * Reports whether the current input should open the command menu.
- *
- * Only a lone leading slash counts. Someone writing "what is the p99 for
- * /v1/chat/completions?" is not reaching for a command, and popping a menu over
- * their question mid-sentence would be worse than having no commands at all.
- */
+/** Only a lone leading slash counts, so a question mentioning "/v1/chat" does not pop the menu. */
 export function isWarpCommandQuery(value: string): boolean {
 	return /^\/[a-z]*$/i.test(value);
 }
 
-/** Commands matching what has been typed so far, in listed order. */
 export function matchWarpCommands(value: string): WarpCommand[] {
 	if (!isWarpCommandQuery(value)) return [];
 	const typed = value.slice(1).toLowerCase();
 	return WARP_COMMANDS.filter((command) => command.name.startsWith(typed));
 }
 
-/**
- * Resolves a submitted line to a command, or null when it is an ordinary
- * question.
- *
- * Matching is exact: "/clear" is a command, "/clear the logs table" is a
- * question that happens to start with a slash. Treating the second as a command
- * would silently discard the rest of what someone wrote.
- */
+/** Exact match only: "/clear the logs table" is a question, and treating it as a command would drop the text. */
 export function resolveWarpCommand(value: string): WarpCommand | null {
 	const trimmed = value.trim().toLowerCase();
 	if (!trimmed.startsWith("/")) return null;

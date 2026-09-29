@@ -69,6 +69,23 @@ func applyScope(filters *logstore.SearchFilters, scope Scope, all bool) {
 	filters.UserIDs = []string{scope.UserID}
 }
 
+// rankingScope is the scope a ranking by dimension defaults to.
+//
+// A ranking across people, org units or keys is a question about more than the
+// asker: narrowed to their own traffic, "top 5 users by cost" ranks one user,
+// and an admin was told only one user had traffic while the dashboard beside
+// the answer listed nineteen. Those rankings take no default, so they cover
+// everything the store's queryscope lets the caller see. A ranking of what the
+// traffic was - error type, app, routing rule - keeps the caller's default.
+func rankingScope(scope Scope, dimension string) Scope {
+	switch logstore.RankingDimension(dimension) {
+	case logstore.RankingDimensionUser, logstore.RankingDimensionTeam, logstore.RankingDimensionCustomer,
+		logstore.RankingDimensionBusinessUnit, logstore.RankingDimensionProject, logstore.RankingDimensionVirtualKey:
+		return Scope{}
+	}
+	return scope
+}
+
 // filtersNameAScope reports whether the model asked about a particular
 // slice of traffic.
 //

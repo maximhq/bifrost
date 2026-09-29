@@ -276,7 +276,11 @@ function Unit({ children }: { children: React.ReactNode }) {
 }
 
 function Trailing({ children, className }: { children: React.ReactNode; className: string }) {
-	return <span className={cn("min-w-0 truncate font-mono text-xs", className)}>{children}</span>;
+	return (
+		<span className={cn("min-w-0 truncate font-mono text-xs", className)} data-testid="logs-metric-trailing">
+			{children}
+		</span>
+	);
 }
 
 /**
@@ -375,184 +379,189 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 	// is good news on requests is a regression here.
 	const costChange = previous ? formatPctChange(totalCost, previous.total_cost, "lower-is-better") : undefined;
 
+	// Columns follow the strip's own width, not the viewport's: beside the app and
+	// filter sidebars a 1440px window leaves the strip about 900px, and six columns
+	// there truncate the trailing figures.
 	return (
-		<Card
-			className={cn(
-				"shrink-0 overflow-hidden rounded-sm py-0 shadow-none",
-				// gap-px over a divider-coloured surface renders the hairlines, so they
-				// stay correct at every breakpoint instead of relying on nth-child math.
-				"grid grid-cols-2 gap-px md:grid-cols-3 lg:grid-cols-6",
-				divider,
-				"transition-opacity duration-200",
-				loading ? "opacity-50" : "opacity-100",
-			)}
-			data-testid="logs-metric-strip"
-		>
-			<Segment
-				state={state}
-				title="Total Requests"
-				footer={
-					<>
-						<Sparkline
-							points={requestPoints}
-							bucketSizeSeconds={requestHistogram?.bucket_size_seconds}
-							className={toneClass[requestsSignal.tone]}
-							rows={(point, index) => (
-								<>
-									<TooltipRow name="Requests">{averaged(point, formatCount(point.value))}</TooltipRow>
-									{errorPoints[index] && errorPoints[index].value > 0 && (
-										<TooltipRow name="Failed" className={negative}>
-											{averaged(point, formatCount(errorPoints[index].value))}
+		<div className="@container/metric-strip shrink-0">
+			<Card
+				className={cn(
+					"overflow-hidden rounded-sm py-0 shadow-none",
+					// gap-px over a divider-coloured surface renders the hairlines, so they
+					// stay correct at every breakpoint instead of relying on nth-child math.
+					"grid grid-cols-2 gap-px @2xl/metric-strip:grid-cols-3 @6xl/metric-strip:grid-cols-6",
+					divider,
+					"transition-opacity duration-200",
+					loading ? "opacity-50" : "opacity-100",
+				)}
+				data-testid="logs-metric-strip"
+			>
+				<Segment
+					state={state}
+					title="Total Requests"
+					footer={
+						<>
+							<Sparkline
+								points={requestPoints}
+								bucketSizeSeconds={requestHistogram?.bucket_size_seconds}
+								className={toneClass[requestsSignal.tone]}
+								rows={(point, index) => (
+									<>
+										<TooltipRow name="Requests">{averaged(point, formatCount(point.value))}</TooltipRow>
+										{errorPoints[index] && errorPoints[index].value > 0 && (
+											<TooltipRow name="Failed" className={negative}>
+												{averaged(point, formatCount(errorPoints[index].value))}
+											</TooltipRow>
+										)}
+									</>
+								)}
+							/>
+							{requestsSignal.text && <Trailing className={toneClass[requestsSignal.tone]}>{requestsSignal.text}</Trailing>}
+						</>
+					}
+				>
+					<NumberFlow value={totalRequests} format={COMPACT_NUMBER_FORMAT} />
+				</Segment>
+
+				<Segment
+					state={state}
+					title="Success Rate"
+					footer={
+						<>
+							<RatioBar
+								percent={successRate}
+								tooltip={
+									<TooltipBody heading="Of all requests in this window">
+										<TooltipRow name="Succeeded" className={positive}>
+											{formatCount(success.passed)}
 										</TooltipRow>
-									)}
-								</>
-							)}
-						/>
-						{requestsSignal.text && <Trailing className={toneClass[requestsSignal.tone]}>{requestsSignal.text}</Trailing>}
-					</>
-				}
-			>
-				<NumberFlow value={totalRequests} format={COMPACT_NUMBER_FORMAT} />
-			</Segment>
+										<TooltipRow name="Failed" className={negative}>
+											{formatCount(success.failed)}
+										</TooltipRow>
+										<TooltipRow name="Total">{formatCount(totalRequests)}</TooltipRow>
+										{previous && <TooltipRow name="Previous period">{`${previous.success_rate.toFixed(2)}%`}</TooltipRow>}
+									</TooltipBody>
+								}
+							/>
+							{successChange && <Trailing className={toneClass[successChange.tone]}>{successChange.text}</Trailing>}
+						</>
+					}
+				>
+					<NumberFlow value={successRate} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />
+					<Unit>%</Unit>
+				</Segment>
 
-			<Segment
-				state={state}
-				title="Success Rate"
-				footer={
-					<>
-						<RatioBar
-							percent={successRate}
-							tooltip={
-								<TooltipBody heading="Of all requests in this window">
-									<TooltipRow name="Succeeded" className={positive}>
-										{formatCount(success.passed)}
-									</TooltipRow>
-									<TooltipRow name="Failed" className={negative}>
-										{formatCount(success.failed)}
-									</TooltipRow>
-									<TooltipRow name="Total">{formatCount(totalRequests)}</TooltipRow>
-									{previous && <TooltipRow name="Previous period">{`${previous.success_rate.toFixed(2)}%`}</TooltipRow>}
-								</TooltipBody>
-							}
-						/>
-						{successChange && <Trailing className={toneClass[successChange.tone]}>{successChange.text}</Trailing>}
-					</>
-				}
-			>
-				<NumberFlow value={successRate} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />
-				<Unit>%</Unit>
-			</Segment>
+				<Segment
+					state={state}
+					title="User Success"
+					footer={
+						<>
+							<RatioBar
+								percent={userSuccessRate}
+								tooltip={
+									<TooltipBody heading="Of user-facing requests only">
+										<TooltipRow name="Succeeded" className={positive}>
+											{formatCount(userSuccess.passed)}
+										</TooltipRow>
+										<TooltipRow name="Failed" className={negative}>
+											{formatCount(userSuccess.failed)}
+										</TooltipRow>
+										<TooltipRow name="Total">{formatCount(userRequests)}</TooltipRow>
+										{previous && <TooltipRow name="Previous period">{`${previous.user_facing_success_rate.toFixed(2)}%`}</TooltipRow>}
+									</TooltipBody>
+								}
+							/>
+							{userSuccessChange && <Trailing className={toneClass[userSuccessChange.tone]}>{userSuccessChange.text}</Trailing>}
+						</>
+					}
+				>
+					<NumberFlow value={userSuccessRate} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />
+					<Unit>%</Unit>
+				</Segment>
 
-			<Segment
-				state={state}
-				title="User Success"
-				footer={
-					<>
-						<RatioBar
-							percent={userSuccessRate}
-							tooltip={
-								<TooltipBody heading="Of user-facing requests only">
-									<TooltipRow name="Succeeded" className={positive}>
-										{formatCount(userSuccess.passed)}
-									</TooltipRow>
-									<TooltipRow name="Failed" className={negative}>
-										{formatCount(userSuccess.failed)}
-									</TooltipRow>
-									<TooltipRow name="Total">{formatCount(userRequests)}</TooltipRow>
-									{previous && <TooltipRow name="Previous period">{`${previous.user_facing_success_rate.toFixed(2)}%`}</TooltipRow>}
-								</TooltipBody>
-							}
-						/>
-						{userSuccessChange && <Trailing className={toneClass[userSuccessChange.tone]}>{userSuccessChange.text}</Trailing>}
-					</>
-				}
-			>
-				<NumberFlow value={userSuccessRate} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />
-				<Unit>%</Unit>
-			</Segment>
-
-			<Segment
-				state={state}
-				title="Avg Latency"
-				footer={
-					<>
-						<Sparkline
-							points={latencyPoints}
-							bucketSizeSeconds={latencyHistogram?.bucket_size_seconds}
-							className={warning}
-							rows={(point, index) => (
-								<>
-									<TooltipRow name="Average">{averaged(point, formatMs(point.value))}</TooltipRow>
-									{latencyP95Points[index] && (
-										<TooltipRow name="p95">{averaged(point, formatMs(latencyP95Points[index].value))}</TooltipRow>
-									)}
-								</>
-							)}
-						/>
-						{/* "~" because this is a weighted mean of bucket p95s, not the
+				<Segment
+					state={state}
+					title="Avg Latency"
+					footer={
+						<>
+							<Sparkline
+								points={latencyPoints}
+								bucketSizeSeconds={latencyHistogram?.bucket_size_seconds}
+								className={warning}
+								rows={(point, index) => (
+									<>
+										<TooltipRow name="Average">{averaged(point, formatMs(point.value))}</TooltipRow>
+										{latencyP95Points[index] && (
+											<TooltipRow name="p95">{averaged(point, formatMs(latencyP95Points[index].value))}</TooltipRow>
+										)}
+									</>
+								)}
+							/>
+							{/* "~" because this is a weighted mean of bucket p95s, not the
 						    window's own 95th percentile. */}
-						{p95 > 0 && <Trailing className={warning}>p95 ~{formatMs(p95)}</Trailing>}
-					</>
-				}
-			>
-				<NumberFlow value={Math.round(stats?.average_latency ?? 0)} />
-				<Unit>ms</Unit>
-			</Segment>
+							{p95 > 0 && <Trailing className={warning}>p95 ~{formatMs(p95)}</Trailing>}
+						</>
+					}
+				>
+					<NumberFlow value={Math.round(stats?.average_latency ?? 0)} />
+					<Unit>ms</Unit>
+				</Segment>
 
-			<Segment
-				state={state}
-				title="Total Tokens"
-				footer={
-					<>
-						<StackedBar
-							first={promptTokens}
-							second={completionTokens}
-							tooltip={
-								<TooltipBody heading="Token split">
-									<TooltipRow name="Input" className="text-chart-token-input">
-										{`${formatCount(promptTokens)}${tokenTotal > 0 ? ` (${((promptTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
-									</TooltipRow>
-									<TooltipRow name="Output" className="text-chart-token-output">
-										{`${formatCount(completionTokens)}${tokenTotal > 0 ? ` (${((completionTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
-									</TooltipRow>
-									<TooltipRow name="Total">{formatCount(stats?.total_tokens ?? 0)}</TooltipRow>
-								</TooltipBody>
-							}
-						/>
-						<Trailing className={muted}>
-							<NumberFlow value={promptTokens} format={FOOTER_NUMBER_FORMAT} />
-							{/* No spaces around the slash: it reads the same in mono figures and
+				<Segment
+					state={state}
+					title="Total Tokens"
+					footer={
+						<>
+							<StackedBar
+								first={promptTokens}
+								second={completionTokens}
+								tooltip={
+									<TooltipBody heading="Token split">
+										<TooltipRow name="Input" className="text-chart-token-input">
+											{`${formatCount(promptTokens)}${tokenTotal > 0 ? ` (${((promptTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
+										</TooltipRow>
+										<TooltipRow name="Output" className="text-chart-token-output">
+											{`${formatCount(completionTokens)}${tokenTotal > 0 ? ` (${((completionTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
+										</TooltipRow>
+										<TooltipRow name="Total">{formatCount(stats?.total_tokens ?? 0)}</TooltipRow>
+									</TooltipBody>
+								}
+							/>
+							<Trailing className={muted}>
+								<NumberFlow value={promptTokens} format={FOOTER_NUMBER_FORMAT} />
+								{/* No spaces around the slash: it reads the same in mono figures and
 							    keeps both halves of the split visible one breakpoint lower. */}
-							{"/"}
-							<NumberFlow value={completionTokens} format={FOOTER_NUMBER_FORMAT} />
-						</Trailing>
-					</>
-				}
-			>
-				<NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
-			</Segment>
+								{"/"}
+								<NumberFlow value={completionTokens} format={FOOTER_NUMBER_FORMAT} />
+							</Trailing>
+						</>
+					}
+				>
+					<NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
+				</Segment>
 
-			<Segment
-				state={state}
-				title="Total Cost"
-				footer={
-					<>
-						<Sparkline
-							points={costPoints}
-							bucketSizeSeconds={costHistogram?.bucket_size_seconds}
-							className={costChange ? toneClass[costChange.tone] : muted}
-							rows={(point) => <TooltipRow name="Cost">{averaged(point, formatCurrencyNumber(point.value))}</TooltipRow>}
-						/>
-						{costChange?.text ? (
-							<Trailing className={toneClass[costChange.tone]}>{costChange.text}</Trailing>
-						) : (
-							costPerRequest > 0 && <Trailing className={muted}>{formatCurrencyNumber(costPerRequest)}/req</Trailing>
-						)}
-					</>
-				}
-			>
-				<NumberFlow value={totalCost} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
-			</Segment>
-		</Card>
+				<Segment
+					state={state}
+					title="Total Cost"
+					footer={
+						<>
+							<Sparkline
+								points={costPoints}
+								bucketSizeSeconds={costHistogram?.bucket_size_seconds}
+								className={costChange ? toneClass[costChange.tone] : muted}
+								rows={(point) => <TooltipRow name="Cost">{averaged(point, formatCurrencyNumber(point.value))}</TooltipRow>}
+							/>
+							{costChange?.text ? (
+								<Trailing className={toneClass[costChange.tone]}>{costChange.text}</Trailing>
+							) : (
+								costPerRequest > 0 && <Trailing className={muted}>{formatCurrencyNumber(costPerRequest)}/req</Trailing>
+							)}
+						</>
+					}
+				>
+					<NumberFlow value={totalCost} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
+				</Segment>
+			</Card>
+		</div>
 	);
 }

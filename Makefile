@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -1815,6 +1815,21 @@ run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suit
 	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
 	$(ECHO) "$(GREEN)Running MCP Code Mode E2E tests against $$BINARY...$(NC)"; \
 	./tests/e2e/api/runners/individual/run-newman-mcp-codemode-tests.sh --binary "$$BINARY"
+
+run-warp-test: install-newman ## Run the Warp E2E suite: boots Bifrost on a throwaway Postgres DB, seeds it (tests/cmd/seed/warpseed) and asks Warp questions with a live model. Needs OPENAI_API_KEY (or WARP_UPSTREAM_BIFROST=<url> to use a running Bifrost's key), Postgres and Weaviate (tests/docker-compose.yml). Builds tmp/bifrost-http unless BINARY is given (Usage: make run-warp-test [BINARY=path/to/bifrost-http] [FOLDER="Guardrails"] [WARP_UPSTREAM_BIFROST=http://localhost:8080] [WEAVIATE_HOST=localhost:9000] [POSTGRES_PORT=5432] [USE_INFISICAL=1])
+	@$(EXPOSE_ENV); \
+	BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
+	$(ECHO) "$(GREEN)Running Warp E2E tests against $$BINARY...$(NC)"; \
+	./tests/e2e/api/runners/individual/run-newman-warp-tests.sh --binary "$$BINARY" $(if $(FOLDER),--folder "$(FOLDER)",)
 
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin

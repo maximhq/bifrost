@@ -251,7 +251,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
 				for j, block := range msg.Content.ContentBlocks {
 					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
-					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil))
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil || fileDataNeedsDataURL(block.File.FileData)))
 					if needsBlockCopy {
 						blockCopy := block
 						if stripBlockCacheControl {
@@ -265,8 +265,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						// was discarded. Providers that cannot take a URL now say so by
 						// name, and any OpenAI-compatible endpoint that does accept one
 						// keeps working without a Bifrost change.
-						if blockCopy.File != nil && blockCopy.File.FileType != nil {
+						// Fold it into file_data first: the wire has nowhere else to carry
+						// the media type, and bare base64 is rejected (fileDataAsDataURL).
+						if blockCopy.File != nil && (blockCopy.File.FileType != nil || fileDataNeedsDataURL(blockCopy.File.FileData)) {
 							fileCopy := *blockCopy.File
+							if fileCopy.FileData != nil {
+								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
+							}
 							fileCopy.FileType = nil
 							blockCopy.File = &fileCopy
 						}
@@ -485,7 +490,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						continue
 					}
 
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData))) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
@@ -508,8 +513,13 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						}
 
 						// Strip FileType from file block
-						if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
+						// Fold it into file_data first: the wire has nowhere else to carry
+						// the media type, and bare base64 is rejected (fileDataAsDataURL).
+						if blockCopy.ResponsesInputMessageContentBlockFile != nil && (blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(blockCopy.ResponsesInputMessageContentBlockFile.FileData)) {
 							fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+							if fileCopy.FileData != nil {
+								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
+							}
 							fileCopy.FileType = nil
 							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 						}
@@ -735,7 +745,7 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.Citations != nil {
 				return true
 			}
-			if block.File != nil && block.File.FileType != nil {
+			if block.File != nil && (block.File.FileType != nil || fileDataNeedsDataURL(block.File.FileData)) {
 				return true
 			}
 		}
@@ -768,7 +778,7 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.MediaResolution != nil {
 				return true
 			}
-			if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
+			if block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData)) {
 				return true
 			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {

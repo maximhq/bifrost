@@ -1,10 +1,4 @@
-/**
- * The minimum an element has to look like for the check below.
- *
- * Structural rather than `Element` so the rule can be tested: this repo has no
- * DOM environment for vitest, and a keyboard rule that cannot be asserted is
- * one that quietly stops holding. A real `Element` satisfies this shape.
- */
+/** Structural rather than `Element` so it can be tested without a DOM environment. */
 export interface KeyEventTarget {
 	tagName?: string;
 	getAttribute?(name: string): string | null;
@@ -13,17 +7,7 @@ export interface KeyEventTarget {
 
 const INTERACTIVE_TAGS = new Set(["BUTTON", "SELECT", "A"]);
 
-/**
- * Says whether a keydown came from something that handles its own keys.
- *
- * The question card listens on the document, so it sees every keystroke in the
- * panel. Text inputs were already excluded, but buttons and links were not -
- * with Skip focused, Enter reached the card's handler and picked the
- * highlighted option instead of pressing the button under the cursor.
- *
- * It walks up rather than checking the target alone, because focus usually sits
- * on a child of the control: the span inside a button is what the event names.
- */
+/** Walks up because the event often names a child of the control, such as the span inside a button. */
 export function isInteractiveTarget(target: KeyEventTarget | null | undefined): boolean {
 	for (let node = target; node; node = node.parentElement ?? null) {
 		const tag = node.tagName?.toUpperCase();

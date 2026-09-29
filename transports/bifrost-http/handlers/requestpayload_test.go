@@ -721,3 +721,27 @@ func BenchmarkSingleFullBodyParse(b *testing.B) {
 		})
 	}
 }
+
+// TestSDKFidelityPrepareDecisionRequestNullState pins #7599 on the Bifrost-native
+// /v1/decisions route: {"state": null} is a valid decision input (TypeSafe's
+// EntryType allows null) and must not be confused with an absent state, which
+// stays a 400.
+func TestSDKFidelityPrepareDecisionRequestNullState(t *testing.T) {
+	questions := `"questions":{"q":{"kind":"noul","instructions":"Evaluate this state."}}`
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","state":null,` + questions + `}`)
+	_, req, err := prepareDecisionRequest(ctx, nil)
+	if err != nil {
+		t.Fatalf("null state must be accepted, got %v", err)
+	}
+	if req.State != nil {
+		t.Errorf("null state must stay null, got %#v", req.State)
+	}
+
+	missing := &fasthttp.RequestCtx{}
+	missing.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0",` + questions + `}`)
+	if _, _, err := prepareDecisionRequest(missing, nil); err == nil || !strings.Contains(err.Error(), "state is required") {
+		t.Fatalf("absent state must still be rejected, got %v", err)
+	}
+}

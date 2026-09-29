@@ -4463,6 +4463,11 @@
             "hmacKey": {
               "type": "string"
             },
+            "omitIpAddresses": {
+              "type": "boolean",
+              "description": "Stop recording client IP addresses in audit logs while keeping every other field. IPs already stored are hidden from the API, filter data, search, exports and archives but not deleted from the database. Default: false",
+              "default": false
+            },
             "archiveInterval": {
               "type": "string",
               "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",

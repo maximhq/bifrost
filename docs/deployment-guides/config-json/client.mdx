@@ -111,6 +111,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |
 | `allow_direct_keys` | boolean | `false` | Allow callers to bypass the registered key pool by sending `x-bf-direct-key: true` and a raw provider key in `Authorization` / `x-api-key` / `x-goog-api-key`. See [Direct API Key](../../providers/request-options#direct-api-key) |
+| `delete_expired_virtual_keys` | boolean | `false` | Delete expired virtual keys with a daily cleanup job. A key can override this with its own `delete_after_expire`. See [Virtual key expiry](../../features/governance/virtual-keys#key-expiry) |
 
 ```json
 {
