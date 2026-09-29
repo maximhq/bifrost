@@ -1957,11 +1957,21 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 		// Skip — the content_block_stop is emitted on OutputItemDone
 		return nil, nil
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	// response.incomplete is terminal too: a truncated or filtered turn must still close
+	// with message_delta + message_stop, or the client never sees the stop reason.
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Emit message_delta + message_stop as two separate events
 		stopReason := "end_turn"
 		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
-			stopReason = resp.Response.IncompleteDetails.Reason
+			// Translate the Responses vocabulary into Anthropic stop reasons.
+			switch resp.Response.IncompleteDetails.Reason {
+			case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+				stopReason = "max_tokens"
+			case schemas.ResponsesResponseIncompleteReasonContentFilter:
+				stopReason = "refusal"
+			default:
+				stopReason = resp.Response.IncompleteDetails.Reason
+			}
 		}
 
 		// Build message_delta event

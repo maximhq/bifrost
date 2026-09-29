@@ -1993,14 +1993,23 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		event.ContentBlockIndex = &contentBlockIndex
 		event.ContentBlockStop = true
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	// response.incomplete is terminal too: a truncated or filtered turn must still close
+	// with messageStop, or the client never sees the stop reason or usage.
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Message stop - always set stopReason
 		stopReason := "end_turn"
 		if bifrostResp.Response != nil {
-			if bifrostResp.Response.StopReason != nil {
+			// Recognized incomplete details win: an explicit stop reason may be provider-specific
+			// (Anthropic "refusal") and not a valid Converse stopReason.
+			var detailsReason string
+			var detailsOK bool
+			if d := bifrostResp.Response.IncompleteDetails; d != nil {
+				detailsReason, detailsOK = bedrockStopReasonFromIncompleteDetails(d)
+			}
+			if detailsOK {
+				stopReason = detailsReason
+			} else if bifrostResp.Response.StopReason != nil {
 				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
-			} else if bifrostResp.Response.IncompleteDetails != nil {
-				stopReason = bifrostResp.Response.IncompleteDetails.Reason
 			}
 		}
 		event.StopReason = &stopReason
