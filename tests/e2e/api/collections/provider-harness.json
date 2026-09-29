@@ -84043,6 +84043,61 @@
                   ]
                 },
                 {
+                  "name": "47.10.A native /v1/chat/completions -> openai/gpt-4o-mini bare base64 file_data with file_type becomes a data URL",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var body = pm.response.text() || '';",
+                          "pm.test('bare-base64 file_data reaches the provider as a data URL', function () {",
+                          "  pm.expect(body, 'provider rejected bare base64 file_data: ' + body.slice(0, 500)).to.not.match(/Invalid base64 data URL|Expected a base64-encoded data URL/i);",
+                          "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 500)).to.equal(200);",
+                          "  var json = pm.response.json();",
+                          "  var raw = (json.extra_fields || {}).raw_request;",
+                          "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                          "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
+                          "  var fileData = String((((raw.messages || [])[0].content || []).filter(function (p) { return p.type === 'file'; }).map(function (p) { return p.file.file_data; })[0]) || '');",
+                          "  pm.expect(fileData.indexOf('data:application/pdf;base64,'), 'outbound file_data was not a PDF data URL: ' + fileData.slice(0, 80)).to.equal(0);",
+                          "  pm.expect(JSON.stringify(raw), 'file_type is a Bifrost extension and must not reach the wire').to.not.include('\"file_type\"');",
+                          "  var reply = String(((((json.choices || [])[0] || {}).message || {}).content) || '');",
+                          "  pm.expect(reply, 'model did not read the document: ' + reply.slice(0, 300)).to.include('4217');",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      },
+                      {
+                        "key": "x-bf-send-back-raw-request",
+                        "value": "true"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the invoice number in the attached document? Reply with just the number.\"},{\"type\":\"file\",\"file\":{\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcwMCBUZCAoSU5WT0lDRSA0MjE3IFRvdGFsIGR1ZSA1OC40MCBVU0QpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\"filename\":\"invoice.pdf\",\"file_type\":\"application/pdf\"}}]}]}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
                   "name": "47.10.A native /v1/chat/completions -> anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
@@ -140648,6 +140703,115 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gemini-3-8-flash /v1/chat/completions bare base64 file_data with file_type becomes a data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('bare-base64 file_data reaches the provider as a data URL', function () {",
+                  "  pm.expect(body, 'provider rejected bare base64 file_data: ' + body.slice(0, 500)).to.not.match(/Invalid base64 data URL|Expected a base64-encoded data URL/i);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = (json.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
+                  "  var fileData = String((((raw.messages || [])[0].content || []).filter(function (p) { return p.type === 'file'; }).map(function (p) { return p.file.file_data; })[0]) || '');",
+                  "  pm.expect(fileData.indexOf('data:application/pdf;base64,'), 'outbound file_data was not a PDF data URL: ' + fileData.slice(0, 80)).to.equal(0);",
+                  "  pm.expect(JSON.stringify(raw), 'file_type is a Bifrost extension and must not reach the wire').to.not.include('\"file_type\"');",
+                  "  var reply = String(((((json.choices || [])[0] || {}).message || {}).content) || '');",
+                  "  pm.expect(reply, 'model did not read the document: ' + reply.slice(0, 300)).to.include('4217');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"databricks/databricks-gemini-3-8-flash\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the invoice number in the attached document? Reply with just the number.\"},{\"type\":\"file\",\"file\":{\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcwMCBUZCAoSU5WT0lDRSA0MjE3IFRvdGFsIGR1ZSA1OC40MCBVU0QpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\"filename\":\"invoice.pdf\",\"file_type\":\"application/pdf\"}}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gemini-3-8-flash /v1/responses bare base64 input_file with file_type becomes a data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('bare-base64 file_data reaches the provider as a data URL', function () {",
+                  "  pm.expect(body, 'provider rejected bare base64 file_data: ' + body.slice(0, 500)).to.not.match(/Invalid base64 data URL|Expected a base64-encoded data URL/i);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = (json.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
+                  "  var fileData = String((((raw.input || [])[0].content || []).filter(function (p) { return p.type === 'input_file'; }).map(function (p) { return p.file_data; })[0]) || '');",
+                  "  pm.expect(fileData.indexOf('data:application/pdf;base64,'), 'outbound file_data was not a PDF data URL: ' + fileData.slice(0, 80)).to.equal(0);",
+                  "  pm.expect(JSON.stringify(raw), 'file_type is a Bifrost extension and must not reach the wire').to.not.include('\"file_type\"');",
+                  "  var reply = String(((json.output || []).filter(function (o) { return o.type === 'message'; }).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('')) || '');",
+                  "  pm.expect(reply, 'model did not read the document: ' + reply.slice(0, 300)).to.include('4217');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"databricks/databricks-gemini-3-8-flash\",\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"What is the invoice number in the attached document? Reply with just the number.\"},{\"type\":\"input_file\",\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcwMCBUZCAoSU5WT0lDRSA0MjE3IFRvdGFsIGR1ZSA1OC40MCBVU0QpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\"filename\":\"invoice.pdf\",\"file_type\":\"application/pdf\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }
