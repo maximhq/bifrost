@@ -177564,6 +177564,186 @@
           "name": "[EXPECT-400] openai openai/gpt-5-mini /v1/chat/completions conflicting reasoning_effort high vs reasoning.effort low still rejected - #7659"
         }
       ]
+    },
+    {
+      "name": "128. Gemini tool result with $ref key stays opaque (#7694)",
+      "description": "Issue #7694: a role:\"tool\" message (or Responses function_call_output) whose content is a JSON object was forwarded to Gemini verbatim as function_response.response. Gemini 3+ reads any nested {\"$ref\": \"<name>\"} in that object as a pointer to a display_name in function_response.parts and rejects the request with 400 \"The referenced name ... does not match to a display_name in the function_response.parts\". JSON Schema / OpenAPI tool output uses $ref routinely, so any agent session that cats a spec broke for the rest of the conversation. Fix: core/providers/gemini (convertBifrostMessagesToGemini, convertResponsesMessagesToGeminiContents) sends a JSON tool result as opaque string content whenever any nested object carries a $ref key, on both the Gemini Developer API and Vertex. Each case pins: the pre-fix error substring is absent, HTTP 200, and a normal completion shape.",
+      "item": [
+        {
+          "name": "gemini gemini/gemini-3.7-flash /v1/chat/completions tool result JSON with nested $ref stays opaque -> 200 (non-streaming) - #7694",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-3.7-flash tool result containing $ref is not read as a part reference - #7694', function () {",
+                  "  pm.expect(pm.response.text(), 'pre-fix signature present: ' + pm.response.text()).to.not.include('does not match to a display_name');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices && j.choices.length, 'no choices: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.choices[0].message, 'no message: ' + pm.response.text()).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-3.7-flash /v1/chat/completions tool result JSON with nested $ref stays opaque -> 200 (streaming) - #7694",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-3.7-flash streaming tool result containing $ref is not read as a part reference - #7694', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'pre-fix signature present: ' + body).to.not.include('does not match to a display_name');",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'no SSE data frames: ' + body).to.include('data: ');",
+                  "  pm.expect(body, 'stream did not finish: ' + body).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-3.7-flash /v1/responses function_call_output JSON with nested $ref stays opaque -> 200 (non-streaming) - #7694",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini/gemini-3.7-flash function_call_output containing $ref is not read as a part reference - #7694', function () {",
+                  "  pm.expect(pm.response.text(), 'pre-fix signature present: ' + pm.response.text()).to.not.include('does not match to a display_name');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output && j.output.length, 'no output items: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_output_tokens\":20,\"input\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex vertex/gemini-3.7-flash /v1/chat/completions tool result JSON with nested $ref stays opaque -> 200 (non-streaming) - #7694",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex/gemini-3.7-flash tool result containing $ref is not read as a part reference - #7694', function () {",
+                  "  pm.expect(pm.response.text(), 'pre-fix signature present: ' + pm.response.text()).to.not.include('does not match to a display_name');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices && j.choices.length, 'no choices: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.choices[0].message, 'no message: ' + pm.response.text()).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-3.7-flash\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
