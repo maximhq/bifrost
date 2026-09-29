@@ -1588,6 +1588,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 
 	for _, msg := range msgs {
 		var toolResultContent []BedrockContentBlock
+		// ToolResultContentBlock has no cachePoint member, so a marker nested in
+		// toolResult.content is not a checkpoint. The cache_control is emitted as a
+		// sibling cachePoint after this message's toolResult instead, one per tool
+		// message, carrying the TTL of the last marked block (#7614).
+		var cacheControl *schemas.CacheControl
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string. The helper
 			// validates, compacts, wraps arrays and primitives, falls back to a text
@@ -1602,11 +1607,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
 							Text: block.Text,
 						})
-						// Cache point must be in a separate block
 						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
+							cacheControl = block.CacheControl
 						}
 					}
 				case schemas.ChatContentBlockTypeImage:
@@ -1618,11 +1620,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
 							Image: imageSource,
 						})
-						// Cache point must be in a separate block
 						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
+							cacheControl = block.CacheControl
 						}
 					}
 				}
@@ -1651,6 +1650,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		}
 
 		contentBlocks = append(contentBlocks, toolResultBlock)
+		if cacheControl != nil {
+			contentBlocks = append(contentBlocks, BedrockContentBlock{
+				CachePoint: newBedrockCachePoint(cacheControl.TTL),
+			})
+		}
 	}
 
 	bedrockMsg.Content = contentBlocks
@@ -3146,12 +3150,13 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 				total++
 			}
 			// Nested tool-result markers count against the same per-request cap — AWS counts
-			// checkpoints across `messages` as a whole, and convertToolMessages emits a CachePoint
-			// inside ToolResult.Content whenever a client puts cache_control on a tool-result
-			// block. Both sibling passes (stripCachePointsFromBedrockRequest,
-			// downgradeExtendedCacheTTLInBedrockRequest) already recurse here; missing it would
-			// let a request with 4 direct plus 1 nested marker reach Bedrock at 5 and be rejected
-			// by the very limit this clamp exists to respect.
+			// checkpoints across `messages` as a whole. convertToolMessages no longer nests them
+			// (it emits a sibling cachePoint, #7614), but the count stays conservative for any
+			// request that still arrives with one. Both sibling passes
+			// (stripCachePointsFromBedrockRequest, downgradeExtendedCacheTTLInBedrockRequest)
+			// already recurse here; missing it would let a request with 4 direct plus 1 nested
+			// marker reach Bedrock at 5 and be rejected by the very limit this clamp exists to
+			// respect.
 			if tr := req.Messages[i].Content[j].ToolResult; tr != nil {
 				for k := range tr.Content {
 					if tr.Content[k].CachePoint != nil {
@@ -3244,31 +3249,56 @@ const toolResultImagePlaceholder = "Image attached below."
 func hoistToolResultImages(req *BedrockConverseRequest) {
 	for i := range req.Messages {
 		content := req.Messages[i].Content
-		var images []BedrockContentBlock
-		last := -1
-		for j := range content {
-			toolResult := content[j].ToolResult
+		lastToolResult := -1
+		for j := len(content) - 1; j >= 0; j-- {
+			if content[j].ToolResult != nil {
+				lastToolResult = j
+				break
+			}
+		}
+		var hoisted []BedrockContentBlock
+		n, last := 0, -1
+		for j, block := range content {
+			// A checkpoint covering an image must travel with that image. Keep
+			// their order and TTLs while retaining all tool results before images.
+			// Trailing checkpoints stay in place so they still cover trailing text.
+			if j < lastToolResult && block.CachePoint != nil && len(hoisted) > 0 {
+				// Adjacent checkpoints mark the same prefix; the later one wins.
+				if hoisted[len(hoisted)-1].CachePoint != nil {
+					hoisted[len(hoisted)-1] = block
+				} else {
+					hoisted = append(hoisted, block)
+				}
+				continue
+			}
+			content[n] = block
+			n++
+			toolResult := block.ToolResult
 			if toolResult == nil {
 				continue
 			}
-			last = j
-			moved := len(images)
+			last = n - 1
+			moved := len(hoisted)
 			kept := toolResult.Content[:0]
-			for _, block := range toolResult.Content {
-				if block.Image != nil {
-					images = append(images, block)
+			for _, inner := range toolResult.Content {
+				if inner.Image != nil {
+					hoisted = append(hoisted, inner)
 					continue
 				}
-				kept = append(kept, block)
+				kept = append(kept, inner)
 			}
 			// An empty toolResult is rejected, so keep a stable placeholder behind.
-			if len(kept) == 0 && len(images) > moved {
+			if len(kept) == 0 && len(hoisted) > moved {
 				kept = append(kept, BedrockContentBlock{Text: new(toolResultImagePlaceholder)})
 			}
 			toolResult.Content = kept
 		}
-		if len(images) > 0 {
-			req.Messages[i].Content = slices.Insert(content, last+1, images...)
+		if len(hoisted) > 0 {
+			// A moved checkpoint that now abuts a trailing one yields to it (later wins).
+			if hoisted[len(hoisted)-1].CachePoint != nil && last+1 < n && content[last+1].CachePoint != nil {
+				hoisted = hoisted[:len(hoisted)-1]
+			}
+			req.Messages[i].Content = slices.Insert(content[:n], last+1, hoisted...)
 		}
 	}
 }

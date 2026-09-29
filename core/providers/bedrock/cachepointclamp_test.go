@@ -163,10 +163,10 @@ func TestClampBedrockCachePoints_NilSafe(t *testing.T) {
 }
 
 // TestClampBedrockCachePoints_CountsNestedToolResultMarkers covers the case flagged in review on
-// PR #5931: convertToolMessages emits a CachePoint *inside* ToolResult.Content whenever a client
-// puts cache_control on a tool-result block (utils.go, the ChatContentBlockTypeText and
-// ChatContentBlockTypeImage arms). AWS counts checkpoints across `messages` as a whole, so those
-// nested markers spend the same 4-per-request budget as direct ones.
+// PR #5931: a CachePoint *inside* ToolResult.Content (which convertToolMessages emitted before
+// #7614 moved it to a sibling block) must still be counted if a request arrives with one. AWS
+// counts checkpoints across `messages` as a whole, so those nested markers spend the same
+// 4-per-request budget as direct ones.
 //
 // This fixture is over the cap ONLY because of the nested marker — 2 system + 2 direct message
 // markers + 1 nested = 5. A clamp that walks direct content alone sees 4, concludes there is
