@@ -1659,3 +1659,37 @@ func TestBifrostResponsesResponseToolUsageIsTopLevelOnTheWire(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"type":"response.completed","sequence_number":3,"response":`+body+`}`), &parsed))
 	assert.Equal(t, 2, parsed.Response.Usage.ToolUsage.WebSearch.NumRequests)
 }
+
+func TestDeepCopyResponsesMessagePreservesGuardContent(t *testing.T) {
+	messageType := ResponsesMessageTypeMessage
+	role := ResponsesInputMessageRoleUser
+	text := "What is the capital of France?"
+
+	original := ResponsesMessage{
+		Type: &messageType,
+		Role: &role,
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{{
+				Type:         ResponsesInputMessageContentBlockTypeText,
+				Text:         &text,
+				GuardContent: &GuardContent{Qualifiers: []string{"query"}},
+			}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	got := copied.Content.ContentBlocks[0].GuardContent
+	if got == nil {
+		t.Fatal("deep copy dropped the guard marker")
+	}
+	if got == original.Content.ContentBlocks[0].GuardContent {
+		t.Error("copy aliases the original guard marker struct")
+	}
+	if len(got.Qualifiers) != 1 || got.Qualifiers[0] != "query" {
+		t.Fatalf("qualifiers = %v, want [query]", got.Qualifiers)
+	}
+	got.Qualifiers[0] = "grounding_source"
+	if original.Content.ContentBlocks[0].GuardContent.Qualifiers[0] != "query" {
+		t.Error("copy shares the qualifiers backing array with the original")
+	}
+}

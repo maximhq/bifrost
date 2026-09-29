@@ -1894,6 +1894,19 @@ type ResponsesMessageContentBlock struct {
 
 	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
 	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+
+	// GuardContent marks this text block for selective guardrail evaluation (Bedrock).
+	GuardContent *GuardContent `json:"guard_content,omitempty"`
+}
+
+// GuardContent scopes a guardrail to the text block it annotates. Bedrock Converse renders
+// the block as a guardContent entry and InvokeModel as an inline
+// <amazon-bedrock-guardrails-guardContent_{suffix}> span; once any block in a request is
+// marked, AWS evaluates only the marked blocks. Qualifiers are the AWS content qualifiers
+// ("grounding_source", "query") and are forwarded verbatim. Providers with no equivalent
+// never read the marker, so the block degrades to plain text on a cross-provider fallback.
+type GuardContent struct {
+	Qualifiers []string `json:"qualifiers,omitempty"`
 }
 
 type ResponsesOutputMessageContentCompaction struct {

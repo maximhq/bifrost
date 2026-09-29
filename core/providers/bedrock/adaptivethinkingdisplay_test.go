@@ -404,7 +404,7 @@ func TestInvokeBody_BetweenTools(t *testing.T) {
 			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 			req.RawRequestBody = rawBody
 		}
-		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(model, false, true))
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(model, false, true, nil))
 		if bifrostErr != nil {
 			t.Fatalf("build invoke body failed: %v", bifrostErr.Error.Message)
 		}

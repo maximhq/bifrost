@@ -5305,3 +5305,99 @@ func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
 		t.Error("Sonnet 5.5 must report per-message effort support")
 	}
 }
+
+// TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome: Bedrock's native
+// InvokeModel reports the guardrail outcome as top-level amazon-bedrock-* fields that
+// AnthropicMessageResponse has no member for; the handler must keep them on the response.
+func TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}`))
+	}))
+	defer server.Close()
+
+	run := func(provider schemas.ModelProvider) *schemas.BifrostResponsesResponse {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		resp, bifrostErr := HandleAnthropicResponsesRequest(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke", request,
+			AnthropicRequestBuildConfig{Provider: provider, Model: "claude-sonnet-4-6"},
+			map[string]string{}, nil, nil, truncationTestLogger{})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return resp
+	}
+
+	resp := run(schemas.Bedrock)
+	if got := resp.ProviderExtraFields[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+		t.Errorf("guardrail action = %v, want INTERVENED", got)
+	}
+	raw, _ := resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+	if string(raw) != trace {
+		t.Errorf("guardrail trace = %s, want %s", raw, trace)
+	}
+
+	if extra := run(schemas.Anthropic).ProviderExtraFields; len(extra) != 0 {
+		t.Errorf("a non-Bedrock response must not grow guardrail fields: %v", extra)
+	}
+}
+
+// TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome: on a native
+// InvokeModelWithResponseStream the guardrail outcome arrives as top-level amazon-bedrock-*
+// fields of the final event, which AnthropicStreamEvent has no member for; the terminal
+// response chunk must carry them, verbatim.
+func TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	body := anthropicMessageStart + anthropicTextDelta +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":5},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}` + "\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	run := func(plain string) []*schemas.BifrostStreamChunk {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		jsonData, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", IsStreaming: true})
+		if bifrostErr != nil {
+			t.Fatalf("build: %s", bifrostErr.Error.Message)
+		}
+		stream, bifrostErr := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke-with-response-stream"+plain, jsonData,
+			map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
+			truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return collectTruncationChunks(t, stream)
+	}
+
+	chunks := run("")
+	var carrying int
+	for _, chunk := range chunks {
+		if chunk.BifrostResponsesStreamResponse == nil || chunk.BifrostResponsesStreamResponse.Response == nil {
+			continue
+		}
+		extra := chunk.BifrostResponsesStreamResponse.Response.ProviderExtraFields
+		if extra[BedrockInvokeGuardrailActionKey] == nil && extra[BedrockInvokeGuardrailTraceKey] == nil {
+			continue
+		}
+		carrying++
+		if chunk.BifrostResponsesStreamResponse.Type != schemas.ResponsesStreamResponseTypeCompleted {
+			t.Errorf("guardrail outcome rode on %s, want the terminal completed chunk", chunk.BifrostResponsesStreamResponse.Type)
+		}
+		if got := extra[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+			t.Errorf("guardrail action = %v, want INTERVENED", got)
+		}
+		raw, _ := extra[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+		if string(raw) != trace {
+			t.Errorf("guardrail trace = %s, want %s", raw, trace)
+		}
+	}
+	if carrying != 1 {
+		t.Fatalf("%d chunks carried the guardrail outcome, want exactly 1", carrying)
+	}
+}
