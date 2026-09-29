@@ -2,7 +2,6 @@ package bifrost
 
 import (
 	"context"
-	"math"
 	"net/http"
 	"testing"
 	"testing/synctest"
@@ -11,36 +10,36 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// retryAfterError models the attempt-owned hint that providers attach to the
+// error after parsing their response. Retry scheduling must use this value,
+// rather than re-reading the mutable response-header slot on the context.
+func retryAfterError(message string, statusCode *int, hint time.Duration) *schemas.BifrostError {
+	err := createBifrostError(message, statusCode, nil, false)
+	err.ExtraFields.RetryAfter = hint.Milliseconds()
+	return err
+}
+
 func TestRetryAfterHonorsProviderDelay(t *testing.T) {
-	for _, format := range []string{"seconds", "http-date"} {
-		t.Run(format, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-				ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
-				config := createTestConfig(1, time.Millisecond, 5*time.Second)
-				start := time.Now()
-				header := "2"
-				if format == "http-date" {
-					header = start.Add(2 * time.Second).UTC().Format(http.TimeFormat)
-				}
-				calls := 0
-				result, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
-					calls++
-					if calls == 1 {
-						ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"retry-after": header})
-						return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
-					}
-					if elapsed := time.Since(start); elapsed < 2*time.Second {
-						t.Errorf("retried after %s, before the provider's 2s Retry-After", elapsed)
-					}
-					return "success", nil
-				}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
-				if err != nil || result != "success" || calls != 2 {
-					t.Fatalf("result=%q err=%v calls=%d", result, err, calls)
-				}
-			})
-		})
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+		config := createTestConfig(1, time.Millisecond, 5*time.Second)
+		start := time.Now()
+		calls := 0
+		result, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			if calls == 1 {
+				return "", retryAfterError("rate limit exceeded", Ptr(429), 2*time.Second)
+			}
+			if elapsed := time.Since(start); elapsed < 2*time.Second {
+				t.Errorf("retried after %s, before the provider's 2s Retry-After", elapsed)
+			}
+			return "success", nil
+		}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+		if err != nil || result != "success" || calls != 2 {
+			t.Fatalf("result=%q err=%v calls=%d", result, err, calls)
+		}
+	})
 }
 
 func TestRetryAfterStopsWhenWaitExceedsBudget(t *testing.T) {
@@ -55,15 +54,15 @@ func TestRetryAfterStopsWhenWaitExceedsBudget(t *testing.T) {
 				defer ctx.Cancel()
 				ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 				config := createTestConfig(2, time.Millisecond, 5*time.Second)
-				header := "60"
+				hint := time.Minute
 				if budget == "request deadline" {
-					header = "2"
+					hint = 2 * time.Second
 				}
 				upstreamErr := createBifrostError("rate limit exceeded", Ptr(429), nil, false)
 				calls := 0
 				_, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
 					calls++
-					ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": header})
+					upstreamErr.ExtraFields.RetryAfter = hint.Milliseconds()
 					return "", upstreamErr
 				}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
 				if calls != 1 || err != upstreamErr {
@@ -90,8 +89,7 @@ func TestRetryAfterDoesNotReuseResponseHeaders(t *testing.T) {
 				result, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
 					calls++
 					if calls == 1 && reuse == "next attempt" {
-						ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": "2"})
-						return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+						return "", retryAfterError("rate limit exceeded", Ptr(429), 2*time.Second)
 					}
 					if (calls == 2 && reuse == "next attempt") || (calls == 1 && reuse == "fallback") {
 						secondCall = time.Now()
@@ -111,6 +109,52 @@ func TestRetryAfterDoesNotReuseResponseHeaders(t *testing.T) {
 	}
 }
 
+func TestRetryAfterUsesTheFailedAttemptsHintWhenContextsAreShared(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// The public core API accepts a caller-owned BifrostContext. A caller that
+		// (incorrectly, but safely at the map-operation level) reuses it for two
+		// concurrent requests must not let the second response's headers alter the
+		// first request's retry schedule.
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+		primaryStarted := make(chan struct{})
+		releasePrimary := make(chan struct{})
+		type result struct {
+			value string
+			err   *schemas.BifrostError
+			calls int
+		}
+		resultCh := make(chan result, 1)
+
+		go func() {
+			calls := 0
+			value, err := executeRequestWithRetries(ctx, createTestConfig(1, time.Millisecond, 5*time.Second), func(_ schemas.Key) (string, *schemas.BifrostError) {
+				calls++
+				if calls == 1 {
+					ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": "60"})
+					close(primaryStarted)
+					<-releasePrimary
+					return "", retryAfterError("primary rate limit", Ptr(429), 2*time.Second)
+				}
+				return "primary success", nil
+			}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+			resultCh <- result{value: value, err: err, calls: calls}
+		}()
+
+		<-primaryStarted
+		_, _ = executeRequestWithRetries(ctx, createTestConfig(0, time.Millisecond, 5*time.Second), func(_ schemas.Key) (string, *schemas.BifrostError) {
+			ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": "60"})
+			return "", retryAfterError("other request rate limit", Ptr(429), time.Minute)
+		}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+		close(releasePrimary)
+
+		got := <-resultCh
+		if got.err != nil || got.value != "primary success" || got.calls != 2 {
+			t.Fatalf("the primary attempt must keep its own 2s hint: value=%q err=%v calls=%d", got.value, got.err, got.calls)
+		}
+	})
+}
+
 func TestRetryAfterWaitIsCancellable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -122,10 +166,9 @@ func TestRetryAfterWaitIsCancellable(t *testing.T) {
 		_, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
 			calls++
 			if calls == 1 {
-				ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": "2"})
 				time.AfterFunc(100*time.Millisecond, ctx.Cancel)
 			}
-			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+			return "", retryAfterError("rate limit exceeded", Ptr(429), 2*time.Second)
 		}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
 		if calls != 1 || time.Since(start) != 100*time.Millisecond {
 			t.Fatalf("cancellation should stop the retry wait: calls=%d elapsed=%s", calls, time.Since(start))
@@ -144,36 +187,6 @@ func TestRetryAfterWaitIsCancellable(t *testing.T) {
 	})
 }
 
-func TestRetryAfterParsing(t *testing.T) {
-	now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-	for _, tt := range []struct {
-		name, value string
-		want        time.Time
-	}{
-		{"seconds", "2", now.Add(2 * time.Second)},
-		{"whitespace", " 2\t", now.Add(2 * time.Second)},
-		{"zero", "0", now},
-		{"leading zeros", "002", now.Add(2 * time.Second)},
-		{"http date", now.Add(time.Minute).Format(http.TimeFormat), now.Add(time.Minute)},
-		{"past date", now.Add(-time.Minute).Format(http.TimeFormat), now.Add(-time.Minute)},
-		{"duration overflow", "9223372037", now.Add(time.Duration(math.MaxInt64))},
-		{"integer overflow", "18446744073709551616", now.Add(time.Duration(math.MaxInt64))},
-		{"empty", "", time.Time{}},
-		{"negative", "-1", time.Time{}},
-		{"signed", "+1", time.Time{}},
-		{"fraction", "0.5", time.Time{}},
-		{"multiple values", "2, 3", time.Time{}},
-		{"invalid date", "tomorrow", time.Time{}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got := retryAfterTime(map[string]string{"rEtRy-AfTeR": tt.value}, now)
-			if !got.Equal(tt.want) {
-				t.Errorf("retryAfterTime(%q)=%v, want %v", tt.value, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRetryAfterAllowsWaitAtBackoffCap(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -184,8 +197,7 @@ func TestRetryAfterAllowsWaitAtBackoffCap(t *testing.T) {
 		result, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
 			calls++
 			if calls == 1 {
-				ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": "2"})
-				return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+				return "", retryAfterError("rate limit exceeded", Ptr(429), 2*time.Second)
 			}
 			return "success", nil
 		}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
@@ -206,8 +218,7 @@ func TestRetryAfterDeadlineExpiresDuringLocalBackoff(t *testing.T) {
 		_, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
 			calls++
 			// The provider hint fits the deadline, but the longer local backoff does not.
-			ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": "1"})
-			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+			return "", retryAfterError("rate limit exceeded", Ptr(429), time.Second)
 		}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
 		if calls != 1 || time.Since(start) != 1500*time.Millisecond {
 			t.Fatalf("deadline must stop the wait: calls=%d elapsed=%s", calls, time.Since(start))
@@ -219,31 +230,23 @@ func TestRetryAfterDeadlineExpiresDuringLocalBackoff(t *testing.T) {
 }
 
 func TestRetryAfterPreservesLocalBackoff(t *testing.T) {
-	for _, hint := range []string{"", "invalid", "0", "1", "past"} {
-		t.Run(hint, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				if hint == "past" {
-					hint = time.Now().Add(-time.Minute).UTC().Format(http.TimeFormat)
-				}
-				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-				ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
-				config := createTestConfig(1, 2*time.Second, 5*time.Second)
-				calls := 0
-				start := time.Now()
-				_, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
-					calls++
-					if calls == 1 {
-						ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": hint})
-						return "", createBifrostError("unavailable", Ptr(503), nil, false)
-					}
-					return "success", nil
-				}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
-				if elapsed := time.Since(start); elapsed < 1600*time.Millisecond || elapsed > 2400*time.Millisecond || calls != 2 || err != nil {
-					t.Fatalf("local backoff changed: elapsed=%s calls=%d err=%v", elapsed, calls, err)
-				}
-			})
-		})
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+		config := createTestConfig(1, 2*time.Second, 5*time.Second)
+		calls := 0
+		start := time.Now()
+		_, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			if calls == 1 {
+				return "", retryAfterError("unavailable", Ptr(503), 0)
+			}
+			return "success", nil
+		}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+		if elapsed := time.Since(start); elapsed < 1600*time.Millisecond || elapsed > 2400*time.Millisecond || calls != 2 || err != nil {
+			t.Fatalf("local backoff changed: elapsed=%s calls=%d err=%v", elapsed, calls, err)
+		}
+	})
 }
 
 func TestRetryAfterStreamKeyRotation(t *testing.T) {
@@ -263,8 +266,7 @@ func TestRetryAfterStreamKeyRotation(t *testing.T) {
 			calls++
 			chunks := make(chan *schemas.BifrostStreamChunk, 1)
 			if calls == 1 {
-				ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"Retry-After": "2"})
-				chunks <- &schemas.BifrostStreamChunk{BifrostError: createBifrostError("rate limit exceeded", Ptr(429), nil, false)}
+				chunks <- &schemas.BifrostStreamChunk{BifrostError: retryAfterError("rate limit exceeded", Ptr(429), 2*time.Second)}
 			} else {
 				if key.ID != "b" || time.Since(start) != 2*time.Second {
 					t.Errorf("rotation must honor account-level wait: key=%s elapsed=%s", key.ID, time.Since(start))

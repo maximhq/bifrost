@@ -6947,10 +6947,11 @@ func executeRequestWithRetries[T any](
 		lastWasPermanentKeyFailure = isPermanentKeyFailure
 		retryAfter = time.Time{}
 		if !lastWasPermanentKeyFailure && !lastWasEncryptedContentStrip && attempts < config.NetworkConfig.MaxRetries+extraAttempts {
-			now := time.Now()
-			headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
-			retryAfter = retryAfterTime(headers, now)
-			if delay := retryAfter.Sub(now); delay > 0 {
+			// The error belongs to this attempt. Reading response headers back from ctx
+			// would make the retry schedule depend on another concurrent request when a
+			// caller reuses a mutable BifrostContext.
+			if delay := time.Duration(bifrostError.ExtraFields.RetryAfter) * time.Millisecond; delay > 0 {
+				retryAfter = time.Now().Add(delay)
 				deadline, hasDeadline := ctx.Deadline()
 				if delay > config.NetworkConfig.RetryBackoffMax || (hasDeadline && !retryAfter.Before(deadline)) {
 					// Do not shorten the provider's minimum wait or exceed the caller's
