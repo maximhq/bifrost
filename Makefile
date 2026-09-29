@@ -2709,6 +2709,16 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--reporters cli,json$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
 				$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-$$NS_SHARD.json"} \
 				--reporter-json-export "$$NS_REPORT" 2>&1 | sed "s/^/[$$NS_PROV] /"; \
+			NS_RC=$$?; \
+			: "Assertions have already run against the full response, so the stored copy of large bodies"; \
+			: "(image/audio Buffers, ~4 JSON chars per byte) is dead weight: image-gen shards alone were 1.3GB."; \
+			: "Slim the report in place with the merge program (idempotent; same trimming the final merge did)."; \
+			: "Serialized with flock because slimming a big report takes several GB and shards finish together."; \
+			: "Only reports over 20MB are touched, and a failed slim leaves the original untouched."; \
+			if command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 && [ -f tmp/newman-merge.jq ] && [ "$$(stat -c %s "$$NS_REPORT" 2>/dev/null || echo 0)" -gt 20971520 ]; then \
+				flock tmp/.slim.lock sh -c 'jq -s -f tmp/newman-merge.jq "$$1" > "$$1.slim" && [ -s "$$1.slim" ] && mv -f "$$1.slim" "$$1" || rm -f "$$1.slim"' _ "$$NS_REPORT"; \
+			fi; \
+			return $$NS_RC; \
 		}; \
 		LAUNCHED=0; \
 		: "A shard whose filter step fails never reaches tmp/parallel-pids, so the verdict loop"; \
@@ -2885,7 +2895,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			: "its own successful retry. Main reports first, then retries in attempt order."; \
 			MERGE_MAIN="$$(ls tmp/newman-report-*.json 2>/dev/null | grep -v -e '-retry[0-9]*\.json$$' | sort)"; \
 			MERGE_RETRY="$$(ls tmp/newman-report-*-retry*.json 2>/dev/null | sort -V)"; \
-			jq -s -f tmp/newman-merge.jq $$MERGE_MAIN $$MERGE_RETRY > tmp/newman-report.json || say "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			: "Two stages: one jq -s over every shard (~3.6GB) gets OOM-killed, and the > redirect had"; \
+			: "already truncated newman-report.json to 0 bytes, so every reader died on 'Unexpected end of"; \
+			: "JSON input'. The merge program is idempotent, so slim each shard alone first (peak = the"; \
+			: "largest shard) and slurp only the slimmed copies, order preserved. Output lands in a temp"; \
+			: "file and is moved into place only on success, so a failed merge never leaves an empty report."; \
+			rm -rf tmp/.merge-slim; mkdir -p tmp/.merge-slim; \
+			MERGE_SLIM=""; MERGE_OK=1; MERGE_N=0; \
+			for f in $$MERGE_MAIN $$MERGE_RETRY; do \
+				MERGE_N=$$((MERGE_N + 1)); \
+				o="$$(printf 'tmp/.merge-slim/%04d.json' $$MERGE_N)"; \
+				jq -s -f tmp/newman-merge.jq "$$f" > "$$o" || { MERGE_OK=0; say "$(YELLOW)Slimming $$f failed$(NC)"; break; }; \
+				MERGE_SLIM="$$MERGE_SLIM $$o"; \
+			done; \
+			if [ "$$MERGE_OK" = "1" ] && jq -s -f tmp/newman-merge.jq $$MERGE_SLIM > tmp/.newman-report-merged.json; then \
+				mv -f tmp/.newman-report-merged.json tmp/newman-report.json; \
+			else \
+				rm -f tmp/.newman-report-merged.json; \
+				say "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			fi; \
+			rm -rf tmp/.merge-slim; \
 			rm -f tmp/.newman-report.slim.json; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
