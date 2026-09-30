@@ -2384,6 +2384,7 @@ type ResponsesFileSearchToolCallResult struct {
 // ResponsesComputerToolCall represents a computer tool call
 type ResponsesComputerToolCall struct {
 	PendingSafetyChecks []ResponsesComputerToolCallPendingSafetyCheck `json:"pending_safety_checks,omitempty"`
+	Actions             []ResponsesComputerToolCallAction             `json:"actions,omitempty"`
 }
 
 // ResponsesComputerToolCallPendingSafetyCheck represents a pending safety check
