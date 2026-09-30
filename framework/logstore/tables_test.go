@@ -298,6 +298,57 @@ func TestMCPToolLogGovernanceSetsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentLogGovernanceSetsRoundTrip(t *testing.T) {
+	entry := &AgentLog{
+		TeamIDsParsed: []string{"team1", "team2"}, TeamNamesParsed: []string{"Team One", "Team Two"},
+		CustomerIDsParsed: []string{"cust1"}, CustomerNamesParsed: []string{"Customer One"},
+		BusinessUnitIDsParsed: []string{"bu1"}, BusinessUnitNamesParsed: []string{"BU One"},
+		BudgetIDsParsed: []string{"budget1"}, RateLimitIDsParsed: []string{"rl1"},
+	}
+	require.NoError(t, entry.SerializeFields())
+	stored := &AgentLog{
+		TeamIDs: entry.TeamIDs, TeamNames: entry.TeamNames,
+		CustomerIDs: entry.CustomerIDs, CustomerNames: entry.CustomerNames,
+		BusinessUnitIDs: entry.BusinessUnitIDs, BusinessUnitNames: entry.BusinessUnitNames,
+		BudgetIDs: entry.BudgetIDs, RateLimitIDs: entry.RateLimitIDs,
+	}
+	require.NoError(t, stored.DeserializeFields())
+	assert.Equal(t, entry.TeamIDsParsed, stored.TeamIDsParsed)
+	assert.Equal(t, entry.TeamNamesParsed, stored.TeamNamesParsed)
+	assert.Equal(t, entry.CustomerIDsParsed, stored.CustomerIDsParsed)
+	assert.Equal(t, entry.CustomerNamesParsed, stored.CustomerNamesParsed)
+	assert.Equal(t, entry.BusinessUnitIDsParsed, stored.BusinessUnitIDsParsed)
+	assert.Equal(t, entry.BusinessUnitNamesParsed, stored.BusinessUnitNamesParsed)
+	assert.Equal(t, entry.BudgetIDsParsed, stored.BudgetIDsParsed)
+	assert.Equal(t, entry.RateLimitIDsParsed, stored.RateLimitIDsParsed)
+}
+
+// TestAgentLogOverheadBreakdownUsesCurrentShape verifies A2A rows use the compact LLM storage shape.
+func TestAgentLogOverheadBreakdownUsesCurrentShape(t *testing.T) {
+	buckets := []OverheadBucket{
+		{Name: "a2a.transport", Kind: "internal", DurationUs: 12.5},
+		{Name: "plugin.logging", Kind: "plugin", DurationUs: 3.75},
+	}
+	entry := &AgentLog{OverheadBreakdownParsed: buckets}
+	require.NoError(t, entry.SerializeFields())
+	assert.Equal(t, `{"a2a.transport":12.5,"plugin.logging":3.75}`, entry.OverheadBreakdown)
+
+	stored := &AgentLog{OverheadBreakdown: entry.OverheadBreakdown}
+	require.NoError(t, stored.DeserializeFields())
+	require.Len(t, stored.OverheadBreakdownParsed, 2)
+	assert.Equal(t, "a2a.transport", stored.OverheadBreakdownParsed[0].Name)
+	assert.Equal(t, 12.5, stored.OverheadBreakdownParsed[0].DurationUs)
+	assert.Equal(t, "plugin.logging", stored.OverheadBreakdownParsed[1].Name)
+	assert.Equal(t, 3.75, stored.OverheadBreakdownParsed[1].DurationUs)
+}
+
+// TestAgentLogOverheadBreakdownDoesNotReadUnshippedLegacyShape avoids compatibility for unreleased A2A rows.
+func TestAgentLogOverheadBreakdownDoesNotReadUnshippedLegacyShape(t *testing.T) {
+	entry := &AgentLog{OverheadBreakdown: `[{"name":"a2a.transport","duration_us":12.5}]`}
+	require.NoError(t, entry.DeserializeFields())
+	assert.Nil(t, entry.OverheadBreakdownParsed)
+}
+
 // TestMCPToolLogGovernanceSetsTolerateCorruptJSON keeps one unreadable column
 // from failing the whole read: the row is still worth serving without it.
 func TestMCPToolLogGovernanceSetsTolerateCorruptJSON(t *testing.T) {
