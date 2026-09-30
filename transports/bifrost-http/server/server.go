@@ -153,7 +153,7 @@ type ServerCallbacks interface {
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
 	// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
 	UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
-	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary token and discovers tools.
 	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error)
 	// VerifyHeadersConnection verifies an MCP server using user-supplied header values and discovers tools.
@@ -563,6 +563,13 @@ func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCal
 func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
 	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	return s.Client.GetAvailableMCPTools(bifrostCtx)
+}
+
+// GetMCPServerInstructions returns the aggregated upstream instructions visible to ctx,
+// which carries whatever narrowing admission stamped on the request.
+func (s *BifrostHTTPServer) GetMCPServerInstructions(ctx context.Context) string {
+	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	return s.Client.GetMCPServerInstructions(bifrostCtx)
 }
 
 // markPluginDisabled marks a plugin as disabled in the plugin status
@@ -1456,6 +1463,8 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			s.Config.ClientConfig.MCPToolExecutionTimeout,
 			s.Config.ClientConfig.MCPCodeModeBindingLevel,
 			s.Config.ClientConfig.MCPDisableAutoToolInject,
+			s.Config.ClientConfig.MCPMaxInstructionsPerClient,
+			s.Config.ClientConfig.MCPMaxInstructionsTotal,
 		); err != nil {
 			logger.Warn("failed to sync MCP tool manager config during client config reload: %v", err)
 		}
@@ -1530,11 +1539,11 @@ func (s *BifrostHTTPServer) UpdateDropExcessRequests(ctx context.Context, value 
 // UpdateMCPToolManagerConfig updates the MCP tool manager config.
 // Always pass the current disableAutoToolInject value so it is not reset by an update that
 // only meant to change something else.
-func (s *BifrostHTTPServer) UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error {
+func (s *BifrostHTTPServer) UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int) error {
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
-	return s.Client.UpdateToolManagerConfig(maxAgentDepth, toolExecutionTimeoutInSeconds, codeModeBindingLevel, disableAutoToolInject)
+	return s.Client.UpdateToolManagerConfig(maxAgentDepth, toolExecutionTimeoutInSeconds, codeModeBindingLevel, disableAutoToolInject, maxInstructionsPerClient, maxInstructionsTotal)
 }
 
 // reloadObservabilityPlugins reloads all observability plugins in the tracing middleware

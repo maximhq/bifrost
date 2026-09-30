@@ -1436,6 +1436,8 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 		cc.MCPCodeModeBindingLevel = DefaultClientConfig.MCPCodeModeBindingLevel
 	}
 	cc.MCPDisableAutoToolInject = tm.DisableAutoToolInject
+	cc.MCPMaxInstructionsPerClient = tm.MaxInstructionsPerClient
+	cc.MCPMaxInstructionsTotal = tm.MaxInstructionsTotal
 }
 
 // loadProviders loads and merges providers from file with store using hash reconciliation
@@ -2358,6 +2360,8 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 		config.ClientConfig.MCPCodeModeBindingLevel,
 	)
 	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
+	mcpCfg.ToolManagerConfig.MaxInstructionsPerClient = config.ClientConfig.MCPMaxInstructionsPerClient
+	mcpCfg.ToolManagerConfig.MaxInstructionsTotal = config.ClientConfig.MCPMaxInstructionsTotal
 
 	// ToolSyncInterval is declared under the file's mcp section rather than
 	// client_config, so it sits outside the hash-driven client config load and

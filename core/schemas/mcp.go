@@ -335,6 +335,10 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	// MaxInstructionsPerClient bounds one server's forwarded instructions, in bytes. 0 is the default.
+	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
+	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
+	MaxInstructionsTotal int `json:"max_instructions_total,omitempty"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
@@ -374,6 +378,12 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
+
+	// Byte bounds on forwarded instructions. A gateway aggregating tens of upstreams can
+	// otherwise hand every caller an unbounded prefix, which on the inference path is billed
+	// on every request.
+	DefaultMaxInstructionsPerClient = 4096
+	DefaultMaxInstructionsTotal     = 16384
 )
 
 // CodeModeBindingLevel defines how tools are exposed in the VFS for code execution

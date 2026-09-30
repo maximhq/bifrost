@@ -987,6 +987,8 @@ export const coreConfigSchema = z.object({
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
+	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
+	mcp_max_instructions_total: z.number().int().min(0).default(0),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 

@@ -296,6 +296,8 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		CompatShouldConvertParams:             config.Compat.ShouldConvertParams,
 		CompatAzureDeepseek:                   config.Compat.AzureDeepseek,
 		MCPAgentDepth:                         config.MCPAgentDepth,
+		MCPMaxInstructionsPerClient:           config.MCPMaxInstructionsPerClient,
+		MCPMaxInstructionsTotal:               config.MCPMaxInstructionsTotal,
 		MCPToolExecutionTimeout:               config.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
@@ -596,6 +598,8 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 			AzureDeepseek:          dbConfig.CompatAzureDeepseek,
 		},
 		MCPAgentDepth:                         dbConfig.MCPAgentDepth,
+		MCPMaxInstructionsPerClient:           dbConfig.MCPMaxInstructionsPerClient,
+		MCPMaxInstructionsTotal:               dbConfig.MCPMaxInstructionsTotal,
 		MCPToolExecutionTimeout:               dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
@@ -1691,10 +1695,12 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		return nil, err
 	}
 	toolManagerConfig := schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout:  schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
-		MaxAgentDepth:         clientConfig.MCPAgentDepth,
-		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
-		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,
+		ToolExecutionTimeout:     schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
+		MaxAgentDepth:            clientConfig.MCPAgentDepth,
+		MaxInstructionsPerClient: clientConfig.MCPMaxInstructionsPerClient,
+		MaxInstructionsTotal:     clientConfig.MCPMaxInstructionsTotal,
+		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
+		DisableAutoToolInject:    clientConfig.MCPDisableAutoToolInject,
 	}
 	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 	for i, dbClient := range dbMCPClients {

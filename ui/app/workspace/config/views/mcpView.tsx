@@ -38,6 +38,8 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: string;
 		mcp_code_mode_binding_level: string;
 		mcp_tool_sync_interval: string;
+		mcp_max_instructions_per_client: string;
+		mcp_max_instructions_total: string;
 		oauth2_auth_code_ttl: string;
 		oauth2_access_token_ttl: string;
 	}>({
@@ -45,6 +47,8 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: "30",
 		mcp_code_mode_binding_level: "server",
 		mcp_tool_sync_interval: "10",
+		mcp_max_instructions_per_client: "0",
+		mcp_max_instructions_total: "0",
 		oauth2_auth_code_ttl: "300",
 		oauth2_access_token_ttl: "600",
 	});
@@ -57,6 +61,8 @@ export default function MCPView() {
 				mcp_tool_execution_timeout: config?.mcp_tool_execution_timeout?.toString() || "30",
 				mcp_code_mode_binding_level: config?.mcp_code_mode_binding_level || "server",
 				mcp_tool_sync_interval: config?.mcp_tool_sync_interval?.toString() || "10",
+				mcp_max_instructions_per_client: (config?.mcp_max_instructions_per_client ?? 0).toString(),
+				mcp_max_instructions_total: (config?.mcp_max_instructions_total ?? 0).toString(),
 				// Coerce a stored 0 (which the backend treats as "use default") to the
 				// displayed default so the inputs never show a confusing 0.
 				oauth2_auth_code_ttl: (config?.oauth2_server_config?.auth_code_ttl || 300).toString(),
@@ -74,6 +80,8 @@ export default function MCPView() {
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
+			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
+			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
 			clientURLChanged ||
@@ -119,6 +127,22 @@ export default function MCPView() {
 		const numValue = Number.parseInt(value);
 		if (!isNaN(numValue) && numValue >= 0) {
 			setLocalConfig((prev) => ({ ...prev, mcp_tool_sync_interval: numValue }));
+		}
+	}, []);
+
+	const handleMaxInstructionsPerClientChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_max_instructions_per_client: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0) {
+			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_per_client: numValue }));
+		}
+	}, []);
+
+	const handleMaxInstructionsTotalChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_max_instructions_total: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0) {
+			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_total: numValue }));
 		}
 	}, []);
 
@@ -201,6 +225,27 @@ export default function MCPView() {
 
 			if (isNaN(toolTimeout) || toolTimeout <= 0) {
 				toast.error("Tool execution timeout must be a positive number.");
+				return;
+			}
+
+			// These three write through to localConfig only on a valid parse, so a cleared
+			// field leaves the previous value staged and would save silently.
+			const syncInterval = Number.parseInt(localValues.mcp_tool_sync_interval);
+			const perClientCap = Number.parseInt(localValues.mcp_max_instructions_per_client);
+			const totalCap = Number.parseInt(localValues.mcp_max_instructions_total);
+
+			if (isNaN(syncInterval) || syncInterval < 0) {
+				toast.error("Tool sync interval must be zero or a positive number.");
+				return;
+			}
+
+			if (isNaN(perClientCap) || perClientCap < 0) {
+				toast.error("Max instructions per server must be zero or a positive number.");
+				return;
+			}
+
+			if (isNaN(totalCap) || totalCap < 0) {
+				toast.error("Max instructions total must be zero or a positive number.");
 				return;
 			}
 
@@ -356,6 +401,50 @@ export default function MCPView() {
 						onCheckedChange={handleTempTokenAuthChange}
 						disabled={!hasSettingsUpdateAccess}
 						data-testid="mcp-enable-temp-token-auth-switch"
+					/>
+				</div>
+
+				{/* Instruction Size Bounds */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-max-instructions-per-client" className="text-sm font-medium">
+							Max Instructions Per Server (bytes)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Longer text is truncated with a notice. Set to 0 to use the default of 4096.
+						</p>
+					</div>
+					<Input
+						id="mcp-max-instructions-per-client"
+						data-testid="mcp-max-instructions-per-client-input"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_max_instructions_per_client}
+						onChange={(e) => handleMaxInstructionsPerClientChange(e.target.value)}
+						min="0"
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-max-instructions-total" className="text-sm font-medium">
+							Max Instructions Total (bytes)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Ceiling across every server a caller can see. At <code className="text-xs">Gateway and LLM requests</code> this rides on every
+							MCP-bearing request, so raising it raises per-request tokens. Set to 0 to use the default of 16384.
+						</p>
+					</div>
+					<Input
+						id="mcp-max-instructions-total"
+						data-testid="mcp-max-instructions-total-input"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_max_instructions_total}
+						onChange={(e) => handleMaxInstructionsTotalChange(e.target.value)}
+						min="0"
+						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>
 
