@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -717,5 +718,30 @@ func TestOtelRawDemandRespectsContentLogging(t *testing.T) {
 	}}
 	if metricsOnly.ConsumesRawPayloads() {
 		t.Error("metrics-only profile demanded raw payloads it cannot export")
+	}
+}
+
+// profileForStorage mirrors Profile by hand, so a field added to one and not the
+// other is dropped on save — export_raw_payloads regressed this way.
+func TestProfileStorageKeepsEveryConfigField(t *testing.T) {
+	jsonTags := func(v any) []string {
+		rt := reflect.TypeOf(v)
+		var out []string
+		for i := 0; i < rt.NumField(); i++ {
+			tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+			if tag != "" && tag != "-" {
+				out = append(out, tag)
+			}
+		}
+		return out
+	}
+	stored := map[string]bool{}
+	for _, tag := range jsonTags(profileForStorage{}) {
+		stored[tag] = true
+	}
+	for _, tag := range jsonTags(Profile{}) {
+		if !stored[tag] {
+			t.Errorf("Profile field %q is missing from profileForStorage and will be dropped on save", tag)
+		}
 	}
 }

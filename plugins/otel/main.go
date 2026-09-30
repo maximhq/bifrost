@@ -299,6 +299,7 @@ type profileForStorage struct {
 	OverheadBreakdownEnabled bool              `json:"overhead_breakdown_enabled,omitempty"`
 	RequestHeaders           []string          `json:"request_headers,omitempty"`
 	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
+	ExportRawPayloads        bool              `json:"export_raw_payloads,omitempty"`
 	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
 	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
@@ -343,6 +344,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			OverheadBreakdownEnabled: p.OverheadBreakdownEnabled,
 			RequestHeaders:           p.RequestHeaders,
 			DisableContentLogging:    p.DisableContentLogging,
+			ExportRawPayloads:        p.ExportRawPayloads,
 			GroupTracesBySession:     p.GroupTracesBySession,
 			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
