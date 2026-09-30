@@ -2174,14 +2174,15 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 				}
 			}
 
-			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object)
+			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object).
+			// An object carrying a "$ref" key anywhere is wrapped instead: see containsJSONRefKey.
 			if contentStr != "" {
 				var buf bytes.Buffer
-				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' {
-					// Valid JSON object — use raw bytes directly
+				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' && !containsJSONRefKey(buf.Bytes()) {
+					// Valid JSON object without reserved keys — use raw bytes directly
 					responseData = json.RawMessage(buf.Bytes())
 				} else {
-					// Not valid JSON or not an object — wrap to preserve content
+					// Not valid JSON, not an object, or holds "$ref" — wrap to preserve content
 					responseData, _ = providerUtils.MarshalSorted(map[string]any{
 						"content": contentStr,
 					})
@@ -3043,6 +3044,45 @@ func extractSchemaMapFromResponseFormat(responseFormat *interface{}) interface{}
 		return normalizeSchemaValueForGemini(schemaObj)
 	}
 	return nil
+}
+
+// containsJSONRefKey reports whether any object nested anywhere in raw carries a "$ref" key.
+//
+// Gemini reads {"$ref": "<displayName>"} inside function_response.response as a pointer to a
+// multimodal part in function_response.parts and rejects the whole request with 400 ("does not
+// match to a display_name") when no such part exists. Tool output uses "$ref" for ordinary
+// reasons (JSON Schema, OpenAPI), so the converters send such a result as opaque text instead of
+// a structured object (#7694). There is deliberately no byte-level pre-check: JSON lets any
+// character of a key be written as a \uXXXX escape, and only the parser walk, which compares the
+// unescaped key, catches every spelling.
+func containsJSONRefKey(raw []byte) bool {
+	found := false
+	var walk func(v gjson.Result)
+	walk = func(v gjson.Result) {
+		isObject := v.IsObject()
+		v.ForEach(func(key, value gjson.Result) bool {
+			if isObject && key.String() == "$ref" {
+				found = true
+				return false
+			}
+			if value.IsObject() || value.IsArray() {
+				walk(value)
+			}
+			return !found
+		})
+	}
+	walk(gjson.ParseBytes(raw))
+	return found
+}
+
+// geminiFunctionOutputValue returns a function result for embedding under a key of
+// function_response.response: raw JSON when output is valid JSON with no "$ref" key at any
+// depth, otherwise the string itself so Gemini treats it as opaque text (#7694).
+func geminiFunctionOutputValue(output string) any {
+	if json.Valid([]byte(output)) && !containsJSONRefKey([]byte(output)) {
+		return json.RawMessage(output)
+	}
+	return output
 }
 
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
