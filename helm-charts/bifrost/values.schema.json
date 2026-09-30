@@ -2449,7 +2449,7 @@
                   "additionalProperties": false
                 },
                 "keywords": {
-                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. A request is embedded and takes the tier of its nearest phrase. In split mode these lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
+                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. Semantic embeds requests and matches the nearest phrase; Jev does not read these lists. In split mode the lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
                   "oneOf": [
                     {
                       "type": "object",

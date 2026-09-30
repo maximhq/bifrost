@@ -390,9 +390,31 @@ bifrost:
 
 ## Complexity Router Configuration
 
-If you use `complexity_tier` in routing rules, configure the semantic embedding model and seed its reference phrases from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
+If you use `complexity_tier` in routing rules, choose Jev or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. Jev uses the configured Typesafe provider and its enabled key. Semantic needs an embedding provider and reference phrases.
 
-Omit this block, or leave `complexityAnalyzerConfig: null`, to leave semantic complexity classification disabled. To enable it from Helm, provide the `semantic` block and all three keyword lists. In the default split mode, the supplied phrases merge with the stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
+Omit this block, or leave `complexityAnalyzerConfig: null`, to leave complexity classification disabled. To enable it, supply all three `keywords` lists. They are required by the current config shape even when Jev is primary, though Jev does not use the phrases. In the default split mode, supplied phrases merge with stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
+
+For Jev as the primary classifier:
+
+```yaml
+bifrost:
+  governance:
+    complexityAnalyzerConfig:
+      classifier: jev
+      jev:
+        previous_message_count: 1
+        timeout: "1.5s"
+      session:
+        enabled: true
+      keywords:
+        simple_keywords: ["fix the grammar in this sentence."]
+        medium_keywords: ["apply a standard method to this technical question."]
+        complex_keywords: ["design a solution under several competing constraints."]
+```
+
+`jev.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Jev usage counts toward request cost and budgets. To use Jev after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: jev`, and optionally include the `jev` settings above.
+
+For Semantic as the primary classifier:
 
 ```yaml
 bifrost:
@@ -414,10 +436,10 @@ bifrost:
         complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
 ```
 
-`session.enabled` is optional and defaults to `false`. When enabled, an identified session retains its highest observed tier for 24 hours of inactivity; normally sequential turns can escalate while lower proposals keep the stored tier. Overlapping requests for the same session are best-effort and resolve by last writer wins. The lifetime is built in and is separate from provider prompt-cache TTLs.
+`session.enabled` is optional and defaults to `false` for both classifiers. When enabled, an identified session retains its highest observed tier for 24 hours of inactivity; normally sequential turns can escalate while lower proposals keep the stored tier. Overlapping requests for the same session are best-effort and resolve by last writer wins. The lifetime is built in and is separate from provider prompt-cache TTLs.
 
 <Note>
-In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, keyword lists are merged additively with stored runtime phrases (union with duplicates removed), and the semantic block is replaced as one unit. Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored governance state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
+In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, keyword lists are merged additively with stored runtime phrases (union with duplicates removed), and the semantic block is replaced as one unit. Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored config state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
 </Note>
 
 <Note>

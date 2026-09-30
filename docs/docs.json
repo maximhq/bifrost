@@ -226,6 +226,7 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/complexity-router",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -239,8 +240,7 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers",
-                  "features/governance/complexity-router"
+                  "features/governance/required-headers"
                 ]
               },
               "features/telemetry",
@@ -1170,6 +1170,7 @@
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",
+                  "POST /api/mcp/client/{id}/reregister",
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
                   "GET /api/mcp/sessions",
@@ -2229,6 +2230,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/governance/complexity-router",
+      "destination": "/features/complexity-router"
+    },
     {
       "source": "/integrations/guardrails/lakera",
       "destination": "/integrations/guardrails/checkpoint"

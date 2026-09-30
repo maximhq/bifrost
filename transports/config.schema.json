@@ -5466,7 +5466,7 @@
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for semantic complexity_tier CEL routing",
+      "description": "Runtime configuration for complexity_tier CEL routing with Semantic or Typesafe Jev classification",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
