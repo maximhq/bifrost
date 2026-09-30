@@ -1966,9 +1966,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 					// Add action if we successfully parsed it
 					if action != nil {
-						item.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
-							ResponsesComputerToolCallAction: action,
-						}
+						setResponsesComputerCallAction(item.ResponsesToolMessage, action)
 					}
 
 					state.ComputerToolID = nil
@@ -3069,27 +3067,23 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		addedState := getOrCreateAnthropicToResponsesStreamState(ctx)
 		blockIdx := addedState.allocBlockIndex(reverseStreamItemKey(bifrostResp))
 
-		// Check if this is a computer tool call
+		// A computer call's actions only arrive on output_item.done, and a batched call
+		// becomes several tool_use blocks, so its blocks are all emitted there. On the
+		// passthrough path Claude's raw deltas and stop follow, so only the start is ours.
 		if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
 			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeComputerCall {
-
-			// Computer tool - emit content_block_start
+			if !addedState.passthrough {
+				return nil
+			}
 			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
 			streamResp.Index = blockIdx
-
-			// Build the content_block as tool_use
-			// Note: Computer tool calls should not be converted to thinking blocks
-			contentBlock := &AnthropicContentBlock{
-				Type: AnthropicContentBlockTypeToolUse,
-				ID:   providerUtils.SanitizeAnthropicToolUseIDPtr(bifrostResp.Item.ID), // The tool use ID
-				Name: schemas.Ptr(string(AnthropicToolNameComputer)),                   // "computer"
+			streamResp.ContentBlock = &AnthropicContentBlock{
+				Type:  AnthropicContentBlockTypeToolUse,
+				ID:    providerUtils.SanitizeAnthropicToolUseIDPtr(bifrostResp.Item.ID),
+				Name:  schemas.Ptr(string(AnthropicToolNameComputer)),
+				Input: json.RawMessage("{}"),
 			}
-
-			// Always start with empty input for streaming compatibility
-			contentBlock.Input = json.RawMessage("{}")
-
-			streamResp.ContentBlock = contentBlock
 		} else if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
 			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebSearchCall {
@@ -3368,14 +3362,6 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					argumentsJSON = *bifrostResp.Item.ResponsesToolMessage.Arguments
 					shouldGenerateDeltas = true
 				}
-			case schemas.ResponsesMessageTypeComputerCall:
-				if bifrostResp.Item.ResponsesToolMessage.Action != nil && bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-					actionInput := convertResponsesToAnthropicComputerAction(bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
-					if jsonBytes, err := providerUtils.MarshalSorted(actionInput); err == nil {
-						argumentsJSON = string(jsonBytes)
-						shouldGenerateDeltas = true
-					}
-				}
 			}
 			if shouldGenerateDeltas && argumentsJSON != "" {
 				// Generate synthetic input_json_delta events by chunking the JSON.
@@ -3541,36 +3527,45 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			bifrostResp.Item.Type != nil &&
 			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeComputerCall {
 
-			// Computer tool complete - emit content_block_delta with the action, then stop
-			// Note: We're sending the complete action JSON in one delta
-			streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
-			streamResp.Index = getOrCreateAnthropicToResponsesStreamState(ctx).blockIndexFor(reverseStreamItemKey(bifrostResp))
-
-			// Convert the action to Anthropic format and marshal to JSON
-			if bifrostResp.Item.ResponsesToolMessage != nil &&
-				bifrostResp.Item.ResponsesToolMessage.Action != nil &&
-				bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-
-				actionInput := convertResponsesToAnthropicComputerAction(
-					bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction,
-				)
-
-				// Marshal the action to JSON string
-				if jsonBytes, err := providerUtils.MarshalSorted(actionInput); err == nil {
-					jsonStr := string(jsonBytes)
-					streamResp.Delta = &AnthropicStreamDelta{
-						Type:        AnthropicStreamDeltaTypeInputJSON,
-						PartialJSON: &jsonStr,
-					}
-				}
-			}
-			return []*AnthropicStreamEvent{
-				streamResp,
-				{
+			// Same blocks as the non-streaming path: one complete tool_use per action, the
+			// first at the index reserved on output_item.added.
+			state := getOrCreateAnthropicToResponsesStreamState(ctx)
+			if state.passthrough {
+				// Claude's raw input deltas already filled the block opened on output_item.added.
+				return []*AnthropicStreamEvent{{
 					Type:  AnthropicStreamEventTypeContentBlockStop,
-					Index: streamResp.Index,
-				},
+					Index: state.blockIndexFor(reverseStreamItemKey(bifrostResp)),
+				}}
 			}
+			item := *bifrostResp.Item
+			if item.ResponsesToolMessage == nil {
+				item.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+			}
+			if item.ResponsesToolMessage.CallID == nil {
+				toolMsg := *item.ResponsesToolMessage
+				toolMsg.CallID = item.ID
+				item.ResponsesToolMessage = &toolMsg
+			}
+			var events []*AnthropicStreamEvent
+			for i, block := range convertBifrostComputerCallToAnthropicToolUse(&item) {
+				idx := state.blockIndexFor(reverseStreamItemKey(bifrostResp))
+				if i > 0 {
+					idx = state.allocBlockIndex("")
+				}
+				input := block.Input
+				block.Input = json.RawMessage("{}")
+				events = append(events, &AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStart, Index: idx, ContentBlock: &block})
+				if len(input) > 0 {
+					partial := string(input)
+					events = append(events, &AnthropicStreamEvent{
+						Type:  AnthropicStreamEventTypeContentBlockDelta,
+						Index: idx,
+						Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &partial},
+					})
+				}
+				events = append(events, &AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: idx})
+			}
+			return events
 		} else if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
 			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebSearchCall {
@@ -5308,6 +5303,10 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// value is restored here rather than trusted to survive the round trip.
 	toolsetNameByToolUseID := make(map[string]string)
 
+	// computerCallFillerIDs maps a batched computer_call's id to the tool_use ids of
+	// its earlier actions, which need a filler tool_result beside the one screenshot.
+	computerCallFillerIDs := make(map[string][]string)
+
 	// midConvPlacementOK reports whether a mid-conversation system message at input index i can
 	// legally be forwarded as role:"system". Anthropic enforces two clauses and rejects a
 	// violation of either with "messages.N: role 'system' must follow a 'user' message ...":
@@ -5759,9 +5758,9 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				pendingReasoningContentBlocks = nil
 			}
 
-			computerToolUseBlock := convertBifrostComputerCallToAnthropicToolUse(&msg)
-			if computerToolUseBlock != nil {
-				pendingToolCalls = append(pendingToolCalls, *computerToolUseBlock)
+			computerToolUseBlocks := convertBifrostComputerCallToAnthropicToolUse(&msg)
+			for i, computerToolUseBlock := range computerToolUseBlocks {
+				pendingToolCalls = append(pendingToolCalls, computerToolUseBlock)
 
 				// Track the tool call ID for matching with tool results
 				if currentToolCallIDs == nil {
@@ -5769,6 +5768,9 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 				if computerToolUseBlock.ID != nil {
 					currentToolCallIDs[*computerToolUseBlock.ID] = true
+					if last := computerToolUseBlocks[len(computerToolUseBlocks)-1]; i < len(computerToolUseBlocks)-1 && last.ID != nil {
+						computerCallFillerIDs[*last.ID] = append(computerCallFillerIDs[*last.ID], *computerToolUseBlock.ID)
+					}
 				}
 			}
 
@@ -6018,6 +6020,13 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			// Accumulate computer call output with other tool results
 			computerResultBlock := convertBifrostComputerCallOutputToAnthropicToolResultBlock(&msg)
 			if computerResultBlock != nil {
+				for _, fillerID := range computerCallFillerIDs[*computerResultBlock.ToolUseID] {
+					pendingToolResultBlocks = append(pendingToolResultBlocks, AnthropicContentBlock{
+						Type:      AnthropicContentBlockTypeToolResult,
+						ToolUseID: schemas.Ptr(fillerID),
+						Content:   &AnthropicContent{ContentStr: schemas.Ptr("ok")},
+					})
+				}
 				pendingToolResultBlocks = append(pendingToolResultBlocks, *computerResultBlock)
 			}
 
@@ -6206,11 +6215,13 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 	if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameComputer) {
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeComputerCall)
 		bifrostMsg.ResponsesToolMessage.Name = nil
+		if isOutputMessage {
+			// OpenAI rejects a computer_call whose id does not begin with "cu".
+			bifrostMsg.ID = schemas.Ptr("cu_" + schemas.GetRandomString(50))
+		}
 		var inputMap map[string]interface{}
 		if err := sonic.Unmarshal(toolBlock.Input, &inputMap); err == nil {
-			bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
-				ResponsesComputerToolCallAction: convertAnthropicToResponsesComputerAction(inputMap),
-			}
+			setResponsesComputerCallAction(bifrostMsg.ResponsesToolMessage, convertAnthropicToResponsesComputerAction(inputMap))
 		}
 	} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall)
@@ -6924,11 +6935,13 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 					if block.Name != nil && *block.Name == string(AnthropicToolNameComputer) {
 						bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeComputerCall)
 						bifrostMsg.ResponsesToolMessage.Name = nil
+						if isOutputMessage {
+							// OpenAI rejects a computer_call whose id does not begin with "cu".
+							bifrostMsg.ID = schemas.Ptr("cu_" + schemas.GetRandomString(50))
+						}
 						var inputMap map[string]interface{}
 						if err := sonic.Unmarshal(block.Input, &inputMap); err == nil {
-							bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
-								ResponsesComputerToolCallAction: convertAnthropicToResponsesComputerAction(inputMap),
-							}
+							setResponsesComputerCallAction(bifrostMsg.ResponsesToolMessage, convertAnthropicToResponsesComputerAction(inputMap))
 						}
 					} else if len(block.Input) > 0 {
 						bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(string(block.Input))
@@ -7674,30 +7687,72 @@ func convertBifrostItemReferenceToAnthropicMessage(msg *schemas.ResponsesMessage
 	return nil
 }
 
-// convertBifrostComputerCallToAnthropicToolUse converts a Bifrost computer call to Anthropic tool use
-func convertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage) *AnthropicContentBlock {
-	if msg.ResponsesToolMessage != nil {
-		toolUseBlock := AnthropicContentBlock{
-			Type: AnthropicContentBlockTypeToolUse,
-			Name: schemas.Ptr(string(AnthropicToolNameComputer)),
-		}
-		if msg.ResponsesToolMessage.CallID != nil {
-			toolUseBlock.ID = providerUtils.SanitizeAnthropicToolUseIDPtr(msg.ResponsesToolMessage.CallID)
-		}
-		if msg.ResponsesToolMessage.Name != nil {
-			toolUseBlock.Name = msg.ResponsesToolMessage.Name
-		}
-
-		if msg.ResponsesToolMessage.Action != nil && msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-			inputMap := convertResponsesToAnthropicComputerAction(msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
-			if inputBytes, err := providerUtils.MarshalSorted(inputMap); err == nil {
-				toolUseBlock.Input = json.RawMessage(inputBytes)
-			}
-		}
-
-		return &toolUseBlock
+// convertBifrostComputerCallToAnthropicToolUse converts a Bifrost computer call to Anthropic tool use blocks, one per action.
+// Earlier actions of a batched call get suffixed ids; the last keeps the call id so the screenshot output pairs with it.
+func convertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
+	if msg.ResponsesToolMessage == nil {
+		return nil
 	}
-	return nil
+	toolMsg := msg.ResponsesToolMessage
+
+	name := string(AnthropicToolNameComputer)
+	if toolMsg.Name != nil {
+		name = *toolMsg.Name
+	}
+
+	// Prefer the batched list over the legacy single-action field.
+	var actions []schemas.ResponsesComputerToolCallAction
+	if call := toolMsg.ResponsesComputerToolCall; call != nil && len(call.Actions) > 0 {
+		actions = call.Actions
+	} else if toolMsg.Action != nil && toolMsg.Action.ResponsesComputerToolCallAction != nil {
+		actions = []schemas.ResponsesComputerToolCallAction{*toolMsg.Action.ResponsesComputerToolCallAction}
+	}
+	if len(actions) == 0 {
+		// Still emit one block so the screenshot output has a tool_use to pair with.
+		return []AnthropicContentBlock{newComputerToolUseBlock(name, providerUtils.SanitizeAnthropicToolUseIDPtr(toolMsg.CallID), nil)}
+	}
+
+	last := len(actions) - 1
+	blocks := make([]AnthropicContentBlock, len(actions))
+	for i := range actions {
+		var id *string
+		if toolMsg.CallID != nil {
+			rawID := *toolMsg.CallID
+			if i < last {
+				rawID = fmt.Sprintf("%s_%d", rawID, i)
+			}
+			id = providerUtils.SanitizeAnthropicToolUseIDPtr(&rawID)
+		}
+		blocks[i] = newComputerToolUseBlock(name, id, &actions[i])
+	}
+	return blocks
+}
+
+// newComputerToolUseBlock builds a computer tool_use block, with the action as its input when present.
+func newComputerToolUseBlock(name string, id *string, action *schemas.ResponsesComputerToolCallAction) AnthropicContentBlock {
+	block := AnthropicContentBlock{
+		Type: AnthropicContentBlockTypeToolUse,
+		Name: schemas.Ptr(name),
+		ID:   id,
+	}
+	if action != nil {
+		if input, err := providerUtils.MarshalSorted(convertResponsesToAnthropicComputerAction(action)); err == nil {
+			block.Input = json.RawMessage(input)
+		}
+	}
+	return block
+}
+
+// setResponsesComputerCallAction sets a computer_call's action as both the single action and the one-element actions list.
+func setResponsesComputerCallAction(toolMsg *schemas.ResponsesToolMessage, action *schemas.ResponsesComputerToolCallAction) {
+	if toolMsg == nil || action == nil {
+		return
+	}
+	toolMsg.Action = &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: action}
+	if toolMsg.ResponsesComputerToolCall == nil {
+		toolMsg.ResponsesComputerToolCall = &schemas.ResponsesComputerToolCall{}
+	}
+	toolMsg.ResponsesComputerToolCall.Actions = []schemas.ResponsesComputerToolCallAction{*action}
 }
 
 // convertBifrostMCPCallToAnthropicToolUse converts a Bifrost MCP call to Anthropic tool use

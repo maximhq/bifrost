@@ -1296,6 +1296,35 @@ func deepCopySchemaValue(original interface{}) interface{} {
 	}
 }
 
+// deepCopyComputerToolCallAction copies a computer action, including its pointers and slices.
+func deepCopyComputerToolCallAction(original ResponsesComputerToolCallAction) ResponsesComputerToolCallAction {
+	copied := original
+	copied.X = clonePtr(original.X)
+	copied.Y = clonePtr(original.Y)
+	copied.Button = clonePtr(original.Button)
+	copied.ScrollX = clonePtr(original.ScrollX)
+	copied.ScrollY = clonePtr(original.ScrollY)
+	copied.Text = clonePtr(original.Text)
+	if original.Path != nil {
+		copied.Path = append([]ResponsesComputerToolCallActionPath(nil), original.Path...)
+	}
+	if original.Keys != nil {
+		copied.Keys = append([]string(nil), original.Keys...)
+	}
+	if original.Region != nil {
+		copied.Region = append([]int(nil), original.Region...)
+	}
+	return copied
+}
+
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
 // to prevent shared data mutation between different plugin accumulators
 func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
@@ -1476,21 +1505,7 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			}
 
 			if original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-				copyAction := *original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction
-				// Deep copy Path slice
-				if copyAction.Path != nil {
-					copyAction.Path = make([]ResponsesComputerToolCallActionPath, len(copyAction.Path))
-					for i, path := range original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Path {
-						copyAction.Path[i] = path // struct copy is fine for simple structs
-					}
-				}
-				// Deep copy Keys slice
-				if copyAction.Keys != nil {
-					copyAction.Keys = make([]string, len(copyAction.Keys))
-					for i, key := range original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Keys {
-						copyAction.Keys[i] = key
-					}
-				}
+				copyAction := deepCopyComputerToolCallAction(*original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
 				copy.ResponsesToolMessage.Action.ResponsesComputerToolCallAction = &copyAction
 			}
 
@@ -1595,6 +1610,12 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesComputerToolCall
 			if original.ResponsesToolMessage.ResponsesComputerToolCall.PendingSafetyChecks != nil {
 				copyToolCall.PendingSafetyChecks = append([]ResponsesComputerToolCallPendingSafetyCheck(nil), original.ResponsesToolMessage.ResponsesComputerToolCall.PendingSafetyChecks...)
+			}
+			if actions := original.ResponsesToolMessage.ResponsesComputerToolCall.Actions; actions != nil {
+				copyToolCall.Actions = make([]ResponsesComputerToolCallAction, len(actions))
+				for i := range actions {
+					copyToolCall.Actions[i] = deepCopyComputerToolCallAction(actions[i])
+				}
 			}
 			copy.ResponsesToolMessage.ResponsesComputerToolCall = &copyToolCall
 		}
