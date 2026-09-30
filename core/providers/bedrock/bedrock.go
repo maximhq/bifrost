@@ -217,8 +217,8 @@ func isStreamTransportError(err error) bool {
 // camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
 // in-stream exception members) to a retryable HTTP status code. These exceptions
 // are transient and should be retried — the retry gate in executeRequestWithRetries
-// checks StatusCode against transientServerStatusCodes (500, 502, 503, 504) for
-// same-key retries and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+// classifies the StatusCode (ClassifyFailure): 500, 502, 503 and 504 retry on the same
+// key, 429 rotates to the next one.
 //
 // Some AWS exceptions have a native status code the gate does not recognize
 // (modelStreamErrorException=424, modelTimeoutException=408); they are mapped to
@@ -4443,12 +4443,36 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
 		return true
 	}
+	if invokeIngressThinkingNeedsInvokePath(ctx, request.Params.Reasoning) {
+		return true
+	}
 	for _, tool := range request.Params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
 		}
 	}
 	return false
+}
+
+// invokeIngressThinkingNeedsInvokePath reports whether a request from the
+// InvokeModel-shaped ingress (BedrockContextKeyAnthropicInvokeIngress) has
+// thinking on. Converse TokenUsage has no thinking-token breakdown, while
+// InvokeModel returns usage.output_tokens_details.thinking_tokens, so such a
+// request is served by InvokeModel to keep the count the client asked for
+// (#7649). Thinking disabled (effort "none") or absent stays on Converse, and
+// so does every other ingress: /v1 and /bedrock converse callers never see
+// the marker. Callers gate on the Anthropic model family first.
+func invokeIngressThinkingNeedsInvokePath(ctx *schemas.BifrostContext, reasoning *schemas.ResponsesParametersReasoning) bool {
+	if ctx == nil || reasoning == nil {
+		return false
+	}
+	if marked, _ := ctx.Value(BedrockContextKeyAnthropicInvokeIngress).(bool); !marked {
+		return false
+	}
+	if reasoning.Effort != nil && *reasoning.Effort == "none" {
+		return false
+	}
+	return true
 }
 
 // invokeURL builds https://<bedrock-runtime host>/model/<model>/<action> using

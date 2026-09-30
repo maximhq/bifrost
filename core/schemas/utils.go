@@ -1404,8 +1404,29 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Execution = &copyExecution
 		}
 
+		if original.ResponsesToolMessage.Async != nil {
+			copy.ResponsesToolMessage.Async = new(*original.ResponsesToolMessage.Async)
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
-			copyError := *original.ResponsesToolMessage.Error
+			copyError := ResponsesToolMessageError{}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr != nil {
+				copyErrorStr := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr
+				copyError.ResponsesToolMessageErrorStr = &copyErrorStr
+			}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct != nil {
+				copyErrorStruct := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+				if copyErrorStruct.Code != nil {
+					copyCode := *copyErrorStruct.Code
+					copyErrorStruct.Code = &copyCode
+				}
+				if copyErrorStruct.Message != nil {
+					copyMessage := *copyErrorStruct.Message
+					copyErrorStruct.Message = &copyMessage
+				}
+				copyErrorStruct.Content = append(json.RawMessage(nil), copyErrorStruct.Content...)
+				copyError.ResponsesToolMessageErrorStruct = &copyErrorStruct
+			}
 			copy.ResponsesToolMessage.Error = &copyError
 		}
 
@@ -2117,6 +2138,12 @@ func IsGPT56Model(model string) bool {
 	return false
 }
 
+// ModelSupportsPromptCacheBreakpoint is the name-based fallback for
+// ModelCaps.SupportsPromptCacheBreakpoint: the gpt-5.6 and gpt-6 families.
+func ModelSupportsPromptCacheBreakpoint(model string) bool {
+	return IsGPT56Model(model) || strings.Contains(strings.ToLower(model), "gpt-6")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
@@ -2180,6 +2207,12 @@ func IsElevenlabsSoundModel(model string) bool {
 	return strings.Contains(model, "eleven_text_to_sound")
 }
 
+// IsTypesafeModel checks if the model targets a TypeSafe System One decisions
+// endpoint (e.g. "typesafe/jev-1.13", "~typesafe/jev-latest") rather than chat.
+func IsTypesafeModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
@@ -2229,13 +2262,13 @@ func ModelSupportsPromptCaching(provider ModelProvider, model string) bool {
 	case Anthropic, OpenRouter:
 		return IsAnthropicModel(model)
 	case Bedrock, BedrockMantle:
-		return BedrockModelSupportsCachePoints(model) || IsGPT56Model(model)
+		return BedrockModelSupportsCachePoints(model) || ModelSupportsPromptCacheBreakpoint(model)
 	case Vertex:
 		// Vertex serves Claude (cache_control) and Gemini (cachedContent) side by
 		// side; only the former is markable.
 		return IsAnthropicModel(model)
 	case Azure, OpenAI:
-		return IsGPT56Model(model)
+		return ModelSupportsPromptCacheBreakpoint(model)
 	default:
 		return false
 	}

@@ -246,6 +246,16 @@ In `headers` mode these endpoints return `404`.
 **Cause:** The client completed an OAuth flow but is also configured with a VK header, so both arrive on one request. Claude Code does this in `both` mode when the VK is set under `x-bf-vk` / `X-Api-Key` instead of `Authorization`.
 **Fix:** Send only one credential — remove the VK header, or configure it as `Authorization: Bearer <vk>` so the client uses header auth and skips OAuth.
 
+### Consent page redirects to sign-in
+**Symptom:** Opening the consent link sends you to Bifrost's sign-in page instead of showing the identity options.
+**Cause:** Authorizing without a Bifrost account is turned off. [`mcp_enable_temp_token_auth`](./auth/overview#the-mcp_enable_temp_token_auth-toggle) is off by default, so a signed-in account is the only way through.
+**Fix:** Sign in — you'll be brought back to the consent page to choose an identity. To let people authorize without a Bifrost account, turn the toggle on.
+
+### Consent page says the link is no longer valid
+**Symptom:** The consent page shows *"This link is no longer valid"*.
+**Cause:** Consent links are one-time and short-lived. This one has expired, was already used, or was altered.
+**Fix:** Restart the connection from your MCP client to get a fresh link.
+
 ### Client keeps re-opening the browser
 **Symptom:** The consent flow runs on every connection.
 **Cause:** The client isn't persisting its tokens, or its refresh token was revoked.

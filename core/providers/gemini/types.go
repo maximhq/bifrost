@@ -105,6 +105,10 @@ const (
 	FinishReasonMalformedResponse FinishReason = "MALFORMED_RESPONSE"
 )
 
+// googleRetryInfoType is the @type of the error detail Google APIs use to say how long to
+// wait before retrying.
+const googleRetryInfoType = "type.googleapis.com/google.rpc.RetryInfo"
+
 type GeminiGenerationRequest struct {
 	Model             string                   `json:"model,omitempty"`    // Model field for explicit model specification
 	Contents          []Content                `json:"contents,omitempty"` // For chat completion requests
@@ -2654,6 +2658,7 @@ type GeminiGenerationErrorStruct struct {
 
 type GeminiGenerationErrorDetails struct {
 	Type            string `json:"@type"`
+	RetryDelay      string `json:"retryDelay,omitempty"` // google.rpc.RetryInfo only, as a protobuf duration such as "39s"
 	FieldViolations []struct {
 		Description string `json:"description"`
 	} `json:"fieldViolations"`

@@ -437,6 +437,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
 	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
+	{IDs: []string{"add_virtual_key_delete_after_expire_column"}, run: migrationAddVirtualKeyDeleteAfterExpireColumn},
+	{IDs: []string{"add_client_config_delete_expired_virtual_keys_column"}, run: migrationAddClientConfigDeleteExpiredVirtualKeysColumn},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"add_flex_and_cache_creation_272k_pricing_columns"}, run: migrationAddFlexAndCacheCreation272kPricingColumns},
@@ -502,6 +504,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
 	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
 	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
+	{IDs: []string{"add_virtual_key_disable_content_logging_column"}, run: migrationAddVirtualKeyDisableContentLoggingColumn},
+	{IDs: []string{"add_ttft_timeout_ms_column_to_routing_targets"}, run: migrationAddTTFTTimeoutMsColumnToRoutingTargets},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -11785,6 +11789,52 @@ func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, log
 	return nil
 }
 
+// migrationAddClientConfigDeleteExpiredVirtualKeysColumn adds delete_expired_virtual_keys to config_client.
+func migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_delete_expired_virtual_keys_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "delete_expired_virtual_keys")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "delete_expired_virtual_keys")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyDeleteAfterExpireColumn adds the nullable delete_after_expire
+// column to governance_virtual_keys. NULL inherits client.delete_expired_virtual_keys.
+// No index: the daily cleanup scan already filters on expires_at and touches few rows.
+func migrationAddVirtualKeyDeleteAfterExpireColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_delete_after_expire_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "delete_after_expire")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "delete_after_expire")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 // migrationAddVertexForceSingleRegionColumn adds the vertex_force_single_region column to the key table.
 // Existing keys default to false (NULL), preserving the current multi-region promotion behaviour.
 func migrationAddVertexForceSingleRegionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -14061,6 +14111,64 @@ func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyDisableContentLoggingColumn adds disable_content_logging to
+// governance_virtual_keys: the key's own tri-state say on content logging. The column is nullable
+// with no default because NULL is a meaning of its own (inherit the client setting), so every
+// existing key comes out of the migration inheriting exactly as it did before.
+func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_disable_content_logging_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "disable_content_logging"); err != nil {
+				return fmt.Errorf("failed to add disable_content_logging column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_virtual_key_disable_content_logging_column is non-rollbackable: dropping disable_content_logging would permanently delete every virtual key's content-logging decision and silently revert content-off keys to logging content; the column is additive and older binaries safely ignore it")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTTFTTimeoutMsColumnToRoutingTargets adds the nullable ttft_timeout_ms
+// column to routing_targets. Existing targets keep NULL (no TTFT deadline), and
+// GenerateRoutingRuleHash only hashes the field when it is set, so no
+// config_hash backfill is needed.
+func migrationAddTTFTTimeoutMsColumnToRoutingTargets(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ttft_timeout_ms_column_to_routing_targets"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableRoutingTarget{}, "ttft_timeout_ms"); err != nil {
+				return fmt.Errorf("failed to add column ttft_timeout_ms: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableRoutingTarget{}, "ttft_timeout_ms"); err != nil {
+				return fmt.Errorf("failed to drop column ttft_timeout_ms: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

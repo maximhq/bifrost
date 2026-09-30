@@ -94,6 +94,15 @@ type ToolDeps struct {
 	// and reports itself unavailable rather than the caller getting a nil-
 	// pointer panic.
 	governance GovernanceReader
+	// vkDecorator overlays what the key row alone cannot say (see
+	// VirtualKeyDecorator). Nil means the row is taken as is.
+	vkDecorator VirtualKeyDecorator
+	// userGovernance is nil on a deployment with no per-user governance, and
+	// describe_user_limits is then not in the tool set at all.
+	userGovernance UserGovernanceReader
+	// charts holds what render_chart drew this turn, so the answer's chart
+	// blocks can be expanded from it. Built per turn with the rest of deps.
+	charts *chartRegistry
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -139,7 +148,7 @@ const FilterSchema = `{
     "models": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success, error, or cancelled."},
     "stop_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. stop, length, content_filter, tool_calls. Call describe_filter_space to see which actually occur."},
-    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Request type, e.g. chat_completion, embedding, speech, transcription, image_generation, video_generation. Use this to exclude non-chat traffic - embeddings, speech, and image/video generation have their own cost and latency shape and otherwise get averaged in with chat requests."},
+    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Exact request types, e.g. chat_completion, chat_completion_stream, responses, responses_stream, text_completion, embedding, speech, transcription, image_generation, video_generation. Leave it unset unless the person names a request type: spend, usage and performance questions cover every type. Each value matches only itself - a streamed request is its own _stream type and the Responses API is responses, so chat_completion alone leaves out most chat traffic. For chat traffic as a whole pass chat_completion, chat_completion_stream, responses and responses_stream together."},
     "virtual_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "team_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "customer_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
@@ -168,7 +177,7 @@ const FilterSchema = `{
     "parent_request_id": {"type": "string", "minLength": 1, "description": "Requests spawned by this request, e.g. the fallback attempts of one call."},
     "missing_cost_only": {"type": "boolean", "description": "Only successful requests whose cost could not be computed."},
     "error_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's error classification on failed requests, e.g. invalid_request_error, overloaded_error - the ids a query_usage_by error_type ranking returns. This is how to fetch the rows behind one row of that ranking."},
-    "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values."},
+    "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values. overloaded_error and rate_limit_error are error types - put them in error_types, never here."},
     "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
@@ -682,6 +691,22 @@ func boolArg(args map[string]any, key string) (bool, error) {
 	return flag, nil
 }
 
+// noteRequestTypes marks a result that was narrowed by request type.
+//
+// objects is an exact match, and a total narrowed by it reads exactly like a
+// total. A spend question filtered to chat_completion came back as $0.00 for
+// every provider on a deployment whose traffic was all Responses API, with
+// nothing in the result to say the filter was why.
+func noteRequestTypes(out map[string]any, filters *logstore.SearchFilters) map[string]any {
+	if len(filters.Objects) == 0 {
+		return out
+	}
+	out["request_types"] = fmt.Sprintf(
+		"Only requests of type %s are counted. Every other request type is left out - streamed requests are their own _stream types, and the Responses API is responses and responses_stream - so this is not total spend, usage or traffic. Unless the person asked for this request type, drop objects and query again; otherwise say the answer covers only this type.",
+		strings.Join(filters.Objects, ", "))
+	return out
+}
+
 // filterArg parses the shared filter object every flow accepts and applies
 // the caller's default scope.
 //
@@ -1012,7 +1037,7 @@ func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
 // per request, which is what will let a future change withhold content-bearing
 // tools from callers who may not read log bodies.
 func buildTools() []Tool {
-	return buildToolsFor(nil)
+	return buildToolsFor(nil, false)
 }
 
 // buildToolsFor returns the tools a request can actually run.
@@ -1020,8 +1045,10 @@ func buildTools() []Tool {
 // semantic_search_logs needs an embedding executor, which a deployment may not
 // have configured. Declaring it anyway tells the model a capability exists,
 // costs it a step to discover otherwise, and on a deployment with no embedding
-// provider does that on every single attempt.
-func buildToolsFor(searcher *SemanticSearcher) []Tool {
+// provider does that on every single attempt. describe_user_limits is the same
+// shape: it needs a UserGovernanceReader, which only a deployment with per-user
+// governance has.
+func buildToolsFor(searcher *SemanticSearcher, userLimits bool) []Tool {
 	tools := []Tool{}
 	if searcher != nil {
 		tools = append(tools, semanticSearchLogsTool())
@@ -1034,40 +1061,46 @@ func buildToolsFor(searcher *SemanticSearcher) []Tool {
 		queryMetricsTool(),
 		queryUsageByTool(),
 		queryModelsTool(),
+		renderChartTool(),
 		describeFilterSpaceTool(),
 		describeVirtualKeyTool(),
-		askUserToolDef(),
 	)
-	return tools
+	if userLimits {
+		tools = append(tools, describeUserLimitsTool())
+	}
+	return append(tools, askUserToolDef())
 }
 
 // declaredToolSets memoizes responsesTools(buildToolsFor(...)) - Warp's tool
-// set is fixed at compile time apart from whether semantic_search_logs is
-// offered, so every one of its JSON schemas was otherwise being re-parsed with
-// sonic on every single turn for no reason. One set per availability: sharing
-// a single set would either hide semantic_search_logs from a deployment that
-// has it or declare it to one that does not. The parsed result is read-only
-// from every call site (folded straight into an outgoing request's
-// Params.Tools), so sharing a slice across concurrent turns is safe.
-var declaredToolSets [2]struct {
+// set is fixed at compile time apart from whether semantic_search_logs and
+// describe_user_limits are offered, so every one of its JSON schemas was
+// otherwise being re-parsed with sonic on every single turn for no reason. One
+// set per combination: sharing a single set would either hide an optional tool
+// from a deployment that has it or declare it to one that does not. The parsed
+// result is read-only from every call site (folded straight into an outgoing
+// request's Params.Tools), so sharing a slice across concurrent turns is safe.
+var declaredToolSets [4]struct {
 	once  sync.Once
 	tools []schemas.ResponsesTool
 	err   error
 }
 
 // declaredTools returns Warp's tool declarations for a deployment with or
-// without semantic search, parsing each set once on first use rather than on
-// every turn.
-func declaredTools(semantic bool) ([]schemas.ResponsesTool, error) {
+// without semantic search and per-user limits, parsing each set once on first
+// use rather than on every turn.
+func declaredTools(semantic, userLimits bool) ([]schemas.ResponsesTool, error) {
 	index, searcher := 0, (*SemanticSearcher)(nil)
 	if semantic {
 		// buildToolsFor only checks for presence; the tool itself reads the
 		// searcher from ToolDeps at execution time.
 		index, searcher = 1, &SemanticSearcher{}
 	}
+	if userLimits {
+		index += 2
+	}
 	set := &declaredToolSets[index]
 	set.once.Do(func() {
-		set.tools, set.err = responsesTools(buildToolsFor(searcher))
+		set.tools, set.err = responsesTools(buildToolsFor(searcher, userLimits))
 	})
 	return set.tools, set.err
 }

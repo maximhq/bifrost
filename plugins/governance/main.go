@@ -124,10 +124,13 @@ type AttributeRoutingEmbeddingCostPlugin interface {
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
 type GovernancePlugin struct {
-	ctx         context.Context
-	cancelFunc  context.CancelFunc
-	wg          sync.WaitGroup // Track active goroutines
-	cleanupOnce sync.Once      // Ensure cleanup happens only once
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+	wg               sync.WaitGroup // Track active goroutines
+	cleanupOnce      sync.Once      // Ensure cleanup happens only once
+	resetWorkersOnce sync.Once      // Ensure reset processing starts only once
+	lifecycleMutex   sync.Mutex     // Prevent reset startup and cleanup from overlapping
+	cleanedUp        bool
 
 	// Core components with clear separation of concerns
 	store    GovernanceStore // Pure data access layer
@@ -234,39 +237,6 @@ func Init(
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 
-	// 4. Perform startup reset check for any expired limits from downtime
-	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
-	if configStore != nil {
-		lockManager := configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second))
-		lock, err := lockManager.NewLock("governance_startup_reset")
-		if err != nil {
-			logger.Warn("failed to create governance startup reset lock: %v", err)
-		} else {
-			// Acquire the lock
-			lockAcquired := true
-			lockWaitStart := time.Now()
-			if err := lock.LockWithRetry(ctx, 10); err != nil {
-				logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
-				lockAcquired = false
-			}
-			logger.Info("[startup-timing] governance_startup_reset lock acquisition took %v (acquired=%t)", time.Since(lockWaitStart), lockAcquired)
-			// Only run startup resets if we successfully acquired the lock
-			if lockAcquired {
-				defer func() {
-					if err := lock.Unlock(ctx); err != nil && !errors.Is(err, configstore.ErrLockNotHeld) {
-						logger.Warn("failed to release governance startup reset lock: %v", err)
-					}
-				}()
-				resetStart := time.Now()
-				if err := tracker.PerformStartupResets(ctx); err != nil {
-					logger.Warn("startup reset failed: %v", err)
-					// Continue initialization even if startup reset fails (non-critical)
-				}
-				logger.Info("[startup-timing] PerformStartupResets took %v", time.Since(resetStart))
-			}
-		}
-	}
-
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
@@ -333,23 +303,6 @@ func InitFromStore(
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
-	// Perform startup reset check for any expired limits from downtime
-	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
-	if configStore != nil {
-		lockManager := configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second))
-		lock, err := lockManager.NewLock("governance_startup_reset")
-		if err != nil {
-			logger.Warn("failed to create governance startup reset lock: %v", err)
-		} else if err := lock.Lock(ctx); err != nil {
-			logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
-		} else {
-			defer lock.Unlock(ctx)
-			if err := tracker.PerformStartupResets(ctx); err != nil {
-				logger.Warn("startup reset failed: %v", err)
-				// Continue initialization even if startup reset fails (non-critical)
-			}
-		}
-	}
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
@@ -369,6 +322,46 @@ func InitFromStore(
 		disableAutoToolInject: disableAutoToolInject,
 	}
 	return plugin, nil
+}
+
+// StartResetWorkers resets expired counters after all governance state has been hydrated,
+// then starts periodic reset processing.
+func (p *GovernancePlugin) StartResetWorkers(ctx context.Context) {
+	p.resetWorkersOnce.Do(func() {
+		p.lifecycleMutex.Lock()
+		defer p.lifecycleMutex.Unlock()
+
+		if p.cleanedUp {
+			return
+		}
+
+		if p.configStore != nil {
+			lockManager := configstore.NewDistributedLockManager(p.configStore, p.logger, configstore.WithDefaultTTL(30*time.Second))
+			lock, err := lockManager.NewLock("governance_startup_reset")
+			if err != nil {
+				p.logger.Warn("failed to create governance startup reset lock: %v", err)
+			} else {
+				lockAcquired := true
+				lockWaitStart := time.Now()
+				if err := lock.LockWithRetry(ctx, 10); err != nil {
+					p.logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
+					lockAcquired = false
+				}
+				p.logger.Info("[startup-timing] governance_startup_reset lock acquisition took %v (acquired=%t)", time.Since(lockWaitStart), lockAcquired)
+				if lockAcquired {
+					resetStart := time.Now()
+					if err := p.tracker.PerformStartupResets(ctx); err != nil {
+						p.logger.Warn("startup reset failed: %v", err)
+					}
+					p.logger.Info("[startup-timing] PerformStartupResets took %v", time.Since(resetStart))
+					if err := lock.Unlock(ctx); err != nil && !errors.Is(err, configstore.ErrLockNotHeld) {
+						p.logger.Warn("failed to release governance startup reset lock: %v", err)
+					}
+				}
+			}
+		}
+		p.tracker.startWorkers(p.ctx)
+	})
 }
 
 // GetName returns the name of the plugin
@@ -401,6 +394,11 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 // HTTPTransportPostHook intercepts requests after they are processed (governance decision point)
 // It modifies the response in-place and returns nil to continue
 func (p *GovernancePlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
+}
+
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *GovernancePlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
 	return nil
 }
 
@@ -1507,6 +1505,7 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	}
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	stampVirtualKeyContentLogging(ctx, vk)
 	if vk.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
@@ -1534,6 +1533,10 @@ func (p *GovernancePlugin) PostMCPConnectionHook(ctx *schemas.BifrostContext, re
 func (p *GovernancePlugin) Cleanup() error {
 	var cleanupErr error
 	p.cleanupOnce.Do(func() {
+		p.lifecycleMutex.Lock()
+		defer p.lifecycleMutex.Unlock()
+
+		p.cleanedUp = true
 		if p.cancelFunc != nil {
 			p.cancelFunc()
 		}

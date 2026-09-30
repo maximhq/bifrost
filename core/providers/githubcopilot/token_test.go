@@ -433,6 +433,9 @@ func newFakeGithub(t *testing.T) *fakeGithub {
 		}
 		status := int(f.installationStatus.Load())
 		w.Header().Set("Content-Type", "application/json")
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "7")
+		}
 		w.WriteHeader(status)
 		if status != http.StatusCreated && status != http.StatusOK {
 			_, _ = fmt.Fprint(w, `{"message":"upstream said no"}`)
@@ -446,6 +449,9 @@ func newFakeGithub(t *testing.T) *fakeGithub {
 		f.copilotHits.Add(1)
 		status := int(f.copilotStatus.Load())
 		w.Header().Set("Content-Type", "application/json")
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "7")
+		}
 		w.WriteHeader(status)
 		if status != http.StatusOK {
 			_, _ = fmt.Fprint(w, `{"message":"upstream said no"}`)
@@ -663,6 +669,20 @@ func TestFailureBackoff(t *testing.T) {
 		assert.False(t, *bErr.AllowFallbacks)
 	})
 
+	t.Run("a rate-limited exchange carries the retry hint", func(t *testing.T) {
+		installation := newFakeGithub(t)
+		installation.installationStatus.Store(http.StatusTooManyRequests)
+		_, bErr := installation.mint(installation.resolve(t, "backoff-3"), noopLogger{})
+		require.NotNil(t, bErr)
+		assert.Equal(t, int64(7000), bErr.ExtraFields.RetryAfter)
+
+		copilot := newFakeGithub(t)
+		copilot.copilotStatus.Store(http.StatusTooManyRequests)
+		_, bErr = copilot.mint(copilot.resolve(t, "backoff-4"), noopLogger{})
+		require.NotNil(t, bErr)
+		assert.Equal(t, int64(7000), bErr.ExtraFields.RetryAfter)
+	})
+
 	t.Run("backoff grows and clamps", func(t *testing.T) {
 		assert.Equal(t, permanentBackoffBase, backoffFor(1, true))
 		assert.Equal(t, 2*permanentBackoffBase, backoffFor(2, true))
@@ -676,6 +696,29 @@ func TestFailureBackoff(t *testing.T) {
 		assert.False(t, isPermanentError(blockingError("x", http.StatusBadGateway)))
 		assert.True(t, isPermanentError(blockingError("x", http.StatusUnauthorized)))
 		assert.True(t, isPermanentError(blockingError("x", http.StatusForbidden)))
+	})
+}
+
+// TestClassifyInstallationToken422 pins that GitHub's two 422 causes get different guidance.
+// Blaming the repository for a permission failure sends the operator to re-check a
+// repository ID that was never the problem.
+func TestClassifyInstallationToken422(t *testing.T) {
+	cfg := &copilotConfig{installationID: "12345", repositoryID: 745048854}
+
+	t.Run("permission not granted names the permission, not the repository", func(t *testing.T) {
+		body := []byte(`{"message":"The permissions requested are not granted to this installation."}`)
+		bErr := classifyInstallationTokenError(http.StatusUnprocessableEntity, body, cfg)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "copilot_requests: write")
+		assert.Contains(t, bErr.Error.Message, "Copilot Requests")
+		assert.NotContains(t, bErr.Error.Message, "745048854")
+	})
+
+	t.Run("other 422s still point at the repository", func(t *testing.T) {
+		body := []byte(`{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`)
+		bErr := classifyInstallationTokenError(http.StatusUnprocessableEntity, body, cfg)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "745048854")
 	})
 }
 

@@ -148,7 +148,21 @@ func (f *RoutingFallback) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*f = RoutingFallback(decoded)
+	// Trim now: an unpinned object is persisted as the legacy string, where padding would become an unknown provider prefix after a restart.
+	f.Provider = schemas.ModelProvider(strings.TrimSpace(string(f.Provider)))
+	f.Model = strings.TrimSpace(f.Model)
+	f.KeyID = strings.TrimSpace(f.KeyID)
 	return nil
+}
+
+// Resolved returns the fallback to route on. A legacy "provider/model" string is re-parsed on each
+// call, because rules are decoded at boot before custom providers are registered (#7538).
+func (f RoutingFallback) Resolved() schemas.Fallback {
+	if f.raw == "" {
+		return f.Fallback
+	}
+	provider, model := schemas.ParseModelString(f.raw, "")
+	return schemas.Fallback{Provider: provider, Model: model, KeyID: f.KeyID}
 }
 
 // RoutingFallbackStrings renders a fallback slice in its legacy string form, for logs.
@@ -171,6 +185,7 @@ type TableRoutingTarget struct {
 	KeyID           *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"key_id,omitempty"`   // persisted key pin
 	ProviderKeyName *string `gorm:"-" json:"provider_key_name,omitempty"`                                              // config-only alias; resolved to key_id during load
 	Weight          float64 `gorm:"not null;default:1" json:"weight"`                                                  // must sum to 1 across all targets in a rule
+	TTFTTimeoutMs   *int    `gorm:"column:ttft_timeout_ms" json:"ttft_timeout_ms,omitempty"`                           // streaming first-token deadline; nil = off
 }
 
 // TableName for TableRoutingTarget

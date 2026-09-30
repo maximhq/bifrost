@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Gemini image-generation models (e.g. gemini-2.5-flash-image) return the
@@ -393,4 +395,153 @@ func TestToGeminiChatCompletionRequest_MidConversationSystemInlined(t *testing.T
 		}
 	}
 	assert.Equal(t, 2, inline, "both trailing reminders must be inlined in place, none hoisted")
+}
+
+func TestToGeminiChatCompletionRequest_NMapsToCandidateCount(t *testing.T) {
+	cases := []struct {
+		name    string
+		n       int
+		want    int32
+		wantErr string
+	}{
+		{name: "normal", n: 3, want: 3},
+		{name: "maximum int32", n: math.MaxInt32, want: math.MaxInt32},
+		{name: "above maximum int32", n: math.MaxInt32 + 1, wantErr: "n must be between 1 and 2147483647"},
+		{name: "zero", n: 0, wantErr: "n must be between 1 and 2147483647"},
+		{name: "negative", n: -1, wantErr: "n must be between 1 and 2147483647"},
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, tt := range cases {
+			t.Run(string(provider)+"/"+tt.name, func(t *testing.T) {
+				result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    "gemini-2.5-flash",
+					Input: []schemas.ChatMessage{{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
+					}},
+					Params: &schemas.ChatParameters{N: schemas.Ptr(tt.n)},
+				})
+				if tt.wantErr != "" {
+					require.ErrorContains(t, err, tt.wantErr)
+					return
+				}
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				assert.Equal(t, tt.want, result.GenerationConfig.CandidateCount)
+			})
+		}
+	}
+}
+
+// chatToolResultHasRefKey reports whether any object at any depth of raw has a "$ref" key.
+// Gemini reads {"$ref": "<displayName>"} inside function_response.response as a pointer to
+// a multimodal part, so a caller's JSON Schema / OpenAPI tool output must never reach the
+// wire with one (#7694).
+func chatToolResultHasRefKey(raw []byte) bool {
+	var found bool
+	var walk func(v gjson.Result)
+	walk = func(v gjson.Result) {
+		v.ForEach(func(key, value gjson.Result) bool {
+			if v.IsObject() && key.String() == "$ref" {
+				found = true
+				return false
+			}
+			if value.IsObject() || value.IsArray() {
+				walk(value)
+			}
+			return !found
+		})
+	}
+	walk(gjson.ParseBytes(raw))
+	return found
+}
+
+// TestToGeminiChatCompletionRequest_ToolResultRefKeyStaysOpaque pins that a role:"tool"
+// message whose content is a JSON object containing a "$ref" key anywhere is sent to
+// Gemini as opaque string content ({"content": "<verbatim text>"}), never as a structured
+// function_response.response. Gemini reserves "$ref" there for multimodal part references
+// and rejects the request with 400 "does not match to a display_name in the
+// function_response.parts" otherwise (#7694). Tool output without "$ref" keeps the
+// structured fast path.
+func TestToGeminiChatCompletionRequest_ToolResultRefKeyStaysOpaque(t *testing.T) {
+	const refOutput = `{"schema":{"$ref":"#/components/schemas/SOM_computer_post_response"}}`
+	const plainOutput = `{"temperature":22,"condition":"sunny"}`
+
+	build := func(content *schemas.ChatMessageContent) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-flash-latest",
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Fetch the spec, then reply ok.")},
+				},
+				{
+					Role: schemas.ChatMessageRoleAssistant,
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+							ID:   schemas.Ptr("c1"),
+							Type: schemas.Ptr("function"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"cat spec.json"}`,
+							},
+						}},
+					},
+				},
+				{
+					Role:            schemas.ChatMessageRoleTool,
+					ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("c1")},
+					Content:         content,
+				},
+			},
+		}
+	}
+
+	functionResponse := func(t *testing.T, req *schemas.BifrostChatRequest) []byte {
+		t.Helper()
+		out, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Contents, 3)
+		require.Len(t, out.Contents[2].Parts, 1)
+		require.NotNil(t, out.Contents[2].Parts[0].FunctionResponse)
+		return out.Contents[2].Parts[0].FunctionResponse.Response
+	}
+
+	t.Run("string content with nested $ref is wrapped as opaque text", func(t *testing.T) {
+		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentStr: schemas.Ptr(refOutput)}))
+		assert.False(t, chatToolResultHasRefKey(resp), "function_response.response must not carry a $ref key: %s", resp)
+		assert.Equal(t, refOutput, gjson.GetBytes(resp, "content").String(), "tool text must survive verbatim under \"content\"")
+	})
+
+	t.Run("text block content with nested $ref is wrapped as opaque text", func(t *testing.T) {
+		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+			Type: schemas.ChatContentBlockTypeText,
+			Text: schemas.Ptr(refOutput),
+		}}}))
+		assert.False(t, chatToolResultHasRefKey(resp), "function_response.response must not carry a $ref key: %s", resp)
+		assert.Equal(t, refOutput, gjson.GetBytes(resp, "content").String(), "tool text must survive verbatim under \"content\"")
+	})
+
+	t.Run("top-level $ref is wrapped as opaque text", func(t *testing.T) {
+		const topLevel = `{"$ref":"#/definitions/Thing"}`
+		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentStr: schemas.Ptr(topLevel)}))
+		assert.False(t, chatToolResultHasRefKey(resp), "function_response.response must not carry a $ref key: %s", resp)
+		assert.Equal(t, topLevel, gjson.GetBytes(resp, "content").String())
+	})
+
+	t.Run("unicode-escaped $ref key is wrapped as opaque text", func(t *testing.T) {
+		// JSON allows any character of a key to be escaped; "$r\u0065f" decodes to "$ref".
+		escaped := `{"schema":{"$r\u0065f":"#/x"}}`
+		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentStr: schemas.Ptr(escaped)}))
+		assert.False(t, chatToolResultHasRefKey(resp), "function_response.response must not carry a $ref key: %s", resp)
+		assert.Equal(t, escaped, gjson.GetBytes(resp, "content").String())
+	})
+
+	t.Run("JSON object without $ref keeps the structured fast path", func(t *testing.T) {
+		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentStr: schemas.Ptr(plainOutput)}))
+		assert.JSONEq(t, plainOutput, string(resp), "plain JSON tool output must still be forwarded as a structured object")
+	})
 }

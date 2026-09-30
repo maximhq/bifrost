@@ -178,6 +178,7 @@ var (
 		"length":         "max_tokens",
 		"tool_calls":     "tool_use",
 		"content_filter": "content_filtered",
+		"refusal":        "content_filtered", // Anthropic refusal; not a valid Converse stopReason
 	}
 )
 
@@ -195,6 +196,19 @@ func convertBedrockStopReason(stopReason string) string {
 		return reason
 	}
 	return stopReason
+}
+
+// bedrockStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// Converse stop reason, for terminal events that carry no explicit stop reason. ok is
+// false for a reason with no Converse equivalent, which must not reach messageStop.
+func bedrockStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) (reason string, ok bool) {
+	switch details.Reason {
+	case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+		return "max_tokens", true
+	case schemas.ResponsesResponseIncompleteReasonContentFilter:
+		return "content_filtered", true
+	}
+	return "", false
 }
 
 // convertBifrostToBedrockStopReason converts a Bifrost stop reason back to Bedrock format.
@@ -524,7 +538,10 @@ func bedrockAliasToolName(ctx context.Context, name string) string {
 		semanticName = "tool"
 	}
 
-	hash := fmt.Sprintf("%08x", uint32(xxhash.Sum64String(name)))
+	// The "t" keeps the alias letter-first: a bare hex hash starts with a digit 10
+	// times in 16, and moonshotai.kimi-k3 answers any digit-leading tool name with
+	// HTTP 200 and an empty stream.
+	hash := fmt.Sprintf("t%08x", uint32(xxhash.Sum64String(name)))
 	maxSemanticLen := 64 - len(hash) - 1
 	if len(semanticName) > maxSemanticLen {
 		semanticName = semanticName[:maxSemanticLen]
@@ -659,7 +676,17 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		if bedrockReq.AdditionalModelRequestFields == nil {
 			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 		}
-		if bifrostReq.Params.Reasoning.MaxTokens != nil {
+		if bifrostReq.Params.Reasoning.Type != nil && *bifrostReq.Params.Reasoning.Type == "between_tools" &&
+			schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+			// A thinking type, independent of effort: the caller's effort is forwarded as-is.
+			if thinking := anthropic.BetweenToolsThinking(caps, bifrostReq.Params.Reasoning.Effort); thinking != nil {
+				bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{"type": thinking.Type})
+			}
+			if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+				caps.SupportsNativeEffort(anthropic.DefaultSupportsNativeEffort(caps.Model())) {
+				setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+			}
+		} else if bifrostReq.Params.Reasoning.MaxTokens != nil {
 			tokenBudget := *bifrostReq.Params.Reasoning.MaxTokens
 			if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
 				// bedrock does not support dynamic reasoning budget like gemini
@@ -1245,6 +1272,72 @@ func reasoningSignatureForBedrock(sig *string) *string {
 	return sig
 }
 
+// extraParamStringSlice reads a string-array extra param. Over HTTP,
+// BedrockConverseRequest.UnmarshalJSON keeps unknown fields as json.RawMessage,
+// which schemas.SafeExtractStringSlice does not decode; in-process callers pass
+// Go values, which it does. A JSON null is absent, as a nil Go value would be.
+func extraParamStringSlice(value any) ([]string, bool) {
+	if raw, ok := value.(json.RawMessage); ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, false
+		}
+		var out []string
+		if err := sonic.Unmarshal(raw, &out); err != nil {
+			return nil, false
+		}
+		return out, true
+	}
+	return schemas.SafeExtractStringSlice(value)
+}
+
+// extraParamStringPointer is extraParamStringSlice for a string extra param. A
+// JSON null decodes into a string without error, so it is checked first: a
+// pointer to "" would read as an explicit setting and suppress a caller's default.
+func extraParamStringPointer(value any) (*string, bool) {
+	if raw, ok := value.(json.RawMessage); ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, false
+		}
+		var out string
+		if err := sonic.Unmarshal(raw, &out); err != nil {
+			return nil, false
+		}
+		return &out, true
+	}
+	return schemas.SafeExtractStringPointer(value)
+}
+
+// foreignRedactedContentPrefix marks a redactedContent blob Bifrost wrapped for a
+// Converse client. Converse types redactedContent as a blob, so strict SDKs
+// base64-decode it; a non-Bedrock upstream's token (an OpenAI Fernet token) is not
+// standard base64 and fails that decode (#7514). The prefix lets the next turn
+// unwrap it back to the exact token the upstream minted.
+const foreignRedactedContentPrefix = "bifrost:redacted:v1:"
+
+// encodeRedactedContentForConverse leaves a canonical base64 blob (every native
+// Bedrock blob) untouched and wraps anything else. Canonical, not merely decodable:
+// SDKs replay the decoded bytes re-encoded, so only a canonical blob comes back
+// byte-identical.
+func encodeRedactedContentForConverse(token string) string {
+	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil && base64.StdEncoding.EncodeToString(decoded) == token {
+		return token
+	}
+	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + token))
+}
+
+// decodeRedactedContentFromConverse unwraps a blob encodeRedactedContentForConverse
+// wrapped and returns every other blob unchanged.
+func decodeRedactedContentFromConverse(blob string) string {
+	decoded, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		return blob
+	}
+	if token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix); ok {
+		return token
+	}
+	return blob
+}
+
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
 // Bedrock accepts ("5m" | "1h"); anything else (e.g. Anthropic's "1m") is dropped to the default.
 func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
@@ -1674,7 +1767,14 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 		// The Converse API rejects duplicate document names within a
 		// request (#7003): disambiguate via the request-scoped namer.
 		document.Name = docNamer.name(document.Name)
-		return []BedrockContentBlock{{Document: document}}, nil
+		blocks := []BedrockContentBlock{{Document: document}}
+		// Cache point must be in a separate block (#7613)
+		if block.CacheControl != nil {
+			blocks = append(blocks, BedrockContentBlock{
+				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
+			})
+		}
+		return blocks, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")

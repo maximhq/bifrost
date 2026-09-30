@@ -487,5 +487,90 @@ echo "LAUNCHED=$LAUNCHED"`;
   assert.equal(out, "LAUNCHED=2");
 });
 
+// ----- script-only chains (the cache-parity rounds) ---------------------------------------------
+
+// The generated cache rows chain through collectionVariables.get() in their TEST scripts, never
+// through a {{var}} in the body. Their prompts are salted with pcNonce, which the collection-level
+// pre-request script sets once per newman process, so a read round that runs in a different
+// process than its write round is guaranteed to start cold and write again. Every selection that
+// can keep round 2 without round 1 - a cost slice, --rerun-failed - has to drag round 1 along.
+const writeRound = {
+  name: "Cache anchor: control round 1 (write)",
+  request: {
+    method: "POST",
+    url: "http://localhost:8080/v1/chat/completions",
+    body: { mode: "raw", raw: JSON.stringify({ model: "anthropic/claude-opus-4-7", messages: [] }) },
+  },
+  event: [
+    {
+      listen: "test",
+      script: { type: "text/javascript", exec: ['pm.collectionVariables.set("ca_control_write", "{}");'] },
+    },
+  ],
+};
+const readRound = {
+  name: "Cache anchor: control round 2 (read)",
+  request: {
+    method: "POST",
+    url: "http://localhost:8080/v1/chat/completions",
+    body: { mode: "raw", raw: JSON.stringify({ model: "anthropic/claude-opus-4-7", messages: [] }) },
+  },
+  event: [
+    {
+      listen: "test",
+      script: {
+        type: "text/javascript",
+        exec: ['var w = JSON.parse(pm.collectionVariables.get("ca_control_write") || "{}");'],
+      },
+    },
+  ],
+};
+const CACHE_SOURCE = join(WORK, "source-cache.json");
+writeFileSync(
+  CACHE_SOURCE,
+  JSON.stringify({
+    ...COLLECTION,
+    item: [
+      {
+        name: "Chat folder",
+        item: [...Array.from({ length: 10 }, (_, i) => row(i + 1)), writeRound, readRound, ...Array.from({ length: 10 }, (_, i) => row(i + 11))],
+      },
+    ],
+  })
+);
+
+test("a sliced read round keeps its write round in the same slice", () => {
+  const slices = [1, 2, 3].map((k) =>
+    runFilter(["--provider", "anthropic", "--shard", `${k}/3`], { source: CACHE_SOURCE })
+  );
+  const holder = slices.find((s) => s.includes(readRound.name));
+  assert.ok(holder, "no slice contains the read round");
+  assert.ok(holder.includes(writeRound.name), "the read round's slice is missing its write round");
+});
+
+test("--rerun-failed of a failed read round pulls its write round back in", () => {
+  // A prior run in which only the read round failed: exactly the report a cold read produces.
+  const report = join(WORK, "report-cache.json");
+  writeFileSync(
+    report,
+    JSON.stringify({
+      run: {
+        executions: [
+          { item: { name: writeRound.name }, response: { code: 200 }, assertions: [{ assertion: "wrote" }] },
+          {
+            item: { name: readRound.name },
+            response: { code: 200 },
+            assertions: [{ assertion: "read", error: { message: "read=0" } }],
+          },
+        ],
+        failures: [],
+        stats: { requests: { total: 2, failed: 1 } },
+      },
+    })
+  );
+  const kept = runFilter(["--rerun-failed", "--report", report], { source: CACHE_SOURCE });
+  assert.deepEqual(kept, [writeRound.name, readRound.name], "the rerun must replay the write round before the read");
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

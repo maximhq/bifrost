@@ -382,6 +382,10 @@ interface ComboboxSelectBaseProps {
 	creatable?: boolean;
 	createLabel?: (value: string) => React.ReactNode;
 	"data-testid"?: string;
+	// Per-option test id, so a test can pick a choice without matching its label text.
+	optionTestId?: (value: string) => string;
+	// Forwarded to the trigger button so a form label (FormControl / htmlFor) can target it.
+	id?: string;
 }
 
 interface ComboboxCreatableProps {
@@ -531,6 +535,8 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		createLabel,
 		"data-testid": dataTestId,
 		searchPlaceholder,
+		optionTestId,
+		id,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -569,6 +575,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						role="combobox"
 						aria-expanded={open}
 						disabled={disabled}
+						id={id}
 						data-testid={dataTestId}
 						className={cn(
 							"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
@@ -628,6 +635,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 											const next = isSelected ? selectedValues.filter((v) => v !== option.value) : [...selectedValues, option.value];
 											props.onValueChange?.(next);
 										}}
+										data-testid={optionTestId?.(option.value)}
 									>
 										{option.icon ? <span className="text-muted-foreground flex shrink-0 items-center">{option.icon}</span> : null}
 										<span>{option.label}</span>
@@ -673,6 +681,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					role="combobox"
 					aria-expanded={open}
 					disabled={disabled}
+					id={id}
 					data-testid={dataTestId}
 					className={cn(
 						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
@@ -723,6 +732,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 									props.onValueChange?.(option.value);
 									setOpen(false);
 								}}
+								data-testid={optionTestId?.(option.value)}
 							>
 								{option.label}
 								<span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">

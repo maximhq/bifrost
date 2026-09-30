@@ -60,11 +60,13 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_cache_hits_total`         | Counter   | Total cache hits by type (direct/semantic)                        | Base Labels, `cache_type`, custom labels              |
 | `bifrost_cost_total`               | Counter   | Total cost in USD for upstream provider requests                  | Base Labels, custom labels                            |
 | `bifrost_active_requests`          | Gauge     | LLM requests currently in-flight                                  | `method`                                              |
-| `bifrost_provider_key_up`          | Gauge     | Per-key health: `1` after a successful attempt, `0` after a failure | `provider`, `key_id`, `key_name`                    |
-| `bifrost_key_rotation_events_total`| Counter   | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — one increment per actual swap | `provider`, `requested_model`, `key_id`, `key_name`, `fail_reason` |
+| `bifrost_provider_key_up`          | Gauge     | Per-key health: `1` after a successful attempt, `0` after a failed attempt, except a failure that says nothing about the key's health (`model_access`, `model_gone`, `region_blocked`), which leaves it unchanged | `provider`, `key_id`, `key_name`                    |
+| `bifrost_key_rotation_events_total`| Counter   | Key rotations triggered by per-key failures (rate limit, rejected credential, exhausted quota, model this key cannot reach, retired model, region block), one increment per actual swap | `provider`, `requested_model`, `key_id`, `key_name`, `fail_reason` |
 | `bifrost_request_retries`          | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). | Base Labels |
 | `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing | `provider`, `model`, `phase` (`request` or `warmup`) |
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic complexity routing embeddings | `provider`, `model`, `phase` (`request` or `warmup`) |
+| `bifrost_routing_llm_requests_total` | Counter | Chat completions made by the semantic router's LLM fallback | `provider`, `model` |
+| `bifrost_routing_llm_cost_total` | Counter | Cost in USD of those LLM fallback completions | `provider`, `model` |
 
 Base Labels:
 
@@ -79,7 +81,7 @@ Base Labels:
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
 - `complexity_tier`: Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
-- `complexity_mechanism`: How the effective complexity tier was determined (`semantic`, `llm`, `session`, or `skipped` when no tier was produced). The raw complexity score is deliberately not a label because it has unbounded cardinality; it is recorded in request logs and traces
+- `complexity_mechanism`: How the effective complexity tier was determined (`semantic`, `jev`, `llm`, `session`, or `skipped` when no tier was produced). The semantic similarity score is not a label because it has unbounded cardinality; it is recorded in request logs and traces. Jev confidence is recorded in the routing decision log
 - `selected_key_id`: ID of the key that successfully served the request (empty string `""` on final errors)
 - `selected_key_name`: Name of the key that successfully served the request (empty string `""` on final errors)
 - `fallback_index`: Fallback index (0 for first attempt, 1 for second attempt, etc.)

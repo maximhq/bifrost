@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -276,8 +277,18 @@ type BifrostHTTPServer struct {
 	// per page. Optional; wired at server init when available, otherwise left nil
 	// so the VK read paths report no assignee (OSS has no user directory).
 	VirtualKeyAssigneeResolver handlers.VirtualKeyAssigneeResolver
+	// VirtualKeyBusinessUnitResolver names each VK's owning business unit on the
+	// governance read paths. Nil on OSS builds; set by the enterprise wrapper.
+	VirtualKeyBusinessUnitResolver handlers.VirtualKeyBusinessUnitResolver
+	// WarpUserGovernanceReader answers Warp's describe_user_limits: what an
+	// access profile lets one person spend. Nil on OSS builds, which have no
+	// per-user governance, so Warp does not offer the tool; set by the
+	// enterprise wrapper before RegisterAPIRoutes, like the resolvers above.
+	WarpUserGovernanceReader warp.UserGovernanceReader
 
-	SidekiqRunner         *sidekiq.Runner
+	SidekiqRunner *sidekiq.Runner
+	// GovernanceHandler is kept so the expired-key cleanup scheduler can be started and stopped.
+	GovernanceHandler     *handlers.GovernanceHandler
 	SidekiqDispatcherStop func()
 
 	// Background live model catalog refresher. Guarded because the framework
@@ -321,6 +332,7 @@ type GovernanceInMemoryStore struct {
 	Config *lib.Config
 }
 
+// GetConfiguredProviders returns the configured provider map.
 func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
 	// Use read lock for thread-safe access - no need to copy on hot path
 	s.Config.Mu.RLock()
@@ -343,14 +355,17 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviderNames() []string {
 	return names
 }
 
+// GetMCPClientsAllowedByDefault returns the default MCP client allowlist.
 func (s *GovernanceInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string {
 	return s.Config.GetMCPClientsAllowedByDefault()
 }
 
+// GetMCPClientNames returns configured MCP client names indexed by slug.
 func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
 	return s.Config.GetMCPClientNames()
 }
 
+// GetMCPClientBySlug resolves an MCP client configuration by slug.
 func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, string, bool) {
 	return s.Config.GetMCPClientBySlug(slug)
 }
@@ -450,6 +465,7 @@ func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, 
 	}
 }
 
+// UpdateMCPClientCredentials saves credentials and refreshes the MCP server configuration.
 func (s *BifrostHTTPServer) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
 	if err := s.Config.UpdateMCPClientCredentials(ctx, id, newConfig); err != nil {
 		return err
@@ -543,6 +559,7 @@ func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCal
 	return s.Client.ExecuteResponsesMCPTool(bifrostCtx, toolCall)
 }
 
+// GetAvailableMCPTools returns the tools currently available to the Bifrost client.
 func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
 	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	return s.Client.GetAvailableMCPTools(bifrostCtx)
@@ -678,6 +695,7 @@ type virtualMCPCache interface {
 	DetachVirtualMCPInMemory(string, uint)
 }
 
+// governanceVirtualMCPCache returns the governance store cache when it supports virtual MCP operations.
 func (s *BifrostHTTPServer) governanceVirtualMCPCache() virtualMCPCache {
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
@@ -943,6 +961,7 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 	return nil
 }
 
+// ReloadProvider reloads persisted provider settings into the live client.
 func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
@@ -2279,6 +2298,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingResponsesPlugin, ok := plugin.(routing.ResponsesExecutorSetter); ok {
 		routingResponsesPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 	}
+	if routingDecisionPlugin, ok := plugin.(routing.DecisionExecutorSetter); ok {
+		routingDecisionPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
+	}
 	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
 		return err
 	}
@@ -2406,6 +2428,19 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	return nil
 }
 
+// notificationPublisher returns a publisher that reads s.Config.NotificationPublisher at
+// call time, so a handler registered before the notification service exists (RegisterAPIRoutes
+// without Bootstrap) still reaches it. Publishing is a no-op while none is set.
+func (s *BifrostHTTPServer) notificationPublisher() schemas.NotificationPublisher {
+	return func(ctx context.Context, input schemas.NotificationInput) (*schemas.Notification, error) {
+		publish := s.Config.NotificationPublisher
+		if publish == nil {
+			return nil, nil
+		}
+		return publish(ctx, input)
+	}
+}
+
 // RegisterAPIRoutes initializes the routes for the Bifrost HTTP server.
 func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	var err error
@@ -2436,10 +2471,16 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver, s.VirtualKeyAssigneeResolver)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver, s.VirtualKeyAssigneeResolver, s.VirtualKeyBusinessUnitResolver)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
+		// Register the expired-key cleanup job before the dispatcher starts, since
+		// any node may claim it.
+		if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
+			governanceHandler.SetExpiryCleanupBackend(s.SidekiqRunner, s.notificationPublisher())
+		}
+		s.GovernanceHandler = governanceHandler
 	}
 	// Routing rules and the complexity analyzer config live in the config store, so these
 	// endpoints have nothing to serve when persistence is disabled (initStores leaves
@@ -2488,7 +2529,13 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool { return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp) })
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
+		return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp)
+	}, handlers.WarpResolvers{
+		ExternalQuotaBudgets: s.ExternalQuotaBudgetResolver,
+		VirtualKeyAssignees:  s.VirtualKeyAssigneeResolver,
+		UserGovernance:       s.WarpUserGovernanceReader,
+	})
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2796,9 +2843,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// exist early, but RegisterRoutes is only ever called once, later, on
 	// whichever handler is current then - so a handler built here never
 	// serves a request or gets its routes registered before being replaced.
-	// It still cost a full warp.NewService (its own dedicated Bifrost
-	// instance and worker pool) that was immediately shut down again a few
-	// lines into RegisterAPIRoutes, on every boot.
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
@@ -3003,6 +3047,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
+		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 	}
 
 	// Initialize Sidekiq runner for background jobs
@@ -3149,6 +3194,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if s.SidekiqRunner != nil {
 		s.SidekiqDispatcherStop = s.SidekiqRunner.StartDispatcher(sidekiq.DispatchInterval, sidekiq.StaleAfter)
 	}
+	if s.GovernanceHandler != nil {
+		s.GovernanceHandler.StartExpiryCleanupScheduler(s.Ctx)
+	}
 
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
@@ -3215,7 +3263,8 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			// Warp first. Its indexer workers call s.Client.EmbeddingRequest, and
+			// Warp first. Its indexer workers call s.Client.EmbeddingRequest (and its
+			// chat turns s.Client.ResponsesRequest), and
 			// LogIndexer.Close waits for them - so shutting the client down first
 			// cancelled its context underneath work that was still being waited on,
 			// and pending indexing failed during an orderly shutdown.
@@ -3253,6 +3302,9 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping oauth2 sweep worker...")
 				s.OAuth2SweepWorker.stop()
 				s.OAuth2SweepWorker = nil
+			}
+			if s.GovernanceHandler != nil {
+				s.GovernanceHandler.StopExpiryCleanupScheduler()
 			}
 			if s.SidekiqDispatcherStop != nil {
 				logger.Info("stopping sidekiq dispatcher...")

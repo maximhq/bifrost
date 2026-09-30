@@ -1,5 +1,5 @@
 // Base API
-export { baseApi, clearAuthStorage, getErrorMessage, setAuthToken } from "./baseApi";
+export { baseApi, clearAuthStorage, getErrorCode, getErrorMessage, setAuthToken } from "./baseApi";
 
 // API slices and hooks
 export * from "./brandingApi";

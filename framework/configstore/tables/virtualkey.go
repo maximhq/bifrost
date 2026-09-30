@@ -242,14 +242,15 @@ func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
 
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type TableVirtualKey struct {
-	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
-	Description     string                          `gorm:"type:text" json:"description,omitempty"`
-	Value           schemas.SecretVar               `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
-	IsActive        *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
-	ExpiresAt       *time.Time                      `gorm:"type:timestamp;null" json:"expires_at,omitempty"`                             // Optional expiry; nil means never expires
-	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
-	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
+	ID                string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Name              string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
+	Description       string                          `gorm:"type:text" json:"description,omitempty"`
+	Value             schemas.SecretVar               `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
+	IsActive          *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
+	ExpiresAt         *time.Time                      `gorm:"type:timestamp;null" json:"expires_at,omitempty"`                             // Optional expiry; nil means never expires
+	DeleteAfterExpire *bool                           `gorm:"type:boolean" json:"delete_after_expire,omitempty"`                           // Nil inherits client.delete_expired_virtual_keys; true/false override it for this key
+	ProviderConfigs   []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
+	MCPConfigs        []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
 	// Foreign key relationships. TeamID, CustomerID and BusinessUnitID are mutually exclusive: a
 	// key belongs to at most one owner, which is what decides whose money it spends and whose
@@ -265,6 +266,13 @@ type TableVirtualKey struct {
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
 	AllowAllProviders bool `gorm:"default:false" json:"allow_all_providers"`
+
+	// DisableContentLogging is the key's own say on whether request and response content is
+	// persisted for its traffic. Tri-state on purpose: nil inherits client.disable_content_logging,
+	// true forces content off for every sink, false forces content on for the log store only (each
+	// observability connector keeps its own flag). No gorm default: a default tag would make GORM
+	// write the default for a nil pointer on insert and collapse "inherit" into "false".
+	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
@@ -294,6 +302,11 @@ type TableVirtualKey struct {
 	// MarshalJSON drops the field so callers refetch instead of reading nil as
 	// "unassigned". Never persisted; set by the governance read paths.
 	AssigneeResolved bool `gorm:"-" json:"-"`
+
+	// BusinessUnit names the business unit that owns this key, the counterpart of the Team and
+	// Customer relations. Business units are an enterprise table, so it cannot be preloaded: the
+	// governance read paths fill it from a downstream resolver, and it stays nil in OSS.
+	BusinessUnit *VirtualKeyBusinessUnit `gorm:"-" json:"business_unit,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -327,6 +340,13 @@ type AssignedUser struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
+}
+
+// VirtualKeyBusinessUnit is the minimal projection of a key's owning business unit carried on
+// read responses, so the UI can name it the way it names a team or customer.
+type VirtualKeyBusinessUnit struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // TableName sets the table name for each model
@@ -406,6 +426,18 @@ func (vk *TableVirtualKey) IsExpiredAt(now time.Time) bool {
 		return false
 	}
 	return !now.UTC().Before(vk.ExpiresAt.UTC())
+}
+
+// DeletesAfterExpire reports whether the daily cleanup job may delete this key once it
+// has expired. A nil flag inherits the client-wide default.
+func (vk *TableVirtualKey) DeletesAfterExpire(clientDefault bool) bool {
+	if vk == nil {
+		return false
+	}
+	if vk.DeleteAfterExpire != nil {
+		return *vk.DeleteAfterExpire
+	}
+	return clientDefault
 }
 
 // NormalizeVirtualKeyOwnerID is normalizeVirtualKeyOwnerID for callers outside this package: an

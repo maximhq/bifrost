@@ -513,6 +513,13 @@ func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
 	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
 }
 
+// IsTypesafeModelFamily reports whether the current attempt resolves to a
+// TypeSafe System One model. It honors aliases by resolving the canonical
+// model name first. See IsAnthropicModelFamily for usage notes.
+func IsTypesafeModelFamily(ctx *BifrostContext, model string) bool {
+	return IsTypesafeModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
@@ -586,12 +593,15 @@ func IsVeoModelFamily(ctx *BifrostContext, model string) bool {
 // ResolvedKeyAlias.ModelFamily reflects the family explicitly configured on
 // the alias (nil when the admin didn't set one) — not the substring-resolved
 // family used for routing.
+//
+// RequestedProvider/RequestedModel come from ctx via ApplyRequestRouting.
 func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemptModel string, attemptKey Key) RoutingInfo {
 	info := RoutingInfo{
 		Provider: attemptProvider,
 		Model:    attemptModel,
 		Key:      attemptKey.Name,
 	}
+	info.ApplyRequestRouting(ctx)
 	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil {
 		rka := &ResolvedKeyAlias{
 			ModelID: ra.Config.ModelID,
@@ -607,6 +617,21 @@ func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemp
 		info.ResolvedKeyAlias = rka
 	}
 	return info
+}
+
+// ApplyRequestRouting copies the provider/model the caller sent, before any
+// PreRequestHook rewrote them, from ctx onto ri. Unlike the per-attempt fields
+// these are the same on every attempt of a request, fallbacks included.
+func (ri *RoutingInfo) ApplyRequestRouting(ctx *BifrostContext) {
+	if ri == nil || ctx == nil {
+		return
+	}
+	if provider, ok := ctx.Value(BifrostContextKeyRequestedProvider).(ModelProvider); ok {
+		ri.RequestedProvider = provider
+	}
+	if model, ok := ctx.Value(BifrostContextKeyRequestedModel).(string); ok {
+		ri.RequestedModel = model
+	}
 }
 
 // ResolveConfig returns the AliasConfig for the given user-facing model name,

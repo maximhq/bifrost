@@ -15,7 +15,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestUsageTracker_FailedRequestWithUsage_IsBilled verifies the fix:
+func TestGovernancePlugin_StartResetWorkers(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	pluginCtx, cancel := context.WithCancel(context.Background())
+	plugin := &GovernancePlugin{
+		ctx:        pluginCtx,
+		cancelFunc: cancel,
+		store:      store,
+		resolver:   resolver,
+		tracker:    tracker,
+		logger:     logger,
+	}
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	require.Nil(t, tracker.resetTicker, "reset worker must remain dormant during hydration")
+
+	plugin.StartResetWorkers(context.Background())
+	firstTicker := tracker.resetTicker
+	require.NotNil(t, firstTicker, "reset worker must start after hydration")
+
+	plugin.StartResetWorkers(context.Background())
+	require.Same(t, firstTicker, tracker.resetTicker, "reset worker activation must be idempotent")
+}
+
 // a request that failed (Success=false) but still consumed provider tokens
 // (Cost/TokensUsed > 0, e.g. a cancelled mid-stream or a 5xx after input
 // processing) MUST update the budget. Anthropic bills for tokens it processed

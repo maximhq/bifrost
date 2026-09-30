@@ -696,6 +696,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
 	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
+	DeleteExpiredVirtualKeys:        false,
 	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
 }
 
@@ -7048,6 +7049,7 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				Weight:            bifrost.Ptr(key.Weight),
 				Provider:          string(providerKey),
 				ConfigHash:        key.ConfigHash,
+				Enabled:           key.Enabled,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

@@ -520,11 +520,16 @@ func recoverFlattenedDecisionArguments(argumentsJSON []byte, questions map[strin
 }
 
 // parseLeakedParameterTag reads a `<parameter name="field">value` string (the
-// closing tag is optional) into the answer field it names and that field's JSON
-// value. A choice stays a string; any other value must itself be valid JSON.
+// closing tag is optional, and surrounding whitespace is ignored) into the
+// answer field it names and that field's JSON value. A choice stays a string;
+// any other value must itself be valid JSON.
 func parseLeakedParameterTag(value json.RawMessage) (string, json.RawMessage, bool) {
 	var s string
-	if err := sonic.Unmarshal(value, &s); err != nil || !strings.HasPrefix(s, leakedParameterTagPrefix) {
+	if err := sonic.Unmarshal(value, &s); err != nil {
+		return "", nil, false
+	}
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, leakedParameterTagPrefix) {
 		return "", nil, false
 	}
 	rest := s[len(leakedParameterTagPrefix):]

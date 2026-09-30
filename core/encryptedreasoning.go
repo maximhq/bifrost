@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -117,8 +118,83 @@ func containsAnyMarker(message string, markers []string) bool {
 	return false
 }
 
+// reasoningTokenWords are the family names every upstream uses when it refuses a
+// replayed reasoning token, whatever else the sentence says. OpenAI, Azure, xAI and
+// Bedrock's OpenAI-compatible surfaces say "encrypted content" or "encrypted
+// reasoning"; Bedrock Converse says "reasoningContent"; Anthropic says "thinking" and
+// "redacted_thinking"; Gemini and Vertex say "thought signature". These are the names
+// of the field, not the provider's verdict on it, which is why they hold still while
+// the verdict wording ("invalid", "corrupted", "not valid", "could not decrypt",
+// "different region") keeps changing.
+var reasoningTokenWords = []string{"encrypted", "reasoning", "thinking", "thought"}
+
+// reasoningConfigParams are request parameters that configure reasoning rather than
+// replay it. A 400 naming one is a configuration error -- an effort level or summary
+// mode the model does not take, a thinking budget outside Anthropic's documented
+// bounds, or a thinking mode the model has retired -- and the strip never touches
+// these parameters, so the retry would only earn the same 400.
+var reasoningConfigParams = []string{
+	"reasoning.effort",
+	"reasoning_effort",
+	"reasoning.summary",
+	"reasoning_summary",
+	"budget_tokens",
+	"thinking.type",
+	"thinking_budget",
+	"thinkingbudget",
+	"thinking_level",
+	"thinkinglevel",
+	"include_thoughts",
+	"includethoughts",
+}
+
+// shouldStripReasoningAfterClientError reports whether a failed attempt earns one more
+// try with the request's replayed reasoning tokens removed.
+//
+// The gate is a 400 whose message names a reasoning token, by family word alone. It
+// deliberately does not require the upstream's verdict wording: only Anthropic
+// documents its refusal text, and every mid-conversation provider or model switch
+// (bedrock to bedrock_mantle, Azure to Mantle, a per-turn router) produced a new
+// sentence per surface that the older verdict-based matcher missed, each time handing a
+// healable 400 straight to the client. Requiring the family word keeps an unrelated
+// 400 (context length, an unsupported parameter) from spending an upstream call that
+// would only return the same error.
+//
+// A 400 is the only class where the payload is the plausible cause: 401/403 are
+// identity, 404 is routing, 429 and 5xx are transient, and the ordinary retry classes
+// already own those. The caller pairs this with stripUnverifiableReasoning, which
+// returns false when the request carries no token, so the extra attempt is spent only
+// on requests that replay one. A 400 that names the family for another reason (a
+// missing thought_signature) costs one cheap call that is rejected before inference
+// and returns the same error; a successful response is never touched, because the
+// strip runs only after a refusal.
+//
+// Two exclusions are certain to earn the same 400 again. Anthropic's documented
+// "`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be
+// modified": the strip drops those blocks. And a 400 that names a reasoning
+// configuration parameter (see reasoningConfigParams) but no replayed-token field:
+// the strip leaves the parameter in place.
+func shouldStripReasoningAfterClientError(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil || err.StatusCode == nil || *err.StatusCode != 400 {
+		return false
+	}
+	message := strings.ToLower(err.Error.Message)
+	if strings.Contains(message, "cannot be modified") {
+		return false
+	}
+	if containsAnyMarker(message, reasoningConfigParams) && !namesEncryptedReasoningField(message) {
+		return false
+	}
+	return containsAnyMarker(message, reasoningTokenWords)
+}
+
 // isEncryptedReasoningRejection reports whether err is an upstream refusal to accept
-// replayed encrypted reasoning content.
+// replayed encrypted reasoning content, as far as the known phrasings go.
+//
+// It no longer gates the fail-soft retry; shouldStripReasoningAfterClientError does,
+// on status alone. This classifier labels the retry in logs and metrics, so an
+// operator can tell a recognised token refusal from a speculative strip after an
+// unrelated 400. A miss here costs a less specific log line, not a failed turn.
 //
 // encrypted_content is bound to the identity that minted it: the item id it was
 // issued with, the API key's organization, and the serving endpoint. A gateway
@@ -157,6 +233,13 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 	// trigger would spend an upstream call to arrive at the same error, worse.
 	if strings.Contains(message, "cannot be modified") {
 		return false
+	}
+
+	// Bedrock runtime's OpenAI-compatible Responses endpoint uses validation_error
+	// for model/account-bound reasoning replay. Match its specific refusal rather
+	// than treating unrelated reasoning validation errors as recoverable.
+	if strings.Contains(message, "encrypted reasoning was created for a different account or model") {
+		return true
 	}
 
 	if !namesEncryptedReasoningField(message) {
@@ -271,6 +354,44 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 
 	changed := false
 	for i := range rewritten {
+		// The chat analogue of the Responses call-id strip: the Gemini chat converter
+		// carries the thought signature inside tool_calls[].id as "<id>_ts_<signature>"
+		// and rebuilds it from there, so a history minted on the other platform has no
+		// reasoning detail to strip and the retry never fired. Cloned only when a strip
+		// is needed, so the caller's slices are never mutated.
+		if assistant := rewritten[i].ChatAssistantMessage; assistant != nil && len(assistant.ToolCalls) > 0 {
+			var cloned []schemas.ChatAssistantMessageToolCall
+			for j := range assistant.ToolCalls {
+				id := assistant.ToolCalls[j].ID
+				if id == nil {
+					continue
+				}
+				base := providerUtils.StripThoughtSignature(*id)
+				if base == *id {
+					continue
+				}
+				if cloned == nil {
+					cloned = make([]schemas.ChatAssistantMessageToolCall, len(assistant.ToolCalls))
+					copy(cloned, assistant.ToolCalls)
+				}
+				cloned[j].ID = &base
+			}
+			if cloned != nil {
+				assistantCopy := *assistant
+				assistantCopy.ToolCalls = cloned
+				rewritten[i].ChatAssistantMessage = &assistantCopy
+				changed = true
+			}
+		}
+		if tool := rewritten[i].ChatToolMessage; tool != nil && tool.ToolCallID != nil {
+			if base := providerUtils.StripThoughtSignature(*tool.ToolCallID); base != *tool.ToolCallID {
+				toolCopy := *tool
+				toolCopy.ToolCallID = &base
+				rewritten[i].ChatToolMessage = &toolCopy
+				changed = true
+			}
+		}
+
 		assistant := rewritten[i].ChatAssistantMessage
 		if assistant == nil || len(assistant.ReasoningDetails) == 0 {
 			continue
@@ -604,6 +725,33 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 	for _, message := range input {
 		messageChanged := false
 
+		// Gemini and Vertex mint no encrypted_content: the thought signature rides on the
+		// function call, and the converters carry it inside the call id as
+		// "<id>_ts_<signature>" and rebuild thoughtSignature from that suffix on the way
+		// back in. A history minted on the other platform therefore had nothing below to
+		// strip, the strip reported false, and the one fail-soft retry never fired: the
+		// "Corrupted thought signature." 400 reached the client. The suffix IS the token
+		// here, so it is dropped from the call and from its output (both strip to the same
+		// base id, which is what keeps them paired), and from an item id the streaming path
+		// built from the call id. A tool item is never an emptied reasoning item, so it is
+		// appended here rather than routed through the survival check below.
+		if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.CallID != nil {
+			callID := *message.ResponsesToolMessage.CallID
+			if base := providerUtils.StripThoughtSignature(callID); base != callID {
+				toolCopy := *message.ResponsesToolMessage
+				toolCopy.CallID = &base
+				message.ResponsesToolMessage = &toolCopy
+				if message.ID != nil {
+					if baseID := providerUtils.StripThoughtSignature(*message.ID); baseID != *message.ID {
+						message.ID = &baseID
+					}
+				}
+				changed = true
+				stripped = append(stripped, message)
+				continue
+			}
+		}
+
 		if message.ResponsesReasoning != nil && message.ResponsesReasoning.EncryptedContent != nil {
 			reasoningCopy := *message.ResponsesReasoning
 			reasoningCopy.EncryptedContent = nil
@@ -692,6 +840,30 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs bool) bool {
 	for _, item := range input.Array() {
 		rest := item.Raw
 		itemChanged := false
+
+		// The raw analogue of the call-id strip on the typed path: a Gemini/Vertex thought
+		// signature lives in call_id (and in an item id built from it), not in any
+		// reasoning field. Rewritten in place and appended directly, since a tool item can
+		// never be an emptied reasoning item.
+		if callID := gjson.Get(rest, "call_id"); callID.Type == gjson.String {
+			if base := providerUtils.StripThoughtSignature(callID.Str); base != callID.Str {
+				updated, err := sjson.Set(rest, "call_id", base)
+				if err != nil {
+					items = append(items, item.Raw)
+					continue
+				}
+				if itemID := gjson.Get(updated, "id"); itemID.Type == gjson.String {
+					if baseID := providerUtils.StripThoughtSignature(itemID.Str); baseID != itemID.Str {
+						if withID, err := sjson.Set(updated, "id", baseID); err == nil {
+							updated = withID
+						}
+					}
+				}
+				changed = true
+				items = append(items, updated)
+				continue
+			}
+		}
 
 		if gjson.Get(rest, "encrypted_content").Exists() {
 			updated, err := sjson.Delete(rest, "encrypted_content")

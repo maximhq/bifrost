@@ -1,4 +1,6 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -66,8 +68,8 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
-				<DropdownMenuItem
-					disabled={!canUpdate}
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(canUpdate, "edit", "customers")}
 					data-testid={`customer-button-edit-${customer.id}`}
 					onSelect={(e) => {
 						e.stopPropagation();
@@ -80,7 +82,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				>
 					<Edit className="h-4 w-4" />
 					Edit
-				</DropdownMenuItem>
+				</DisabledReasonMenuItem>
 				<DropdownMenuItem asChild className="cursor-pointer" data-testid={`customer-button-view-logs-${customer.id}`}>
 					<Link
 						to="/workspace/logs"
@@ -95,9 +97,9 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 						View logs
 					</Link>
 				</DropdownMenuItem>
-				<DropdownMenuItem
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(canDelete, "delete", "customers")}
 					variant="destructive"
-					disabled={!canDelete}
 					data-testid={`customer-button-delete-${customer.id}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -109,7 +111,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				>
 					<Trash2 className="h-4 w-4" />
 					Delete
-				</DropdownMenuItem>
+				</DisabledReasonMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -249,10 +251,17 @@ export default function CustomersTable({
 									data-testid="customers-search-input"
 								/>
 							</div>
-							<Button className="ml-auto" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
-								<Plus className="h-4 w-4" />
-								Add Customer
-							</Button>
+							<DisabledReason reason={actionDisabledReason(hasCreateAccess, "create", "customers")} className="ml-auto">
+								<Button
+									className="ml-auto h-9"
+									data-testid="customer-button-create"
+									onClick={handleAddCustomer}
+									disabled={!hasCreateAccess}
+								>
+									<Plus className="h-4 w-4" />
+									Add Customer
+								</Button>
+							</DisabledReason>
 						</div>
 
 						<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="customer-table-container">

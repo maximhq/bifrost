@@ -1,5 +1,7 @@
 import type { WarpQuestion, WarpUsage } from "@/components/warp/warpStream.utils";
+import { WarpStreamSession } from "@/components/warp/warpStreamSession";
 import { useFeatureFlag } from "@/hooks/useFeatureFlag";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
@@ -71,8 +73,17 @@ interface WarpContextValue {
 	open: () => void;
 	close: () => void;
 	toggle: () => void;
-	/** Completed turns. The in-flight answer lives in the panel, not here. */
+	/** Completed turns. The in-flight answer lives in `stream`, not here. */
 	turns: WarpTurn[];
+	/**
+	 * The one in-flight request, created once for the provider's lifetime.
+	 *
+	 * Owned here so closing the dock - which unmounts the panel - lets the
+	 * answer finish and land in `turns` instead of aborting it. The panel
+	 * subscribes to it for token updates; this value's identity never changes,
+	 * so the tokens never travel through context.
+	 */
+	stream: WarpStreamSession;
 	appendTurn: (turn: WarpTurn) => void;
 	replaceTurns: (turns: WarpTurn[]) => void;
 	clear: () => void;
@@ -105,26 +116,48 @@ const WarpContext = createContext<WarpContextValue | null>(null);
  * so far.
  *
  * It deliberately holds only slow-moving values. The token-by-token answer stays
- * in local state inside the panel, because a context update re-renders every
- * consumer — including the topbar button — and doing that on every streamed
- * chunk would make the whole dashboard chrome repaint dozens of times a second.
+ * in the stream session, which the panel subscribes to directly, because a
+ * context update re-renders every consumer — including the topbar button — and
+ * doing that on every streamed chunk would make the whole dashboard chrome
+ * repaint dozens of times a second.
  *
  * The conversation is in memory only. It survives navigation between views,
  * which is the point of the dock, but not a reload. Server-side persistence is a
  * separate feature with its own storage and retention questions.
  *
- * While the "warp" feature flag is off the provider publishes null, which every
- * consumer already treats as "no Warp here": the launcher, the ⌘I shortcut and
- * the dock all stand down. The provider itself stays mounted either way -
- * swapping it for a bare fragment would change the element type above the whole
- * dashboard and remount every page when the flag query resolves.
+ * While the "warp" feature flag is off, or the caller lacks WarpSession View or
+ * Warp View, the provider publishes null, which every consumer already treats
+ * as "no Warp here": the launcher, the ⌘I shortcut and the dock all stand down.
+ * The provider itself stays mounted either way - swapping it for a bare
+ * fragment would change the element type above the whole dashboard and remount
+ * every page when the flag query resolves.
  */
 export function WarpProvider({ children }: { children: React.ReactNode }) {
-	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
+	const isWarpFlagOn = useFeatureFlag(FEATURE_FLAGS.warp);
+	const hasWarpSessionAccess = useRbac(RbacResource.WarpSession, RbacOperation.View);
+	// The panel reads GET /api/warp/config to tell "not set up" from "ready", which is gated on Warp View.
+	const hasWarpConfigReadAccess = useRbac(RbacResource.Warp, RbacOperation.View);
+	const isWarpEnabled = isWarpFlagOn && hasWarpSessionAccess && hasWarpConfigReadAccess;
 	const [isOpen, setIsOpen] = useState(false);
 	const [turns, setTurns] = useState<WarpTurn[]>([]);
-	const [conversationId, setConversationId] = useState("");
+	const [conversationId, setConversationIdState] = useState("");
 	const [question, setQuestion] = useState<WarpQuestion | null>(null);
+	// One session for the provider's lifetime. The sink only closes over state
+	// setters, which are stable, so nothing here goes stale across renders.
+	const [stream] = useState(
+		() =>
+			new WarpStreamSession({
+				// A turn with neither text nor error is a stop that produced nothing;
+				// filing it would leave an invisible empty row in the transcript.
+				commitTurn: (turn) => {
+					if (turn.content || turn.error) setTurns((current) => [...current, turn]);
+				},
+				setConversationId: setConversationIdState,
+				setQuestion,
+			}),
+	);
+	// Through the session, so its own copy - what send() files under - moves too.
+	const setConversationId = stream.setConversationId;
 
 	const open = useCallback(() => setIsOpen(true), []);
 	const close = useCallback(() => setIsOpen(false), []);
@@ -135,13 +168,13 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 	// question would be appended to the conversation just discarded.
 	const clear = useCallback(() => {
 		setTurns([]);
-		setConversationId("");
+		stream.setConversationId("");
 		// The pending question goes with the transcript that produced it. Leaving
 		// it set kept the question card on screen above an empty thread, and
 		// answering it sent the reply into a new conversation without any of the
 		// context that made it a sensible question.
 		setQuestion(null);
-	}, []);
+	}, [stream]);
 
 	const value = useMemo(
 		() => ({
@@ -150,6 +183,7 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 			close,
 			toggle,
 			turns,
+			stream,
 			appendTurn,
 			replaceTurns,
 			clear,
@@ -158,7 +192,7 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 			question,
 			setQuestion,
 		}),
-		[isOpen, open, close, toggle, turns, appendTurn, replaceTurns, clear, conversationId, question],
+		[isOpen, open, close, toggle, turns, stream, appendTurn, replaceTurns, clear, conversationId, setConversationId, question],
 	);
 	return <WarpContext.Provider value={isWarpEnabled ? value : null}>{children}</WarpContext.Provider>;
 }

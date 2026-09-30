@@ -27,6 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
+import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -642,12 +643,14 @@ export default function LogsPage() {
 
 	const handlePollToggle = useCallback(
 		(enabled: boolean) => {
-			setUrlState({ polling: enabled });
-			if (enabled) {
+			const next = getLiveToggleState(enabled, urlState.period);
+			setUrlState(next);
+			// A period change alters the query args, which fetches on its own.
+			if (enabled && !next.period) {
 				refreshAll();
 			}
 		},
-		[setUrlState, refreshAll],
+		[setUrlState, refreshAll, urlState.period],
 	);
 
 	// Period selection: store relative period + fresh timestamps in URL (bypasses setFilters
@@ -1032,6 +1035,7 @@ export default function LogsPage() {
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 						onFilterByParentRequestId={handleFilterByParentRequestId}
 						onFilterBySessionId={handleFilterBySessionId}
+						onOpenLog={(logId) => setUrlState({ selected_log: logId })}
 						onViewSession={(sessionId, logId) => {
 							setUrlState({ selected_log: "" }, { history: "replace" });
 							setSessionHighlightedLogId(logId);

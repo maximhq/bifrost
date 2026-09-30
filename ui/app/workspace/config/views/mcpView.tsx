@@ -2,16 +2,16 @@ import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
-import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -236,13 +236,13 @@ export default function MCPView() {
 			// what the form shows.
 			const clientConfigToSave: CoreConfig = oauthModeActive
 				? {
-						...localConfig,
-						oauth2_server_config: {
-							...localConfig.oauth2_server_config,
-							auth_code_ttl: authCodeTTL,
-							access_token_ttl: accessTokenTTL,
-						},
-					}
+					...localConfig,
+					oauth2_server_config: {
+						...localConfig.oauth2_server_config,
+						auth_code_ttl: authCodeTTL,
+						access_token_ttl: accessTokenTTL,
+					},
+				}
 				: localConfig;
 
 			await updateCoreConfig({
@@ -256,7 +256,7 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0" data-testid="mcp-settings-view">
+		<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="mcp-settings-view">
 			<PageTitle title="MCP Settings">Configure MCP (Model Context Protocol) agent and tool settings.</PageTitle>
 			<div className="space-y-4">
 				{/* Max Agent Depth */}

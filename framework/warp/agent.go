@@ -159,13 +159,23 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance Governanc
 	return &Agent{
 		chat:             chat,
 		cost:             cost,
-		tools:            buildToolsFor(searcher),
-		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance},
+		tools:            buildToolsFor(searcher, false),
+		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry()},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,
 		timezone:         timezone,
 	}
+}
+
+// SetGovernanceExtras hands the agent the two governance overlays the service
+// may have been given: the key decorator and the per-user reader. The tool set
+// is rebuilt because describe_user_limits is only offered when there is a
+// reader to answer it. Called once, before Run.
+func (a *Agent) SetGovernanceExtras(decorator VirtualKeyDecorator, users UserGovernanceReader) {
+	a.deps.vkDecorator = decorator
+	a.deps.userGovernance = users
+	a.tools = buildToolsFor(a.deps.semantic, users != nil)
 }
 
 // accumulateUsage folds one iteration's usage into the running total.
@@ -495,7 +505,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// a.tools is buildToolsFor's fixed output for this deployment's semantic
 	// search availability (see NewAgent), so this is the matching memoized
 	// declaration set - parsed once for the process, not once per turn.
-	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil)
+	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil, a.deps != nil && a.deps.userGovernance != nil)
 	if err != nil {
 		emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
 		return
@@ -511,7 +521,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// system item. The Responses API models instructions as a property of the
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
-	instructions := systemInstructions(a.config, a.deps != nil && a.deps.semantic != nil, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
+	instructions := systemInstructionsFor(a.config, toolAvailability{
+		semantic:   a.deps != nil && a.deps.semantic != nil,
+		userLimits: a.deps != nil && a.deps.userGovernance != nil,
+	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	// conversationTokens tracks the running estimate behind
@@ -534,6 +547,9 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// turn, so the redirect does not send the model back to a call it would have
 	// refused as a repeat.
 	calledTool, describedFilterSpace, redirected := false, false, false
+	// chartRedirected is whether a dropped chart block has been reported back
+	// yet. Separate from redirected: a turn can need both, and each is sent once.
+	chartRedirected := false
 	// finalNudged and emptyRetried each bound a one-time message below.
 	finalNudged, emptyRetried := false, false
 	// issued is every Logs link a tool has returned, which is what the links in
@@ -599,7 +615,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// which discarded every step before it.
 			if !finalNudged {
 				finalNudged = true
-				nudge := userNudge("This is your final step and no tools are available now. Write your answer from the results above: lead with what you found, then say plainly what you could not check.")
+				nudge := loopNudge("This is your final step and no tools are available now. Write your answer from the results above: lead with what you found, then say plainly what you could not check.")
 				conversation = append(conversation, nudge)
 				conversationTokens += estimateMessageTokens(nudge)
 			}
@@ -617,16 +633,12 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: new(a.config.ReasoningEffort)}
 		}
 
+		provider, model := requestTarget(a.config)
 		response, bifrostErr := a.chat(ctx, &schemas.BifrostResponsesRequest{
-			// The wire protocol, not the provider that serves the request: the
-			// configured provider rides in the model string below. See
-			// transportProvider.
-			Provider: transportProvider(),
-			// Qualified as provider/model so the routing on the other end cannot
-			// substitute a different provider for the same model name.
-			Model:  modelForRequest(a.config),
-			Input:  conversation,
-			Params: params,
+			Provider: provider,
+			Model:    model,
+			Input:    conversation,
+			Params:   params,
 		})
 		if bifrostErr != nil {
 			code := ErrUpstream
@@ -657,7 +669,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 				return
 			}
 			emptyRetried = true
-			nudge := userNudge("Your last reply was empty. Continue: call a tool if you still need data and tools are available, otherwise write your answer from the results above.")
+			nudge := loopNudge("Your last reply was empty. Continue: call a tool if you still need data and tools are available, otherwise write your answer from the results above.")
 			conversation = append(conversation, nudge)
 			conversationTokens += estimateMessageTokens(nudge)
 			iteration--
@@ -675,7 +687,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		// links, the raw delta reached the dashboard, and its markdown renderer
 		// showed every such link as "[blocked]" until a reload served the saved,
 		// repaired copy. What streams must be what is saved.
-		text := sanitizeAnswerLinks(responsesText(response.Output), issued)
+		// Chart blocks are expanded here for the same reason: the dashboard
+		// draws from the spec render_chart stored, and a block no tool issued
+		// is dropped before anyone sees it.
+		text, droppedCharts := expandChartBlocksCounted(sanitizeAnswerLinks(responsesText(response.Output), issued), a.deps.charts)
 		toolCalls := responsesToolCalls(response.Output)
 
 		// On the final step any text is the answer, tool calls or not: nothing
@@ -692,12 +707,28 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// After a tool has run, a question in prose is still caught by shape.
 			// Held back and sent back once, while a later step can still offer
 			// tools; the text has not been emitted, so the client never sees it.
+			// A chart block render_chart did not produce this turn was dropped -
+			// a chart the model typed itself, numbers and all. Dropped silently,
+			// the answer showed a gap where the chart should be and no reason.
+			// Sent back once, so the model draws it properly or says why not.
+			if droppedCharts > 0 && !finalStep && !chartRedirected && iteration+1 < a.maxIterations {
+				chartRedirected = true
+				nudge := loopNudge(droppedChartRedirect)
+				conversation = append(conversation, nudge)
+				conversationTokens += estimateMessageTokens(nudge)
+				continue
+			}
 			if !finalStep && !redirected && iteration+1 < a.maxIterations && (!calledTool || endsWithProseQuestion(text)) {
 				redirected = true
 				redirect := unsupportedReplyRedirect(calledTool, describedFilterSpace)
 				conversation = append(conversation, redirect)
 				conversationTokens += estimateMessageTokens(redirect)
 				continue
+			}
+			// The dropped chart was all the reply said and nothing is left to
+			// redirect it: say so rather than end on an empty answer.
+			if droppedCharts > 0 && strings.TrimSpace(text) == "" {
+				text = droppedChartAnswer
 			}
 			if !emitText(text) {
 				return
@@ -1094,35 +1125,47 @@ func endsWithProseQuestion(text string) bool {
 	return strings.HasSuffix(text, "?") && !strings.Contains(text, "```warp-scope")
 }
 
-// unsupportedReplyRedirect is the one-time nudge sent back for a reply that
-// called no tool, or that asked in prose after one did. It rides as a user
-// message because it is feedback on the last reply, not a standing
-// instruction.
-// userNudge builds a user-role message from the loop itself: feedback on the
+// loopNudge builds a message from the loop itself: feedback on the
 // conversation so far rather than a standing instruction, which is why it rides
 // in the transcript and not in the system prompt.
-func userNudge(content string) schemas.ResponsesMessage {
+//
+// It rides as a developer message, not a user one. These nudges are not the
+// person's words, and a reasoning model that was handed the no-data redirect
+// as a user turn - "if it declines ... give the same reply again" - read it as
+// someone trying to steer it, refused it ("I can't help with instructions
+// about how to respond"), and that refusal reached the screen as the answer.
+// The developer role is the application speaking, which is what this is.
+// Every provider converter carries it: OpenAI as is, Anthropic and Bedrock as
+// an in-place system turn, Gemini as a user turn.
+func loopNudge(content string) schemas.ResponsesMessage {
 	itemType := schemas.ResponsesMessageTypeMessage
-	role := schemas.ResponsesInputMessageRoleUser
+	role := schemas.ResponsesInputMessageRoleDeveloper
 	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
 }
 
+// unsupportedReplyRedirect is the one-time nudge sent back for a reply that
+// called no tool, or that asked in prose after one did. It rides as a
+// developer message, like every loopNudge, because it is feedback on the last
+// reply from the loop rather than anything the person said.
 func unsupportedReplyRedirect(calledTool, describedFilterSpace bool) schemas.ResponsesMessage {
-	itemType := schemas.ResponsesMessageTypeMessage
-	role := schemas.ResponsesInputMessageRoleUser
 	content := "That reply asked a question in prose, which reaches the person with nothing to click. " +
 		"If you need to ask, call " + AskUserTool + " with the options instead. If you did not need to ask, answer without the question."
 	if !calledTool {
-		options := "call describe_filter_space first so the options are ones that have traffic, and offer the person's own traffic only if describe_filter_space says they are identified. "
+		options := "call describe_filter_space first so the options are ones that have traffic, and offer the person's own traffic only if describe_filter_space says they are identified, with its caller_user_id as that option's hint. "
 		if describedFilterSpace {
-			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified. "
+			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified, with its caller_user_id as that option's hint. "
 		}
+		// Declining comes first. Listed after ask_user, it read as the last resort,
+		// and correct refusals came back as scope questions.
 		content = "That reply rests on no data: no tool has returned any this turn. " +
+			"If it declines a message outside what you cover - not about this deployment's traffic, nor a virtual key's budget, rate limit or allowed providers and models - give the same reply again, without calling a tool or asking anything. " +
+			"If it declines a question about a virtual key's budget, rate limit or allowed providers and models, call describe_virtual_key instead: those are in scope. " +
+			"If it answers from results already in this conversation, give the same reply again. " +
+			"If it answers a greeting, a thank-you or a question about what you are or can do, give the same reply again. " +
 			"If it asks the person something, call " + AskUserTool + " with options instead - " + options +
-			"If it says the question cannot be answered, investigate with your tools first - query_usage_by with dimension error_type and status error counts every failure by kind, query_logs returns failed rows with error_type, provider and model, and get_request_trace explains one request. " +
-			"If it answers from results already in this conversation, or declines a question outside what your tools cover, give the same reply again."
+			"If it says a question about this deployment cannot be answered, investigate with your tools first - query_usage_by with dimension error_type and status error counts every failure by kind, query_logs returns failed rows with error_type, provider and model, and get_request_trace explains one request."
 	}
-	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
+	return loopNudge(content)
 }
 
 func toolResultMessage(callID, result string) schemas.ResponsesMessage {

@@ -47,6 +47,28 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
 	})
 
+	// A routing rule rewrote gpt-4o-mini to gpt-4o: the caller's model must be
+	// recoverable from the headers alongside the routed one.
+	t.Run("routing rewrite emits requested route next to the routed model", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		extra := schemas.BifrostResponseExtraFields{
+			RoutingInfo: schemas.RoutingInfo{
+				Provider:          schemas.OpenAI,
+				Model:             "gpt-4o",
+				RequestedProvider: schemas.OpenAI,
+				RequestedModel:    "gpt-4o-mini",
+			},
+		}
+
+		ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+
+		assert.Equal(t, "gpt-4o", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoModel)))
+		assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedProvider)))
+		assert.Equal(t, "gpt-4o-mini", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedModel)))
+	})
+
 	t.Run("fallback index from context emits when non-zero", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		bifrostCtx := newBifrostCtx()
@@ -73,6 +95,8 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedProvider)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedModel)))
 		// No accumulator installed — unmeasured must stay distinguishable from zero.
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostUpstreamLatency)))
 	})
@@ -234,6 +258,26 @@ func TestApplyBifrostStreamResponseHeaders(t *testing.T) {
 		// Deprecated original-model derives from the primary on fallback.
 		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
 		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
+	})
+
+	// Stream headers are written from the context snapshot before the first
+	// chunk, so the requested route has to ride on it as well.
+	t.Run("snapshot emits requested route", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRoutingInfo, schemas.RoutingInfo{
+			Provider:       schemas.OpenAI,
+			Model:          "gpt-4o",
+			RequestedModel: "gpt-4o-mini",
+		})
+
+		ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+
+		assert.Equal(t, "gpt-4o", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoModel)))
+		assert.Equal(t, "gpt-4o-mini", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedModel)))
+		// The caller sent a bare model, so there is no requested provider to report.
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoRequestedProvider)))
 	})
 
 	t.Run("missing snapshot emits only request type", func(t *testing.T) {

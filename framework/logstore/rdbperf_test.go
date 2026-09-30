@@ -4,10 +4,19 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type testLogger struct{}
@@ -649,5 +658,98 @@ func TestBulkUpdateCostSQLiteFallback(t *testing.T) {
 			t.Fatalf("split mismatch for %s: got in=%v out=%v add=%v want in=%v out=%v add=%v",
 				id, logEntry.InputCost, logEntry.OutputCost, logEntry.AdditionalCost, want.Input, want.Output, want.Additional)
 		}
+	}
+}
+
+// insertSpendLog inserts one finished request for a user at ts with the given cost.
+// An empty userID leaves user_id NULL.
+func insertSpendLog(t *testing.T, db *gorm.DB, id, userID string, ts time.Time, cost float64) {
+	t.Helper()
+	row := &Log{ID: id, Timestamp: ts, Status: "success", Provider: "openai", Model: "gpt-4o", Cost: &cost}
+	if userID != "" {
+		u := userID
+		row.UserID = &u
+	}
+	require.NoError(t, db.Create(row).Error)
+}
+
+// sortedSpend orders entries by user id so tests compare them deterministically.
+func sortedSpend(entries []UserSpendEntry) []UserSpendEntry {
+	out := append([]UserSpendEntry(nil), entries...)
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out
+}
+
+// TestGetUserSpendRawSumsWindowInOneQuery checks the raw path sums each user's cost
+// inside the window only, skips rows with no user, and runs exactly one query (no
+// previous-period comparison).
+func TestGetUserSpendRawSumsWindowInOneQuery(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&Log{}))
+
+	end := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	start := end.Add(-7 * 24 * time.Hour)
+	insertSpendLog(t, db, "a1", "alice", end.Add(-time.Hour), 3)
+	insertSpendLog(t, db, "a2", "alice", end.Add(-6*24*time.Hour), 2)
+	insertSpendLog(t, db, "a3", "alice", start.Add(-time.Hour), 100) // before the window
+	insertSpendLog(t, db, "b1", "bob", end.Add(-2*time.Hour), 7)
+	insertSpendLog(t, db, "n1", "", end.Add(-time.Hour), 50) // no user
+
+	var queries atomic.Int32
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("count_queries", func(*gorm.DB) { queries.Add(1) }))
+	require.NoError(t, db.Callback().Raw().Before("gorm:raw").Register("count_raw", func(*gorm.DB) { queries.Add(1) }))
+
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	got, err := store.GetUserSpend(context.Background(), SearchFilters{StartTime: &start, EndTime: &end})
+	require.NoError(t, err)
+	assert.Equal(t, []UserSpendEntry{{UserID: "alice", TotalCost: 5}, {UserID: "bob", TotalCost: 7}}, sortedSpend(got))
+	assert.Equal(t, int32(1), queries.Load(), "one aggregate query, no previous-period read")
+}
+
+// A failed request has no cost and, when it never reached a provider, no
+// latency. Sorted by either, those rows are "no value", not "the largest" or
+// "the smallest": Postgres puts NULLs first under DESC, so "most expensive
+// requests" led with zero-cost failures and Warp named a failed call as the
+// week's most expensive; SQLite puts them first under ASC instead. Both
+// directions, both backends: rows with the value come first.
+func TestSearchLogsSortsMissingCostAndLatencyLast(t *testing.T) {
+	stores := map[string]func(t *testing.T) *RDBLogStore{
+		"sqlite":   newTestSQLiteStore,
+		"postgres": func(t *testing.T) *RDBLogStore { store, _ := setupPerfTestDB(t); return store },
+	}
+	for name, newStore := range stores {
+		t.Run(name, func(t *testing.T) {
+			store := newStore(t)
+			ctx := context.Background()
+			base := time.Date(2026, 1, 2, 3, 4, 0, 0, time.UTC)
+			cheap, dear := 0.01, 2.10
+			fast, slow := 100.0, 45000.0
+			prefix := "sort-nulls-" + name + "-"
+			entries := []*Log{
+				{ID: prefix + "failed", Timestamp: base, Object: "chat_completion", Provider: "anthropic", Model: "m", Status: "error"},
+				{ID: prefix + "cheap-fast", Timestamp: base.Add(time.Minute), Object: "chat_completion", Provider: "openai", Model: "m", Status: "success", Cost: &cheap, Latency: &fast},
+				{ID: prefix + "dear-slow", Timestamp: base.Add(2 * time.Minute), Object: "chat_completion", Provider: "anthropic", Model: "m", Status: "success", Cost: &dear, Latency: &slow},
+			}
+			for _, entry := range entries {
+				require.NoError(t, store.Create(ctx, entry))
+			}
+			filters := SearchFilters{Models: []string{"m"}, Providers: []string{"openai", "anthropic"}}
+			order := func(sortBy, direction string) []string {
+				result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 10, SortBy: sortBy, Order: direction})
+				require.NoError(t, err)
+				ids := []string{}
+				for _, log := range result.Logs {
+					if strings.HasPrefix(log.ID, prefix) {
+						ids = append(ids, strings.TrimPrefix(log.ID, prefix))
+					}
+				}
+				return ids
+			}
+			for _, sortBy := range []string{"cost", "latency"} {
+				require.Equal(t, []string{"dear-slow", "cheap-fast", "failed"}, order(sortBy, "desc"), sortBy+" desc")
+				require.Equal(t, []string{"cheap-fast", "dear-slow", "failed"}, order(sortBy, "asc"), sortBy+" asc")
+			}
+		})
 	}
 }

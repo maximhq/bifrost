@@ -13,6 +13,9 @@ warp-config:
       `configured: false` and the default values, not a `404`. The settings page
       needs to render its empty form, and a `404` would make "never set up"
       indistinguishable from "this build has no Warp route".
+
+      Enterprise RBAC: requires `Warp` View. The chat panel reads this route
+      too, so Warp chat users need it as well as `WarpSession` View.
     tags:
       - Warp
     responses:
@@ -22,6 +25,8 @@ warp-config:
           application/json:
             schema:
               $ref: '../../schemas/management/warp.yaml#/WarpConfig'
+      '403':
+        description: Caller lacks `Warp` View (enterprise)
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
       '503':
@@ -34,12 +39,12 @@ warp-config:
     description: |
       Writes Warp's settings. **Administrators only.**
 
-      RBAC in this transport is enterprise-only and path-based, so the floor is
-      enforced in the handler: a single write points the server at a provider
-      key and a model it will then call on its own behalf, which is not
-      something an ordinary dashboard user should be able to do. Non-admin
-      callers get `403`. The response carries the key reference back, not a
-      redacted credential - there is no secret stored here to redact.
+      A single write points the server at a provider key and a model it will
+      then call on its own behalf, which is not something an ordinary dashboard
+      user should be able to do. In OSS only the local admin may write; in
+      enterprise the caller needs `Warp` Update. Anyone else gets `403`. The
+      response carries the key reference back, not a redacted credential -
+      there is no secret stored here to redact.
 
       `api_key_id` is a reference, not a credential, so it round-trips in the
       clear and needs no omitted-versus-empty rule: omitting it writes an empty
@@ -62,7 +67,7 @@ warp-config:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '403':
-        description: Caller is not an administrator
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
       '409':
         description: Embedding configuration cannot change during an active backfill
       '500':
@@ -76,6 +81,8 @@ warp-backfill:
   post:
     operationId: startWarpLogEmbeddingBackfill
     summary: Start a Warp log embedding backfill
+    description: |
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
     tags: [Warp]
     security:
       - ManagementBearerAuth: []
@@ -95,7 +102,7 @@ warp-backfill:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '403':
-        description: Caller is not an administrator
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
       '409':
         description: |
           A Warp embedding backfill is already active. The body is that job, so
@@ -116,6 +123,8 @@ warp-backfill-status:
   get:
     operationId: getWarpLogEmbeddingBackfillStatus
     summary: Read Warp log embedding backfill progress
+    description: |
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
     tags: [Warp]
     security:
       - ManagementBearerAuth: []
@@ -131,7 +140,7 @@ warp-backfill-status:
             schema:
               $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
       '403':
-        description: Caller is not an administrator
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
@@ -145,6 +154,8 @@ warp-backfill-cancel:
   post:
     operationId: cancelWarpLogEmbeddingBackfill
     summary: Cancel a Warp log embedding backfill
+    description: |
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
     tags: [Warp]
     security:
       - ManagementBearerAuth: []
@@ -166,7 +177,7 @@ warp-backfill-cancel:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '403':
-        description: Caller is not an administrator
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
@@ -177,9 +188,9 @@ warp-backfill-cancel:
           Cancelling needs both: the runner to stop the work, the store to record
           it.
 
-warp-chat:
+warp-session:
   post:
-    operationId: warpChat
+    operationId: warpSession
     summary: Ask Warp a question
     description: |
       Runs Warp's agent loop over the deployment's telemetry and returns an
@@ -191,9 +202,11 @@ warp-chat:
       permanent: a deployment that enables logging after startup begins serving
       this route without a restart.
 
-      Conversation history is client-sent and no session is stored: the dashboard
-      already holds the thread, so a server-side session would need TTLs, cleanup
-      and cross-node coordination for no user-visible gain.
+      The model's context is client-sent: `messages` carries the thread so far.
+      Where Warp history is available the server also files each turn under
+      `conversation_id` so the thread can be listed and reopened through
+      `/api/warp/conversations`. Omit `conversation_id` to start a new thread;
+      its id comes back on the `done` event or in the JSON body.
 
       **Data visibility equals the caller's own.** Every tool query runs against
       the caller's row-level scope, so Warp can never surface data the caller
@@ -201,6 +214,8 @@ warp-chat:
 
       With `stream: true` (the default) the response is `text/event-stream`. Both
       modes run the identical loop; only the sink differs.
+
+      Enterprise RBAC: requires `WarpSession` View.
     tags:
       - Warp
     requestBody:
@@ -208,7 +223,7 @@ warp-chat:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/warp.yaml#/WarpChatRequest'
+            $ref: '../../schemas/management/warp.yaml#/WarpSessionRequest'
     responses:
       '200':
         description: |
@@ -228,9 +243,11 @@ warp-chat:
               type: string
           application/json:
             schema:
-              $ref: '../../schemas/management/warp.yaml#/WarpChatResponse'
+              $ref: '../../schemas/management/warp.yaml#/WarpSessionResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller lacks `WarpSession` View (enterprise)
       '413':
         description: Conversation exceeds the server's history limit
         content:
@@ -254,3 +271,140 @@ warp-chat:
               $ref: '../../schemas/management/warp.yaml#/WarpUnavailable'
     security:
       - ManagementBearerAuth: []
+
+warp-log-index-status:
+  get:
+    operationId: getWarpLogIndexStatus
+    summary: Read Warp semantic search index status
+    description: |
+      A read-only summary for the chat panel: whether semantic log search is
+      usable, and the latest backfill's progress when one exists. `last_error`
+      on the backfill is returned only to the local admin, since the provider's
+      error text can name endpoints and models.
+
+      Enterprise RBAC: requires `WarpSession` View.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Index status
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpLogIndexStatus'
+      '403':
+        description: Caller lacks `WarpSession` View (enterprise)
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+warp-conversations:
+  get:
+    operationId: listWarpConversations
+    summary: List the caller's Warp conversations
+    description: |
+      Returns the caller's own threads, most recent first, without their
+      messages. On a deployment without authentication every conversation
+      shares one owner, so the history is common to the deployment.
+
+      Registered only when Warp history storage is available.
+
+      Enterprise RBAC: requires `WarpSession` View.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - in: query
+        name: limit
+        description: Maximum threads to return. Values above 100 are clamped to 100.
+        schema:
+          type: integer
+          minimum: 1
+          default: 50
+    responses:
+      '200':
+        description: The caller's conversations
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpConversationList'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller lacks `WarpSession` View (enterprise)
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+warp-conversation-by-id:
+  get:
+    operationId: getWarpConversation
+    summary: Read one Warp conversation
+    description: |
+      Returns one of the caller's threads with its transcript, bounded to the
+      newest messages. Another user's thread returns `404`, the same as a
+      missing one, so the response never confirms that it exists.
+
+      Registered only when Warp history storage is available.
+
+      Enterprise RBAC: requires `WarpSession` View.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: The conversation and its transcript
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpConversationDetail'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller lacks `WarpSession` View (enterprise)
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+  delete:
+    operationId: deleteWarpConversation
+    summary: Delete a Warp conversation
+    description: |
+      Permanently deletes one of the caller's threads. Another user's thread
+      returns `404`. Threads older than the configured history retention are
+      also removed automatically.
+
+      Registered only when Warp history storage is available.
+
+      Enterprise RBAC: requires `WarpSession` Delete.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    responses:
+      '204':
+        description: Deleted
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller lacks `WarpSession` Delete (enterprise)
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

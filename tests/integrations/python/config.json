@@ -501,7 +501,17 @@
           "value": "env.DEEPSEEK_API_KEY",
           "weight": 1,
           "models": ["*"],
-          "use_for_batch_api": false
+          "use_for_batch_api": false,
+          "aliases": {
+            "deepseek-v4-flash-anthropic": {
+              "model_id": "deepseek-v4-flash",
+              "use_anthropic_endpoints": true
+            },
+            "deepseek-v4-pro-anthropic": {
+              "model_id": "deepseek-v4-pro",
+              "use_anthropic_endpoints": true
+            }
+          }
         }
       ],
       "network_config": {
@@ -1043,6 +1053,54 @@
             "weight": 1
           }
         ]
+      },
+      {
+        "id": "harness-custom-provider-fallback-boot",
+        "priority": 909,
+        "name": "Harness custom provider fallback loaded at boot",
+        "description": "Provider harness only (folder 117, #7538). Sends the request to OpenAI on a model OpenAI rejects, then falls back to the custom provider openai_pc_auto through a legacy 'provider/model' string. Rules are decoded before bifrost.Init registers custom providers, so this rule is the boot-time path that dropped the fallback. Matches nothing without x-harness-custom-fallback: boot.",
+        "cel_expression": "\"x-harness-custom-fallback\" in headers && headers[\"x-harness-custom-fallback\"] == \"boot\"",
+        "targets": [
+          {
+            "provider": "openai",
+            "model": "bifrost-harness-nonexistent-primary",
+            "weight": 1
+          }
+        ],
+        "fallbacks": [
+          "openai_pc_auto/gpt-4o-mini"
+        ]
+      },
+      {
+        "id": "harness-custom-provider-fallback-boot-provider-only",
+        "priority": 910,
+        "name": "Harness custom provider-only fallback loaded at boot",
+        "description": "Provider harness only (folder 117, #7538). Same as harness-custom-provider-fallback-boot, but the fallback is the provider-only legacy form 'openai_pc_auto/', which must keep the custom provider and take the incoming model. Matches nothing without x-harness-custom-fallback: boot-provider-only.",
+        "cel_expression": "\"x-harness-custom-fallback\" in headers && headers[\"x-harness-custom-fallback\"] == \"boot-provider-only\"",
+        "targets": [
+          {
+            "provider": "openai",
+            "model": "bifrost-harness-nonexistent-primary",
+            "weight": 1
+          }
+        ],
+        "fallbacks": [
+          "openai_pc_auto/"
+        ]
+      },
+      {
+        "id": "harness-requested-route-rewrite",
+        "priority": 911,
+        "name": "Harness requested route: rewrite the model",
+        "description": "Provider harness only (folder 120). Rewrites the caller's model to gpt-4o-mini so the response can report both the routed model and the model the caller sent (routing_info.requested_model and x-bifrost-routing-info-requested-model). Matches nothing without x-harness-requested-route: rewrite.",
+        "cel_expression": "\"x-harness-requested-route\" in headers && headers[\"x-harness-requested-route\"] == \"rewrite\"",
+        "targets": [
+          {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "weight": 1
+          }
+        ]
       }
     ],
     "virtual_keys": [
@@ -1162,6 +1220,21 @@
           },
           {
             "provider": "deepseek",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
+        ]
+      },
+      {
+        "name": "Test Key (content logging off)",
+        "id": "vk-test-nocontent",
+        "value": "sk-bf-test-key-nocontent",
+        "is_active": true,
+        "disable_content_logging": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0
