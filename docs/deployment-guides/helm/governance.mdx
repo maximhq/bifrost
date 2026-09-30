@@ -404,6 +404,9 @@ bifrost:
       jev:
         previous_message_count: 1
         timeout: "1.5s"
+        criteria:                      # Optional: omit to use the shipped tier guidance
+          COMPLEX:
+            definition: "Advanced expertise combined with substantial reasoning, design, or changes that must stay consistent across several components."
       session:
         enabled: true
       keywords:
@@ -412,7 +415,9 @@ bifrost:
         complex_keywords: ["design a solution under several competing constraints."]
 ```
 
-`jev.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Jev usage counts toward request cost and budgets. To use Jev after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: jev`, and optionally include the `jev` settings above.
+`jev.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Jev usage counts toward request cost and budgets.
+
+`jev.criteria` optionally overrides the tier guidance Jev classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/complexity-router#tier-guidance) for the defaults and how to write your own. To use Jev after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: jev`, and optionally include the `jev` settings above.
 
 For Semantic as the primary classifier:
 
