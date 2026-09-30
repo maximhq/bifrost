@@ -136,6 +136,8 @@ type RoutingTarget struct {
 	Model    *string `json:"model,omitempty"`    // nil = use incoming model
 	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
 	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
+
+	TTFTTimeoutMs *int `json:"ttft_timeout_ms,omitempty"` // nil or 0 = no TTFT deadline
 }
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
@@ -166,6 +168,26 @@ type UpdateRoutingRuleRequest struct {
 	Priority      *int                                `json:"priority,omitempty"`
 	Scope         *string                             `json:"scope,omitempty"`
 	ScopeID       *string                             `json:"scope_id,omitempty"`
+}
+
+// maxRoutingTTFTTimeoutMs caps a target's TTFT deadline; it mirrors
+// ttft_timeout_ms's maximum in config.schema.json.
+const maxRoutingTTFTTimeoutMs = 300000
+
+// validateRoutingTTFTTimeout checks a target's ttft_timeout_ms; nil and 0 mean "no deadline".
+func validateRoutingTTFTTimeout(ms *int) error {
+	if ms != nil && (*ms < 0 || *ms > maxRoutingTTFTTimeoutMs) {
+		return fmt.Errorf("ttft_timeout_ms must be between 1 and %d (0 disables it)", maxRoutingTTFTTimeoutMs)
+	}
+	return nil
+}
+
+// nilIfZero normalizes a 0 ("no deadline") ttft_timeout_ms to nil so it is stored as NULL.
+func nilIfZero(ms *int) *int {
+	if ms == nil || *ms == 0 {
+		return nil
+	}
+	return ms
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules
@@ -253,6 +275,9 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 		}
 		if t.KeyID != nil && *t.KeyID != "" && (t.Provider == nil || *t.Provider == "") {
 			return fmt.Errorf("key_id requires provider to be set")
+		}
+		if err := validateRoutingTTFTTimeout(t.TTFTTimeoutMs); err != nil {
+			return err
 		}
 
 		// Canonicalise identity: lowercase provider/model, treat nil == "".
@@ -627,10 +652,11 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 	for _, t := range req.Targets {
 		targets = append(targets, configstoreTables.TableRoutingTarget{
-			Provider: t.Provider,
-			Model:    t.Model,
-			KeyID:    t.KeyID,
-			Weight:   t.Weight,
+			Provider:      t.Provider,
+			Model:         t.Model,
+			KeyID:         t.KeyID,
+			Weight:        t.Weight,
+			TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 		})
 	}
 
@@ -733,10 +759,11 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 		for _, t := range req.Targets {
 			newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
-				Provider: t.Provider,
-				Model:    t.Model,
-				KeyID:    t.KeyID,
-				Weight:   t.Weight,
+				Provider:      t.Provider,
+				Model:         t.Model,
+				KeyID:         t.KeyID,
+				Weight:        t.Weight,
+				TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 			})
 		}
 		rule.Targets = newTargets

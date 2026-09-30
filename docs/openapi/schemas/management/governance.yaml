@@ -1426,6 +1426,11 @@ RoutingTarget:
       exclusiveMinimum: 0
       description: Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)
       example: 0.5
+    ttft_timeout_ms:
+      type: [integer, 'null']
+      minimum: 0
+      maximum: 300000
+      description: Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it.
 
 RoutingRule:
   type: object
