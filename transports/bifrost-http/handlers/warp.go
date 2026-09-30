@@ -293,8 +293,14 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
 		if err == nil && job == nil {
 			// Nothing running. A reloaded page still wants to see how the last
-			// backfill ended, so fall back to the newest job of any status.
+			// backfill ended, so fall back to the newest job of any status -
+			// unless it ran under an embedding space that is no longer the
+			// configured one, in which case it says nothing about this space
+			// and the page shows its empty default instead.
 			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+			if err == nil && job != nil && !h.service.BackfillMatchesConfig(ctx, job.Metadata) {
+				job = nil
+			}
 		}
 	}
 	if err != nil {
