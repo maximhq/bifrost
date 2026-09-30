@@ -3,11 +3,13 @@ package warp
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 )
@@ -84,8 +86,10 @@ var linkTitle = regexp.MustCompile(`\s+["'(].*$`)
 // link whose query a tool issued becomes the issued link; any other link to the
 // Logs page gets its path repaired and its query kept; a link into the
 // dashboard that no tool could have returned loses its target and keeps its
-// text. External links are left alone. issued may be nil, which skips only the
-// first of those.
+// text, and so does a link that cannot open at all - a placeholder such as
+// "https://.../", a bare scheme, an empty target. A link that cannot work must
+// not be clickable. External links to a real host are left alone. issued may
+// be nil, which skips only the first of those.
 func sanitizeAnswerLinks(answer string, issued issuedLinks) string {
 	answer = fencedIssueLink.ReplaceAllString(answer, "[Request this in Bifrost's issue tracker]($1)\n")
 	matches := markdownLink.FindAllStringSubmatchIndex(answer, -1)
@@ -127,9 +131,14 @@ const (
 // resolveLinkTarget decides what one link target becomes.
 //
 // "workspace" and "logs" as a host are the path's own segments, reinterpreted
-// by a model that wanted a domain, so those count as the dashboard. Any other
-// host is somebody else's site unless the query is one a tool issued: a
-// genuinely external "https://example.com/logs" is left alone.
+// by a model that wanted a domain, so those count as the dashboard, and so
+// does any host in front of the dashboard's own "/workspace/logs" path: a
+// model that will not write a root-relative link puts a domain it made up
+// there, and the link only opens once the domain is gone. A host that is not
+// a hostname at all - the "..." of a "https://.../" placeholder - is a link
+// that cannot open, and is unlinked. Any other host is somebody else's site
+// unless the query is one a tool issued: a genuinely external
+// "https://example.com/logs" is left alone.
 func resolveLinkTarget(target string, issued issuedLinks) (string, linkVerdict) {
 	raw := strings.TrimSpace(target)
 	raw = strings.TrimSuffix(strings.TrimPrefix(raw, "<"), ">")
@@ -138,20 +147,38 @@ func resolveLinkTarget(target string, issued issuedLinks) (string, linkVerdict) 
 	raw = strings.ReplaceAll(raw, "&amp;", "&")
 	// A space the model decoded back out of a search term.
 	raw = strings.ReplaceAll(raw, " ", "+")
-	if raw == "" || strings.HasPrefix(raw, "#") {
+	if raw == "" {
+		return "", linkInvented
+	}
+	if strings.HasPrefix(raw, "#") {
 		return "", linkUntouched
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || (parsed.Scheme != "" && parsed.Host == "") {
-		// Unparseable, or a scheme with no host (mailto:, tel:).
+	if err != nil {
+		return "", linkInvented
+	}
+	if parsed.Scheme != "" && parsed.Host == "" {
+		if parsed.Opaque == "" && parsed.Path == "" {
+			// "https://" with nothing after it.
+			return "", linkInvented
+		}
+		// A scheme with no host (mailto:, tel:).
 		return "", linkUntouched
 	}
 	host := strings.ToLower(parsed.Host)
 	foreign := host != "" && host != "workspace" && host != "logs"
+	if foreign && !openableHost(parsed.Hostname()) {
+		return "", linkInvented
+	}
 
 	segments := strings.FieldsFunc(parsed.Path, func(r rune) bool { return r == '/' })
 	if !foreign && host != "" {
 		segments = append([]string{host}, segments...)
+	}
+	if n := len(segments); foreign && n >= 2 && segments[n-2] == "workspace" && segments[n-1] == "logs" {
+		// The dashboard's own path behind an invented domain.
+		foreign = false
+		segments = segments[n-2:]
 	}
 	key, parseable := canonicalQuery(parsed.RawQuery)
 
@@ -182,6 +209,30 @@ func resolveLinkTarget(target string, issued issuedLinks) (string, linkVerdict) 
 		}
 	}
 	return logsViewPath + "?" + parsed.RawQuery, linkRewritten
+}
+
+// openableHost reports whether a host is one a browser could resolve: an IP
+// address, or dot-separated labels of letters, digits and hyphens. "..." and
+// "…" are what a model writes for a domain it does not have, and url.Parse
+// accepts both as a host.
+func openableHost(hostname string) bool {
+	if hostname == "" {
+		return false
+	}
+	if net.ParseIP(hostname) != nil {
+		return true
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(hostname, "."), ".") {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if r != '-' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // fencedIssueLink matches a fenced code block whose only content is the
