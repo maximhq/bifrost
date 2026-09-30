@@ -18328,6 +18328,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"governance.virtual_keys", reflect.TypeOf(tables.TableVirtualKey{}), true},
 		{"governance.virtual_keys.provider_configs", reflect.TypeOf(tables.TableVirtualKeyProviderConfig{}), true},
 		{"governance.virtual_keys.mcp_configs", reflect.TypeOf(tables.TableVirtualKeyMCPConfig{}), true},
+		{"governance.virtual_keys.agent_grants", reflect.TypeOf(tables.TableVirtualKeyAgentGrant{}), true},
 		{"governance.auth_config", reflect.TypeOf(configstore.AuthConfig{}), false},
 		{"governance.complexity_analyzer_config", reflect.TypeOf(configstore.ComplexityAnalyzerConfig{}), false},
 		{"governance.complexity_analyzer_config.tier_boundaries", reflect.TypeOf(configstore.ComplexityTierBoundaries{}), false},
@@ -18436,6 +18437,9 @@ var excludedGoFields = map[string]map[string]bool{
 	},
 	"tables.TableVirtualKeyMCPConfig": {
 		"mcp_client": true, // GORM relation
+	},
+	"tables.TableVirtualKeyAgentGrant": {
+		"created_at": true, // DB metadata; set on write
 	},
 	// MCP types have internal state fields
 	"schemas.MCPConfig": {
@@ -21531,6 +21535,214 @@ func TestLoadWebhooksConfigWithoutSection(t *testing.T) {
 	assert.Len(t, webhookNamesInStore(t, store), 1)
 	_, ok := config.WebhookEndpointByName("db-only")
 	assert.True(t, ok, "database endpoints load into memory even with no file section")
+}
+
+// agentNamesInStore maps each stored agent registration name to its card URL.
+func agentNamesInStore(t *testing.T, store configstore.ConfigStore) map[string]string {
+	t.Helper()
+	registrations, err := store.ListAgentRegistrations(context.Background())
+	require.NoError(t, err)
+	names := make(map[string]string, len(registrations))
+	for _, registration := range registrations {
+		names[registration.Name] = registration.AgentCardURL
+	}
+	return names
+}
+
+// apiCreatedAgent simulates an API-created registration: written through the
+// same store CRUD the manager uses, with no ConfigHash.
+func apiCreatedAgent(t *testing.T, store configstore.ConfigStore, name string) {
+	t.Helper()
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateAgentRegistration(context.Background(), &schemas.AgentRegistration{
+		Name: name, AgentCardURL: "https://example.com/" + name, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}))
+}
+
+func TestLoadAgentsConfigMerge(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	// One valid declaration, one invalid name (skipped with a warning).
+	configData := parseConfigData(t, `{
+		"agents": [
+			{"name": "from-file", "agent_card_url": "https://example.com/card"},
+			{"name": "Bad_Name", "agent_card_url": "https://example.com/card"}
+		]
+	}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	names := agentNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "from-file")
+
+	// Enabled defaults to true when omitted, and the file hash is checkpointed.
+	created, err := store.GetAgentRegistration(context.Background(), "from-file")
+	require.NoError(t, err)
+	assert.True(t, created.Enabled)
+	assert.NotEmpty(t, created.ConfigHash)
+
+	// An unchanged file is a no-op (hash match): the row is not rewritten.
+	firstUpdatedAt := created.UpdatedAt
+	loadAgentsConfig(context.Background(), config, configData)
+	unchanged, err := store.GetAgentRegistration(context.Background(), "from-file")
+	require.NoError(t, err)
+	assert.Equal(t, firstUpdatedAt, unchanged.UpdatedAt, "a hash match must not rewrite the row")
+
+	// A registration created outside the file survives a merge reload.
+	apiCreatedAgent(t, store, "from-api")
+
+	// A changed card URL in the file updates the existing row instead of duplicating.
+	configData = parseConfigData(t, `{
+		"agents": [
+			{"name": "from-file", "agent_card_url": "https://example.com/card2"}
+		]
+	}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	names = agentNamesInStore(t, store)
+	require.Len(t, names, 2)
+	assert.Equal(t, "https://example.com/card2", names["from-file"])
+	assert.Contains(t, names, "from-api")
+}
+
+func TestLoadAgentsConfigDuplicateNamesAreSkipped(t *testing.T) {
+	initTestLogger()
+
+	for _, sourceOfTruth := range []bool{false, true} {
+		t.Run(fmt.Sprintf("source_of_truth=%t", sourceOfTruth), func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			config := &Config{ConfigStore: store}
+			apiCreatedAgent(t, store, "duplicate")
+
+			source := ""
+			if sourceOfTruth {
+				source = `"source_of_truth": "config.json",`
+			}
+			configData := parseConfigData(t, fmt.Sprintf(`{
+				%s
+				"agents": [
+					{"name": "duplicate", "agent_card_url": "https://example.com/first", "allow_by_default": true},
+					{"name": " duplicate ", "agent_card_url": "https://example.com/second"}
+				]
+			}`, source))
+			loadAgentsConfig(context.Background(), config, configData)
+
+			registration, err := store.GetAgentRegistration(context.Background(), "duplicate")
+			require.NoError(t, err)
+			assert.Equal(t, "https://example.com/duplicate", registration.AgentCardURL)
+			assert.False(t, registration.AllowByDefault)
+		})
+	}
+}
+
+func TestLoadAgentsConfigSourceOfTruthPrunes(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	apiCreatedAgent(t, store, "db-only")
+
+	configData := parseConfigData(t, `{
+		"source_of_truth": "config.json",
+		"agents": [
+			{"name": "from-file", "agent_card_url": "https://example.com/card"}
+		]
+	}`)
+	require.True(t, configData.isConfigJSONSourceOfTruth(), "fixture must opt into file-as-source-of-truth")
+	loadAgentsConfig(context.Background(), config, configData)
+
+	names := agentNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "from-file")
+	assert.NotContains(t, names, "db-only", "rows absent from the file are pruned when it is the source of truth")
+
+	// Re-running with an unchanged file is a no-op (hash match).
+	loadAgentsConfig(context.Background(), config, configData)
+	assert.Len(t, agentNamesInStore(t, store), 1)
+}
+
+func TestLoadAgentsConfigInvalidDeclarationKeepsRegistration(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	// A valid registration exists in the DB and is re-declared in the file,
+	// but this run's declaration is malformed (bad card URL). The
+	// source-of-truth prune must NOT delete the working row over a typo.
+	apiCreatedAgent(t, store, "keep-me")
+
+	configData := parseConfigData(t, `{
+		"source_of_truth": "config.json",
+		"agents": [
+			{"name": "keep-me", "agent_card_url": "not-a-valid-url"}
+		]
+	}`)
+	require.True(t, configData.isConfigJSONSourceOfTruth())
+	loadAgentsConfig(context.Background(), config, configData)
+
+	assert.Contains(t, agentNamesInStore(t, store), "keep-me", "an invalid declaration must not prune its existing registration")
+}
+
+func TestLoadAgentsConfigWithoutSection(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	apiCreatedAgent(t, store, "db-only")
+
+	// Source-of-truth mode without an agents section must not prune —
+	// presence of the section is what authorizes it.
+	configData := parseConfigData(t, `{"source_of_truth": "config.json"}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	assert.Len(t, agentNamesInStore(t, store), 1)
+}
+
+func TestLoadAgentsConfigSecretRefsAndGrants(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	require.NoError(t, store.CreateVirtualKey(context.Background(), &tables.TableVirtualKey{
+		ID: "vk-1", Name: "VK One", Value: *schemas.NewSecretVar("vk-1-value"), IsActive: schemas.Ptr(true),
+	}))
+
+	configData := parseConfigData(t, `{
+		"agents": [
+			{
+				"name": "granted",
+				"agent_card_url": "https://example.com/card",
+				"virtual_key_ids": ["vk-1"],
+				"discovery_auth": {
+					"type": "headers",
+					"headers": {"Authorization": "env.AGENT_TEST_TOKEN_UNSET"}
+				}
+			},
+			{
+				"name": "bad-grant",
+				"agent_card_url": "https://example.com/card",
+				"virtual_key_ids": ["missing-vk"]
+			}
+		]
+	}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	// The registration referencing a nonexistent virtual key fails the
+	// store's grant validation and is skipped with a warning.
+	names := agentNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "granted")
+
+	granted, err := store.GetAgentRegistration(context.Background(), "granted")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vk-1"}, granted.VirtualKeyIDs, "grant rows follow the API create path")
+
+	header := granted.DiscoveryAuth.Headers["Authorization"]
+	assert.True(t, header.IsFromSecret(), "env references pass through as secret refs")
+	assert.Equal(t, "env.AGENT_TEST_TOKEN_UNSET", header.GetRawRef())
+	assert.Empty(t, header.GetValue(), "unset env refs stay unresolved rather than becoming literals")
 }
 
 func TestResolveSetupToken_Unset(t *testing.T) {
