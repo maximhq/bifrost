@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -763,6 +765,34 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
+}
+
+func TestSignAWSRequest_UsesConfiguredProfileOverAmbientCredentials(t *testing.T) {
+	fixtureDir := t.TempDir()
+	configFile := filepath.Join(fixtureDir, "config")
+	credentialsFile := filepath.Join(fixtureDir, "credentials")
+	require.NoError(t, os.WriteFile(configFile, []byte("[default]\nregion = us-east-1\n[profile team-a]\nregion = us-east-1\n"), 0o600))
+	require.NoError(t, os.WriteFile(credentialsFile, []byte("[default]\naws_access_key_id = DEFAULT_ACCESS_KEY\naws_secret_access_key = default-secret\n[team-a]\naws_access_key_id = PROFILE_A_ACCESS_KEY\naws_secret_access_key = profile-a-secret\n"), 0o600))
+
+	t.Setenv("AWS_CONFIG_FILE", configFile)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", credentialsFile)
+	t.Setenv("AWS_PROFILE", "default")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AMBIENT_ACCESS_KEY")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	var keyCfg schemas.BedrockKeyConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"profile":"team-a","region":"us-east-1"}`), &keyCfg))
+
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if signErr := signAWSRequest(ctx, req, &keyCfg, "us-east-1", bedrockSigningService); signErr != nil {
+		t.Fatalf("signAWSRequest failed: %s", signErr.Error.Message)
+	}
+	assert.Contains(t, req.Header.Get("Authorization"), "Credential=PROFILE_A_ACCESS_KEY/")
+	assert.NotContains(t, req.Header.Get("Authorization"), "AMBIENT_ACCESS_KEY")
 }
 
 // TestSignAWSRequest_ExcludesVolatileHeadersFromSignature locks in the fix for the
