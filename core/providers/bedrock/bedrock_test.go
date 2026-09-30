@@ -3684,6 +3684,47 @@ func TestAnthropicOrderedOutputConfigRoundTripsReasoning(t *testing.T) {
 	assert.Equal(t, "auto", *result.Params.Reasoning.Summary)
 }
 
+// TestConverseAdditionalModelRequestFieldsStoreMapsToParamsStore pins that a boolean
+// "store" in additionalModelRequestFields reaches ResponsesParameters.Store, so
+// Azure/OpenAI Responses targets receive store:false instead of their store:true default.
+func TestConverseAdditionalModelRequestFieldsStoreMapsToParamsStore(t *testing.T) {
+	newReq := func(fields *schemas.OrderedMap) *bedrock.BedrockConverseRequest {
+		return &bedrock.BedrockConverseRequest{
+			ModelID: "azure/gpt-5",
+			Messages: []bedrock.BedrockMessage{{
+				Role:    bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Hello")}},
+			}},
+			AdditionalModelRequestFields: fields,
+		}
+	}
+
+	tests := []struct {
+		name     string
+		fields   *schemas.OrderedMap
+		expected *bool
+	}{
+		{"store false", schemas.NewOrderedMapFromPairs(schemas.KV("store", false)), schemas.Ptr(false)},
+		{"store true", schemas.NewOrderedMapFromPairs(schemas.KV("store", true)), schemas.Ptr(true)},
+		{"store non-bool ignored", schemas.NewOrderedMapFromPairs(schemas.KV("store", "no")), nil},
+		{"store absent", schemas.NewOrderedMapFromPairs(schemas.KV("other", 1)), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := newReq(tt.fields).ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, result.Params)
+			if tt.expected == nil {
+				assert.Nil(t, result.Params.Store)
+				return
+			}
+			require.NotNil(t, result.Params.Store, "store in additionalModelRequestFields must set Params.Store")
+			assert.Equal(t, *tt.expected, *result.Params.Store)
+		})
+	}
+}
+
 func TestAnthropicOutputConfigFormatStillFallsBackToBudgetTokensForReasoning(t *testing.T) {
 	request := &bedrock.BedrockConverseRequest{
 		ModelID: "anthropic.claude-opus-4-6-v1",
