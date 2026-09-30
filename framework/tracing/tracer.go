@@ -493,14 +493,15 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 	// The typed record is the source of truth; the attribute map is rendered
 	// from it so both paths cannot drift. Connectors read span.LLM directly as
 	// they migrate off the map.
-	span.LLM = BuildLLMSpanData(req, nil, nil, t.spanBuildOptions())
+	llm := BuildLLMSpanData(req, nil, nil, t.spanBuildOptions())
+	span.LLM = llm
 	// Rendering the record into the attribute map is only worth doing when a
 	// connector will read it; it is the single largest allocation left on the
 	// path. The typed record is always attached, so a connector registered
 	// mid-flight still finds the data, just not the map form.
 	var attrs map[string]any
 	if t.Demand().Any {
-		attrs = span.LLM.Attributes()
+		attrs = llm.Attributes()
 		span.SetAttributes(attrs)
 	}
 
@@ -548,13 +549,16 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if span == nil {
 		return
 	}
-	if span.LLM == nil {
-		span.LLM = &schemas.LLMSpanData{}
+	// Hold the payload rather than re-reading span.LLM below: ReleaseTrace resets a
+	// pooled span mid-call, nils the field, and the later derefs would panic.
+	llm := span.EnsureLLMIfMatch(h.spanID)
+	if llm == nil {
+		return
 	}
-	ApplyResponse(span.LLM, resp, err, t.spanBuildOptions())
+	ApplyResponse(llm, resp, err, t.spanBuildOptions())
 	var respAttrs map[string]any
 	if t.Demand().Any {
-		respAttrs = span.LLM.ResponseAttributes()
+		respAttrs = llm.ResponseAttributes()
 	}
 	// A cancelled stream arrives here with an accumulated response whose usage
 	// is missing the final chunk, so its aggregate token counts read zero. When
@@ -586,7 +590,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	// ExtraFields.RequestType is empty until the request settles.
 	// Prefer the typed record; fall back to the attribute for spans whose request
 	// side was never populated (a failure before dispatch).
-	requestType := string(span.LLM.RequestType)
+	requestType := string(llm.RequestType)
 	if requestType == "" {
 		if raw, ok := span.GetAttribute(schemas.AttrLegacyRequestType); ok {
 			requestType, _ = raw.(string)
@@ -667,7 +671,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	} else if priceable && resp != nil {
 		scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider))
 		if breakdown := t.pricingManager.CalculateCostBreakdown(resp, scopes); breakdown != nil {
-			span.LLM.Cost = breakdown
+			llm.Cost = breakdown
 			span.SetAttributes(schemas.CostAttributes(breakdown))
 		} else {
 			span.SetAttribute(schemas.AttrUsageCost, 0.0)
