@@ -1,9 +1,14 @@
 package openai
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 var _ schemas.LiveProvider = (*OpenAIProvider)(nil)
@@ -80,5 +85,57 @@ func TestLiveHeaders(t *testing.T) {
 	}
 	if headers["Authorization"] != "Bearer sk-test" || headers["X-Extra"] != "1" {
 		t.Fatalf("LiveHeaders() = %v", headers)
+	}
+}
+
+func TestCreateLiveWebRTCSession(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"v=0 offer"}}`)
+	var status int
+	var reply string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/live/sessions" || r.Header.Get("Authorization") != "Bearer sk-test" ||
+			r.Header.Get("Content-Type") != "application/json" || string(got) != string(body) {
+			t.Errorf("unexpected request %s %s auth=%q type=%q body=%s", r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type"), got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(reply))
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	status, reply = http.StatusCreated, `{"session":{"id":"live_123"},"transport":{"type":"webrtc","sdp":"v=0 answer"}}`
+	created, bifrostErr := provider.CreateLiveWebRTCSession(newCtx(), key, body)
+	if bifrostErr != nil {
+		t.Fatalf("CreateLiveWebRTCSession() error = %v", bifrostErr.Error)
+	}
+	if created.Session.ID != "live_123" || created.Transport.SDP != "v=0 answer" {
+		t.Fatalf("CreateLiveWebRTCSession() = %+v", created)
+	}
+
+	status, reply = http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"Invalid SDP offer."}}`
+	_, bifrostErr = provider.CreateLiveWebRTCSession(newCtx(), key, body)
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+		bifrostErr.ExtraFields.RequestType != schemas.LiveRequest || bifrostErr.Error.Message != "Invalid SDP offer." {
+		t.Fatalf("upstream error = %+v", bifrostErr)
+	}
+
+	status, reply = http.StatusCreated, `{"session":{"id":"live_123"}}`
+	if _, bifrostErr = provider.CreateLiveWebRTCSession(newCtx(), key, body); bifrostErr == nil {
+		t.Fatal("a create response without an SDP answer must be an error")
+	}
+
+	blocked := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL},
+		customProviderConfig: &schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Realtime: true}}}
+	if _, bifrostErr = blocked.CreateLiveWebRTCSession(newCtx(), key, body); bifrostErr == nil {
+		t.Fatal("allowed_requests without live must block session create")
 	}
 }

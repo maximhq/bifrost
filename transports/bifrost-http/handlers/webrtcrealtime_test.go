@@ -471,11 +471,11 @@ func TestWebRTCRealtimeRelayCloseFinalizesActiveTurnHooks(t *testing.T) {
 		},
 	})
 
-	relay := &webrtcRealtimeRelay{
+	relay := &webrtcRelay{handler: &realtimeWebRTCMessages{
 		session:     session,
 		providerKey: schemas.OpenAI,
 		model:       "gpt-realtime",
-	}
+	}}
 
 	relay.close()
 
