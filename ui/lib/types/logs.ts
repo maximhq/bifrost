@@ -556,20 +556,17 @@ export interface GuardrailMetadata {
 }
 
 export interface RoutingCall {
+	request_type?: string;
 	provider_used?: string;
 	model_used?: string;
 	input_tokens?: number;
-	// Present only when this call was a chat completion (the llm classifier);
-	// absent for a semantic classification embed.
+	// Present for token-generating classifiers; request_type selects the pricing mode.
 	output_tokens?: number;
 	count_toward_budgets?: boolean;
 }
 
 export interface RoutingMetadata {
-	// One entry per billable routing-classification call this request made: a
-	// semantic classification embed, an llm classification completion, or
-	// both when semantic classification produced no tier and the llm fallback
-	// ran.
+	// One entry per billable semantic embed or classifier call, including Jev decisions.
 	calls?: RoutingCall[];
 }
 

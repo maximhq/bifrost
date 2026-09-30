@@ -16,6 +16,8 @@ import {
 	parseLLMTimeoutMs,
 	parseSemanticTimeoutMs,
 } from "@/lib/types/complexityRouter";
+import { ModelProvider } from "@/lib/types/config";
+import { DBKey } from "@/lib/types/governance";
 import { z } from "zod";
 
 // Form-owned duration values are always a single unit (the controls append
@@ -95,6 +97,12 @@ const llmSchema = z.object({
 	count_toward_budgets: z.boolean().optional(),
 });
 
+// usesJev reports whether the Jev block is live: the primary classifier or the
+// semantic fallback. Its controls are hidden and its values are not saved otherwise.
+function usesJev(values: { classifier: string; semantic: { fallback: string } }): boolean {
+	return values.classifier === "jev" || values.semantic.fallback === "jev";
+}
+
 export const analyzerConfigSchema = z
 	.object({
 		classifier: z.enum(["semantic", "jev"]),
@@ -104,7 +112,11 @@ export const analyzerConfigSchema = z
 			complex_keywords: z.array(z.string()).min(1, "Complex phrases cannot be empty"),
 		}),
 		semantic: semanticSchema,
-		jev: jevSchema,
+		// Only shape-checked here: the Jev controls are hidden unless Jev is the
+		// classifier or the fallback, so jevSchema runs in superRefine under that
+		// condition rather than letting an invisible error block Save. An emptied
+		// number input registers as NaN, which must pass the shape check too.
+		jev: z.object({ previous_message_count: z.number().or(z.nan()), timeout: z.string() }),
 		llm: llmSchema,
 		session: z.object({ enabled: z.boolean() }),
 	})
@@ -136,6 +148,15 @@ export const analyzerConfigSchema = z
 				message: "Configure the semantic classifier before enabling session routing",
 				path: ["session", "enabled"],
 			});
+		}
+
+		if (usesJev(data)) {
+			const jev = jevSchema.safeParse(data.jev);
+			if (!jev.success) {
+				for (const issue of jev.error.issues) {
+					ctx.addIssue({ code: "custom", message: issue.message, path: ["jev", ...issue.path] });
+				}
+			}
 		}
 
 		// The llm block follows the same half-filled rule, with one addition:
@@ -250,7 +271,9 @@ export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
 	return {
 		classifier: classifier === "jev" ? "jev" : "semantic",
 		keywords: config.keywords,
-		jev: config.jev ? { ...DEFAULT_JEV_CONFIG, ...config.jev, timeout: config.jev.timeout ?? DEFAULT_JEV_CONFIG.timeout } : DEFAULT_JEV_CONFIG,
+		jev: config.jev
+			? { ...DEFAULT_JEV_CONFIG, ...config.jev, timeout: config.jev.timeout ?? DEFAULT_JEV_CONFIG.timeout }
+			: DEFAULT_JEV_CONFIG,
 		session: config.session ?? { enabled: false },
 		llm: savedLLM
 			? {
@@ -286,7 +309,9 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 	return {
 		classifier: values.classifier,
 		keywords: values.keywords,
-		...(values.classifier === "jev" || values.semantic.fallback === "jev" || saved?.jev ? { jev: values.jev } : {}),
+		// Unused Jev values are not validated, so keep the saved block instead of
+		// sending hidden, possibly invalid edits.
+		...(usesJev(values) ? { jev: values.jev } : saved?.jev ? { jev: saved.jev } : {}),
 		...(values.session.enabled ? { session: values.session } : {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
@@ -304,6 +329,13 @@ export function semanticTimeoutFieldValue(timeout: string | undefined): string |
 	return millis ? millis[1] : parseSemanticTimeoutMs(timeout);
 }
 
+// jevTimeoutFieldValue shows the stored Go duration as editable milliseconds.
+export function jevTimeoutFieldValue(timeout: string | undefined): string | number {
+	if (timeout === "") return "";
+	const millis = timeout?.trim().match(/^([0-9]*\.?[0-9]+)ms$/);
+	return millis ? millis[1] : parseSemanticTimeoutMs(timeout ?? DEFAULT_JEV_CONFIG.timeout);
+}
+
 // Same round-trip as semanticTimeoutFieldValue, with the llm default backstop.
 export function llmTimeoutFieldValue(timeout: string | undefined): string | number {
 	if (timeout === "") return "";
@@ -313,4 +345,30 @@ export function llmTimeoutFieldValue(timeout: string | undefined): string | numb
 // shouldSeedLLMPrompt decides whether the shipped guidance may initialize the draft.
 export function shouldSeedLLMPrompt(enabled: boolean, defaultPrompt: string, prompt: string, edited: boolean): boolean {
 	return enabled && defaultPrompt !== "" && prompt === "" && !edited;
+}
+
+// isRouterConfigured decides whether the page opens on the classifier choice
+// (nothing set up yet) or straight on the configured classifier's settings.
+// A router counts as configured once it can classify anything: a saved semantic
+// block, or Jev chosen as the primary classifier. Phrases alone do not count;
+// every install has them, and without a classifier they route nothing.
+export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean {
+	if (!config) return false;
+	if (config.classifier?.trim().toLowerCase() === "jev") return true;
+	return Boolean(config.semantic?.provider && config.semantic?.embedding_model);
+}
+// TypesafeState is what the UI can actually tell about the Typesafe provider
+// Jev authenticates through. "configured" is not a guarantee that Jev calls
+// succeed — only a live request proves that — so the UI never calls it "ready".
+export type TypesafeState = "missing" | "failing" | "no-enabled-key" | "configured";
+
+export function getTypesafeState(providers: ModelProvider[] | undefined, keys: DBKey[] | undefined): TypesafeState {
+	const provider = (providers ?? []).find((candidate) => candidate.name === "typesafe");
+	if (!provider) return "missing";
+	// The provider failed to initialise, or could not list models with its keys:
+	// both mean its credentials or settings are wrong.
+	if (provider.provider_status !== "active" || provider.status === "list_models_failed") return "failing";
+	// A key omits `enabled` when unset, which the Go side reads as enabled.
+	if (!(keys ?? []).some((key) => key.provider === "typesafe" && key.enabled !== false)) return "no-enabled-key";
+	return "configured";
 }

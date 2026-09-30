@@ -63,6 +63,8 @@ interface Props {
 	// The page renders this too, but saving from here leaves the sheet open on top of it,
 	// so a failed submit would otherwise report itself entirely out of sight.
 	submitError?: string | null;
+	// Jev's settings, shown when Jev is the fallback.
+	jevSettings: ReactNode;
 }
 
 // EmbeddingConfigSheet holds every field of the semantic block. It is a sheet
@@ -95,6 +97,7 @@ export default function EmbeddingConfigSheet({
 	isSaving,
 	onSave,
 	submitError,
+	jevSettings,
 }: Props) {
 	// The two pools are narrowed by the parent, so the selectors filter the full provider
 	// list back down to them rather than re-deriving the capability rules here.
@@ -407,11 +410,9 @@ export default function EmbeddingConfigSheet({
 								/>
 							</div>
 
-							{semantic?.fallback === "jev" && (
-								<p className="text-muted-foreground border-t pt-4 text-xs">
-									Jev uses Typesafe provider credentials. Its request history and timeout are configured on the Complexity Router page.
-								</p>
-							)}
+							{/* Jev's own settings sit under the choice that turns it on, the
+							    same way the llm fallback's do below. */}
+							{semantic?.fallback === "jev" && <div className="border-t pt-4">{jevSettings}</div>}
 
 							{/* Fallback classifier fields. Rendered inline rather than in a
 							    sheet of their own, and only while "LLM classifier" is the

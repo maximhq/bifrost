@@ -7049,6 +7049,7 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				Weight:            bifrost.Ptr(key.Weight),
 				Provider:          string(providerKey),
 				ConfigHash:        key.ConfigHash,
+				Enabled:           key.Enabled,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy
