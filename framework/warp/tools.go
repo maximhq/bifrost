@@ -94,6 +94,12 @@ type ToolDeps struct {
 	// and reports itself unavailable rather than the caller getting a nil-
 	// pointer panic.
 	governance GovernanceReader
+	// vkDecorator overlays what the key row alone cannot say (see
+	// VirtualKeyDecorator). Nil means the row is taken as is.
+	vkDecorator VirtualKeyDecorator
+	// userGovernance is nil on a deployment with no per-user governance, and
+	// describe_user_limits is then not in the tool set at all.
+	userGovernance UserGovernanceReader
 	// charts holds what render_chart drew this turn, so the answer's chart
 	// blocks can be expanded from it. Built per turn with the rest of deps.
 	charts *chartRegistry
@@ -1031,7 +1037,7 @@ func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
 // per request, which is what will let a future change withhold content-bearing
 // tools from callers who may not read log bodies.
 func buildTools() []Tool {
-	return buildToolsFor(nil)
+	return buildToolsFor(nil, false)
 }
 
 // buildToolsFor returns the tools a request can actually run.
@@ -1039,8 +1045,10 @@ func buildTools() []Tool {
 // semantic_search_logs needs an embedding executor, which a deployment may not
 // have configured. Declaring it anyway tells the model a capability exists,
 // costs it a step to discover otherwise, and on a deployment with no embedding
-// provider does that on every single attempt.
-func buildToolsFor(searcher *SemanticSearcher) []Tool {
+// provider does that on every single attempt. describe_user_limits is the same
+// shape: it needs a UserGovernanceReader, which only a deployment with per-user
+// governance has.
+func buildToolsFor(searcher *SemanticSearcher, userLimits bool) []Tool {
 	tools := []Tool{}
 	if searcher != nil {
 		tools = append(tools, semanticSearchLogsTool())
@@ -1056,38 +1064,43 @@ func buildToolsFor(searcher *SemanticSearcher) []Tool {
 		renderChartTool(),
 		describeFilterSpaceTool(),
 		describeVirtualKeyTool(),
-		askUserToolDef(),
 	)
-	return tools
+	if userLimits {
+		tools = append(tools, describeUserLimitsTool())
+	}
+	return append(tools, askUserToolDef())
 }
 
 // declaredToolSets memoizes responsesTools(buildToolsFor(...)) - Warp's tool
-// set is fixed at compile time apart from whether semantic_search_logs is
-// offered, so every one of its JSON schemas was otherwise being re-parsed with
-// sonic on every single turn for no reason. One set per availability: sharing
-// a single set would either hide semantic_search_logs from a deployment that
-// has it or declare it to one that does not. The parsed result is read-only
-// from every call site (folded straight into an outgoing request's
-// Params.Tools), so sharing a slice across concurrent turns is safe.
-var declaredToolSets [2]struct {
+// set is fixed at compile time apart from whether semantic_search_logs and
+// describe_user_limits are offered, so every one of its JSON schemas was
+// otherwise being re-parsed with sonic on every single turn for no reason. One
+// set per combination: sharing a single set would either hide an optional tool
+// from a deployment that has it or declare it to one that does not. The parsed
+// result is read-only from every call site (folded straight into an outgoing
+// request's Params.Tools), so sharing a slice across concurrent turns is safe.
+var declaredToolSets [4]struct {
 	once  sync.Once
 	tools []schemas.ResponsesTool
 	err   error
 }
 
 // declaredTools returns Warp's tool declarations for a deployment with or
-// without semantic search, parsing each set once on first use rather than on
-// every turn.
-func declaredTools(semantic bool) ([]schemas.ResponsesTool, error) {
+// without semantic search and per-user limits, parsing each set once on first
+// use rather than on every turn.
+func declaredTools(semantic, userLimits bool) ([]schemas.ResponsesTool, error) {
 	index, searcher := 0, (*SemanticSearcher)(nil)
 	if semantic {
 		// buildToolsFor only checks for presence; the tool itself reads the
 		// searcher from ToolDeps at execution time.
 		index, searcher = 1, &SemanticSearcher{}
 	}
+	if userLimits {
+		index += 2
+	}
 	set := &declaredToolSets[index]
 	set.once.Do(func() {
-		set.tools, set.err = responsesTools(buildToolsFor(searcher))
+		set.tools, set.err = responsesTools(buildToolsFor(searcher, userLimits))
 	})
 	return set.tools, set.err
 }
