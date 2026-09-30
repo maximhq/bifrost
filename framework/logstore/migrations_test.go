@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -526,6 +528,26 @@ func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	}
 	assert.Equal(t, "logs", tables["idx_logs_project_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
+}
+
+// TestPerformanceIndexesHaveNoDuplicateColumns keeps the background builder from building the
+// same index twice under two names: a second index on the same columns costs a full build on
+// every upgraded deployment and a write on every insert, and the planner still picks one. A
+// partial index counts as a duplicate of a full one on the same columns, since an equality
+// filter on the column already implies its IS NOT NULL predicate.
+func TestPerformanceIndexesHaveNoDuplicateColumns(t *testing.T) {
+	onColumns := regexp.MustCompile(`(?i)\bON\s+(\w+)\s*(USING\s+\w+\s*)?\(([^)]*)\)`)
+	seen := map[string]string{}
+	for _, idx := range performanceIndexes {
+		match := onColumns.FindStringSubmatch(idx.sql)
+		require.NotNil(t, match, "cannot read the columns of %s from %q", idx.name, idx.sql)
+		key := strings.ToLower(strings.TrimSpace(match[1]+" "+strings.TrimSpace(match[2])) + "(" + strings.Join(strings.Fields(match[3]), " ") + ")")
+		if other, ok := seen[key]; ok {
+			t.Errorf("%s and %s both index %s", other, idx.name, key)
+			continue
+		}
+		seen[key] = idx.name
+	}
 }
 
 // TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
