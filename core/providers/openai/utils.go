@@ -211,6 +211,17 @@ func bareModelLower(model string) string {
 	return strings.ToLower(model)
 }
 
+// ConvertOpenAIMessagesToBifrostMessages maps the OpenAI wire message shape used by the
+// /openai/* integration onto Bifrost's internal chat schema. Name, role, content and tool
+// results pass through as sent; an assistant turn additionally gets its replayed reasoning
+// normalized onto Reasoning, because downstream provider logic gates on that field rather
+// than on whichever spelling the client happened to use.
+//
+// The normalization is delegated to schemas.FirstNonEmptyReplayedReasoning instead of being
+// written here, so this ingress and the native /v1/chat/completions decoder cannot drift on
+// which spelling wins, what counts as empty, or which reasoning_details types carry
+// plaintext. Note the inversion at the call site: on this wire shape the Go field Reasoning
+// is bound to `reasoning_content` and ReasoningAlias to `reasoning`.
 func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.ChatMessage {
 	bifrostMessages := make([]schemas.ChatMessage, len(messages))
 	for i, message := range messages {
@@ -224,18 +235,22 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			// Callers replay assistant reasoning under any of three keys. Normalize them
 			// onto Reasoning so downstream provider logic sees replayed reasoning
 			// regardless of spelling — DeepSeek in particular gates thinking on it.
-			reasoning := message.OpenAIChatAssistantMessage.Reasoning
-			if reasoning == nil {
-				reasoning = message.OpenAIChatAssistantMessage.ReasoningAlias
-			}
-			if reasoning == nil {
-				for _, detail := range message.OpenAIChatAssistantMessage.ReasoningDetails {
-					if detail.Text != nil {
-						reasoning = detail.Text
-						break
-					}
-				}
-			}
+			//
+			// Delegated to schemas rather than reimplemented here: this is the /openai/*
+			// ingress and ChatAssistantMessage.UnmarshalJSON is the native ingress, and both
+			// take the same client body. An independent copy is how the two drifted apart —
+			// this converter used to pick an empty reasoning_content over a real reasoning
+			// text and accept plaintext from reasoning.encrypted / reasoning.summary /
+			// untyped details, forwarding opaque bytes upstream as reasoning_content.
+			//
+			// Argument order is (reasoning_content, reasoning, details): on this wire shape
+			// the Go field Reasoning is bound to `reasoning_content` and ReasoningAlias to
+			// `reasoning`.
+			reasoning := schemas.FirstNonEmptyReplayedReasoning(
+				message.OpenAIChatAssistantMessage.Reasoning,
+				message.OpenAIChatAssistantMessage.ReasoningAlias,
+				message.OpenAIChatAssistantMessage.ReasoningDetails,
+			)
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
 				Reasoning:        reasoning,
