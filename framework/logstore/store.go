@@ -195,6 +195,8 @@ type LogStore interface {
 	FindAgentLog(ctx context.Context, id string) (*AgentLog, error)
 	FindAgentLogsForDeletion(ctx context.Context, ids []string) ([]*AgentLog, error)
 	ListAgentLogHistory(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogHistoryResult, error)
+	ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error)
+	FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error)
 	GetAgentLogStats(ctx context.Context, filter AgentLogHistoryFilter) (*AgentLogStats, error)
 	GetAgentHistogram(ctx context.Context, filter AgentLogHistoryFilter, bucketSizeSeconds int64) (*AgentHistogramResult, error)
 	GetAgentFilterData(ctx context.Context, dimensions []string, limit int, query string) (*AgentFilterData, error)

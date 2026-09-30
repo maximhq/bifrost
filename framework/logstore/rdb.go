@@ -5269,6 +5269,86 @@ func (s *RDBLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHi
 	return &AgentLogHistoryResult{Logs: rows, Pagination: pagination}, nil
 }
 
+// ListAgentLogOperations returns a bounded page of request rows with correlated events.
+func (s *RDBLogStore) ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error) {
+	filter.RecordKind = []string{"request"}
+	history, err := s.ListAgentLogHistory(ctx, filter, pagination)
+	if err != nil {
+		return nil, err
+	}
+	if len(history.Logs) == 0 {
+		return &AgentLogOperationResult{Logs: []AgentLogOperation{}, Pagination: history.Pagination}, nil
+	}
+
+	requestIDs := make([]string, 0, len(history.Logs))
+	for _, row := range history.Logs {
+		requestIDs = append(requestIDs, row.RequestID)
+	}
+	var rows []AgentLog
+	if err := s.ScopedDB(ctx).
+		Where("request_id IN ?", requestIDs).
+		Order("timestamp ASC, id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return buildAgentLogOperations(history.Logs, rows, history.Pagination), nil
+}
+
+// FindAgentLogOperation returns the request operation containing the identified row.
+func (s *RDBLogStore) FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error) {
+	entry, err := s.FindAgentLog(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	var rows []AgentLog
+	if err := s.ScopedDB(ctx).
+		Where("request_id = ?", entry.RequestID).
+		Order("timestamp ASC, id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		if rows[i].RecordKind == "request" {
+			operation := newAgentLogOperation(&rows[i], rows)
+			return &operation, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// buildAgentLogOperations preserves page order while grouping scoped event rows under requests.
+func buildAgentLogOperations(summaries []AgentLogSummary, rows []AgentLog, pagination PaginationOptions) *AgentLogOperationResult {
+	rowsByRequestID := make(map[string][]AgentLog, len(summaries))
+	requestsByID := make(map[string]*AgentLog, len(summaries))
+	for i := range rows {
+		row := &rows[i]
+		rowsByRequestID[row.RequestID] = append(rowsByRequestID[row.RequestID], *row)
+		if row.RecordKind == "request" {
+			requestsByID[row.ID] = row
+		}
+	}
+	operations := make([]AgentLogOperation, 0, len(summaries))
+	for _, summary := range summaries {
+		request := requestsByID[summary.ID]
+		if request == nil {
+			continue
+		}
+		operations = append(operations, newAgentLogOperation(request, rowsByRequestID[summary.RequestID]))
+	}
+	return &AgentLogOperationResult{Logs: operations, Pagination: pagination}
+}
+
+// newAgentLogOperation converts one request and its event rows to the public contract.
+func newAgentLogOperation(request *AgentLog, rows []AgentLog) AgentLogOperation {
+	operation := AgentLogOperation{AgentLogDetail: NewAgentLogDetail(request), Events: []AgentLogDetail{}}
+	for i := range rows {
+		if rows[i].RecordKind == "event" {
+			operation.Events = append(operation.Events, NewAgentLogDetail(&rows[i]))
+		}
+	}
+	return operation
+}
+
 func deserializeAgentSummaryGovernance(row *AgentLogSummary) {
 	entry := &AgentLog{
 		TeamIDs: row.TeamIDsStored, TeamNames: row.TeamNamesStored,

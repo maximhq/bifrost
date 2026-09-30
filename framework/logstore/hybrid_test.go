@@ -579,10 +579,12 @@ func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
 	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
 	requestBody := `{"jsonrpc":"2.0","method":"SendMessage"}`
 	responseBody := `{"jsonrpc":"2.0","result":{"taskId":"task-1"}}`
+	pluginLogs := `[{"plugin_name":"audit"}]`
+	errorDetails := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream failed"}}
 	entry := &AgentLog{
 		ID: "a2a-1", Timestamp: ts, RecordKind: "request",
 		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-a2a-1",
-		RequestBody: &requestBody, ResponseBody: &responseBody,
+		RequestBody: &requestBody, ResponseBody: &responseBody, PluginLogs: pluginLogs, ErrorDetailsParsed: errorDetails,
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
@@ -607,6 +609,12 @@ func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
 	require.NotNil(t, found.ResponseBody)
 	assert.Equal(t, requestBody, *found.RequestBody)
 	assert.Equal(t, responseBody, *found.ResponseBody)
+
+	operation, err := hybrid.FindAgentLogOperation(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, pluginLogs, operation.PluginLogs)
+	require.NotNil(t, operation.ErrorDetails)
+	assert.Equal(t, "upstream failed", operation.ErrorDetails.Error.Message)
 }
 
 func TestHybrid_HiddenAgentLogRetainsObjectWithoutHydration(t *testing.T) {

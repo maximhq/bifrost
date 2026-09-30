@@ -1583,11 +1583,20 @@ type AgentLogSummary struct {
 // bookkeeping never leave the log store through this type.
 type AgentLogDetail struct {
 	AgentLogSummary
-	RequestBody  *string               `json:"request_body,omitempty"`
-	ResponseBody *string               `json:"response_body,omitempty"`
-	EventBody    *string               `json:"event_body,omitempty"`
-	PluginLogs   string                `json:"plugin_logs,omitempty"`
-	ErrorDetails *schemas.BifrostError `json:"error_details,omitempty"`
+	RequestBody      *string               `json:"request_body,omitempty"`
+	ResponseBody     *string               `json:"response_body,omitempty"`
+	EventBody        *string               `json:"event_body,omitempty"`
+	PluginLogs       string                `json:"plugin_logs,omitempty"`
+	ErrorDetails     *schemas.BifrostError `json:"error_details,omitempty"`
+	hasObject        bool
+	contentHidden    bool
+	payloadReference *string
+}
+
+// AgentLogOperation is one request row with the event rows produced by that request.
+type AgentLogOperation struct {
+	AgentLogDetail
+	Events []AgentLogDetail `json:"events"`
 }
 
 func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
@@ -1609,6 +1618,7 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 		ContentType:       entry.ContentType, Input: entry.RequestBody,
 		RequestBody: entry.RequestBody, ResponseBody: entry.ResponseBody, EventBody: entry.EventBody,
 		PluginLogs: entry.PluginLogs, ErrorDetails: entry.ErrorDetailsParsed,
+		hasObject: entry.HasObject, contentHidden: entry.ContentHidden, payloadReference: entry.PayloadReference,
 	}
 }
 
@@ -1616,6 +1626,12 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 type AgentLogHistoryResult struct {
 	Logs       []AgentLogSummary `json:"logs"`
 	Pagination PaginationOptions `json:"pagination"`
+}
+
+// AgentLogOperationResult is a bounded page of hydrated request operations.
+type AgentLogOperationResult struct {
+	Logs       []AgentLogOperation `json:"logs"`
+	Pagination PaginationOptions   `json:"pagination"`
 }
 
 // AgentLog records Agent Gateway request and event observability. Queryable
