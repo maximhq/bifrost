@@ -1,3 +1,4 @@
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import WarpPanel from "@/components/warp/warpPanel";
 import { useIsNarrowerThan } from "@/hooks/use-mobile";
@@ -12,28 +13,38 @@ export default function WarpDock({ children }: { children: React.ReactNode }) {
 	const isMobile = useIsNarrowerThan(WARP_DOCK_MIN_WIDTH);
 	const isOpen = !!warp?.isOpen;
 
-	// Wrapper is unconditional so toggling Warp never remounts the page.
+	// The group is unconditional so toggling Warp never remounts the page; only the handle and
+	// the Warp panel come and go.
 	return (
-		// clip, not hidden: contains the slide-in without making this a scroll container.
-		<div className="flex min-h-0 w-full min-w-0 flex-1 overflow-x-clip" data-testid="warp-dock">
-			<div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
+		<div className="flex min-h-0 w-full min-w-0 flex-1" data-testid="warp-dock">
+			<ResizablePanelGroup direction="horizontal" className="min-h-0 min-w-0">
+				<ResizablePanel id="warp-content" minSize="360px" className="flex min-h-0 min-w-0 flex-col">
+					{children}
+				</ResizablePanel>
 
-			{isOpen && !isMobile && (
-				<aside
-					// CSS hidden below 1024px covers the frame before useIsNarrowerThan resolves.
-					className="animate-in slide-in-from-right-4 fade-in-0 hidden min-h-0 w-[400px] shrink-0 flex-col duration-200 ease-out will-change-transform motion-reduce:animate-none min-[1024px]:flex xl:w-[460px]"
-					data-testid="warp-dock-panel"
-				>
-					<div className="dark:bg-card min-h-0 flex-1 overflow-hidden border border-gray-200 bg-card md:mr-2 md:mb-3 md:rounded-md dark:border-zinc-800">
-						<WarpPanel />
-					</div>
-				</aside>
-			)}
+				{isOpen && !isMobile && (
+					<>
+						<ResizableHandle aria-label="Resize Warp panel" className="bg-transparent md:-translate-x-1.5" data-testid="warp-dock-resize-handle" />
+						<ResizablePanel
+							id="warp-panel"
+							defaultSize="400px"
+							minSize="320px"
+							maxSize="50%"
+							className="min-h-0"
+							data-testid="warp-dock-panel"
+						>
+							<div className="dark:bg-card bg-card h-full min-h-0 overflow-hidden border border-gray-200 md:mr-2 md:mb-3 md:rounded-md dark:border-zinc-800">
+								<WarpPanel />
+							</div>
+						</ResizablePanel>
+					</>
+				)}
+			</ResizablePanelGroup>
 
 			{isOpen && isMobile && (
 				<Sheet open onOpenChange={(open) => !open && warp?.close()}>
 					{/* Override SheetContent's sm:w-3/4 so the sheet stays full width. */}
-					<SheetContent side="right" className="p-0 sm:w-full sm:max-w-none w-[calc(100%_-_16px)]" data-testid="warp-dock-sheet">
+					<SheetContent side="right" className="w-[calc(100%_-_16px)] p-0 sm:w-full sm:max-w-none" data-testid="warp-dock-sheet">
 						{/* Radix names the dialog from SheetTitle, not the panel's own heading. */}
 						<SheetTitle className="sr-only">Warp</SheetTitle>
 						<SheetDescription className="sr-only">Ask Warp questions about this deployment&apos;s logs, usage and spend.</SheetDescription>
