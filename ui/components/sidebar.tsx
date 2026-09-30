@@ -4,6 +4,7 @@ import {
 	BadgeInfo,
 	BookOpenText,
 	BookUser,
+	Bot,
 	Boxes,
 	BoxIcon,
 	Building,
@@ -140,6 +141,9 @@ const productionSetupHelpCard = {
 	dismissible: true,
 };
 
+const newBadgeClassName =
+	"relative overflow-hidden px-1.5 py-0 text-[10px] leading-4 group-data-[collapsible=icon]:hidden after:pointer-events-none after:absolute after:inset-y-0 after:-left-full after:w-full after:skew-x-[-18deg] after:bg-gradient-to-r after:from-transparent after:via-primary/25 after:to-transparent after:opacity-0 after:content-[''] after:animate-[sidebar-new-badge-shine_1200ms_cubic-bezier(0.22,1,0.36,1)_260ms_both]";
+
 // Sidebar item interface
 interface SidebarItem {
 	title: string;
@@ -162,7 +166,7 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 
 const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
 
-const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs"]);
+const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs", "/workspace/agent-logs"]);
 
 const preserveTimeFilters = (baseHref: string, subItemUrl: string, pathname: string, search: string): string => {
 	if (TimeFilterPages.has(subItemUrl) && TimeFilterPages.has(pathname)) {
@@ -229,7 +233,8 @@ const SidebarItemView = ({
 	const isRouteMatch = (url: string) => {
 		// Exact-match base paths that have sibling tab routes nested under them, so the base
 		// tab isn't also highlighted when a child tab (e.g. /settings) is active.
-		if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
+		if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing" || url === "/workspace/agent-gateway")
+			return pathname === url;
 		// Avoid double-highlighting with "/workspace/mcp-registry/library"
 		if (url === "/workspace/mcp-registry") return !pathname.startsWith("/workspace/mcp-registry/library") && pathname.startsWith(url);
 		return pathname.startsWith(url);
@@ -277,6 +282,11 @@ const SidebarItemView = ({
 				>
 					{item.title}
 				</span>
+				{item.new && (
+					<Badge data-new-badge="true" className={`${newBadgeClassName} ml-auto ${hasSubItems ? "mr-2" : ""}`}>
+						New
+					</Badge>
+				)}
 				{item.tag && (
 					<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
 						{item.tag}
@@ -585,6 +595,8 @@ export default function AppSidebar() {
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
+	const hasAgentGatewayAccess = useRbac(RbacResource.AgentGateway, RbacOperation.View);
+	const hasAgentLogsAccess = useRbac(RbacResource.AgentLogs, RbacOperation.View);
 	const hasVirtualMCPsAccess = useRbac(RbacResource.VirtualMCPs, RbacOperation.View);
 	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
@@ -676,7 +688,8 @@ export default function AppSidebar() {
 				url: "/workspace/logs",
 				icon: Telescope,
 				description: "Request logs & monitoring",
-				hasAccess: hasLogsAccess,
+				hasAccess:
+					hasLogsAccess || hasDashboardAccess || hasMCPLogsAccess || hasAgentLogsAccess || hasObservabilityAccess || hasSettingsAccess,
 				subItems: [
 					{
 						title: "Dashboard",
@@ -698,6 +711,13 @@ export default function AppSidebar() {
 						icon: MCPIcon,
 						description: "MCP tool execution logs",
 						hasAccess: hasMCPLogsAccess,
+					},
+					{
+						title: "Agent Logs",
+						url: "/workspace/agent-logs",
+						icon: Bot,
+						description: "Agent request logs",
+						hasAccess: hasAgentLogsAccess,
 					},
 					{
 						title: "Connectors",
@@ -829,6 +849,37 @@ export default function AppSidebar() {
 						icon: Settings,
 						description: "MCP configuration",
 						hasAccess: hasMCPGatewayAccess,
+					},
+				],
+			},
+			{
+				title: "Agents",
+				url: "/workspace/agent-gateway",
+				icon: Bot,
+				description: "Register and manage A2A agents",
+				hasAccess: hasAgentGatewayAccess,
+				new: true,
+				subItems: [
+					{
+						title: "Agent Catalog",
+						url: "/workspace/agent-gateway",
+						icon: LayoutGrid,
+						description: "Registered A2A agents",
+						hasAccess: hasAgentGatewayAccess,
+					},
+					{
+						title: "Push Configurations",
+						url: "/workspace/agent-gateway/push-configs",
+						icon: Webhook,
+						description: "Stored A2A push callbacks",
+						hasAccess: hasAgentGatewayAccess,
+					},
+					{
+						title: "Agent Settings",
+						url: "/workspace/config/agent-gateway",
+						icon: Settings,
+						description: "Agent Gateway configuration",
+						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
@@ -1175,6 +1226,8 @@ export default function AppSidebar() {
 			hasDashboardAccess,
 			hasModelProvidersAccess,
 			hasMCPGatewayAccess,
+			hasAgentGatewayAccess,
+			hasAgentLogsAccess,
 			hasVirtualMCPsAccess,
 			hasMCPLogsAccess,
 			hasPluginsAccess,
@@ -1263,7 +1316,8 @@ export default function AppSidebar() {
 	useEffect(() => {
 		const newExpandedItems = new Set<string>();
 		const isRouteMatch = (url: string) => {
-			if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
+			if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing" || url === "/workspace/agent-gateway")
+				return pathname === url;
 			return pathname.startsWith(url);
 		};
 		items.forEach((item) => {
