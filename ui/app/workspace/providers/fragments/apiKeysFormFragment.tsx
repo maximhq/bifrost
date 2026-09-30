@@ -163,8 +163,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
 
-	// Auth type state for Bedrock: 'iam_role', 'explicit', or 'api_key'
-	const [bedrockAuthType, setBedrockAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
+	// Auth type state for Bedrock: inherited credentials, named profile, explicit credentials, or API key
+	const [bedrockAuthType, setBedrockAuthType] = useState<"iam_role" | "profile" | "explicit" | "api_key">("iam_role");
 
 	// Auth type state for Bedrock Mantle: 'iam_role', 'explicit', or 'api_key'
 	const [bedrockMantleAuthType, setBedrockMantleAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
@@ -231,24 +231,29 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 		// an empty form and settled on the personal access token tab.
 	}, [isDatabricks, form, databricksDefaults]);
 
+	const bedrockDefaults = form.formState.defaultValues?.key?.bedrock_key_config;
 	useEffect(() => {
 		if (form.formState.isDirty) return;
 		if (isBedrock) {
 			const accessKey = form.getValues("key.bedrock_key_config.access_key");
 			const secretKey = form.getValues("key.bedrock_key_config.secret_key");
+			const profile = form.getValues("key.bedrock_key_config.profile");
 			const apiKey = form.getValues("key.value");
 			const hasExplicitCreds = accessKey?.value || accessKey?.ref || secretKey?.value || secretKey?.ref;
+			const hasProfile = profile?.value || profile?.ref;
 			const hasApiKey = apiKey?.value || apiKey?.ref;
-			let detected: "iam_role" | "explicit" | "api_key" = "iam_role";
+			let detected: "iam_role" | "profile" | "explicit" | "api_key" = "iam_role";
 			if (hasExplicitCreds) {
 				detected = "explicit";
+			} else if (hasProfile) {
+				detected = "profile";
 			} else if (hasApiKey) {
 				detected = "api_key";
 			}
 			setBedrockAuthType(detected);
 			form.setValue("key.bedrock_key_config._auth_type", detected);
 		}
-	}, [isBedrock, form]);
+	}, [isBedrock, form, bedrockDefaults]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
@@ -1238,17 +1243,19 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						<Tabs
 							value={bedrockAuthType}
 							onValueChange={(v) => {
-								setBedrockAuthType(v as "iam_role" | "explicit" | "api_key");
+								setBedrockAuthType(v as "iam_role" | "profile" | "explicit" | "api_key");
 								form.setValue("key.bedrock_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
-								if (v === "iam_role") {
-									// Clear explicit credentials and API key when switching to IAM Role
+								if (v === "iam_role" || v === "profile") {
 									form.setValue("key.bedrock_key_config.access_key", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.secret_key", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.session_token", undefined, { shouldDirty: true });
 									form.setValue("key.value", undefined, { shouldDirty: true });
+									if (v === "iam_role") {
+										form.setValue("key.bedrock_key_config.profile", undefined, { shouldDirty: true });
+									}
 								} else if (v === "explicit") {
-									// Clear API key when switching to Explicit Credentials
 									form.setValue("key.value", undefined, { shouldDirty: true });
+									form.setValue("key.bedrock_key_config.profile", undefined, { shouldDirty: true });
 								} else if (v === "api_key") {
 									// Clear AWS credentials and assume-role fields when switching to API Key
 									form.setValue("key.bedrock_key_config.access_key", undefined, { shouldDirty: true });
@@ -1257,12 +1264,16 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									form.setValue("key.bedrock_key_config.role_arn", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.external_id", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.session_name", undefined, { shouldDirty: true });
+									form.setValue("key.bedrock_key_config.profile", undefined, { shouldDirty: true });
 								}
 							}}
 						>
-							<TabsList className="flex w-full justify-start">
+							<TabsList className="flex h-auto w-full flex-wrap justify-start">
 								<TabsTrigger data-testid="apikey-bedrock-iam-role-tab" value="iam_role">
 									IAM Role (Inherited)
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-bedrock-profile-tab" value="profile">
+									AWS Profile / SSO
 								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-bedrock-explicit-credentials-tab" value="explicit">
 									Explicit Credentials
@@ -1273,7 +1284,10 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</TabsList>
 						</Tabs>
 						{bedrockAuthType === "iam_role" && (
-							<p className="text-muted-foreground text-sm">Uses IAM roles attached to your environment (EC2, Lambda, ECS, EKS).</p>
+							<p className="text-muted-foreground text-sm">Uses the gateway process&apos;s default AWS credential chain.</p>
+						)}
+						{bedrockAuthType === "profile" && (
+							<p className="text-muted-foreground text-sm">Uses a named AWS profile available to the gateway process.</p>
 						)}
 						{bedrockAuthType === "api_key" && (
 							<p className="text-muted-foreground text-sm">Uses a Bearer token for API key authentication.</p>
@@ -1379,6 +1393,25 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</FormItem>
 						)}
 					/>
+					{bedrockAuthType === "profile" && (
+						<FormField
+							control={control}
+							name={`key.bedrock_key_config.profile`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>AWS Profile (Required)</FormLabel>
+									<FormDescription>
+										Named profile from ~/.aws/config or ~/.aws/credentials. For SSO, run aws sso login --profile &lt;name&gt; on the gateway
+										host. This profile can provide the source credentials for Assume Role below.
+									</FormDescription>
+									<FormControl>
+										<SecretVarInput data-testid="apikey-bedrock-profile-input" placeholder="my-profile or env.AWS_PROFILE" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 					{bedrockAuthType !== "api_key" && (
 						<>
 							<FormField

@@ -1,14 +1,82 @@
 package bedrock
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUploadToS3_UsesConfiguredProfileOverAmbientCredentials(t *testing.T) {
+	configureBedrockProfileTestCredentials(t)
+
+	authHeaders := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeaders <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	t.Setenv("AWS_ENDPOINT_URL_S3", server.URL)
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "127.0.0.1,localhost")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	keyConfig := &schemas.BedrockKeyConfig{
+		Profile: schemas.NewSecretVar("team-a"),
+		Region:  schemas.NewSecretVar("us-east-1"),
+	}
+	if err := uploadToS3(ctx, keyConfig, "us-east-1", "test-bucket", "input.jsonl", []byte("{}\n")); err != nil {
+		t.Fatalf("uploadToS3 failed: %s", err.Error.Message)
+	}
+
+	select {
+	case authorization := <-authHeaders:
+		assert.Contains(t, authorization, "Credential=PROFILE_A_ACCESS_KEY/")
+		assert.NotContains(t, authorization, "AMBIENT_ACCESS_KEY")
+	default:
+		t.Fatal("S3 endpoint did not receive an upload")
+	}
+}
+
+func TestUploadToS3_MissingProfileDoesNotUseAmbientCredentials(t *testing.T) {
+	configureBedrockProfileTestCredentials(t)
+
+	requests := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	t.Setenv("AWS_ENDPOINT_URL_S3", server.URL)
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "127.0.0.1,localhost")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	keyConfig := &schemas.BedrockKeyConfig{
+		Profile: schemas.NewSecretVar("missing-team"),
+		Region:  schemas.NewSecretVar("us-east-1"),
+	}
+	err := uploadToS3(ctx, keyConfig, "us-east-1", "test-bucket", "input.jsonl", []byte("{}\n"))
+	require.NotNil(t, err)
+	select {
+	case <-requests:
+		t.Fatal("S3 upload used ambient credentials after the selected profile was missing")
+	default:
+	}
+}
 
 // TestConvertBedrockRequestsToJSONL_NoModelIDInModelInput guards against
 // regressing the Bedrock batch bug where modelId was injected into each

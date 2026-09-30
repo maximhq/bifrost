@@ -550,7 +550,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 	}
 
 	if mergedKey.BedrockKeyConfig != nil {
-		var accessKey, secretKey, sessionToken, region, arn, roleARN, externalID, sessionName, batchRoleARN *schemas.SecretVar
+		var accessKey, secretKey, sessionToken, region, arn, roleARN, externalID, sessionName, profile, batchRoleARN *schemas.SecretVar
 		if oldRawKey.BedrockKeyConfig != nil {
 			accessKey = &oldRawKey.BedrockKeyConfig.AccessKey
 			secretKey = &oldRawKey.BedrockKeyConfig.SecretKey
@@ -560,6 +560,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			roleARN = oldRawKey.BedrockKeyConfig.RoleARN
 			externalID = oldRawKey.BedrockKeyConfig.ExternalID
 			sessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
+			profile = oldRawKey.BedrockKeyConfig.Profile
 			batchRoleARN = oldRawKey.BedrockKeyConfig.BatchRoleARN
 		}
 		for _, item := range []struct {
@@ -575,6 +576,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			{mergedKey.BedrockKeyConfig.RoleARN, roleARN, "bedrock_key_config.role_arn"},
 			{mergedKey.BedrockKeyConfig.ExternalID, externalID, "bedrock_key_config.external_id"},
 			{mergedKey.BedrockKeyConfig.RoleSessionName, sessionName, "bedrock_key_config.session_name"},
+			{mergedKey.BedrockKeyConfig.Profile, profile, "bedrock_key_config.profile"},
 			{mergedKey.BedrockKeyConfig.BatchRoleARN, batchRoleARN, "bedrock_key_config.batch_role_arn"},
 		} {
 			if err := preserve(item.incoming, item.stored, item.field); err != nil {
@@ -865,6 +867,17 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.Bedrock:
 		if key.BedrockKeyConfig == nil || key.BedrockKeyConfig.Region == nil || !key.BedrockKeyConfig.Region.IsSet() {
 			return fmt.Errorf("bedrock_key_config.region is required for Bedrock keys")
+		}
+		if profile := key.BedrockKeyConfig.Profile; profile != nil {
+			if !profile.IsSet() || (profile.GetValue() != "" && strings.TrimSpace(profile.GetValue()) == "") {
+				return fmt.Errorf("bedrock_key_config.profile must be non-empty when configured")
+			}
+			if key.Value.IsSet() ||
+				key.BedrockKeyConfig.AccessKey.IsSet() ||
+				key.BedrockKeyConfig.SecretKey.IsSet() ||
+				key.BedrockKeyConfig.SessionToken.IsSet() {
+				return fmt.Errorf("bedrock_key_config.profile cannot be combined with explicit credentials or a Bedrock API key")
+			}
 		}
 	case schemas.BedrockMantle:
 		if key.BedrockMantleKeyConfig == nil || key.BedrockMantleKeyConfig.Region == nil || !key.BedrockMantleKeyConfig.Region.IsSet() {

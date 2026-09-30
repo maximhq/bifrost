@@ -641,6 +641,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.RoleSessionName != nil {
 				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
 			}
+			if key.BedrockKeyConfig.Profile != nil {
+				bedrockConfig.Profile = key.BedrockKeyConfig.Profile.Redacted()
+			}
 			if key.BedrockKeyConfig.BatchRoleARN != nil {
 				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
 			}

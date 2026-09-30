@@ -342,6 +342,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vllm_key_config_columns"}, run: migrationAddVLLMKeyConfigColumns},
 	{IDs: []string{"widen_encrypted_varchar_columns"}, run: migrationWidenEncryptedVarcharColumns},
 	{IDs: []string{"add_bedrock_assume_role_columns"}, run: migrationAddBedrockAssumeRoleColumns},
+	{IDs: []string{"add_bedrock_profile_column"}, run: migrationAddBedrockProfileColumn},
 	{IDs: []string{"add_store_raw_request_response_column"}, run: migrationAddStoreRawRequestResponseColumn},
 	{IDs: []string{"add_pricing_refactor_columns"}, run: migrationAddPricingRefactorColumns},
 	{IDs: []string{"rename_truncated_pricing_column"}, run: migrationRenameTruncatedPricingColumn},
@@ -6576,6 +6577,36 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB, log
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running widen encrypted varchar columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBedrockProfileColumn adds the bedrock_profile column to the config_keys
+// table so Bedrock keys can select a named profile from ~/.aws/config / ~/.aws/credentials
+// (including AWS SSO profiles) for the default credential chain.
+func migrationAddBedrockProfileColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bedrock_profile_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "bedrock_profile"); err != nil {
+				return fmt.Errorf("failed to add bedrock_profile column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "bedrock_profile"); err != nil {
+				return fmt.Errorf("failed to drop bedrock_profile column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running bedrock profile column migration: %s", err.Error())
 	}
 	return nil
 }

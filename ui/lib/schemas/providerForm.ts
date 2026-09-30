@@ -127,6 +127,7 @@ const BedrockKeyConfigSchema = z
 		secret_key: z.string(),
 		session_token: z.string().optional(),
 		region: z.string().min(1, "Region is required for Bedrock keys"),
+		profile: z.string().optional(),
 		role_arn: z.string().optional(),
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
@@ -159,6 +160,29 @@ const BedrockKeyConfigSchema = z
 		{
 			message: "For Bedrock: either provide both Access Key and Secret Key, or leave both empty for IAM role authentication",
 			path: ["access_key"],
+		},
+	)
+	.refine(
+		(data) => {
+			return data.profile === undefined || data.profile === "" || data.profile.trim() !== "";
+		},
+		{
+			message: "Profile must be non-empty when configured",
+			path: ["profile"],
+		},
+	)
+	.refine(
+		(data) => {
+			const profile = data.profile?.trim() || "";
+			if (profile === "") return true;
+			const accessKey = data.access_key?.trim() || "";
+			const secretKey = data.secret_key?.trim() || "";
+			const sessionToken = data.session_token?.trim() || "";
+			return accessKey === "" && secretKey === "" && sessionToken === "";
+		},
+		{
+			message: "Profile cannot be combined with explicit AWS credentials",
+			path: ["profile"],
 		},
 	);
 
@@ -200,24 +224,29 @@ const ReplicateKeyConfigSchema = z.object({
 	use_deployments_endpoint: z.boolean().optional(),
 });
 
-const KeySchema = z.object({
-	id: z.string(),
-	name: z.string().min(1, "Name is required for the key"),
-	value: z.string(),
-	models: z.array(z.string()),
-	weight: z.number().min(0.1, "Key weights must be between 0.1 and 1").max(1, "Key weights must be between 0.1 and 1"),
-	aliases: z
-		.record(z.string(), aliasConfigSchema)
-		.optional()
-		.refine((value) => !value || isValidAliases(value), { message: "Deployments must have a Model ID set on every row" }),
-	azure_key_config: AzureKeyConfigSchema.optional(),
-	vertex_key_config: VertexKeyConfigSchema.optional(),
-	bedrock_key_config: BedrockKeyConfigSchema.optional(),
-	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
-	replicate_key_config: ReplicateKeyConfigSchema.optional(),
-	github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
-	use_for_batch_api: z.boolean().optional(),
-});
+const KeySchema = z
+	.object({
+		id: z.string(),
+		name: z.string().min(1, "Name is required for the key"),
+		value: z.string(),
+		models: z.array(z.string()),
+		weight: z.number().min(0.1, "Key weights must be between 0.1 and 1").max(1, "Key weights must be between 0.1 and 1"),
+		aliases: z
+			.record(z.string(), aliasConfigSchema)
+			.optional()
+			.refine((value) => !value || isValidAliases(value), { message: "Deployments must have a Model ID set on every row" }),
+		azure_key_config: AzureKeyConfigSchema.optional(),
+		vertex_key_config: VertexKeyConfigSchema.optional(),
+		bedrock_key_config: BedrockKeyConfigSchema.optional(),
+		bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
+		replicate_key_config: ReplicateKeyConfigSchema.optional(),
+		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
+		use_for_batch_api: z.boolean().optional(),
+	})
+	.refine((data) => !data.bedrock_key_config?.profile?.trim() || !data.value.trim(), {
+		message: "AWS Profile cannot be combined with a Bedrock API key",
+		path: ["bedrock_key_config", "profile"],
+	});
 
 // Main provider form schema
 export const ProviderFormSchema = z

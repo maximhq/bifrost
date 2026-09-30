@@ -6162,6 +6162,12 @@
                   "type": "string",
                   "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
                 },
+                "profile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S",
+                  "description": "Named AWS profile (including AWS SSO profiles) for this Bedrock key; cannot be combined with explicit credentials (can use env. prefix)"
+                },
                 "external_id": {
                   "type": "string",
                   "description": "External ID for AssumeRole (can use env. prefix)"
@@ -6246,12 +6252,49 @@
               "required": [
                 "region"
               ],
+              "not": {
+                "allOf": [
+                  {
+                    "required": ["profile"]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "required": ["access_key"],
+                        "properties": {"access_key": {"minLength": 1}}
+                      },
+                      {
+                        "required": ["secret_key"],
+                        "properties": {"secret_key": {"minLength": 1}}
+                      },
+                      {
+                        "required": ["session_token"],
+                        "properties": {"session_token": {"minLength": 1}}
+                      }
+                    ]
+                  }
+                ]
+              },
               "additionalProperties": false
             },
             "use_openai_endpoints": {
               "type": "boolean",
               "description": "Routes chat completions and responses requests through Bedrock's OpenAI-compatible endpoints (/openai/v1) instead of Converse, for models that serve them. Converse is used for everything else. Bedrock Guardrails, performanceConfig and requestMetadata apply only on Converse: the OpenAI-compatible endpoints accept and ignore them."
             }
+          },
+          "not": {
+            "allOf": [
+              {
+                "required": ["value"],
+                "properties": {"value": {"minLength": 1}}
+              },
+              {
+                "required": ["bedrock_key_config"],
+                "properties": {
+                  "bedrock_key_config": {"required": ["profile"]}
+                }
+              }
+            ]
           }
         }
       ]
