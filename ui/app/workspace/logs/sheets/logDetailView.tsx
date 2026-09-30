@@ -42,6 +42,7 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
+import { getLogRoutingPanel } from "@/lib/registries/logs";
 import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
 import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
@@ -53,6 +54,7 @@ import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappin
 import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/logs";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
@@ -75,6 +77,7 @@ import {
 	isClientToolCallItem,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
+	isShownMetadataKey,
 	parseRoutingDecisionLine,
 	pickNextSessionLog,
 	resolveRawJsonNoticeState,
@@ -1288,6 +1291,8 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	// A downstream build can draw its own routing record at the top of the Routing tab.
+	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
@@ -2811,46 +2816,14 @@ export function LogDetailView({
 					{!isContainer &&
 						!isPassthrough &&
 						log.metadata &&
-						Object.keys(log.metadata).filter((k) => {
-							if (k === "isAsyncRequest") return false;
-							if (
-								isRealtimeTurn &&
-								[
-									"realtime_session_id",
-									"provider_session_id",
-									"realtime_source",
-									"realtime_event_type",
-									"realtime_transport",
-									"realtime_voice",
-									"realtime",
-								].includes(k)
-							)
-								return false;
-							return true;
-						}).length > 0 && (
+						Object.keys(log.metadata).some((k) => isShownMetadataKey(k, isRealtimeTurn)) && (
 							<>
 								<DottedSeparator />
 								<div className="space-y-4">
 									<BlockHeader title="Metadata" />
 									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 										{Object.entries(log.metadata)
-											.filter(([key]) => {
-												if (key === "isAsyncRequest") return false;
-												if (
-													isRealtimeTurn &&
-													[
-														"realtime_session_id",
-														"provider_session_id",
-														"realtime_source",
-														"realtime_event_type",
-														"realtime_transport",
-														"realtime_voice",
-														"realtime",
-													].includes(key)
-												)
-													return false;
-												return true;
-											})
+											.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 											.map(([key, value]) => (
 												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
 											))}
@@ -3805,6 +3778,7 @@ export function LogDetailView({
 				</TabsContent>
 
 				<TabsContent value="routing" className="space-y-3">
+					{RoutingPanel && <RoutingPanel log={log} />}
 					{log.attempt_trail && log.attempt_trail.length > 1 && (
 						<CollapsibleBox
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}

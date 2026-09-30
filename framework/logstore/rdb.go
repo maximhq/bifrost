@@ -4668,14 +4668,16 @@ func (s *RDBLogStore) ListUserAgentMappings(ctx context.Context, activeOnly bool
 }
 
 // metadataSystemKeys are metadata keys added by the system that should be excluded from filter data.
-// The load balancer's schema-version and exclusion-list keys are hidden because they are either
-// constant or high-cardinality; its enum-valued decision keys stay visible so operators can filter
-// on them.
 var metadataSystemKeys = map[string]struct{}{
-	"isAsyncRequest":                                          {},
-	schemas.LoadBalancerMetadataPrefix + "v":                  {},
-	schemas.LoadBalancerMetadataPrefix + "excluded_providers": {},
-	schemas.LoadBalancerMetadataPrefix + "excluded_keys":      {},
+	"isAsyncRequest": {},
+}
+
+// isMetadataSystemKey reports whether a metadata key is the system's rather than the caller's, and
+// so stays out of the filter data. Every key under schemas.LoadBalancerMetadataPrefix is: it is
+// the router's own record of an attempt, not caller metadata.
+func isMetadataSystemKey(key string) bool {
+	_, isSystem := metadataSystemKeys[key]
+	return isSystem || strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix)
 }
 
 const (
@@ -4717,7 +4719,7 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 			continue
 		}
 		for key, val := range parsed {
-			if _, isSystem := metadataSystemKeys[key]; isSystem {
+			if isMetadataSystemKey(key) {
 				continue
 			}
 			if !isValidMetadataKey(key) {
