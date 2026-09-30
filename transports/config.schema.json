@@ -2140,6 +2140,8 @@
           },
           "agent_card_url": {
             "type": "string",
+            "format": "uri",
+            "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
             "description": "Absolute http(s) URL of the upstream agent's Agent Card (typically .../.well-known/agent-card.json)."
           },
           "tenant": {
@@ -7674,20 +7676,28 @@
           "description": "OAuth client-credentials configuration (for type 'oauth').",
           "properties": {
             "provider_url": {
-              "type": "string"
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
             },
             "discovery_url": {
-              "type": "string"
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
             },
             "token_url": {
-              "type": "string"
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
             },
             "client_id": {
               "type": "string",
+              "minLength": 1,
               "description": "OAuth client ID (can use env. or vault. prefix)."
             },
             "client_secret": {
               "type": "string",
+              "minLength": 1,
               "description": "OAuth client secret (can use env. or vault. prefix)."
             },
             "scopes": {
@@ -7696,11 +7706,11 @@
                 "type": "string"
               }
             },
-            "audience": {
+            "resource": {
               "type": "string"
             }
           },
-          "additionalProperties": true
+          "additionalProperties": false
         },
         "security_schemes": {
           "type": "array",
@@ -7732,7 +7742,51 @@
           "additionalProperties": false
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "oauth"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "oauth"
+            ],
+            "properties": {
+              "oauth": {
+                "required": [
+                  "client_id",
+                  "client_secret"
+                ],
+                "anyOf": [
+                  {
+                    "required": [
+                      "provider_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "discovery_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "token_url"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "mcp_client_config": {
       "type": "object",
