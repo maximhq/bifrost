@@ -4233,8 +4233,12 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	// Convert messages directly to ChatMessage format
 	var bifrostMessages []schemas.ResponsesMessage
 
-	// Convert regular messages using the new conversion method
-	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(ctx, req.Messages, req.System, false, provider == schemas.Bedrock)
+	// Group tool calls with the blocks around them when this request may run on
+	// Bedrock. A bedrock/ prefix is not the only such request: governance can
+	// route a bare Claude id after this conversion, and the ungrouped converter
+	// hoists thinking blocks, which Converse rejects as a modified block.
+	keepToolsGrouped := provider == schemas.Bedrock || schemas.IsAnthropicModel(req.Model)
+	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(ctx, req.Messages, req.System, false, keepToolsGrouped)
 	bifrostMessages = append(bifrostMessages, convertedMessages...)
 
 	// Convert tools if present
