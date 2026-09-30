@@ -184,6 +184,20 @@ const FilterSchema = `{
   }
 }`
 
+// unknownFilterFieldsError is the refusal for a filter key FilterSchema does not
+// declare. It is typed so executeTool can tell a misplaced argument (a key the
+// tool itself takes beside filters) from a key nothing takes: the bare list of
+// supported fields said nothing about where "limit" belongs, and the model had
+// to guess its way out.
+type unknownFilterFieldsError struct {
+	fields    []string
+	supported []string
+}
+
+func (e *unknownFilterFieldsError) Error() string {
+	return fmt.Sprintf("unknown filter fields: %s. Supported fields are: %s", strings.Join(e.fields, ", "), strings.Join(e.supported, ", "))
+}
+
 // parseFilters converts the model's filter object into SearchFilters.
 //
 // Unknown keys are rejected rather than ignored. A silently dropped filter
@@ -220,13 +234,9 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		// Listed from the set the check itself uses. Written out by hand, the
 		// list fell behind the schema the first time a filter was added.
 		supported := slices.Sorted(maps.Keys(known))
-		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: %s", strings.Join(unknown, ", "), strings.Join(supported, ", "))
+		return nil, &unknownFilterFieldsError{fields: unknown, supported: supported}
 	}
 
-	// Presence is checked here, not left to parseTime: indexing a map gives nil
-	// for an absent key and for an explicit JSON null alike, so `"start_time":
-	// null` took the default window instead of being rejected - and FilterSchema
-	// declares both as strings, so null was never in the contract.
 	// Presence is checked here, not left to parseTime: indexing a map gives nil
 	// for an absent key and for an explicit JSON null alike, so `"start_time":
 	// null` took the default window instead of being rejected - and FilterSchema

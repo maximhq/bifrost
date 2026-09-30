@@ -1043,17 +1043,28 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 	require.NotContains(t, systemInstructions(&schemas.WarpConfig{}, false), "semantic_search_logs")
 	require.Contains(t, systemInstructions(&schemas.WarpConfig{}, true), "semantic_search_logs")
 
-	// Exactly one sampling instruction for a themes question, whichever way the
-	// deployment is set up. With both present the model was told to read 25 rows
-	// and told a semantic sample was better, with nothing saying which wins - so
-	// it could take the weaker one, or take both and pay twice.
+	// Two question shapes, each with exactly one sample, whichever way the
+	// deployment is set up. A topic question ("did anyone ask about refunds")
+	// goes to semantic search when there is one and to a content_search sample
+	// otherwise. A survey question ("what kinds of tasks was Rohan doing") takes
+	// the query_logs include_content sample in both setups: asked to embed a
+	// description of someone's activity, semantic search scored nothing above
+	// the threshold twice, and the hint then forbade the sample that would have
+	// answered, so Warp told a person with 42k requests that nothing matched.
 	withSemantic := systemInstructions(&schemas.WarpConfig{}, true)
 	withoutSemantic := systemInstructions(&schemas.WarpConfig{}, false)
-	require.NotContains(t, withSemantic, "include_content and limit 25",
-		"the query_logs sample must not compete with the semantic one")
-	require.Contains(t, withSemantic, "do not also call query_logs")
-	require.Contains(t, withoutSemantic, "include_content and limit 25",
-		"without semantic search there has to be a sample to take")
+	for _, prompt := range []string{withSemantic, withoutSemantic} {
+		require.Contains(t, prompt, "one query_logs call with include_content and limit 25",
+			"a survey question has the same sample in both setups")
+		require.Contains(t, prompt, "is not representative of the entire traffic",
+			"a themes answer must say it came from a sample")
+	}
+	require.Contains(t, withSemantic, "do not also call query_logs for the same question",
+		"a topic question takes one sample, the semantic one")
+	require.Contains(t, withSemantic, "takes the query_logs sample described above first",
+		"a survey question does not start with semantic search")
+	require.Contains(t, withoutSemantic, "content_search",
+		"without semantic search a topic question still has a sample to take")
 
 	// And the tool list agrees with the prompt in both directions.
 	names := func(tools []Tool) []string {
@@ -1331,14 +1342,14 @@ func TestWarpAgentRefusesRepeatedToolCall(t *testing.T) {
 	require.Equal(t, EventDone, events[len(events)-1].Type)
 }
 
-// A topic question ("what do people ask about?") has no aggregate that answers
+// A survey question ("what do people ask about?") has no aggregate that answers
 // it, and the slicing rule for large counts turns it into an endless
 // count-count-list rhythm. The prompt has to name the bounded approach and
 // forbid the two loop shapes explicitly.
 func TestWarpSystemPromptGuidesTopicQuestionsAndForbidsRepeats(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 
-	require.Contains(t, content, "what people ask about")
+	require.Contains(t, content, "what do people ask about")
 	require.Contains(t, content, "one bounded sample")
 	require.Contains(t, content, "at most three slices")
 	require.Contains(t, content, "Never call a tool again with the same arguments")
@@ -1911,6 +1922,36 @@ func TestWarpAgentRefusesArgumentsAToolDoesNotTake(t *testing.T) {
 	_, err := parseFilters(map[string]any{"error_type": []any{"x"}}, Now())
 	require.ErrorContains(t, err, "error_types")
 	require.ErrorContains(t, err, "status_codes")
+}
+
+// The mirror of the refusal above. gpt-5.4-mini called semantic_search_logs
+// with "limit" inside filters, and the refusal listed the 45 supported filter
+// fields and nothing else - which reads as "limit is not available", not
+// "limit is in the wrong place". A misplaced argument the tool takes beside
+// filters is named as such, and an unknown key nothing takes is not.
+func TestWarpAgentNamesArgumentMisplacedInsideFilters(t *testing.T) {
+	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+
+	result, failed := agent.executeTool(context.Background(), "query_logs",
+		`{"filters":{"start_time":"-1d","limit":10}}`)
+	require.True(t, failed)
+	require.Contains(t, result, "unknown filter fields: limit", "the refusal itself is unchanged")
+	require.Contains(t, result, "limit is an argument of query_logs, not a filter field: pass it beside filters, not inside them.")
+
+	result, failed = agent.executeTool(context.Background(), "query_logs",
+		`{"filters":{"start_time":"-1d","limit":10,"sort_by":"cost"}}`)
+	require.True(t, failed)
+	require.Contains(t, result, "limit and sort_by are arguments of query_logs, not filter fields: pass them beside filters, not inside them.")
+
+	result, failed = agent.executeTool(context.Background(), "query_logs",
+		`{"filters":{"start_time":"-1d","provider":"openai"}}`)
+	require.True(t, failed)
+	require.Contains(t, result, "unknown filter fields: provider")
+	require.NotContains(t, result, "is an argument of", "a key nothing takes gets no placement hint")
+
+	_, failed = agent.executeTool(context.Background(), "query_logs",
+		`{"filters":{"start_time":"-1d"},"limit":10}`)
+	require.False(t, failed, "the same argument beside filters runs")
 }
 
 // The same live run read an all-empty alias ranking as a finding about

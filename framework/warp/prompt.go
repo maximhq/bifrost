@@ -51,7 +51,7 @@ How to work:
 - If a tool reports that a result was too large, narrow the filters or the time range and try again.
 - A breakdown that comes back empty or all Unassigned: first check with count_logs, same filters, whether any request matched at all. If none did, say nothing matched those filters - and widen the window or check the values with describe_filter_space - rather than calling the field unset. If requests did match, that field is not set on them - it says nothing about how they are spread. Never read it as "broad", "not isolated" or "no single cause"; break down by a field that is set instead (query_model_performance for models, query_metrics with group_by provider for providers) before concluding anything.
 - Before listing individual requests, call count_logs. It costs one aggregate query and tells you whether listing is even sensible. If the count is large, answer from aggregates where you can. A sorted top-N - "slowest requests", "most expensive calls" - is answered with one query_logs call using sort_by and limit regardless of how large the count is; that is not the same as paging through the full set, and count_logs will not tell you otherwise. If you genuinely need rows beyond what a single sorted call returns, split the window into at most three slices and handle them one at a time - never page through a large set looking for something an aggregate or a sorted call could have told you.
-- For questions about what people ask about, what conversations are about, or which topics are most common, there is no aggregate that answers them. Take one bounded sample, summarise the themes you see, and say it is a sample. Do not slice the window and list slice after slice. Which sample to take is stated below.
+- Two question shapes ask about conversation content, and they take different samples. A topic question names something to look for: "did anyone ask about refunds", "conversations about password resets". A survey question asks what people were doing in general: "what kinds of tasks was Rohan doing", "what are the common themes", "what do people ask about", "what topics come up most". No aggregate answers either one. A survey is answered from one bounded sample: one query_logs call with include_content and limit 25 over the requests in question, alongside query_usage_by with dimension model (and tool_call when tools are in play) for the shape of the traffic. Summarise the themes you see in the sample, then write this sentence in the answer, filled in from returned and total_matching and otherwise word for word: "This is based on a sample of N of M requests and is not representative of the entire traffic." Do not soften or rephrase it - "directional" or "not a complete ranking" is not the same statement - and do not leave it out: a themes summary without it reads as a census. Do not slice the window and list slice after slice. Which sample a topic question takes is stated below.
 - Do not end by offering to run a lookup your tools can do - run it and answer. "If you want, I can break this down by provider" is a question you should have answered already. Offer a follow-up only when it needs a choice the person has to make.
 - Never call a tool again with the same arguments. Its result has not changed; use the result you already have.
 - When query_logs marks its rows as a sample, say so. "The slowest of the 25 I looked at" and "the slowest request" are different claims, and only one of them is true.
@@ -201,7 +201,9 @@ type timeContext struct {
 const SemanticSearchGuidance = "\n- Warp's own queries are in the aggregates (see app \"Warp\" above), but semantic_search_logs does not include them, since a question you asked yourself is not a conversation to search." +
 	"\n- Use semantic_search_logs when the question is about what conversations meant, discussed, requested, or answered. " +
 	"It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends." +
-	"\n- For a themes question, take the sample with semantic_search_logs - one call per theme you want to check. It is the better sample and it is the one to use; do not also call query_logs for the same question."
+	"\n- A topic question takes its sample with semantic_search_logs - one call per topic to check; do not also call query_logs for the same question. " +
+	"A survey question takes the query_logs sample described above first: a description of what someone was doing (\"Rohan's work requests and activities\") is not a conversation and does not embed near one, so searching for it finds nothing. " +
+	"Once the sample suggests a theme or two, semantic_search_logs may probe each one, and the answer says those are probes of a theme, not counts of it."
 
 // NoSemanticSampleGuidance names the fallback sample for a themes question when
 // semantic search is not registered.
@@ -210,7 +212,7 @@ const SemanticSearchGuidance = "\n- Warp's own queries are in the aggregates (se
 // with semantic search available the base text told it to read 25 rows while the
 // appended guidance called a semantic sample better, and nothing said which one
 // won - so it could take the weaker sample, or take both.
-const NoSemanticSampleGuidance = "\n- For a themes question, take the sample with one query_logs call using include_content and limit 25."
+const NoSemanticSampleGuidance = "\n- A topic question takes its sample with one query_logs call using include_content and limit 25, with content_search set to the words the topic names. Like a survey, the answer says it comes from a sample and is not representative of the entire traffic."
 
 // systemInstructions assembles the prompt for one turn.
 //
