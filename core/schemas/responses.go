@@ -1455,6 +1455,8 @@ const (
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
 	ResponsesMessageTypeShellCall            ResponsesMessageType = "shell_call"
 	ResponsesMessageTypeShellCallOutput      ResponsesMessageType = "shell_call_output"
+	ResponsesMessageTypeApplyPatchCall       ResponsesMessageType = "apply_patch_call"
+	ResponsesMessageTypeApplyPatchCallOutput ResponsesMessageType = "apply_patch_call_output"
 	ResponsesMessageTypeMCPCall              ResponsesMessageType = "mcp_call"
 	ResponsesMessageTypeCustomToolCall       ResponsesMessageType = "custom_tool_call"
 	ResponsesMessageTypeCustomToolCallOutput ResponsesMessageType = "custom_tool_call_output"
@@ -1967,6 +1969,9 @@ type ResponsesToolMessage struct {
 
 	// Shell-specific (shell_call / shell_call_output): environment and limits
 	*ResponsesShellCall
+
+	// apply_patch-specific (apply_patch_call): the file operation
+	*ResponsesApplyPatchCall
 
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
@@ -2713,6 +2718,20 @@ type ResponsesShellCall struct {
 	MaxOutputLength *int                           `json:"max_output_length,omitempty"` // shell_call_output
 }
 
+// ResponsesApplyPatchCall carries the apply_patch_call field that the neutral
+// tool-message shape has no home for.
+type ResponsesApplyPatchCall struct {
+	Operation *ResponsesApplyPatchOperation `json:"operation,omitempty"`
+}
+
+// ResponsesApplyPatchOperation is an apply_patch_call's file instruction. OpenAI
+// rejects a replayed item without it, so it has to survive the round trip.
+type ResponsesApplyPatchOperation struct {
+	Type string  `json:"type"` // "create_file" | "delete_file" | "update_file"
+	Path string  `json:"path"`
+	Diff *string `json:"diff,omitempty"` // absent on delete_file
+}
+
 // ResponsesShellCallEnvironment is where a shell_call ran.
 type ResponsesShellCallEnvironment struct {
 	Type        string  `json:"type"` // "local" | "container_reference"
@@ -2987,6 +3006,7 @@ const (
 	ResponsesToolTypeLocalShell              ResponsesToolType = "local_shell"
 	ResponsesToolTypeShell                   ResponsesToolType = "shell"
 	ResponsesToolTypeProgrammaticToolCalling ResponsesToolType = "programmatic_tool_calling"
+	ResponsesToolTypeApplyPatch              ResponsesToolType = "apply_patch"
 	ResponsesToolTypeCustom                  ResponsesToolType = "custom"
 	ResponsesToolTypeWebSearchPreview        ResponsesToolType = "web_search_preview"
 	ResponsesToolTypeMemory                  ResponsesToolType = "memory"
@@ -4175,6 +4195,9 @@ const (
 	ResponsesStreamResponseTypeShellCallOutputContentDelta ResponsesStreamResponseType = "response.shell_call_output_content.delta"
 	ResponsesStreamResponseTypeShellCallOutputContentDone  ResponsesStreamResponseType = "response.shell_call_output_content.done"
 
+	ResponsesStreamResponseTypeApplyPatchCallOperationDiffDelta ResponsesStreamResponseType = "response.apply_patch_call_operation_diff.delta"
+	ResponsesStreamResponseTypeApplyPatchCallOperationDiffDone  ResponsesStreamResponseType = "response.apply_patch_call_operation_diff.done"
+
 	ResponsesStreamResponseTypeError ResponsesStreamResponseType = "error"
 )
 
@@ -4221,6 +4244,9 @@ type BifrostResponsesStreamResponse struct {
 	CommandIndex     *int                              `json:"command_index,omitempty"`
 	Output           []ResponsesShellCallOutputContent `json:"output,omitempty"`
 	ShellOutputDelta *ResponsesShellCallOutputDelta    `json:"-"`
+
+	// Diff carries the assembled patch on response.apply_patch_call_operation_diff.done.
+	Diff *string `json:"diff,omitempty"`
 
 	PartialImageB64   *string `json:"partial_image_b64,omitempty"`
 	PartialImageIndex *int    `json:"partial_image_index,omitempty"`
@@ -4354,6 +4380,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.Input = resp.Input
 	result.Command = resp.Command
 	result.CommandIndex = resp.CommandIndex
+	result.Diff = resp.Diff
 	result.Output = resp.Output
 	result.ShellOutputDelta = resp.ShellOutputDelta
 	result.PartialImageB64 = resp.PartialImageB64

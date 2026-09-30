@@ -1192,3 +1192,204 @@ func assertCodeExecutionVersion(t *testing.T, tools []AnthropicTool, want string
 	}
 	t.Fatalf("code_execution tool missing from %+v", tools)
 }
+
+// TestConvertBifrostMessages_ApplyPatchCallKeepsOperation verifies that an
+// apply_patch_call replayed to Anthropic keeps its file operation.
+func TestConvertBifrostMessages_ApplyPatchCallKeepsOperation(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation schemas.ResponsesApplyPatchOperation
+		want      []string
+		notWant   []string
+	}{
+		{
+			name:      "create_file",
+			operation: schemas.ResponsesApplyPatchOperation{Type: "create_file", Path: "hello.txt", Diff: schemas.Ptr("+hello\n")},
+			want:      []string{`"type":"create_file"`, `"path":"hello.txt"`, "+hello"},
+		},
+		{
+			name:      "update_file",
+			operation: schemas.ResponsesApplyPatchOperation{Type: "update_file", Path: "main.go", Diff: schemas.Ptr("-old\n+new\n")},
+			want:      []string{`"type":"update_file"`, `"path":"main.go"`, "-old", "+new"},
+		},
+		{
+			name:      "delete_file carries no diff",
+			operation: schemas.ResponsesApplyPatchOperation{Type: "delete_file", Path: "gone.txt"},
+			want:      []string{`"type":"delete_file"`, `"path":"gone.txt"`},
+			notWant:   []string{"diff"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+			operation := tt.operation
+			applyPatchCall := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:                  schemas.Ptr("apply_patch_call_1"),
+					ResponsesApplyPatchCall: &schemas.ResponsesApplyPatchCall{Operation: &operation},
+				},
+			}
+
+			msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{applyPatchCall}, true, caps)
+			if len(msgs) != 1 || len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+				t.Fatalf("expected a single text block, got %+v", msgs)
+			}
+
+			text := *msgs[0].Content.ContentBlocks[0].Text
+			if !strings.Contains(text, "apply_patch_call") {
+				t.Errorf("apply_patch call text missing the item type, got:\n%s", text)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("apply_patch call text missing %q, got:\n%s", want, text)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(text, notWant) {
+					t.Errorf("apply_patch call text unexpectedly contains %q, got:\n%s", notWant, text)
+				}
+			}
+		})
+	}
+}
+
+// A failed apply_patch whose output text is absent must still replay as a message.
+// Dropping it leaves the turn looking like the patch was never attempted, so the model
+// retries or assumes success.
+func TestConvertBifrostToolOutputFailureWithoutOutputText(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  schemas.ResponsesMessage
+		want string
+	}{
+		{
+			name: "failed status with error string",
+			msg: schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status: schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_1"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStr: schemas.Ptr("context lines did not match"),
+					},
+				},
+			},
+			want: "[tool call failed: context lines did not match]",
+		},
+		{
+			name: "failed status with structured error message",
+			msg: schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status: schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_2"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{
+							Type:    "invalid_patch",
+							Message: schemas.Ptr("file not found"),
+						},
+					},
+				},
+			},
+			want: "[tool call failed: file not found]",
+		},
+		{
+			name: "structured error falls back to its type",
+			msg: schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status: schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_3"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{Type: "invalid_patch"},
+					},
+				},
+			},
+			want: "[tool call failed: invalid_patch]",
+		},
+		{
+			name: "failed status with no error detail",
+			msg: schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status:               schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("ap_4")},
+			},
+			want: "[tool call failed]",
+		},
+		{
+			name: "error without a failed status",
+			msg: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_5"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStr: schemas.Ptr("patch rejected"),
+					},
+				},
+			},
+			want: "[tool call error: patch rejected]",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := convertBifrostToolOutputToAnthropicMessage(&tc.msg)
+			if got == nil {
+				t.Fatalf("message dropped; want replay text %q", tc.want)
+			}
+			if len(got.Content.ContentBlocks) != 1 || got.Content.ContentBlocks[0].Text == nil {
+				t.Fatalf("content = %+v, want one text block", got.Content)
+			}
+			if text := *got.Content.ContentBlocks[0].Text; text != tc.want {
+				t.Fatalf("text = %q, want %q", text, tc.want)
+			}
+			if got.Role != AnthropicMessageRoleUser {
+				t.Fatalf("role = %q, want user", got.Role)
+			}
+		})
+	}
+}
+
+// The fallback must not disturb the existing paths: real output text still wins, and an
+// output carrying neither text nor a failure is still dropped rather than replayed as
+// an empty user turn.
+func TestConvertBifrostToolOutputFallbackPreservesExistingBehavior(t *testing.T) {
+	t.Run("output text wins over the failure fallback", func(t *testing.T) {
+		msg := schemas.ResponsesMessage{
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+			Status: schemas.Ptr("failed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("ap_6"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: schemas.Ptr("failed to apply patch to greet.txt"),
+				},
+				Error: &schemas.ResponsesToolMessageError{
+					ResponsesToolMessageErrorStr: schemas.Ptr("should not be used"),
+				},
+			},
+		}
+		got := convertBifrostToolOutputToAnthropicMessage(&msg)
+		if got == nil {
+			t.Fatal("message dropped")
+		}
+		if text := *got.Content.ContentBlocks[0].Text; text != "failed to apply patch to greet.txt" {
+			t.Fatalf("text = %q, want the original output text", text)
+		}
+	})
+
+	t.Run("no text and no failure is still dropped", func(t *testing.T) {
+		msg := schemas.ResponsesMessage{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+			Status:               schemas.Ptr("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("ap_7")},
+		}
+		if got := convertBifrostToolOutputToAnthropicMessage(&msg); got != nil {
+			t.Fatalf("message = %+v, want nil", got)
+		}
+	})
+}

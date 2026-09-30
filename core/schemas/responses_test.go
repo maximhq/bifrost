@@ -1866,3 +1866,102 @@ func TestShellCallOutputText(t *testing.T) {
 	assert.Equal(t, "one\nboom", text)
 	assert.Equal(t, "", ShellCallOutputText(nil))
 }
+
+// TestResponsesApplyPatchCallRoundTrip locks the apply_patch items. OpenAI requires
+// `operation` on a replayed call — without it the turn is rejected with
+// "Missing required parameter: 'input[1].operation'".
+func TestResponsesApplyPatchCallRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "create_file",
+			input: `{"call_id":"call_1","id":"apc_1","operation":{"type":"create_file","path":"hello.txt","diff":"+hi\n"},"status":"completed","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "update_file",
+			input: `{"call_id":"call_2","id":"apc_2","operation":{"type":"update_file","path":"main.go","diff":"@@\n-old\n+new\n"},"status":"in_progress","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "delete_file carries no diff",
+			input: `{"call_id":"call_3","id":"apc_3","operation":{"type":"delete_file","path":"stale.txt"},"status":"completed","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "caller and created_by",
+			input: `{"call_id":"call_4","caller":{"type":"program","caller_id":"call_parent"},"created_by":"asst_1","id":"apc_4","operation":{"type":"create_file","path":"a.txt","diff":"+a\n"},"status":"completed","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "output item",
+			input: `{"call_id":"call_1","id":"apco_1","output":"done","status":"completed","type":"apply_patch_call_output"}`,
+		},
+		{
+			name:  "failed output item",
+			input: `{"call_id":"call_2","id":"apco_2","status":"failed","type":"apply_patch_call_output"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tt.input), &msg))
+			require.NotNil(t, msg.Type)
+			require.NotNil(t, msg.ResponsesToolMessage)
+
+			encoded, err := Marshal(msg)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.input, string(encoded))
+		})
+	}
+}
+
+// TestDeepCopyResponsesMessageCopiesApplyPatchOperation keeps the copy from sharing
+// the operation pointers with the original.
+func TestDeepCopyResponsesMessageCopiesApplyPatchOperation(t *testing.T) {
+	original := ResponsesMessage{
+		Type: Ptr(ResponsesMessageTypeApplyPatchCall),
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID: Ptr("call_1"),
+			ResponsesApplyPatchCall: &ResponsesApplyPatchCall{
+				Operation: &ResponsesApplyPatchOperation{Type: "create_file", Path: "hello.txt", Diff: Ptr("+hi\n")},
+			},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	require.NotNil(t, copied.ResponsesToolMessage)
+	require.NotNil(t, copied.ResponsesApplyPatchCall)
+	operation := copied.ResponsesApplyPatchCall.Operation
+	require.NotNil(t, operation)
+	assert.Equal(t, "hello.txt", operation.Path)
+	require.NotNil(t, operation.Diff)
+	assert.Equal(t, "+hi\n", *operation.Diff)
+
+	*original.ResponsesApplyPatchCall.Operation.Diff = "mutated"
+	original.ResponsesApplyPatchCall.Operation.Path = "mutated"
+	assert.Equal(t, "+hi\n", *copied.ResponsesApplyPatchCall.Operation.Diff)
+	assert.Equal(t, "hello.txt", copied.ResponsesApplyPatchCall.Operation.Path)
+}
+
+// TestResponsesApplyPatchStreamEvents keeps the assembled patch on the done event:
+// the diff deltas are ordinary string deltas, but `diff` had no field to land in.
+func TestResponsesApplyPatchStreamEvents(t *testing.T) {
+	deltaEvent := `{"type":"response.apply_patch_call_operation_diff.delta","delta":"+hello","item_id":"apc_1","output_index":0,"sequence_number":3}`
+	doneEvent := `{"type":"response.apply_patch_call_operation_diff.done","diff":"+hello\n","item_id":"apc_1","output_index":0,"sequence_number":4}`
+
+	var delta BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(deltaEvent), &delta))
+	require.NotNil(t, delta.Delta)
+	assert.Equal(t, "+hello", *delta.Delta)
+	assert.Nil(t, delta.Diff)
+
+	var done BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(doneEvent), &done))
+	require.NotNil(t, done.Diff)
+	assert.Equal(t, "+hello\n", *done.Diff)
+
+	// The /openai route re-emits through WithDefaults.
+	encoded, err := Marshal(done.WithDefaults())
+	require.NoError(t, err)
+	assert.Equal(t, `"+hello\n"`, gjsonRaw(string(encoded), "diff"))
+}
