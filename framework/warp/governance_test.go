@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -381,7 +382,8 @@ func strPtr(v string) *string { return &v }
 // fakeVirtualKeyFinder is a governance reader that also searches by name the
 // way the store does: a substring match on the key's name (the real search
 // also matches the owning team's or customer's name, which the resolver has
-// to filter back out), capped by the page limit.
+// to filter back out), capped by the page limit with the full match count
+// reported alongside, as the store's total is.
 type fakeVirtualKeyFinder struct {
 	fakeGovernanceReader
 	keys      []tables.TableVirtualKey
@@ -397,7 +399,41 @@ func (f *fakeVirtualKeyFinder) GetVirtualKeysPaginated(_ context.Context, params
 			out = append(out, key)
 		}
 	}
-	return out, int64(len(out)), nil
+	total := int64(len(out))
+	if params.Limit > 0 && len(out) > params.Limit {
+		out = out[:params.Limit]
+	}
+	return out, total, nil
+}
+
+// The store's search matches team and customer names as well as the key's,
+// and the resolver reads one page of it. With more matches than the page
+// holds, the exact key can sit beyond the page - and the resolver then said
+// the key did not exist, when it had simply not looked far enough. A truncated
+// search has to say so, or the model relays a non-existence it never checked.
+func TestWarpDescribeVirtualKeySaysWhenTheNameSearchWasTruncated(t *testing.T) {
+	var keys []tables.TableVirtualKey
+	for i := 0; i < virtualKeyNameSearchLimit; i++ {
+		keys = append(keys, tables.TableVirtualKey{ID: fmt.Sprintf("vk-%d", i), Name: fmt.Sprintf("prod-%d", i)})
+	}
+	// Sorted after a full page of near misses, so the page never reaches it.
+	keys = append(keys, tables.TableVirtualKey{ID: "vk-exact", Name: "prod"})
+	byID := map[string]*tables.TableVirtualKey{}
+	for i := range keys {
+		byID[keys[i].ID] = &keys[i]
+	}
+	finder := &fakeVirtualKeyFinder{fakeGovernanceReader: fakeGovernanceReader{byID: byID}, keys: keys}
+	deps := &ToolDeps{governance: finder}
+
+	_, err := runTool(t, "describe_virtual_key", deps, map[string]any{"name": "prod"})
+	require.ErrorContains(t, err, fmt.Sprintf("first %d of %d", virtualKeyNameSearchLimit, virtualKeyNameSearchLimit+1))
+	require.ErrorContains(t, err, "may exist beyond that page")
+	require.NotContains(t, err.Error(), "does not exist", "a page that ran out is not evidence of absence")
+
+	// A page that held every match keeps the plain not-found answer.
+	_, err = runTool(t, "describe_virtual_key", deps, map[string]any{"name": "ghost"})
+	require.ErrorContains(t, err, `no virtual key named "ghost" that you can see`)
+	require.NotContains(t, err.Error(), "beyond that page")
 }
 
 // A key that exists but has no traffic is not in describe_filter_space, and

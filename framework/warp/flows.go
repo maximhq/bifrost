@@ -978,7 +978,7 @@ func queryUsageByTool() Tool {
 			// answered from its top row: "your traffic is associated with the
 			// virtual key X". Said here, with the id to copy, rather than left to
 			// the scope tag the model read past.
-			if dimension == logstore.RankingDimensionVirtualKey && deps.scope.HasIdentity && scope == "all" {
+			if dimension == logstore.RankingDimensionVirtualKey && deps.scope.HasIdentity && (scope == "all" || scope == "deployment") {
 				out["guidance"] = fmt.Sprintf("These are the keys everyone you may see used, not the person asking: a row here is not their key. For the keys their own requests used, call again with user_ids: [%q].", deps.scope.UserID)
 			}
 			return noteRequestTypes(setRankingLogsLink(out, result, filters, dimension), filters), nil
@@ -1135,6 +1135,15 @@ func describeFilterSpaceTool() Tool {
 			out := map[string]any{
 				"caller_is_identified": deps.scope.HasIdentity,
 				"default_scope": func() string {
+					// The deployment, for a caller nothing restricts: their own
+					// traffic is usually dashboard checks, and "we" means the lot.
+					if deps.scope.Unrestricted {
+						note := "the whole deployment - nothing restricts this caller, so query without asking whose traffic is meant"
+						if deps.scope.HasIdentity {
+							note += fmt.Sprintf("; for their own traffic alone (\"I\", \"my\") pass user_ids: [%q]", deps.scope.UserID)
+						}
+						return note
+					}
 					if deps.scope.HasIdentity {
 						return "the person asking"
 					}

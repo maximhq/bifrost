@@ -602,6 +602,7 @@ func TestWarpSystemPromptExplainsScopeTag(t *testing.T) {
 	require.Contains(t, content, `"self" means scoped to the person asking`)
 	require.Contains(t, content, `"named" means scoped to whatever you filtered by`)
 	require.Contains(t, content, `"all" means everything the person asking may see`)
+	require.Contains(t, content, `"deployment" means the whole deployment`)
 	require.Contains(t, content, `pass scope: "all" in filters`, "the tag is only reachable for an identified caller through the filter marker")
 }
 

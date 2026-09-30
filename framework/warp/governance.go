@@ -199,7 +199,7 @@ func resolveVirtualKeyByName(ctx context.Context, reader GovernanceReader, name 
 	if !ok {
 		return "", fmt.Errorf("this deployment looks keys up by id only - pass virtual_key_id from describe_filter_space")
 	}
-	keys, _, err := finder.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{Search: name, Limit: virtualKeyNameSearchLimit})
+	keys, total, err := finder.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{Search: name, Limit: virtualKeyNameSearchLimit})
 	if err != nil {
 		return "", fmt.Errorf("virtual key search failed: %w", err)
 	}
@@ -217,6 +217,14 @@ func resolveVirtualKeyByName(ctx context.Context, reader GovernanceReader, name 
 	case 1:
 		return exact[0].ID, nil
 	case 0:
+		// A page that ran out is not evidence of absence. The search also
+		// matches team and customer names, so a common word can fill the page
+		// with keys that are not candidates while the exact key sits beyond it
+		// - and "does not exist" here would be relayed as a fact the model
+		// never checked.
+		if total > int64(len(keys)) {
+			return "", fmt.Errorf("no virtual key named exactly %q in the first %d of %d keys the search matched (it also matches team and customer names) - the key may exist beyond that page; pass virtual_key_id from describe_filter_space", name, len(keys), total)
+		}
 		if len(near) > 0 {
 			return "", fmt.Errorf("no virtual key named exactly %q that you can see; names containing it: %s. Pass the exact name, or the id", name, strings.Join(near, ", "))
 		}
