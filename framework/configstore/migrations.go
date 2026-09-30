@@ -18,9 +18,9 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	"github.com/maximhq/bifrost/framework/queryscope"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -523,6 +523,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_keys_created_at_id_index"}, run: migrationAddVirtualKeysCreatedAtIDIndex},
 	{IDs: []string{"add_batch_jobs_due_index"}, run: migrationAddBatchJobsDueIndex},
 	{IDs: []string{"make_mcp_oauth_flows_state_unique"}, run: migrationMakeMCPOauthFlowsStateUnique},
+	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -964,6 +965,31 @@ func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger sch
 		Rollback: func(tx *gorm.DB) error {
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableNotification{})
 		},
+	})
+}
+
+func rollbackAgentGatewayTables(*gorm.DB) error {
+	return fmt.Errorf("add_agent_gateway_tables is non-rollbackable: dropping Agent Gateway tables or configuration would permanently delete registrations, credentials, push configuration, or queued deliveries")
+}
+
+func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_agent_gateway_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(
+				&tables.TableAgentRegistration{},
+				&tables.TableVirtualKeyAgentGrant{},
+				&tables.TableAgentPushConfig{},
+				&tables.TableAgentPushDelivery{},
+			); err != nil {
+				return err
+			}
+			// External base URL override for Agent Gateway card and push callback URLs.
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "A2AExternalClientURL")
+		},
+		Rollback: rollbackAgentGatewayTables,
 	})
 }
 
