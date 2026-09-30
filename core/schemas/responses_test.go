@@ -1965,3 +1965,78 @@ func TestResponsesApplyPatchStreamEvents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `"+hello\n"`, gjsonRaw(string(encoded), "diff"))
 }
+
+// Newer models batch computer actions into an `actions` array instead of the
+// singular `action`. The struct modelled only the older shape, so sonic dropped
+// the field on decode and the client got a computer_call carrying a call_id and
+// no instruction — the computer-use loop then stalls with nothing to execute.
+func TestResponsesComputerCallActionsRoundTrip(t *testing.T) {
+	// Verbatim from a gpt-6.1-sol response.
+	raw := `{
+		"id": "cu_0e484435a8b2b325016abc86cc097487d1b9f516c6993c742c",
+		"type": "computer_call",
+		"status": "completed",
+		"actions": [{"type": "screenshot"}],
+		"call_id": "call_CCgSejtyJvG8dUQdFqgr0Fpu"
+	}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil {
+		t.Fatalf("computer tool call not decoded: %+v", msg)
+	}
+
+	// Asserted through the re-marshalled wire bytes rather than the typed field:
+	// what the client actually receives is the JSON, and this keeps the test
+	// meaningful (a failing assertion, not a compile error) against a build that
+	// does not model the field at all.
+	out, err := Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	actions := gjson.GetBytes(out, "actions")
+	if !actions.IsArray() || len(actions.Array()) != 1 {
+		t.Fatalf("actions not carried through: %s", out)
+	}
+	if got := actions.Array()[0].Get("type").String(); got != "screenshot" {
+		t.Fatalf("actions[0].type = %q, want screenshot: %s", got, out)
+	}
+	// The call_id must still be there alongside it.
+	if got := gjson.GetBytes(out, "call_id").String(); got != "call_CCgSejtyJvG8dUQdFqgr0Fpu" {
+		t.Fatalf("call_id = %q: %s", got, out)
+	}
+
+	// The singular `action` must not be invented where the wire had none.
+	if msg.ResponsesToolMessage.Action != nil {
+		t.Fatalf("singular action = %+v, want nil", msg.ResponsesToolMessage.Action)
+	}
+	if strings.Contains(string(out), `"action":`) {
+		t.Fatalf("singular action emitted where none existed: %s", out)
+	}
+}
+
+// The older singular shape still has to work unchanged.
+func TestResponsesComputerCallSingularActionStillWorks(t *testing.T) {
+	raw := `{
+		"id": "cu_1",
+		"type": "computer_call",
+		"status": "completed",
+		"action": {"type": "screenshot"},
+		"call_id": "call_1"
+	}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil ||
+		msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction == nil {
+		t.Fatalf("singular action not decoded: %+v", msg.ResponsesToolMessage)
+	}
+	if got := msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Type; got != "screenshot" {
+		t.Fatalf("action type = %q, want screenshot", got)
+	}
+}
