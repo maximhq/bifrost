@@ -39,9 +39,11 @@ func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPSer
 	defer m.mu.RUnlock()
 
 	instructionsByName := make(map[string]string, len(m.clientMap))
+	maxLengthByName := make(map[string]int, len(m.clientMap))
 	for _, client := range m.clientMap {
 		if client.ServerInstructions != "" {
 			instructionsByName[client.ExecutionConfig.Name] = client.ServerInstructions
+			maxLengthByName[client.ExecutionConfig.Name] = client.ExecutionConfig.MaxInstructionsLength
 		}
 	}
 
@@ -59,6 +61,7 @@ func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPSer
 		result = append(result, schemas.MCPServerInstructions{
 			ClientName:   name,
 			Instructions: instructionsByName[name],
+			MaxLength:    maxLengthByName[name],
 		})
 	}
 	return result
@@ -107,8 +110,12 @@ func AggregateServerInstructions(parts []schemas.MCPServerInstructions, caps Ins
 		if written > 0 {
 			separator = 2 // the "\n\n" between blocks
 		}
-		// Budget for the wrapper too, or a body that fits the cap still overflows the block.
+		// A server's own cap wins over the global one. The remaining-total clamp below still
+		// applies, so an override raises one server's ceiling, never the aggregate's.
 		limit := caps.PerClient
+		if part.MaxLength > 0 {
+			limit = part.MaxLength
+		}
 		if avail := remaining - separator - blockOverhead(part.ClientName, len(body)); avail < limit {
 			limit = avail
 		}

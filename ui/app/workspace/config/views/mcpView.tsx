@@ -240,12 +240,12 @@ export default function MCPView() {
 			}
 
 			if (isNaN(perClientCap) || perClientCap < 0) {
-				toast.error("Max instructions per server must be zero or a positive number.");
+				toast.error("Max instruction length per server must be zero or a positive number.");
 				return;
 			}
 
 			if (isNaN(totalCap) || totalCap < 0) {
-				toast.error("Max instructions total must be zero or a positive number.");
+				toast.error("Max instruction length total must be zero or a positive number.");
 				return;
 			}
 
@@ -408,7 +408,7 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-max-instructions-per-client" className="text-sm font-medium">
-							Max Instructions Per Server (bytes)
+							Max Instruction Length Per Server (bytes)
 						</label>
 						<p className="text-muted-foreground text-sm">
 							Longer text is truncated with a notice. Set to 0 to use the default of 4096.
@@ -429,7 +429,7 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-max-instructions-total" className="text-sm font-medium">
-							Max Instructions Total (bytes)
+							Max Instruction Length Total (bytes)
 						</label>
 						<p className="text-muted-foreground text-sm">
 							Ceiling across every server a caller can see. At <code className="text-xs">Gateway and LLM requests</code> this rides on every

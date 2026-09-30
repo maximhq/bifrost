@@ -7529,6 +7529,12 @@
             }
           ]
         },
+        "max_instructions_length": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Per-client override for the forwarded instruction byte cap. When set, overrides the global mcp.tool_manager_config.max_instructions_per_client for this MCP server only; the aggregate is still bounded by max_instructions_total. Omit or set to 0 to use the global default."
+        },
         "allowed_extra_headers": {
           "type": "array",
           "items": {

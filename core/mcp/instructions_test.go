@@ -260,6 +260,31 @@ func TestAggregateServerInstructionsKeepsBareTagNameInProse(t *testing.T) {
 	assert.NotContains(t, got, "[removed]")
 }
 
+// A server's own cap overrides the global one, and a server without one keeps the global.
+func TestAggregateServerInstructionsPerServerCapOverridesGlobal(t *testing.T) {
+	got := AggregateServerInstructions([]schemas.MCPServerInstructions{
+		{ClientName: "tight", Instructions: strings.Repeat("a", 3000), MaxLength: 100},
+		{ClientName: "global", Instructions: strings.Repeat("b", 3000)},
+	}, InstructionCaps{PerClient: 500, Total: 16384})
+
+	// The notice states the exact byte count, so it pins each cap precisely: 3000 - 100 and
+	// 3000 - 500. Counting the filler letters would also catch the ones in the tags.
+	assert.Contains(t, got, "[truncated: 2900 bytes omitted]", "the override caps this server at 100 bytes")
+	assert.Contains(t, got, "[truncated: 2500 bytes omitted]", "a server without an override keeps the global cap")
+	assert.Contains(t, got, `<mcp_server name="tight">`)
+	assert.Contains(t, got, `<mcp_server name="global">`)
+}
+
+// An override raises one server's ceiling, never the aggregate's.
+func TestAggregateServerInstructionsPerServerCapStillBoundedByTotal(t *testing.T) {
+	got := AggregateServerInstructions([]schemas.MCPServerInstructions{
+		{ClientName: "big", Instructions: strings.Repeat("c", 9000), MaxLength: 8000},
+	}, InstructionCaps{PerClient: 100, Total: 500})
+
+	assert.LessOrEqual(t, len(got), 500, "the total is a hard bound the override cannot breach")
+	assert.Contains(t, got, "[truncated:")
+}
+
 // A client name is operator-supplied, so a quote in it must not break the attribute.
 func TestAggregateServerInstructionsEscapesClientNameAttribute(t *testing.T) {
 	got := AggregateServerInstructions([]schemas.MCPServerInstructions{

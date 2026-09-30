@@ -398,6 +398,8 @@ const (
 type MCPServerInstructions struct {
 	ClientName   string `json:"client_name"`
 	Instructions string `json:"instructions"`
+	// MaxLength is this server's own byte cap; 0 defers to the global one.
+	MaxLength int `json:"max_length,omitempty"`
 }
 
 // MCPAuthType defines the authentication type for MCP connections
@@ -573,11 +575,12 @@ type MCPClientConfig struct {
 	// time. Ignored for per-user auth types (already always per-call
 	// regardless).
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
-	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global; negative values are rejected)
-	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
-	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
-	Disabled               bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
-	ConfigHash             string             `json:"-"`                                // Config hash for reconciliation (not serialized)
+	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
+	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
+	Disabled               bool               `json:"disabled"`                          // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash             string             `json:"-"`                                 // Config hash for reconciliation (not serialized)
 	// AllowByDefault opens the client to every caller that has not been assigned it explicitly: all
 	// of its tools, with no per-caller configuration. An explicit assignment for a caller decides for
 	// that caller instead, including one that grants no tool at all.
