@@ -1643,11 +1643,10 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 	// Copy decoded data back into the original type
 	*cm = ChatAssistantMessage(aux.Alias)
 
-	// Map xAI's reasoning_content to Bifrost's Reasoning field
-	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
-	if aux.ReasoningContent != nil && cm.Reasoning == nil {
-		cm.Reasoning = aux.ReasoningContent
-	}
+	// Normalize the three spellings a caller may replay assistant reasoning under onto
+	// Reasoning; see FirstNonEmptyReplayedReasoning for the precedence and for why tier 3
+	// is what makes the native surface round-trip reasoning at all.
+	cm.Reasoning = FirstNonEmptyReplayedReasoning(aux.ReasoningContent, cm.Reasoning, cm.ReasoningDetails)
 
 	// DeepSeek-shaped upstreams (ModelScope) keep sending empty reasoning fields
 	// on every content-phase frame once thinking has ended. Folding "" into a
@@ -1672,6 +1671,72 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	return nil
+}
+
+// FirstNonEmptyReplayedReasoning returns the first spelling of replayed assistant
+// reasoning that actually carries text, in the precedence both OpenAI-compatible ingress
+// surfaces agree on:
+//
+//  1. reasoning_content  (xAI/DeepSeek native — and the only spelling Bifrost itself
+//     emits outbound, so a faithful client replays this one)
+//  2. reasoning          (OpenAI/OpenRouter native field)
+//  3. the first reasoning.text detail carrying non-empty Text
+//
+// Keeping the precedence identical to openai.ConvertOpenAIMessagesToBifrostMessages (the
+// normalizer for the /openai/* surface, where the Go field Reasoning is bound to
+// `reasoning_content` and ReasoningAlias to `reasoning`) is the point: if the two entry
+// surfaces disagreed on which spelling wins, the same client body would mean different
+// things depending on the path it arrived on.
+//
+// Tier 3 is what makes the NATIVE /v1/chat/completions surface round-trip reasoning at
+// all. That surface parses the body straight into ChatMessage, so the OpenAI-wire
+// normalizer never runs there; reasoning_details[].text is OpenRouter's documented
+// spelling and exactly what a client that captured Bifrost's own response sends back on
+// the next turn. Without the fold Reasoning stayed nil, and
+// ConvertBifrostMessagesToOpenAIMessages carries reasoning to an OpenAI-compatible
+// upstream only as reasoning_content — ReasoningDetails is inbound-only there by design
+// — so the replayed chain of thought was dropped before the model ever saw it, and
+// multi-turn tool loops ran with no prior thinking block at all.
+//
+// An empty string is absent, never a value. DeepSeek-shaped upstreams keep sending
+// reasoning_content:"" on content-phase frames once thinking has ended, so a bare
+// non-nil check would let that overwrite a real reasoning text and then re-emit it as a
+// fresh thinking block per chunk (#7294).
+//
+// Only a reasoning.text detail qualifies, and it qualifies on its Type rather than merely
+// on having a text field. A summary is a derived digest, and reasoning.encrypted and
+// reasoning.content_blocks carry opaque bytes instead of a readable chain of thought, so
+// plaintext stuffed into one of those must not be forwarded upstream as reasoning_content.
+// An entry with no type is not accepted either: Bifrost always stamps type when it
+// synthesizes a detail, so a client replaying our own response always sends a typed entry
+// and the strict rule costs nothing on the path that matters.
+//
+// The details slice is read, never consumed, pruned or reordered — Anthropic, Gemini and
+// Bedrock replay read ReasoningDetails directly (Text/Signature/Data) and must keep
+// seeing exactly what the client sent. Returns nil when no spelling carries text.
+//
+// Exported because openai.ConvertOpenAIMessagesToBifrostMessages — the ingress for the
+// /openai/* surface — has to apply this same rule set rather than a parallel implementation
+// of it. Both surfaces take the same client body, so any divergence means a replayed chain
+// of thought resolves differently depending on which path it arrived on; that is the bug
+// class this function exists to close. On that wire shape the Go field Reasoning is bound to
+// `reasoning_content` and ReasoningAlias to `reasoning`, so the arguments line up in the
+// order declared here.
+func FirstNonEmptyReplayedReasoning(reasoningContent, reasoning *string, details []ChatReasoningDetails) *string {
+	for _, candidate := range []*string{reasoningContent, reasoning} {
+		if candidate != nil && *candidate != "" {
+			return candidate
+		}
+	}
+	for _, detail := range details {
+		if detail.Type != BifrostReasoningDetailsTypeText {
+			continue
+		}
+		if detail.Text != nil && *detail.Text != "" {
+			return detail.Text
+		}
+	}
 	return nil
 }
 
@@ -1885,11 +1950,11 @@ func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 	// Copy decoded data back into the original type
 	*d = ChatStreamResponseChoiceDelta(aux.Alias)
 
-	// Map xAI's reasoning_content to Bifrost's Reasoning field
-	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
-	if aux.ReasoningContent != nil && d.Reasoning == nil {
-		d.Reasoning = aux.ReasoningContent
-	}
+	// Same normalization as ChatAssistantMessage.UnmarshalJSON above: a stream whose
+	// upstream replays reasoning as reasoning_details must still expose a plain
+	// Reasoning, because every downstream consumer that gates on reasoning reads that
+	// field.
+	d.Reasoning = FirstNonEmptyReplayedReasoning(aux.ReasoningContent, d.Reasoning, d.ReasoningDetails)
 
 	// Same normalization as ChatAssistantMessage.UnmarshalJSON above: an empty
 	// reasoning string on a content-phase delta is upstream noise, and
