@@ -2175,6 +2175,79 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 	return true
 }
 
+// resolveAnthropicProgrammaticCaller decides what OpenAI's "programmatic" caller becomes for this request.
+func resolveAnthropicProgrammaticCaller(declaredVersion string, hasCodeExecutionTool bool) (caller string, emitVersion string) {
+	switch AnthropicToolType(declaredVersion) {
+	case AnthropicToolTypeCodeExecution, AnthropicToolTypeCodeExecution20260120, AnthropicToolTypeCodeExecution20260521:
+		return declaredVersion, ""
+	case AnthropicToolTypeCodeExecution20250522:
+		// Legacy Python-only: allowed_callers rejects it, and naming any other version
+		// makes the auto-injected code_execution tool collide with the declared one.
+		return "", ""
+	}
+	if hasCodeExecutionTool {
+		if declaredVersion != "" {
+			return declaredVersion, ""
+		}
+		// A version-less code_interpreter (the OpenAI shape) would default to
+		// code_execution_20250825, which has no programmatic tool calling — emit
+		// 20260120 instead so the caller restriction is reachable.
+		return string(AnthropicToolTypeCodeExecution20260120), string(AnthropicToolTypeCodeExecution20260120)
+	}
+	// No code execution tool declared: Anthropic auto-injects the version named here.
+	return string(AnthropicToolTypeCodeExecution20260120), ""
+}
+
+// anthropicAllowedCallers rewrites OpenAI's "programmatic" caller into Anthropic's
+// versioned vocabulary, dropping it when the request's code execution version has no
+// caller value. Anthropic's own values pass through untouched.
+func anthropicAllowedCallers(callers []string, programmaticCaller string) []string {
+	if len(callers) == 0 {
+		return callers
+	}
+	mapped := make([]string, 0, len(callers))
+	seen := make(map[string]bool, len(callers))
+	for _, caller := range callers {
+		if caller == schemas.ResponsesToolCallerProgrammatic {
+			if programmaticCaller == "" {
+				continue
+			}
+			caller = programmaticCaller
+		}
+		if seen[caller] {
+			continue
+		}
+		seen[caller] = true
+		mapped = append(mapped, caller)
+	}
+	if len(mapped) == 0 {
+		return nil
+	}
+	return mapped
+}
+
+// declaredChatCodeExecutionVersion is declaredCodeExecutionVersion for the Chat
+// shape, where the code execution tool carries its version in Type.
+func declaredChatCodeExecutionVersion(tools []schemas.ChatTool) (string, bool) {
+	for _, tool := range tools {
+		if strings.HasPrefix(string(tool.Type), string(AnthropicToolNameCodeExecution)+"_") {
+			return string(tool.Type), true
+		}
+	}
+	return "", false
+}
+
+// hasProgrammaticCaller reports whether any caller list asks for OpenAI's
+// "programmatic" context, which is the only value needing translation.
+func hasProgrammaticCaller(callers []string) bool {
+	for _, caller := range callers {
+		if caller == schemas.ResponsesToolCallerProgrammatic {
+			return true
+		}
+	}
+	return false
+}
+
 // StripEmptyThinkingBlocks removes thinking content blocks that would be
 // rejected by Anthropic: those with an empty "thinking" field, or those
 // with an empty "signature" field. An empty signature means the block came
