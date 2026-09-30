@@ -1319,6 +1319,7 @@ type ResponsesResponseUsage struct {
 	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"` // Duration-based audio usage when tokens are unavailable
 	Cost                *BifrostCost                   `json:"cost,omitempty"`          // Only for the providers which support cost calculation
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`    // iterations field is sent by anthropic
+	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`    // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
@@ -1431,7 +1432,8 @@ type ResponsesResponseOutputTokens struct {
 	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
-	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+	// Deprecated: use ResponsesResponseUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
+	NumSearchQueries *int `json:"num_search_queries,omitempty"`
 }
 
 // =============================================================================

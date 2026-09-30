@@ -195,6 +195,7 @@ func buildOAIResponsesUsage(ru *schemas.ResponsesResponseUsage, serviceTier *str
 			usage.CompletionTokensDetails.NumSearchQueries = ru.OutputTokensDetails.NumSearchQueries
 		}
 	}
+	usage.ToolUsage = ru.ToolUsage.DeepCopy()
 	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
 	if serviceTier != nil {
 		t := schemas.BifrostServiceTier(*serviceTier)

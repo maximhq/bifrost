@@ -134,7 +134,7 @@ func TestOffPeak_FlatFeesAreNotDiscounted(t *testing.T) {
 	queries := 2
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000,
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{NumSearchQueries: &queries},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: queries}},
 	}
 
 	bd := s.CalculateCostBreakdown(
