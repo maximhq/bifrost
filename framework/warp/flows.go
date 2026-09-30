@@ -110,8 +110,10 @@ func semanticSearchLogsTool() Tool {
 				// model went off counting and listing logs instead. Say what
 				// happened and what the legitimate next moves are.
 				response["hint"] = fmt.Sprintf("No stored conversation scored above the similarity threshold of %.2f. "+
-					"Do not fall back to count_logs or query_logs to answer a question about meaning. "+
-					"Widen the time range once, rephrase the query, or report that no matching conversations were found.", result.Threshold)
+					"For a topic question - one that names something to look for - do not fall back to count_logs or query_logs to answer a question about meaning: "+
+					"widen the time range once, rephrase the query, or report that no matching conversations were found. "+
+					"For a survey question - what someone was doing, what the themes or topics are - this was the wrong first step, because a description of activity is not a conversation and does not embed near one: "+
+					"take the sample with query_logs using include_content and limit 25, and say in the answer that it was drawn from a sample and is not representative of the entire traffic.", result.Threshold)
 			}
 			return response, nil
 		},

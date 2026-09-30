@@ -1986,7 +1986,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAny\":[\"semantic_search_logs\",\"query_logs\",\"get_log_detail\"]}});"
+                  "warp.prerequest({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"answerAll\":[\"sample of[^.]{0,40}\\\\d[\\\\d,]*[^.]{0,40}(of|out of)[^.]{0,20}\\\\d[\\\\d,]*\",\"(not[ -]|un)representative\"]}});"
                 ]
               }
             },
@@ -1996,7 +1996,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAny\":[\"semantic_search_logs\",\"query_logs\",\"get_log_detail\"]}});"
+                  "warp.test({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"answerAll\":[\"sample of[^.]{0,40}\\\\d[\\\\d,]*[^.]{0,40}(of|out of)[^.]{0,20}\\\\d[\\\\d,]*\",\"(not[ -]|un)representative\"]}});"
                 ]
               }
             }

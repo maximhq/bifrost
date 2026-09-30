@@ -1018,7 +1018,8 @@ func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string
 	// An argument the tool does not take is refused rather than dropped. Dropped,
 	// the call runs as if it had been honoured, and the model reads the result
 	// as shaped by an argument that never existed - then guesses another.
-	if accepted := tool.argumentNames(); len(accepted) > 0 {
+	accepted := tool.argumentNames()
+	if len(accepted) > 0 {
 		unknown := []string{}
 		for name := range args {
 			if !slices.Contains(accepted, name) {
@@ -1034,9 +1035,37 @@ func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string
 
 	result, err := tool.execute(ctx, a.deps, args)
 	if err != nil {
-		return fmt.Sprintf(`{"error":%q}`, err.Error()), true
+		return fmt.Sprintf(`{"error":%q}`, misplacedArgumentHint(err, name, accepted)), true
 	}
 	return boundToolResult(result), false
+}
+
+// misplacedArgumentHint is the mirror of the refusal above. That one catches a
+// filter field sent beside filters and says where it goes; this one catches an
+// argument the tool takes beside filters ("limit") sent inside them, and says
+// so. Without it the refusal listed every supported filter field and nothing
+// else, which the model read as "limit is not available" rather than "limit is
+// in the wrong place", and it spent a step finding out.
+func misplacedArgumentHint(err error, tool string, accepted []string) string {
+	message := err.Error()
+	var unknown *unknownFilterFieldsError
+	if !errors.As(err, &unknown) {
+		return message
+	}
+	misplaced := []string{}
+	for _, field := range unknown.fields {
+		if field != "filters" && slices.Contains(accepted, field) {
+			misplaced = append(misplaced, field)
+		}
+	}
+	switch len(misplaced) {
+	case 0:
+		return message
+	case 1:
+		return fmt.Sprintf("%s %s is an argument of %s, not a filter field: pass it beside filters, not inside them.", message, misplaced[0], tool)
+	default:
+		return fmt.Sprintf("%s %s are arguments of %s, not filter fields: pass them beside filters, not inside them.", message, strings.Join(misplaced, " and "), tool)
+	}
 }
 
 // errorMessage extracts a human-readable message from an upstream error,
