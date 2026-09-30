@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -81,6 +82,7 @@ func cloneTestVirtualKey(vk *configstoreTables.TableVirtualKey) *configstoreTabl
 	clone.Budgets = append([]configstoreTables.TableBudget(nil), vk.Budgets...)
 	clone.ProviderConfigs = append([]configstoreTables.TableVirtualKeyProviderConfig(nil), vk.ProviderConfigs...)
 	clone.MCPConfigs = append([]configstoreTables.TableVirtualKeyMCPConfig(nil), vk.MCPConfigs...)
+	clone.AgentGrants = append([]configstoreTables.TableVirtualKeyAgentGrant(nil), vk.AgentGrants...)
 	return &clone
 }
 
@@ -240,6 +242,137 @@ func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemo
 }
 func (m *providerGovernanceAdoptionManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
 	return nil
+}
+
+type recordingAgentAuthorizationRefresher struct {
+	calls []string
+}
+
+func (r *recordingAgentAuthorizationRefresher) RefreshAuthorization(_ context.Context, virtualKeyID string) error {
+	r.calls = append(r.calls, virtualKeyID)
+	return nil
+}
+
+func TestClassifyAgentGrantReplacementError(t *testing.T) {
+	validationErr := fmt.Errorf("%w: duplicate agent name: alpha", configstore.ErrInvalidAgentGrant)
+	var badReqErr *badRequestError
+	require.ErrorAs(t, classifyAgentGrantReplacementError(validationErr), &badReqErr)
+	require.ErrorIs(t, badReqErr, configstore.ErrInvalidAgentGrant)
+
+	for _, err := range []error{configstore.ErrNotFound, errors.New("database unavailable")} {
+		classified := classifyAgentGrantReplacementError(err)
+		require.ErrorIs(t, classified, err)
+		require.NotErrorAs(t, classified, &badReqErr)
+	}
+}
+
+func TestVirtualKeyAgentAssignmentsHTTPContract(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	agentStore, ok := store.(interface {
+		CreateAgentRegistration(context.Context, *schemas.AgentRegistration) error
+	})
+	if !ok {
+		t.Fatal("test config store does not support agent registrations")
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		now := time.Now().UTC()
+		if err := agentStore.CreateAgentRegistration(ctx, &schemas.AgentRegistration{Name: name, AgentCardURL: "https://example.com/" + name, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("create agent %s: %v", name, err)
+		}
+	}
+
+	createCtx := newTestRequestCtx(`{"name":"agent-assigned","description":"original","agent_grants":[{"agent_name":"beta"},{"agent_name":"alpha"}]}`)
+	handler.createVirtualKey(createCtx)
+	if createCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("create status=%d body=%s", createCtx.Response.StatusCode(), createCtx.Response.Body())
+	}
+	var createResponse struct {
+		VirtualKey struct {
+			ID          string `json:"id"`
+			AgentGrants []struct {
+				VirtualKeyID string `json:"virtual_key_id"`
+				AgentName    string `json:"agent_name"`
+			} `json:"agent_grants"`
+		} `json:"virtual_key"`
+	}
+	if err := json.Unmarshal(createCtx.Response.Body(), &createResponse); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	vkID := createResponse.VirtualKey.ID
+	// The agent grant preload imposes no ordering, so assert set membership.
+	createdGrantNames := make([]string, 0, len(createResponse.VirtualKey.AgentGrants))
+	for _, grant := range createResponse.VirtualKey.AgentGrants {
+		if grant.VirtualKeyID != vkID {
+			t.Fatalf("create assignments=%#v", createResponse.VirtualKey.AgentGrants)
+		}
+		createdGrantNames = append(createdGrantNames, grant.AgentName)
+	}
+	sort.Strings(createdGrantNames)
+	if !reflect.DeepEqual(createdGrantNames, []string{"alpha", "beta"}) {
+		t.Fatalf("create assignments=%#v", createResponse.VirtualKey.AgentGrants)
+	}
+
+	updateCtx := newTestRequestCtx(`{"description":"omitted-preserves"}`)
+	updateCtx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(updateCtx)
+	if updateCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("omitted update status=%d body=%s", updateCtx.Response.StatusCode(), updateCtx.Response.Body())
+	}
+	persistedVK, err := store.GetVirtualKey(ctx, vkID)
+	if err != nil || len(persistedVK.AgentGrants) != 2 {
+		t.Fatalf("omitted update assignments=%#v err=%v", persistedVK, err)
+	}
+
+	for _, invalid := range []string{
+		`{"description":"must-rollback-duplicate","agent_grants":[{"agent_name":"alpha"},{"agent_name":"alpha"}]}`,
+		`{"description":"must-rollback-unknown","agent_grants":[{"agent_name":"missing"}]}`,
+	} {
+		badCtx := newTestRequestCtx(invalid)
+		badCtx.SetUserValue("vk_id", vkID)
+		handler.updateVirtualKey(badCtx)
+		if badCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("invalid update status=%d body=%s", badCtx.Response.StatusCode(), badCtx.Response.Body())
+		}
+		persisted, getErr := store.GetVirtualKey(ctx, vkID)
+		if getErr != nil || persisted.Description != "omitted-preserves" {
+			t.Fatalf("invalid update did not roll back VK fields: vk=%+v err=%v", persisted, getErr)
+		}
+		if grants := persisted.AgentGrants; len(grants) != 2 {
+			t.Fatalf("invalid update did not preserve assignments: %#v", grants)
+		}
+	}
+
+	clearCtx := newTestRequestCtx(`{"agent_grants":[]}`)
+	clearCtx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(clearCtx)
+	if clearCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("clear status=%d body=%s", clearCtx.Response.StatusCode(), clearCtx.Response.Body())
+	}
+	// Clearing removes the grant rows themselves; because governance reads those
+	// rows live, the change is effective immediately with no refresh call.
+	clearedVK, clearedErr := store.GetVirtualKey(ctx, vkID)
+	if clearedErr != nil || len(clearedVK.AgentGrants) != 0 {
+		t.Fatalf("clear did not remove grants: vk=%#v err=%v", clearedVK, clearedErr)
+	}
+	if strings.Contains(string(clearCtx.Response.Body()), `"agent_grants":null`) || !strings.Contains(string(clearCtx.Response.Body()), `"agent_grants":[]`) {
+		t.Fatalf("clear response must contain agent_grants:[]: %s", clearCtx.Response.Body())
+	}
+
+	getCtx := newTestRequestCtx("")
+	getCtx.SetUserValue("vk_id", vkID)
+	handler.getVirtualKey(getCtx)
+	if getCtx.Response.StatusCode() != fasthttp.StatusOK || !strings.Contains(string(getCtx.Response.Body()), `"agent_grants":[]`) {
+		t.Fatalf("get response status=%d body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+	}
+	listCtx := newTestRequestCtx("")
+	handler.getVirtualKeys(listCtx)
+	if listCtx.Response.StatusCode() != fasthttp.StatusOK || !strings.Contains(string(listCtx.Response.Body()), `"agent_grants":[]`) {
+		t.Fatalf("list response status=%d body=%s", listCtx.Response.StatusCode(), listCtx.Response.Body())
+	}
 }
 
 // TestVirtualKeyBudgetOverrideLifecycle verifies finite, replacement, and clear mutations preserve base budget state.
@@ -3022,7 +3155,13 @@ func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
 	store := &mockConfigStoreForVK{}
 	manager := &mockGovernanceManagerForVK{
 		data: &governance.GovernanceData{
-			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{
+				"assigned": {ID: "assigned", Name: "Assigned", AgentGrants: []configstoreTables.TableVirtualKeyAgentGrant{
+					{VirtualKeyID: "assigned", AgentName: "beta"},
+					{VirtualKeyID: "assigned", AgentName: "alpha"},
+				}},
+				"empty": {ID: "empty", Name: "Empty"},
+			},
 		},
 	}
 	h := &GovernanceHandler{
@@ -3047,6 +3186,34 @@ func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
 	}
 	if store.getVirtualKeysPaginatedCalls != 0 {
 		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
+	}
+	var response struct {
+		VirtualKeys []struct {
+			ID          string `json:"id"`
+			AgentGrants []struct {
+				AgentName string `json:"agent_name"`
+			} `json:"agent_grants"`
+		} `json:"virtual_keys"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.VirtualKeys) != 2 {
+		t.Fatalf("expected two virtual keys, got %#v", response.VirtualKeys)
+	}
+	byID := make(map[string][]string, len(response.VirtualKeys))
+	for _, vk := range response.VirtualKeys {
+		names := make([]string, 0, len(vk.AgentGrants))
+		for _, grant := range vk.AgentGrants {
+			names = append(names, grant.AgentName)
+		}
+		byID[vk.ID] = names
+	}
+	if got := byID["assigned"]; len(got) != 2 || got[0] != "beta" || got[1] != "alpha" {
+		t.Fatalf("expected in-memory grants as stored, got %#v", got)
+	}
+	if got := byID["empty"]; len(got) != 0 {
+		t.Fatalf("expected no grants, got %#v", got)
 	}
 }
 
