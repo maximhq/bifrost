@@ -106,6 +106,11 @@ const (
 	// while the tools array (and the cached prefix) stays fixed. Native Anthropic surface
 	// (Claude API direct + Claude in Amazon Bedrock via Mantle); Bedrock is Opus 5 only.
 	AnthropicMidConversationToolChangesBetaHeader = "mid-conversation-tool-changes-2026-07-01"
+	// AnthropicMidConversationOutputConfigBetaHeader enables output_config.effort on a
+	// role:"system" message inside messages (per-message effort), so the effort level can
+	// change from that point on without invalidating the cached prefix. Claude API direct;
+	// Fable/Mythos, Opus 5+, Sonnet 5.5. Other models 400 on the field.
+	AnthropicMidConversationOutputConfigBetaHeader = "mid-conversation-output-config-2026-07-01"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -136,7 +141,8 @@ const (
 	AnthropicServerSideFallbackBetaHeaderPrefix  = "server-side-fallback-"
 	AnthropicFallbackCreditBetaHeaderPrefix      = "fallback-credit-"
 	// Mid-conversation tool changes (Opus 5).
-	AnthropicMidConversationToolChangesBetaHeaderPrefix = "mid-conversation-tool-changes-"
+	AnthropicMidConversationToolChangesBetaHeaderPrefix  = "mid-conversation-tool-changes-"
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix = "mid-conversation-output-config-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -203,6 +209,7 @@ type ProviderFeatureSupport struct {
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	Safeguards             bool // Opaque Claude auto-mode classifier payloads; supported models require the dangerous-tool-use beta.
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
+	MidConvOutputConfig    bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -220,12 +227,13 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
-		ServiceTier:        true,
-		Diagnostics:        true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
-		ServerSideFallback: true, // server-side-fallback-2026-06-01 — Claude API only.
-		FallbackCredit:     true, // fallback-credit-2026-06-01.
-		Safeguards:         true, // Claude Code auto-mode classifier; model-gated with the required beta.
-		MidConvToolChanges: true, // mid-conversation-tool-changes-2026-07-01.
+		ServiceTier:         true,
+		Diagnostics:         true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
+		ServerSideFallback:  true, // server-side-fallback-2026-06-01 — Claude API only.
+		FallbackCredit:      true, // fallback-credit-2026-06-01.
+		Safeguards:          true, // Claude Code auto-mode classifier; model-gated with the required beta.
+		MidConvToolChanges:  true, // mid-conversation-tool-changes-2026-07-01.
+		MidConvOutputConfig: true, // mid-conversation-output-config-2026-07-01.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -1154,8 +1162,18 @@ const (
 
 // AnthropicMessage represents a message in Anthropic format
 type AnthropicMessage struct {
-	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant", "system"
-	Content AnthropicContent     `json:"content"` // Array of content blocks
+	Role         AnthropicMessageRole          `json:"role"`                    // "user", "assistant", "system"
+	Content      AnthropicContent              `json:"content"`                 // Array of content blocks
+	OutputConfig *AnthropicMessageOutputConfig `json:"output_config,omitempty"` // per-message effort on role:"system" (beta mid-conversation-output-config)
+}
+
+// AnthropicMessageOutputConfig is the per-message output_config Anthropic accepts on a
+// role:"system" message under beta mid-conversation-output-config-2026-07-01. Only effort
+// is documented there; the message carries an empty content array when it exists solely to
+// change the effort level, and such a message is exempt from the mid-conversation system
+// placement rules.
+type AnthropicMessageOutputConfig struct {
+	Effort *string `json:"effort,omitempty"` // "low" | "medium" | "high" | "xhigh" | "max"
 }
 
 // AnthropicContent represents content that can be either string or array of blocks
