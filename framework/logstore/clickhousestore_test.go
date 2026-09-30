@@ -287,6 +287,26 @@ func TestChServerVersionSupported(t *testing.T) {
 	}
 }
 
+func TestClickHouseReconcileAgentCorrelation(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	taskID, contextID := "task-clickhouse", "context-clickhouse"
+	request := &AgentLog{ID: "ch-a2a-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-request-id"}
+	event := &AgentLog{ID: "ch-a2a-event", Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-request-id", TaskID: &taskID, ContextID: &contextID}
+
+	_, err := store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{request})
+	require.NoError(t, err)
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{request}))
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{event})))
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{event}))
+
+	found, err := store.FindAgentLog(ctx, request.ID)
+	require.NoError(t, err)
+	require.Equal(t, taskID, *found.TaskID)
+	require.Equal(t, contextID, *found.ContextID)
+}
+
 func TestChTTLDays(t *testing.T) {
 	t.Run("EngineFull", func(t *testing.T) {
 		// Fixtures copied verbatim from system.tables.engine_full on ClickHouse 26.6.

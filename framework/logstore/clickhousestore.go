@@ -360,6 +360,156 @@ func (s *ClickHouseLogStore) BatchCreateIfNotExists(ctx context.Context, entries
 	})
 }
 
+// BatchCreateAgentLogsIfNotExists inserts Agent records whose IDs are absent and returns the inserted IDs.
+func (s *ClickHouseLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(entries))
+	inserted := make([]string, 0, len(entries))
+	err := forEachRMWChunk(entries, func(chunk []*AgentLog) error {
+		fresh := make([]*AgentLog, 0, len(chunk))
+		ids := make([]string, 0, len(chunk))
+		for _, entry := range chunk {
+			if entry == nil {
+				continue
+			}
+			if _, ok := seen[entry.ID]; ok {
+				continue
+			}
+			seen[entry.ID] = struct{}{}
+			fresh = append(fresh, entry)
+			ids = append(ids, entry.ID)
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		defer s.lockRMWBatch("agent_logs", ids)()
+		missing, err := chFilterMissing(ctx, s.db, "agent_logs", fresh, func(l *AgentLog) string { return l.ID }, func(l *AgentLog) time.Time { return l.Timestamp })
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if err := s.db.WithContext(ctx).Create(&missing).Error; err != nil {
+			return err
+		}
+		for _, entry := range missing {
+			inserted = append(inserted, entry.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return inserted, nil
+}
+
+// ReconcileAgentCorrelation uses ClickHouse's existing read-modify-reinsert update
+// model. Reinserted rows keep their immutable key and receive a newer version.
+func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error {
+	type correlationKey struct {
+		agent string
+		id    string
+	}
+	requestKeys := make(map[correlationKey]struct{})
+	taskKeys := make(map[correlationKey]struct{})
+	for _, entry := range entries {
+		if entry == nil || entry.AgentName == "" {
+			continue
+		}
+		if entry.RequestID != "" {
+			requestKeys[correlationKey{agent: entry.AgentName, id: entry.RequestID}] = struct{}{}
+		}
+		if entry.TaskID != nil && *entry.TaskID != "" {
+			taskKeys[correlationKey{agent: entry.AgentName, id: *entry.TaskID}] = struct{}{}
+		}
+	}
+
+	for key := range requestKeys {
+		var rows []AgentLog
+		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(rows))
+		for i := range rows {
+			ids = append(ids, rows[i].ID)
+		}
+		unlock := s.lockRMWBatch("agent_logs", ids)
+		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+			unlock()
+			return err
+		}
+		var taskID, contextID *string
+		for i := range rows {
+			if taskID == nil && rows[i].TaskID != nil && *rows[i].TaskID != "" {
+				taskID = rows[i].TaskID
+			}
+			if contextID == nil && rows[i].ContextID != nil && *rows[i].ContextID != "" {
+				contextID = rows[i].ContextID
+			}
+		}
+		for i := range rows {
+			changed := false
+			if (rows[i].TaskID == nil || *rows[i].TaskID == "") && taskID != nil {
+				rows[i].TaskID = taskID
+				changed = true
+			}
+			if (rows[i].ContextID == nil || *rows[i].ContextID == "") && contextID != nil {
+				rows[i].ContextID = contextID
+				changed = true
+			}
+			if changed {
+				if err := s.chReinsert(ctx, &rows[i]); err != nil {
+					unlock()
+					return err
+				}
+			}
+			if rows[i].TaskID != nil && *rows[i].TaskID != "" {
+				taskKeys[correlationKey{agent: key.agent, id: *rows[i].TaskID}] = struct{}{}
+			}
+		}
+		unlock()
+	}
+
+	for key := range taskKeys {
+		var rows []AgentLog
+		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(rows))
+		for i := range rows {
+			ids = append(ids, rows[i].ID)
+		}
+		unlock := s.lockRMWBatch("agent_logs", ids)
+		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+			unlock()
+			return err
+		}
+		var contextID *string
+		for i := range rows {
+			if rows[i].ContextID != nil && *rows[i].ContextID != "" {
+				contextID = rows[i].ContextID
+				break
+			}
+		}
+		if contextID != nil {
+			for i := range rows {
+				if rows[i].ContextID == nil || *rows[i].ContextID == "" {
+					rows[i].ContextID = contextID
+					if err := s.chReinsert(ctx, &rows[i]); err != nil {
+						unlock()
+						return err
+					}
+				}
+			}
+		}
+		unlock()
+	}
+	return nil
+}
+
 // BatchCreateMCPToolLogsIfNotExists inserts the MCP tool log entries whose
 // ids are not already present. See CreateIfNotExists.
 func (s *ClickHouseLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
@@ -484,6 +634,32 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 		}
 	}
 	return nil
+}
+
+// UpdateAgentLog applies an update to an Agent log row via read-modify-write.
+func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entry any) error {
+	st, err := chParseSchema(s.db, &AgentLog{})
+	if err != nil {
+		return err
+	}
+	defer s.lockRMW("agent_logs", id)()
+	var existing AgentLog
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	dest := reflect.ValueOf(&existing).Elem()
+	switch value := entry.(type) {
+	case map[string]interface{}:
+		if err := chApplyUpdateMap(ctx, st, dest, value); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("clickhouse: unsupported UpdateAgentLog entry type %T", entry)
+	}
+	return s.chReinsert(ctx, &existing)
 }
 
 // UpdateMCPToolLog applies an update to an MCP tool log row via read-modify-write.
@@ -632,6 +808,45 @@ func (s *ClickHouseLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string
 		return nil
 	}
 	return s.chLightweightDelete(ctx, "mcp_tool_logs", "id IN ?", ids)
+}
+
+func (s *ClickHouseLogStore) FindAgentLogsForDeletion(ctx context.Context, ids []string) ([]*AgentLog, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var requestIDs []string
+	if err := s.db.WithContext(ctx).
+		Raw("SELECT DISTINCT request_id FROM `agent_logs` WHERE id IN ?", ids).
+		Scan(&requestIDs).Error; err != nil {
+		return nil, err
+	}
+	query := s.db.WithContext(ctx).Where("id IN ?", ids)
+	if len(requestIDs) > 0 {
+		query = s.db.WithContext(ctx).Where("id IN ? OR request_id IN ?", ids, requestIDs)
+	}
+	var entries []*AgentLog
+	if err := query.Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// DeleteAgentLogs deletes the identified Agent log rows together with every row
+// sharing their request IDs, mirroring the SQL stores so a deleted operation's
+// correlated stream events do not survive as orphans.
+func (s *ClickHouseLogStore) DeleteAgentLogs(ctx context.Context, ids []string) error {
+	entries, err := s.FindAgentLogsForDeletion(ctx, ids)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	entryIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		entryIDs = append(entryIDs, entry.ID)
+	}
+	return s.chLightweightDelete(ctx, "agent_logs", "id IN ?", entryIDs)
 }
 
 // Flush removes stale processing log rows. Overridden so the minute sweep is

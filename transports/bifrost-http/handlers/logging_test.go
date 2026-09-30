@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1143,6 +1144,42 @@ func TestFilterDataListsProjects(t *testing.T) {
 	}
 	if len(payload.Projects) != 1 || payload.Projects[0].ID != "proj-a" || payload.Projects[0].Name != "Atlas" {
 		t.Fatalf("expected the project pair under \"projects\", got %s", ctx.Response.Body())
+	}
+}
+
+// TestCorrelationFilterParsing keeps scalar correlation filters identical across
+// LLM list/stats/histogram and MCP list/stats/analytics endpoints.
+func TestCorrelationFilterParsing(t *testing.T) {
+	var ctx fasthttp.RequestCtx
+	ctx.Request.SetRequestURI("/api/logs?agent_names=library-research,code-reviewer&session_id=session-1&agent_correlation_id=agent-1")
+
+	llm := &logstore.SearchFilters{}
+	parseAgentNamesFilter(&ctx, llm)
+	llm.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
+	parseAgentCorrelationIDFilter(&ctx, llm)
+	if llm.SessionID != "session-1" || llm.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(llm.AgentNames, []string{"library-research", "code-reviewer"}) {
+		t.Fatalf("lost LLM correlation filters: %+v", llm)
+	}
+	if got := parseHistogramFilters(&ctx); got.SessionID != "session-1" || got.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(got.AgentNames, llm.AgentNames) {
+		t.Fatalf("lost LLM histogram correlation filters: %+v", got)
+	}
+
+	list, _, err := parseMCPFiltersAndPagination(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := parseMCPFilters(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analytics, err := parseMCPHistogramFilters(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filters := range []*logstore.MCPToolLogSearchFilters{list, stats, analytics} {
+		if filters.SessionID != "session-1" || filters.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(filters.AgentNames, llm.AgentNames) {
+			t.Fatalf("lost MCP correlation filters: %+v", filters)
+		}
 	}
 }
 
