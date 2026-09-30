@@ -440,30 +440,8 @@ func (h *AgentGatewayHandler) listHistory(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-	includePayloads, includeEvents, err := parseAgentHistoryIncludes(ctx, filter)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
 	logCtx := agentGatewayLogContext(ctx)
 	defer logCtx.Cancel()
-	if includePayloads && includeEvents {
-		rows, err := h.config.LogsStore.ListAgentLogSessions(logCtx, filter, pagination)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent history")
-			return
-		}
-		result := logstore.AgentLogSessionResult{Logs: make([]logstore.AgentLogSession, 0, len(rows.Requests)), Pagination: rows.Pagination}
-		for _, request := range rows.Requests {
-			session := logstore.AgentLogSession{AgentLogDetail: newSanitizedAgentLogDetail(request), Events: []logstore.AgentLogDetail{}}
-			for _, event := range rows.Events[logstore.AgentSessionCorrelationKey(request)] {
-				session.Events = append(session.Events, newSanitizedAgentLogDetail(event))
-			}
-			result.Logs = append(result.Logs, session)
-		}
-		SendJSON(ctx, result)
-		return
-	}
 	result, err := h.config.LogsStore.ListAgentLogHistory(logCtx, filter, pagination)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent history")
@@ -604,39 +582,6 @@ func agentGatewayLogContext(ctx *fasthttp.RequestCtx) *schemas.BifrostContext {
 		logCtx.SetValue(key, value)
 	})
 	return logCtx
-}
-
-func parseAgentHistoryIncludes(ctx *fasthttp.RequestCtx, filter logstore.AgentLogHistoryFilter) (bool, bool, error) {
-	parse := func(name string) (bool, error) {
-		value := strings.TrimSpace(string(ctx.QueryArgs().Peek(name)))
-		if value == "" {
-			return false, nil
-		}
-		if value != "true" {
-			return false, fmt.Errorf("invalid %s parameter: must be true", name)
-		}
-		return true, nil
-	}
-	includePayloads, err := parse("include_payloads")
-	if err != nil {
-		return false, false, err
-	}
-	includeEvents, err := parse("include_events")
-	if err != nil {
-		return false, false, err
-	}
-	if includeEvents && !includePayloads {
-		return false, false, fmt.Errorf("include_events=true requires include_payloads=true")
-	}
-	if includeEvents {
-		if filter.ContextID == "" {
-			return false, false, fmt.Errorf("include_events=true requires context_id")
-		}
-		if len(filter.RecordKind) != 1 || filter.RecordKind[0] != "request" {
-			return false, false, fmt.Errorf("include_events=true requires record_kind=request")
-		}
-	}
-	return includePayloads, includeEvents, nil
 }
 
 func parseAgentHistorySearch(ctx *fasthttp.RequestCtx) (logstore.AgentLogHistoryFilter, logstore.PaginationOptions, error) {
