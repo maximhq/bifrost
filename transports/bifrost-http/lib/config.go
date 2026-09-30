@@ -856,9 +856,12 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 	}
 }
 
-// FeatureFlagWarp gates Warp, the in-dashboard agent. Off by default: while it
-// is off every /api/warp route answers 404 and new logs are not embedded into
-// Warp's index, and the dashboard hides the launcher, dock and settings page.
+// FeatureFlagWarp gates Warp, the in-dashboard agent. On by default in OSS
+// and off by default in the enterprise build, where an operator turns it on
+// per deployment. While it is off every /api/warp route answers 404 and new
+// logs are not embedded into Warp's index, and the dashboard hides the
+// launcher, dock and settings page. On is only the gate: Warp still answers
+// nothing until it is configured with a provider and a vector store.
 // The UI references the same id in ui/lib/constants/featureFlags.ts.
 const FeatureFlagWarp = "warp"
 
@@ -868,10 +871,11 @@ const FeatureFlagWarp = "warp"
 func registerFeatureFlags(_ context.Context) error {
 	defs := []featureflags.FlagDef{
 		{
-			ID:          FeatureFlagWarp,
-			DisplayName: "Warp",
-			Description: "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
-			Default:     false,
+			ID:                FeatureFlagWarp,
+			DisplayName:       "Warp",
+			Description:       "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
+			Default:           true,
+			EnterpriseDefault: new(false),
 		},
 	}
 	for _, def := range defs {

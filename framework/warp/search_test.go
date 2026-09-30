@@ -289,7 +289,14 @@ func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
 	require.Equal(t, 0, response["returned"])
 	hint, _ := response["hint"].(string)
 	require.Contains(t, hint, "threshold")
-	require.Contains(t, hint, "Do not fall back to count_logs or query_logs")
+	require.Contains(t, hint, "do not fall back to count_logs or query_logs")
+	// A survey question ("what kinds of tasks was Rohan doing") has no meaning
+	// to embed, so an empty result is the expected outcome of the wrong first
+	// step, not a finding. Forbidding the fallback outright here had Warp tell
+	// a person with 42k requests in the window that nothing matched.
+	require.Contains(t, hint, "survey question")
+	require.Contains(t, hint, "query_logs using include_content and limit 25")
+	require.Contains(t, hint, "not representative of the entire traffic")
 }
 
 // The default threshold is a Weaviate certainty, (1 + cosine) / 2. At 0.80 it
