@@ -692,6 +692,7 @@ bifrost:
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
+        #     apply_trace_dimensions_to_child_spans: false # Merge x-bf-dim-* onto child spans as well as the root
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
         #     overhead_breakdown_enabled: false # Export the per-component overhead histogram bifrost_overhead_component_microseconds (requires metrics_enabled and an active trace)
         #
@@ -725,6 +726,8 @@ bifrost:
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
+        # Merge x-bf-dim-* request dimensions onto child spans as well as the root HTTP span
+        apply_trace_dimensions_to_child_spans: false
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []

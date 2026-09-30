@@ -47,6 +47,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `disable_content_logging` | `boolean` | ❌ No | Drop message content from exported spans (default: `false`). See [Controlling Exported Content](#controlling-exported-content) |
 | `export_raw_payloads` | `boolean` | ❌ No | Attach raw provider request/response bodies to LLM spans (default: `false`). See [Raw Provider Payloads](#raw-provider-payloads) |
 | `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
+| `apply_trace_dimensions_to_child_spans` | `boolean` | ❌ No | Merge `x-bf-dim-*` request dimensions onto child spans as well as the root (default: `false`). Reserved suffixes `path` and `method` are skipped; span-level attributes win on conflict |
 | `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
 
 ### Environment Variable Substitution

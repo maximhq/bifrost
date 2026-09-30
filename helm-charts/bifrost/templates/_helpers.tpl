@@ -1617,6 +1617,9 @@ false
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
 {{- end }}
+{{- if hasKey $inputConfig "apply_trace_dimensions_to_child_spans" }}
+{{- $_ := set $otelConfig "apply_trace_dimensions_to_child_spans" $inputConfig.apply_trace_dimensions_to_child_spans }}
+{{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
