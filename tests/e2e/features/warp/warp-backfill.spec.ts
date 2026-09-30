@@ -86,3 +86,25 @@ test.describe('Warp backfill spend', () => {
     await expect(page.getByTestId('warp-backfill-spend')).toHaveCount(0)
   })
 })
+
+// The status endpoint answers for the space the deployment is configured with,
+// but the form can be edited off that space before anything is saved. The old
+// run's "Completed" then sat under a model nothing has been indexed for, so
+// the card follows the form: gone while the embedding space is edited, back
+// when the fields return to the saved values.
+test.describe('Warp backfill status and the embedding space', () => {
+  test('hides a finished backfill while the embedding space is edited', async ({ page }) => {
+    await mockWarpBackfill(page, completedJob({ embedding_tokens: 48210 }))
+    await page.goto('/workspace/config/warp')
+
+    const status = page.getByTestId('warp-backfill-status')
+    await expect(status).toBeVisible()
+
+    const dimension = page.getByTestId('warp-embedding-dimension-input')
+    await dimension.fill('3072')
+    await expect(status).toHaveCount(0)
+
+    await dimension.fill(String(configuredWarp.embedding_dimension))
+    await expect(status).toBeVisible()
+  })
+})

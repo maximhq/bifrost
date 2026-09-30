@@ -284,6 +284,44 @@ func TestWarpBackfillStatusWithoutIDFallsBackToLatestJob(t *testing.T) {
 	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-new"`)
 }
 
+// A finished backfill describes the embedding space it ran under. After the
+// embedding model was changed and saved, the settings page still showed the
+// old run as "Completed" over a full progress bar, beside a space nothing has
+// been indexed into - and the Start button stayed disabled for that window as
+// "already fully indexed". A job frozen against another space is not the
+// current state of this one, so the id-less read answers idle instead. A job
+// that is still running is shown regardless: it needs its cancel action.
+func TestWarpBackfillStatusHidesJobFromAnotherEmbeddingSpace(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-old-space", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusCompleted,
+		Metadata: `{"config_signature":"6:openai|17:text-embedding-ada|4:1536|8:WarpLogs|","scanned":100,"total":100,"indexed":100}`,
+	}
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"status":"idle"`)
+	require.NotContains(t, string(statusCtx.Response.Body()), "job-old-space")
+
+	// The same job under the space the deployment is configured with now.
+	metadata, err := handler.service.BuildBackfillJobMeta(context.Background(), time.Unix(1, 0), time.Unix(2, 0), false)
+	require.NoError(t, err)
+	jobs.latest.Metadata = metadata
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-old-space"`)
+
+	// A running job from another space is still the current job.
+	jobs.inFlight = &tables.TableSidekiqJob{
+		ID: "job-running", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"config_signature":"6:openai|17:text-embedding-ada|4:1536|8:WarpLogs|"}`,
+	}
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-running"`)
+}
+
 func TestWarpBackfillStatusWithoutAnyJobIsIdle(t *testing.T) {
 	handler, _, cleanup := newBackfillTestHandler(t)
 	defer cleanup()

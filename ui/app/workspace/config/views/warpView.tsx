@@ -223,11 +223,11 @@ export default function WarpView() {
 	const isBackfillActive =
 		backfillStatus?.status === "pending" || backfillStatus?.status === "running" || backfillStatus?.status === "cancelling";
 	// A live job always wins; otherwise fall back to the run that just ended.
-	const shownBackfill = backfillStatus?.id ? backfillStatus : finishedBackfill;
+	const lastBackfill = backfillStatus?.id ? backfillStatus : finishedBackfill;
 	// These embedding calls skip the plugin pipeline, so they never show up in
 	// the logs - this line is the only place their spend is visible.
-	const backfillSpend = shownBackfill
-		? formatWarpUsage({ total_tokens: shownBackfill.embedding_tokens, cost: { total_cost: shownBackfill.embedding_cost } })
+	const backfillSpend = lastBackfill
+		? formatWarpUsage({ total_tokens: lastBackfill.embedding_tokens, cost: { total_cost: lastBackfill.embedding_cost } })
 		: null;
 
 	// Adopt a job discovered by the id-less request. Without this a reload during
@@ -296,6 +296,19 @@ export default function WarpView() {
 		!!backfillEndCompare &&
 		new Date(backfillStartCompare).getTime() === new Date(backfillStatus.start_time).getTime() &&
 		new Date(backfillEndCompare).getTime() === new Date(backfillStatus.end_time).getTime();
+
+	// The run held after a job finished belongs to the space it ran under. When
+	// the saved space changes, the server's id-less read goes idle and this copy
+	// is what would keep the old "Completed" on screen, so it goes with it.
+	const savedSpaceKey = [
+		config?.embedding_provider ?? "",
+		config?.embedding_model ?? "",
+		config?.embedding_dimension ?? 0,
+		config?.log_vector_store_namespace ?? "",
+	].join("\u0000");
+	useEffect(() => {
+		setFinishedBackfill(null);
+	}, [savedSpaceKey]);
 
 	// One hydration point. Everything the form shows comes from here.
 	useEffect(() => {
@@ -401,6 +414,17 @@ export default function WarpView() {
 		!!config?.configured &&
 		embeddingSpaceChanged(embeddingFields, savedEmbeddingFields) &&
 		normalizeWarpNamespace(form.namespace) === normalizeWarpNamespace(savedEmbeddingFields.namespace);
+	// A finished backfill describes the embedding space it ran under. Once the
+	// form has moved off that space - a different model, dimension or namespace
+	// - the card would show "Completed" over a full bar for rows the new space
+	// will never search, so it is hidden until the fields come back or a job
+	// runs under the new space (the server answers idle for the old one once
+	// the change is saved). A running job stays: it still needs its cancel.
+	const backfillSpaceEdited =
+		!isBackfillActive &&
+		(embeddingSpaceChanged(embeddingFields, savedEmbeddingFields) ||
+			normalizeWarpNamespace(form.namespace) !== normalizeWarpNamespace(savedEmbeddingFields.namespace));
+	const shownBackfill = backfillSpaceEdited ? null : lastBackfill;
 	const invalid =
 		missingRequired ||
 		iterationsInvalid ||
