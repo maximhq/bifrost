@@ -1321,7 +1321,7 @@ func makeSOResponseFormat(schemaName string) interface{} {
 // endpoints reject native `output_config.format` and must instead receive
 // structured output as a synthetic bf_so_* tool call. Any provider added here
 // in the future must also be added to the branch under test in chat.go/responses.go.
-var toolConversionProviders = []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Azure}
+var toolConversionProviders = []schemas.ModelProvider{schemas.BedrockMantle, schemas.Azure}
 
 // TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking verifies that when
 // response_format=json_schema is sent to a provider whose native Anthropic endpoint rejects

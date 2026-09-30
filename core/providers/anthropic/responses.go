@@ -2554,7 +2554,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				// events rather than the item snapshot — the Gemini /genai stream
 				// converter, the OpenAI Responses SDK — sees a stream with no text
 				// in it, which is how a schema-constrained request to a tool-based
-				// structured-output provider (Vertex, Bedrock Mantle, Azure) came
+				// structured-output provider (Bedrock Mantle, Azure) came
 				// back empty while the same request without a schema streamed fine.
 				//
 				// The whole document goes out in one delta rather than replaying the
@@ -4339,7 +4339,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 		if bifrostReq.Params.Text != nil {
-			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
+			// Bedrock Mantle and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
 			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
 				if bifrostReq.Params.Text.Format != nil {

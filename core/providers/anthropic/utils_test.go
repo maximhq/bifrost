@@ -745,12 +745,12 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			expectHeaders: []string{AnthropicStructuredOutputsBetaHeader},
 		},
 		{
-			name:     "Vertex skips structured outputs header",
+			name:     "Vertex adds structured outputs header",
 			provider: schemas.Vertex,
 			req: &AnthropicMessageRequest{
 				OutputFormat: json.RawMessage(`{"type":"json_schema"}`),
 			},
-			unexpectHeaders: []string{AnthropicStructuredOutputsBetaHeader},
+			expectHeaders: []string{AnthropicStructuredOutputsBetaHeader},
 		},
 		{
 			name:     "Vertex skips MCP header",
@@ -1145,7 +1145,6 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 
 	t.Run("Vertex/drops_unsupported_headers", func(t *testing.T) {
 		unsupported := []string{
-			AnthropicStructuredOutputsBetaHeader,
 			AnthropicMCPClientBetaHeader,
 			AnthropicPromptCachingScopeBetaHeader,
 			AnthropicAdvancedToolUseBetaHeader,
@@ -1609,9 +1608,9 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		}
 	})
 
-	t.Run("vertex_strips_mcp_strict_and_input_examples_via_feature_check", func(t *testing.T) {
-		// Vertex: no MCP, no InputExamples, no StructuredOutputs.
-		// tool.strict stripped; tool.input_examples stripped; mcp_servers stripped.
+	t.Run("vertex_strips_mcp_and_input_examples_keeps_strict_via_feature_check", func(t *testing.T) {
+		// Vertex: no MCP, no InputExamples; StructuredOutputs is supported.
+		// tool.strict kept; tool.input_examples stripped; mcp_servers stripped.
 		// tool.cache_control.scope stripped (Vertex has no PromptCachingScope).
 		input := []byte(`{
 			"model":"claude-sonnet-4-6",
@@ -1622,10 +1621,13 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		for _, path := range []string{"mcp_servers", "tools.0.strict", "tools.0.input_examples", "tools.0.cache_control.scope"} {
+		for _, path := range []string{"mcp_servers", "tools.0.input_examples", "tools.0.cache_control.scope"} {
 			if providerUtils.JSONFieldExists(result, path) {
 				t.Errorf("expected %q to be stripped for Vertex, got: %s", path, string(result))
 			}
+		}
+		if !providerUtils.JSONFieldExists(result, "tools.0.strict") {
+			t.Errorf("expected tools.0.strict to be kept for Vertex, got: %s", string(result))
 		}
 		if !providerUtils.JSONFieldExists(result, "tools.0.name") {
 			t.Errorf("expected tool name to survive")

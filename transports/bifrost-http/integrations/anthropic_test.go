@@ -444,7 +444,7 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 		model      string
 		wantRawOff bool
 	}{
-		{"vertex", "vertex/claude-haiku-4-5", true},
+		{"vertex", "vertex/claude-haiku-4-5", false},
 		{"bedrock_mantle", "bedrock_mantle/claude-haiku-4-5", true},
 		{"azure", "azure/claude-haiku-4-5", true},
 		{"anthropic", "anthropic/claude-haiku-4-5", false},

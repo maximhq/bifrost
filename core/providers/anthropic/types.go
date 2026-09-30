@@ -164,6 +164,10 @@ const (
 //	SO-mantle-excl = Structured outputs unsupported on the bedrock-mantle
 //	     Messages API, per the "Supported APIs or features" table:
 //	     https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html
+//	SO-vertex = Structured outputs (output_config.format and strict tool use) on
+//	     Claude 4.5+ via Vertex AI, gated by the org policy constraint
+//	     constraints/vertexai.allowedPartnerModelFeatures (default deny):
+//	     https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude/structured-outputs
 type ProviderFeatureSupport struct {
 	WebSearch              bool // web_search server tool (cite: A)
 	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
@@ -229,7 +233,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
-	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool, StructuredOutputs,
+	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool,
 	// PromptCachingScope (per A overview "Automatic prompt caching" row =
 	//     claudeApi + azureAiBeta only; not yet rolled out to Vertex),
 	// FilesAPI, WebFetch, CodeExecution, AdvancedToolUse, RedactThinking.
@@ -248,6 +252,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		WebSearch:   true, // web search GA on Vertex per A; earlier code restricted to web_search_20250305 — A doesn't qualify
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic:         true,
+		StructuredOutputs:      true, // output_config.format + strict tools per SO-vertex. A project whose org policy does not allow structured_outputs gets Vertex's 400 naming the constraint — never a silently unenforced schema.
 		Compaction:             true,
 		ContextEditing:         true, // context-management-2025-06-27 supported on Vertex (Beta) — see comment above
 		ContextManagementField: true, // Vertex accepts the context_management body field

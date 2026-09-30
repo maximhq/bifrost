@@ -116,8 +116,12 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, caps schemas.ModelCa
 // the synthetic bf_so_* tool instead. Single source of truth for the typed converters and for the
 // raw-body passthrough guards, which have to agree: a body the converter would have rewritten must
 // never reach the provider verbatim ("output_config.format: Extra inputs are not permitted").
+//
+// Vertex is not in this set: Claude on Vertex accepts output_config.format natively (cite:
+// SO-vertex). The synthetic tool cannot be forced while extended thinking is on, so routing Vertex
+// through it silently dropped schema enforcement for every reasoning request.
 func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) bool {
-	return provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure
+	return provider == schemas.BedrockMantle || provider == schemas.Azure
 }
 
 // ValidateResponsesToolsForProvider is the Responses-path mirror of

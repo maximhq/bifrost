@@ -38,10 +38,10 @@ func TestResponseFormatOrderNativeStructuredOutputs(t *testing.T) {
 	schemaorder.AssertSchemaKeyOrder(t, string(raw), "schema")
 }
 
-// TestResponseFormatOrderToolFallback covers Vertex/Bedrock Mantle/Azure, where
+// TestResponseFormatOrderToolFallback covers Bedrock Mantle/Azure, where
 // the schema is rewritten into a forced tool's input_schema.
 func TestResponseFormatOrderToolFallback(t *testing.T) {
-	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Azure} {
+	for _, provider := range toolConversionProviders {
 		t.Run(string(provider), func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 			out, err := ToAnthropicChatRequest(ctx, orderingChatRequest(t, provider))

@@ -3356,9 +3356,9 @@ func TestClearAnthropicPassthroughForUnsupportedStructuredOutput(t *testing.T) {
 	}{
 		{"bedrock mantle with output_config.format clears", "anthropic", schemas.BedrockMantle, true, responsesRequest(outputConfigBody), true},
 		{"bedrock mantle with legacy output_format clears", "anthropic", schemas.BedrockMantle, true, responsesRequest(outputFormatBody), true},
-		{"vertex with output_config.format clears", "anthropic", schemas.Vertex, true, responsesRequest(outputConfigBody), true},
 		{"azure with output_config.format clears", "anthropic", schemas.Azure, true, responsesRequest(outputConfigBody), true},
-		// Anthropic and Bedrock Converse serve the schema natively; nothing to rewrite.
+		// Anthropic, Bedrock Converse and Vertex serve the schema natively; nothing to rewrite.
+		{"vertex with output_config.format preserved", "anthropic", schemas.Vertex, true, responsesRequest(outputConfigBody), false},
 		{"anthropic with output_config.format preserved", "anthropic", schemas.Anthropic, true, responsesRequest(outputConfigBody), false},
 		{"bedrock with output_config.format preserved", "anthropic", schemas.Bedrock, true, responsesRequest(outputConfigBody), false},
 		{"bedrock mantle without a format preserved", "anthropic", schemas.BedrockMantle, true, responsesRequest(noFormatBody), false},
