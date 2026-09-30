@@ -2286,15 +2286,30 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the primary mechanism — without the semantic block no complexity_tier is published. The optional llm block is a chat-completion fallback engaged only when semantic.fallback is 'llm'. The optional session block retains the highest tier observed for a session.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Select semantic or Typesafe Jev as the primary classifier; semantic may fall back to LLM or Jev. Session state reuses the effective tier on tool continuations and can optionally retain the highest tier across turns.",
               "properties": {
+                "classifier": {
+                  "type": "string",
+                  "enum": ["semantic", "jev"],
+                  "default": "semantic",
+                  "description": "Primary complexity classifier; defaults to semantic. Jev uses Typesafe provider credentials."
+                },
+                "jev": {
+                  "type": "object",
+                  "description": "Typesafe Jev request settings; no API key or model is configured in this block.",
+                  "properties": {
+                    "previous_message_count": {"type": "integer", "minimum": 0, "maximum": 5, "default": 1, "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."},
+                    "timeout": {"description": "Maximum Jev classification latency; duration string or milliseconds (default: 1500ms).", "oneOf": [{"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"}, {"type": "number", "minimum": 0}], "default": "1500ms"}
+                  },
+                  "additionalProperties": false
+                },
                 "session": {
                   "type": "object",
-                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns for 24 hours of inactivity. Uses the configured primary classifier and is independent of provider session stickiness.",
                   "properties": {
                     "enabled": {
                       "type": "boolean",
-                      "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+                      "description": "Enable monotonic session tier retention; default: false."
                     }
                   },
                   "required": ["enabled"],
@@ -2350,8 +2365,8 @@
                     },
                     "fallback": {
                       "type": "string",
-                      "enum": ["none", "llm"],
-                      "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (default) records the request as skipped; 'llm' asks the chat model configured in the sibling llm block, which is required when this is set."
+                      "enum": ["none", "llm", "jev"],
+                      "description": "What answers when semantic classification produces no tier: none (default), the configured LLM classifier, or Typesafe Jev."
                     }
                   },
                   "required": ["provider", "embedding_model"],
@@ -2531,7 +2546,8 @@
                         "required": ["enabled"]
                       }
                     },
-                    "required": ["session"]
+                    "required": ["session"],
+                    "not": {"required": ["classifier"], "properties": {"classifier": {"const": "jev"}}}
                   },
                   "then": {
                     "required": ["semantic"]

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { analyzerConfigSchema, countCanonicalSemanticPhrases, DEFAULT_FORM_VALUES, shouldSeedLLMPrompt } from "./formSchema";
+import { analyzerConfigSchema, countCanonicalSemanticPhrases, DEFAULT_FORM_VALUES, shouldSeedLLMPrompt, toAnalyzerPayload, toFormValues } from "./formSchema";
+import type { AnalyzerConfig } from "@/lib/types/complexityRouter";
 
 describe("fallback prompt initialization", () => {
 	test("initializes an untouched empty prompt", () => {
@@ -32,6 +33,38 @@ function formValues(simpleCount: number, semantic: boolean) {
 			: { ...DEFAULT_FORM_VALUES.semantic },
 	};
 }
+
+describe("Jev complexity configuration", () => {
+	test("defaults to one prior user message and a 1500ms timeout", () => {
+		expect(DEFAULT_FORM_VALUES.jev).toEqual({ previous_message_count: 1, timeout: "1500ms" });
+	});
+
+	test("restores the saved classifier and defaults an empty legacy value", () => {
+		const saved: AnalyzerConfig = {
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			classifier: "jev",
+		};
+		expect(toFormValues(saved).classifier).toBe("jev");
+		expect(toFormValues({ ...saved, classifier: "" as never }).classifier).toBe("semantic");
+	});
+
+	test("builds a valid Jev payload with the configured timeout", () => {
+		const values = {
+			...DEFAULT_FORM_VALUES,
+			classifier: "jev" as const,
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			jev: { previous_message_count: 1, timeout: "400ms" },
+		};
+		const parsed = analyzerConfigSchema.safeParse(values);
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+
+		const payload = toAnalyzerPayload(parsed.data);
+		expect(payload.classifier).toBe("jev");
+		expect(payload.jev).toEqual({ previous_message_count: 1, timeout: "400ms" });
+		expect(payload.semantic).toBeUndefined();
+	});
+});
 
 describe("semantic complexity phrase limit", () => {
 	test("accepts exactly 750 canonical phrases", () => {

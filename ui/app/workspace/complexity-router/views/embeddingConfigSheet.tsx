@@ -407,6 +407,12 @@ export default function EmbeddingConfigSheet({
 								/>
 							</div>
 
+							{semantic?.fallback === "jev" && (
+								<p className="text-muted-foreground border-t pt-4 text-xs">
+									Jev uses Typesafe provider credentials. Its request history and timeout are configured on the Complexity Router page.
+								</p>
+							)}
+
 							{/* Fallback classifier fields. Rendered inline rather than in a
 							    sheet of their own, and only while "LLM classifier" is the
 							    selected fallback — a dormant llm block still keeps its saved
