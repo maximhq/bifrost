@@ -96,11 +96,23 @@ func TestLoggableURL(t *testing.T) {
 		assert.NotContains(t, got, "token=abc")
 	})
 
-	t.Run("reference-resolved base_url hides a rewritten host too", func(t *testing.T) {
+	t.Run("a rewritten URL falls back to the reference alone", func(t *testing.T) {
 		t.Setenv("BIFROST_TEST_LOGGABLE_BASE_URL", "https://secret-host.example.com/v1beta")
 		base := schemas.NewSecretVar("env.BIFROST_TEST_LOGGABLE_BASE_URL")
 		got := LoggableURL(base, "https://secret-host.example.com/download/v1beta/files/abc:download?alt=media")
-		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL/download/v1beta/files/abc:download?alt=media", got)
+		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL", got)
+	})
+
+	t.Run("a rewritten URL cannot leak a secret path segment", func(t *testing.T) {
+		// Gemini splices "/download" in front of the version segment, so a base that
+		// carries a tenant ahead of it stops being a prefix of the request URL. The
+		// tenant is still in that URL, which is why the fallback cannot echo any of it.
+		t.Setenv("BIFROST_TEST_LOGGABLE_BASE_URL", "https://secret-host.example.com/tenants/acme/v1beta")
+		base := schemas.NewSecretVar("env.BIFROST_TEST_LOGGABLE_BASE_URL")
+		got := LoggableURL(base, "https://secret-host.example.com/tenants/acme/download/v1beta/files/abc:download?alt=media")
+		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL", got)
+		assert.NotContains(t, got, "acme")
+		assert.NotContains(t, got, "secret-host")
 	})
 
 	t.Run("unparseable URL under a reference falls back to the reference alone", func(t *testing.T) {

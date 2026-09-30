@@ -1316,10 +1316,12 @@ func LoggableURL(baseURL *schemas.SecretVar, fullURL string) string {
 	if resolved := strings.TrimRight(baseURL.GetValue(), "/"); resolved != "" && strings.HasPrefix(fullURL, resolved) {
 		return ref + fullURL[len(resolved):]
 	}
-	// The URL was not built from base_url - a provider that rewrites the host for a
-	// download endpoint, say. Nothing after the host came from the reference, so
-	// dropping scheme and host is both necessary and sufficient.
-	return ref + parsed.RequestURI()
+	// The resolved value is not a prefix, so the URL was rewritten rather than simply
+	// appended to - Gemini's download endpoint splices "/download" in front of the
+	// version segment, for instance. The rest of the path can then still contain parts
+	// of the resolved base (a tenant segment ahead of the version, say) with no way to
+	// tell which, so the reference alone is the only safe rendering.
+	return ref
 }
 
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
