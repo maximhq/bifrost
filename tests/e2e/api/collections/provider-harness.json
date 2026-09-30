@@ -177564,6 +177564,55 @@
           "name": "[EXPECT-400] openai openai/gpt-5-mini /v1/chat/completions conflicting reasoning_effort high vs reasoning.effort low still rejected - #7659"
         }
       ]
+    },
+    {
+      "name": "128. Bedrock named AWS profile validation (bedrock-profile-auth)",
+      "description": "A Bedrock key must select exactly one AWS credential source. This management API probe combines a named profile with static credentials and requires a 400 before the key is saved. It needs no AWS login or inference call.",
+      "item": [
+        {
+          "name": "[EXPECT-400] bedrock/us.amazon.nova-lite-v1:0 profile plus static credentials rejected - bedrock-profile-auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Bedrock profile and static credentials cannot be saved together', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected profile conflict 400: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(body, 'expected profile conflict detail: ' + body.slice(0, 300)).to.include('bedrock_key_config.profile');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-invalid-bedrock-profile-static\",\"models\":[\"us.amazon.nova-lite-v1:0\"],\"weight\":1,\"enabled\":false,\"bedrock_key_config\":{\"region\":\"us-east-1\",\"profile\":\"team-a\",\"access_key\":\"AKIAEXAMPLE\",\"secret_key\":\"example-secret\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/bedrock/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "bedrock",
+                "keys"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

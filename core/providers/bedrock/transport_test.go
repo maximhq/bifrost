@@ -767,12 +767,13 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	assert.Empty(t, transport.TLSNextProto)
 }
 
-func TestSignAWSRequest_UsesConfiguredProfileOverAmbientCredentials(t *testing.T) {
+func configureBedrockProfileTestCredentials(t *testing.T) {
+	t.Helper()
 	fixtureDir := t.TempDir()
 	configFile := filepath.Join(fixtureDir, "config")
 	credentialsFile := filepath.Join(fixtureDir, "credentials")
-	require.NoError(t, os.WriteFile(configFile, []byte("[default]\nregion = us-east-1\n[profile team-a]\nregion = us-east-1\n"), 0o600))
-	require.NoError(t, os.WriteFile(credentialsFile, []byte("[default]\naws_access_key_id = DEFAULT_ACCESS_KEY\naws_secret_access_key = default-secret\n[team-a]\naws_access_key_id = PROFILE_A_ACCESS_KEY\naws_secret_access_key = profile-a-secret\n"), 0o600))
+	require.NoError(t, os.WriteFile(configFile, []byte("[default]\nregion = us-east-1\n[profile team-a]\nregion = us-east-1\n[profile team-b]\nregion = us-east-1\n"), 0o600))
+	require.NoError(t, os.WriteFile(credentialsFile, []byte("[default]\naws_access_key_id = DEFAULT_ACCESS_KEY\naws_secret_access_key = default-secret\n[team-a]\naws_access_key_id = PROFILE_A_ACCESS_KEY\naws_secret_access_key = profile-a-secret\n[team-b]\naws_access_key_id = PROFILE_B_ACCESS_KEY\naws_secret_access_key = profile-b-secret\n"), 0o600))
 
 	t.Setenv("AWS_CONFIG_FILE", configFile)
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", credentialsFile)
@@ -780,6 +781,10 @@ func TestSignAWSRequest_UsesConfiguredProfileOverAmbientCredentials(t *testing.T
 	t.Setenv("AWS_ACCESS_KEY_ID", "AMBIENT_ACCESS_KEY")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+}
+
+func TestSignAWSRequest_UsesConfiguredProfileOverAmbientCredentials(t *testing.T) {
+	configureBedrockProfileTestCredentials(t)
 
 	var keyCfg schemas.BedrockKeyConfig
 	require.NoError(t, json.Unmarshal([]byte(`{"profile":"team-a","region":"us-east-1"}`), &keyCfg))
@@ -793,6 +798,96 @@ func TestSignAWSRequest_UsesConfiguredProfileOverAmbientCredentials(t *testing.T
 	}
 	assert.Contains(t, req.Header.Get("Authorization"), "Credential=PROFILE_A_ACCESS_KEY/")
 	assert.NotContains(t, req.Header.Get("Authorization"), "AMBIENT_ACCESS_KEY")
+}
+
+func TestSignAWSRequest_MissingProfileDoesNotUseAmbientCredentials(t *testing.T) {
+	configureBedrockProfileTestCredentials(t)
+	keyCfg := &schemas.BedrockKeyConfig{Profile: schemas.NewSecretVar("missing-team"), Region: schemas.NewSecretVar("us-east-1")}
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	signErr := signAWSRequest(ctx, req, keyCfg, "us-east-1", bedrockSigningService)
+	require.NotNil(t, signErr)
+	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestSignAWSRequest_BlankEnvironmentProfileDoesNotUseAmbientCredentials(t *testing.T) {
+	configureBedrockProfileTestCredentials(t)
+	t.Setenv("BIFROST_BEDROCK_TEST_PROFILE", "")
+	keyCfg := &schemas.BedrockKeyConfig{
+		Profile: schemas.NewSecretVar("env.BIFROST_BEDROCK_TEST_PROFILE"),
+		Region:  schemas.NewSecretVar("us-east-1"),
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	signErr := signAWSRequest(ctx, req, keyCfg, "us-east-1", bedrockSigningService)
+	require.NotNil(t, signErr)
+	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestSignAWSRequest_EnvironmentProfileUsesCurrentValue(t *testing.T) {
+	configureBedrockProfileTestCredentials(t)
+	t.Setenv("BIFROST_BEDROCK_TEST_PROFILE", "team-a")
+	keyCfg := &schemas.BedrockKeyConfig{
+		Profile: schemas.NewSecretVar("env.BIFROST_BEDROCK_TEST_PROFILE"),
+		Region:  schemas.NewSecretVar("us-east-1"),
+	}
+
+	signWithProfile := func() string {
+		req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+		require.NoError(t, err)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		require.Nil(t, signAWSRequest(ctx, req, keyCfg, "us-east-1", bedrockSigningService))
+		return req.Header.Get("Authorization")
+	}
+
+	assert.Contains(t, signWithProfile(), "Credential=PROFILE_A_ACCESS_KEY/")
+	t.Setenv("BIFROST_BEDROCK_TEST_PROFILE", "team-b")
+	assert.Contains(t, signWithProfile(), "Credential=PROFILE_B_ACCESS_KEY/")
+}
+
+func TestSignAWSRequest_ExpiredSSOProfileExplainsLogin(t *testing.T) {
+	fixtureDir := t.TempDir()
+	configFile := filepath.Join(fixtureDir, "config")
+	credentialsFile := filepath.Join(fixtureDir, "credentials")
+	require.NoError(t, os.WriteFile(configFile, []byte(
+		"[default]\nregion = us-east-1\n"+
+			"[profile expired-sso]\nsso_start_url = https://127.0.0.1:1/start\nsso_region = us-east-1\n"+
+			"sso_account_id = 123456789012\nsso_role_name = BedrockInvoke\nregion = us-east-1\n",
+	), 0o600))
+	require.NoError(t, os.WriteFile(credentialsFile, nil, 0o600))
+	t.Setenv("HOME", fixtureDir)
+	t.Setenv("AWS_CONFIG_FILE", configFile)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", credentialsFile)
+	t.Setenv("AWS_ACCESS_KEY_ID", "AMBIENT_ACCESS_KEY")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+	t.Setenv("AWS_PROFILE", "default")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	keyCfg := &schemas.BedrockKeyConfig{Profile: schemas.NewSecretVar("expired-sso"), Region: schemas.NewSecretVar("us-east-1")}
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	signErr := signAWSRequest(ctx, req, keyCfg, "us-east-1", bedrockSigningService)
+	require.NotNil(t, signErr)
+	assert.Contains(t, signErr.Error.Message, "aws sso login --profile")
+	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestResolveAWSConfig_AssumeRoleCacheIsolatedByProfile(t *testing.T) {
+	configureBedrockProfileTestCredentials(t)
+	roleARN := schemas.NewSecretVar("arn:aws:iam::123456789012:role/Bedrock")
+	var empty schemas.SecretVar
+	configA, errA := resolveAWSConfig(context.Background(), empty, empty, nil, schemas.NewSecretVar("team-a"), roleARN, nil, nil, "us-east-1")
+	configB, errB := resolveAWSConfig(context.Background(), empty, empty, nil, schemas.NewSecretVar("team-b"), roleARN, nil, nil, "us-east-1")
+	require.Nil(t, errA)
+	require.Nil(t, errB)
+	if configA.Credentials == configB.Credentials {
+		t.Fatal("different AWS profiles reused the same AssumeRole credential cache")
+	}
 }
 
 // TestSignAWSRequest_ExcludesVolatileHeadersFromSignature locks in the fix for the

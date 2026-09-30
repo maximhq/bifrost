@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/aws/smithy-go/encoding/httpbinding"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -297,7 +296,7 @@ func signAWSRequestFastHTTP(
 	}
 	creds, err := cfg.Credentials.Retrieve(ctx)
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
+		return bedrockCredentialError(err)
 	}
 	accessKeyID := creds.AccessKeyID
 	secretAccessKey := creds.SecretAccessKey

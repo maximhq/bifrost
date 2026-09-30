@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -26,6 +28,9 @@ func resolveAWSConfig(
 	var profileName string
 	if profile != nil {
 		profileName = strings.TrimSpace(profile.GetValue())
+		if profile.IsFromEnv() {
+			profileName = strings.TrimSpace(os.Getenv(profile.EnvKey()))
+		}
 		if profileName == "" {
 			return aws.Config{}, providerUtils.NewBifrostOperationError(
 				"configured bedrock profile resolved to an empty value",
@@ -127,4 +132,15 @@ func resolveAWSConfig(
 	}
 
 	return cfg, nil
+}
+
+func bedrockCredentialError(err error) *schemas.BifrostError {
+	var invalidSSOToken *ssocreds.InvalidTokenError
+	if errors.As(err, &invalidSSOToken) {
+		return providerUtils.NewBifrostOperationError(
+			"aws sso session expired or invalid; run aws sso login --profile <name> on the gateway host",
+			err,
+		)
+	}
+	return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
 }

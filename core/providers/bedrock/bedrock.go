@@ -733,7 +733,7 @@ func signAWSRequest(
 		}
 	}
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
+		return bedrockCredentialError(err)
 	}
 
 	// Sign the request with AWS Signature V4

@@ -243,6 +243,30 @@ test.describe("Providers", () => {
   });
 
   test.describe("Form Validation", () => {
+    test("Bedrock profile mode requires a name and clears it when switching auth methods", async ({
+      providersPage,
+    }) => {
+      await providersPage.selectProvider("bedrock");
+      await providersPage.addKeyBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+
+      const profileTab = providersPage.page.getByTestId("apikey-bedrock-profile-tab");
+      const profileInput = providersPage.page.getByTestId("apikey-bedrock-profile-input");
+      await profileTab.click();
+      await expect(profileInput).toBeVisible();
+
+      await providersPage.keySaveBtn.click();
+      await expect(providersPage.page.getByText("AWS Profile is required")).toBeVisible();
+
+      await profileInput.fill("team-a");
+      await providersPage.page.getByTestId("apikey-bedrock-iam-role-tab").click();
+      await expect(profileInput).not.toBeVisible();
+      await profileTab.click();
+      await expect(profileInput).toHaveValue("");
+
+      await providersPage.keyCancelBtn.click();
+    });
+
     test("should require name for custom provider", async ({
       providersPage,
     }) => {

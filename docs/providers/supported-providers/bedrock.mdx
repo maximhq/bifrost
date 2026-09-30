@@ -1734,14 +1734,16 @@ For load-balancing across multiple AWS accounts, list one key per profile:
 <Note>
   **SSO token expiry.** Base SSO profiles return `InvalidTokenError` when the cached token in `~/.aws/sso/cache` expires; re-run `aws sso login --profile <name>`. Modern `[sso-session foo]`-style profiles auto-refresh the bearer token within the SSO session lifetime via the SDK's `SSOTokenProvider` — recommend that format for long-running deployments.
 
-  **Docker.** When running Bifrost in a container, mount the host's `~/.aws` directory so the SDK can read both the shared config files and any cached SSO tokens (the SSO cache lives under `~/.aws/sso/cache`, which is included by the parent mount):
+  **Docker.** For a local, trusted container, mount the host's `~/.aws` directory so the SDK can read the shared config and SSO cache. The mount must be writable if the SDK is expected to refresh a modern SSO session's cached token:
   ```bash
   docker run -p 8080:8080 \
-    -e AWS_PROFILE \
-    -v ~/.aws:/root/.aws:ro \
+    --user "$(id -u):0" \
+    -e HOME=/home/appuser \
+    -v ~/.aws:/home/appuser/.aws \
     -v "$PWD/config.json:/app/config.json" \
     maximhq/bifrost
   ```
+  The `profile` field selects the identity for each key; `AWS_PROFILE` is not needed. For hosted deployments, prefer a gateway workload identity over mounting a person's AWS CLI cache.
 
   **Region precedence.** `bedrock_key_config.region` always wins over a region set inside the profile.
 </Note>

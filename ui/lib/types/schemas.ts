@@ -163,7 +163,7 @@ export const bedrockEndpointsSchema = z.object({
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
-		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		_auth_type: z.enum(["iam_role", "profile", "explicit", "api_key"]).optional(),
 		access_key: secretVarSchema.optional(),
 		secret_key: secretVarSchema.optional(),
 		session_token: secretVarSchema.optional(),
@@ -207,11 +207,21 @@ export const bedrockKeyConfigSchema = z
 	)
 	.refine(
 		(data) => {
-			if (!isSecretVarSet(data.profile)) return true;
-			return !isSecretVarSet(data.access_key) && !isSecretVarSet(data.secret_key);
+			if (data._auth_type !== "profile") return true;
+			return isSecretVarSet(data.profile);
 		},
 		{
-			message: "Profile cannot be combined with explicit Access Key / Secret Key",
+			message: "AWS Profile is required",
+			path: ["profile"],
+		},
+	)
+	.refine(
+		(data) => {
+			if (!isSecretVarSet(data.profile)) return true;
+			return !isSecretVarSet(data.access_key) && !isSecretVarSet(data.secret_key) && !isSecretVarSet(data.session_token);
+		},
+		{
+			message: "Profile cannot be combined with explicit AWS credentials",
 			path: ["profile"],
 		},
 	);
@@ -496,6 +506,10 @@ export const modelProviderKeySchema = z
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
+	})
+	.refine((data) => !isSecretVarSet(data.bedrock_key_config?.profile) || !isSecretVarSet(data.value), {
+		message: "AWS Profile cannot be combined with a Bedrock API key",
+		path: ["bedrock_key_config", "profile"],
 	})
 	.refine(
 		(data) => {
