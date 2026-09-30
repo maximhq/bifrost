@@ -183,6 +183,7 @@ func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *
 		clientConn.writeRealtimeError(bifrostErr)
 		return
 	}
+	admission.meter.setTransport("websocket")
 	defer admission.cancel()
 	// Every exit from here on bills what OpenAI reported; a session.closed finish runs first.
 	defer func() { admission.meter.finish(admission.meter.lastReportedSeconds()) }()

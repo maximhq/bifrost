@@ -15,6 +15,12 @@ import (
 // session's budget is checked again.
 const liveBillingWindowSeconds = 30.0
 
+// Unit kinds, as BifrostContextKeyLiveUnit names them for plugins.
+const (
+	liveUnitVoice   = "voice"
+	liveUnitBackend = "backend"
+)
+
 // liveUnitRunner is the slice of *bifrost.Bifrost the meter needs; tests substitute it.
 type liveUnitRunner interface {
 	RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*bifrost.RealtimeTurnHooks, *schemas.BifrostError)
@@ -40,6 +46,17 @@ type liveLane struct {
 	seconds     float64                         // voice: accrued, unbilled seconds
 	usage       *schemas.ResponsesResponseUsage // backend: accrued, unbilled tokens
 	serviceTier *schemas.BifrostServiceTier
+	outputs     []schemas.ResponsesMessage // backend: what the responses billed on the current unit produced
+	responseID  string                     // backend: the last response billed on the current unit
+	delegation  string                     // backend: the delegation the last response ran
+	delegatedMs int64                      // backend: when that delegation began, on the session timeline
+}
+
+// liveEnding is how a session ended: what was said, and whether the provider confirmed the
+// final usage. It rides on the unit that closes the session.
+type liveEnding struct {
+	transcript []schemas.LiveTranscriptLine
+	confirmed  bool
 }
 
 // liveMeter bills one GPT Live session: voice seconds in windows, each backend response once.
@@ -64,6 +81,8 @@ type liveMeter struct {
 	refusal           *schemas.BifrostError // set once the session may not continue
 	minimumSeconds    float64               // least voice time the session bills
 	finished          bool
+	transport         string      // websocket or webrtc, for the session's log row
+	ending            *liveEnding // nil until the session ends; nil at finish means unconfirmed
 }
 
 func newLiveMeter(runner liveUnitRunner, baseCtx *schemas.BifrostContext, provider schemas.ModelProvider, key schemas.Key, sessionID string) *liveMeter {
@@ -85,7 +104,7 @@ func newLiveMeter(runner liveUnitRunner, baseCtx *schemas.BifrostContext, provid
 func (m *liveMeter) admit(voiceModel, backendModel string) *schemas.BifrostError {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	unit, bifrostErr := m.openUnit(voiceModel, false)
+	unit, bifrostErr := m.openUnit(liveUnitVoice, voiceModel, false)
 	if bifrostErr != nil {
 		return bifrostErr
 	}
@@ -94,13 +113,47 @@ func (m *liveMeter) admit(voiceModel, backendModel string) *schemas.BifrostError
 		return nil
 	}
 	if bifrostErr := m.openBackendLane(backendModel); bifrostErr != nil {
-		m.closeUnitWithError(m.voice.current, voiceModel, bifrostErr)
-		m.voice = nil
 		m.finished = true
+		m.closeUnitWithError(liveUnitVoice, m.voice.current, voiceModel, bifrostErr)
+		m.voice = nil
 		return bifrostErr
 	}
 	m.activeBackend = backendModel
 	return nil
+}
+
+// setTransport records how the client is connected, for the session's log row.
+func (m *liveMeter) setTransport(transport string) {
+	m.mu.Lock()
+	m.transport = transport
+	m.mu.Unlock()
+}
+
+// setEnding records what the unit closing the session carries: the transcript, and whether the
+// provider confirmed the final usage. Call it before finish.
+func (m *liveMeter) setEnding(transcript []schemas.LiveTranscriptLine, confirmed bool) {
+	m.mu.Lock()
+	m.ending = &liveEnding{transcript: transcript, confirmed: confirmed}
+	m.mu.Unlock()
+}
+
+// abort ends an admitted session that never ran, with the error that stopped it, so plugins see
+// the session close and log why.
+func (m *liveMeter) abort(bifrostErr *schemas.BifrostError) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.finished {
+		return
+	}
+	m.finished = true
+	for _, lane := range m.backends {
+		m.closeUnitWithError(liveUnitBackend, lane.current, lane.model, bifrostErr)
+		lane.current = nil
+	}
+	if m.voice != nil {
+		m.closeUnitWithError(liveUnitVoice, m.voice.current, m.voice.model, bifrostErr)
+		m.voice.current = nil
+	}
 }
 
 // setProviderSessionID records OpenAI's session id once session.started names it.
@@ -140,8 +193,9 @@ func (m *liveMeter) checkStale(now time.Time) *schemas.BifrostError {
 	return m.refusal
 }
 
-// onBackendResponse bills one terminal backend Responses event, once per response id.
-func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse) *schemas.BifrostError {
+// onBackendResponse bills one terminal backend Responses event, once per response id, for the
+// delegation it ran.
+func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse, delegationID string, delegatedMs int64) *schemas.BifrostError {
 	if response == nil || response.Usage == nil {
 		return nil
 	}
@@ -158,9 +212,14 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 		return m.refusal
 	}
 	lane.usage = addResponsesUsage(lane.usage, response.Usage)
+	lane.outputs = append(lane.outputs, response.Output...)
+	if response.ID != nil {
+		lane.responseID = *response.ID
+	}
 	if response.ServiceTier != nil {
 		lane.serviceTier = response.ServiceTier
 	}
+	lane.delegation, lane.delegatedMs = delegationID, delegatedMs
 	m.rotateLocked(lane)
 	return m.refusal
 }
@@ -197,11 +256,12 @@ func (m *liveMeter) finish(finalSeconds float64) {
 	}
 	m.finished = true
 	m.accrueSecondsLocked(max(finalSeconds, m.minimumSeconds))
-	if m.voice != nil {
-		m.closeLaneLocked(m.voice)
-	}
+	// The voice lane closes last: its unit carries the session's end for plugins.
 	for _, lane := range m.backends {
 		m.closeLaneLocked(lane)
+	}
+	if m.voice != nil {
+		m.closeLaneLocked(m.voice)
 	}
 }
 
@@ -227,7 +287,11 @@ func (m *liveMeter) rotateLocked(lane *liveLane) {
 	if m.finished || m.refusal != nil {
 		return
 	}
-	next, bifrostErr := m.openUnit(lane.model, true)
+	kind := liveUnitVoice
+	if lane.backend {
+		kind = liveUnitBackend
+	}
+	next, bifrostErr := m.openUnit(kind, lane.model, true)
 	if bifrostErr != nil {
 		m.refusal = bifrostErr
 		return
@@ -253,24 +317,41 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 			Latency:                time.Since(unit.startedAt).Milliseconds(),
 		},
 	}
+	kind := liveUnitVoice
 	if lane.backend {
+		kind = liveUnitBackend
 		resp.ExtraFields.PricingRequestType = schemas.ResponsesRequest
 		resp.ServiceTier = lane.serviceTier
 		resp.Usage = lane.usage
 		if resp.Usage == nil {
 			resp.Usage = &schemas.ResponsesResponseUsage{}
 		}
-		lane.usage = nil
+		resp.Output = lane.outputs
+		if lane.responseID != "" {
+			resp.ID = new(lane.responseID)
+		}
+	}
+	result := &schemas.BifrostResponse{ResponsesResponse: resp}
+	postCtx := m.unitContext(unit.requestID, false, kind)
+	if lane.backend {
+		if lane.delegation != "" {
+			postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationID, lane.delegation)
+			postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationStartMs, lane.delegatedMs)
+		}
+		lane.usage, lane.outputs, lane.responseID, lane.delegation, lane.delegatedMs = nil, nil, "", "", 0
 	} else {
 		seconds := lane.seconds
 		resp.Usage = &schemas.ResponsesResponseUsage{AudioSeconds: &seconds}
 		lane.seconds = 0
 	}
-	postCtx := m.unitContext(unit.requestID, false)
-	m.runPostHooks(unit, postCtx, &schemas.BifrostResponse{ResponsesResponse: resp}, nil)
+	if !lane.backend && m.finished {
+		m.markEndLocked(postCtx)
+		result.LiveSession = m.sessionLogLocked()
+	}
+	m.runPostHooks(unit, postCtx, result, nil)
 }
 
-func (m *liveMeter) closeUnitWithError(unit *liveBillingUnit, model string, bifrostErr *schemas.BifrostError) {
+func (m *liveMeter) closeUnitWithError(kind string, unit *liveBillingUnit, model string, bifrostErr *schemas.BifrostError) {
 	if unit == nil {
 		return
 	}
@@ -278,7 +359,29 @@ func (m *liveMeter) closeUnitWithError(unit *liveBillingUnit, model string, bifr
 	postErr.ExtraFields.RequestType = schemas.LiveRequest
 	postErr.ExtraFields.Provider = m.provider
 	postErr.ExtraFields.OriginalModelRequested = model
-	m.runPostHooks(unit, m.unitContext(unit.requestID, false), nil, &postErr)
+	postCtx := m.unitContext(unit.requestID, false, kind)
+	if kind == liveUnitVoice && m.finished {
+		m.markEndLocked(postCtx)
+	}
+	m.runPostHooks(unit, postCtx, nil, &postErr)
+}
+
+// sessionLogLocked is what the closing unit reports about the session for its log row.
+func (m *liveMeter) sessionLogLocked() *schemas.LiveSessionLog {
+	log := &schemas.LiveSessionLog{Transport: m.transport, ProviderSessionID: m.providerSessionID}
+	if m.ending != nil {
+		log.Transcript = m.ending.transcript
+		log.UsageConfirmed = m.ending.confirmed
+	}
+	return log
+}
+
+// markEndLocked flags the unit that closes the session, and whether its usage is unconfirmed.
+func (m *liveMeter) markEndLocked(postCtx *schemas.BifrostContext) {
+	postCtx.SetValue(schemas.BifrostContextKeyLiveSessionEnd, true)
+	if m.ending == nil || !m.ending.confirmed {
+		postCtx.SetValue(schemas.BifrostContextKeyLiveUsageUnconfirmed, true)
+	}
 }
 
 func (m *liveMeter) runPostHooks(unit *liveBillingUnit, postCtx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
@@ -298,7 +401,7 @@ func (m *liveMeter) runPostHooks(unit *liveBillingUnit, postCtx *schemas.Bifrost
 
 // openBackendLane admits a backend model's lane as a continuation of the session.
 func (m *liveMeter) openBackendLane(model string) *schemas.BifrostError {
-	unit, bifrostErr := m.openUnit(model, true)
+	unit, bifrostErr := m.openUnit(liveUnitBackend, model, true)
 	if bifrostErr != nil {
 		return bifrostErr
 	}
@@ -321,9 +424,12 @@ func (m *liveMeter) backendLaneForLocked(responseModel string) *liveLane {
 }
 
 // openUnit runs the plugin pre-hooks for one billing unit.
-func (m *liveMeter) openUnit(model string, continuation bool) (*liveBillingUnit, *schemas.BifrostError) {
+func (m *liveMeter) openUnit(kind, model string, continuation bool) (*liveBillingUnit, *schemas.BifrostError) {
 	requestID := uuid.NewString()
-	preCtx := m.unitContext(requestID, continuation)
+	preCtx := m.unitContext(requestID, continuation, kind)
+	if kind == liveUnitVoice && !continuation {
+		preCtx.SetValue(schemas.BifrostContextKeyLiveSessionStart, true)
+	}
 	startedAt := time.Now()
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
 	req := &schemas.BifrostRequest{
@@ -348,8 +454,8 @@ func (m *liveMeter) openUnit(model string, continuation bool) (*liveBillingUnit,
 }
 
 // unitContext builds a billing unit's context from the session's: same identity and grant, its
-// own request id and trace, grouped under the session id.
-func (m *liveMeter) unitContext(requestID string, continuation bool) *schemas.BifrostContext {
+// own request id and trace, grouped under the session id. Callers hold m.mu.
+func (m *liveMeter) unitContext(requestID string, continuation bool, kind string) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	if m.baseCtx != nil {
 		for ctxKey, value := range m.baseCtx.GetUserValues() {
@@ -376,6 +482,14 @@ func (m *liveMeter) unitContext(requestID string, continuation bool) *schemas.Bi
 	}
 	if continuation {
 		ctx.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyLiveSessionID, m.sessionID)
+	ctx.SetValue(schemas.BifrostContextKeyLiveUnit, kind)
+	if m.providerSessionID != "" {
+		ctx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, m.providerSessionID)
+	}
+	if m.transport != "" {
+		ctx.SetValue(schemas.BifrostContextKeyRealtimeTransport, m.transport)
 	}
 	if strings.TrimSpace(m.key.ID) != "" {
 		ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, m.key.ID)

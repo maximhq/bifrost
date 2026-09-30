@@ -225,6 +225,21 @@ func TestCalculateCost_LiveVoiceDuration(t *testing.T) {
 	assert.Zero(t, breakdown.OutputCost)
 }
 
+func TestCalculateCost_LiveFallsBackToRealtimeModeRow(t *testing.T) {
+	// The datasheet feed files GPT Live models under mode "realtime", the same mode as the
+	// Realtime API models, so a live window must find its per-second rate there.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-live-1", "openai", "realtime"): {
+			Model: "gpt-live-1", Provider: "openai", Mode: "realtime",
+			InputCostPerSecond: new(0.05 / 60),
+		},
+	})
+
+	breakdown := s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 116), nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0966666667, breakdown.TotalCost, 1e-9)
+}
+
 func TestCalculateCost_LiveDoesNotFallBackToTokenPricing(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-live-1", "openai", "responses"): {

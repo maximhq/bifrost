@@ -815,6 +815,7 @@ export const allowedRequestsSchema = z.object({
 	list_models: z.boolean(),
 	websocket_responses: z.boolean(),
 	realtime: z.boolean(),
+	live: z.boolean(),
 });
 
 // Custom provider config schema

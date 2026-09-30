@@ -326,6 +326,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"logs_add_warp_conversations_updated_at_index"}, run: migrationAddWarpConversationsUpdatedAtIndex},
 	{IDs: []string{"logs_add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+	{IDs: []string{"logs_add_live_session_column"}, run: migrationAddLiveSessionColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -5204,6 +5205,29 @@ func migrationAddWarpConversationsUpdatedAtIndex(ctx context.Context, db *gorm.D
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddLiveSessionColumn adds the live_session column to the logs table: a GPT Live
+// session's typed log payload (transcript, delegations, voice and backend cost).
+func migrationAddLiveSessionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_live_session_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "live_session")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "live_session")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding live session column: %s", err.Error())
 	}
 	return nil
 }

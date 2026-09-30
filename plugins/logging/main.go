@@ -1692,6 +1692,16 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
+	// A live session is one row: only the unit that opens it registers, under the session's id.
+	liveUnit := liveUnitKind(ctx)
+	if liveUnit != "" {
+		if !liveFlag(ctx, schemas.BifrostContextKeyLiveSessionStart) {
+			return req, nil, nil
+		}
+		if sessionID := liveSessionID(ctx); sessionID != "" {
+			requestID = sessionID
+		}
+	}
 	createdTimestamp := time.Now().UTC()
 
 	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
@@ -1713,6 +1723,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	if req.RequestType == schemas.RealtimeRequest {
 		initialData.Object = "realtime.turn"
+	}
+	if liveUnit != "" {
+		initialData.Object = liveSessionObject
 	}
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
@@ -1898,7 +1911,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Determine effective request ID (fallback override)
 	effectiveRequestID := requestID
 	var parentRequestID string
-	if directParentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && directParentRequestID != "" {
+	if directParentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && directParentRequestID != "" && directParentRequestID != requestID {
+		// A live session's units name the session as their parent; the session row itself is the root.
 		parentRequestID = directParentRequestID
 	}
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
@@ -1936,6 +1950,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		CreatedAt:          time.Now(),
 		Status:             logStatusProcessing,
 	}
+	if liveUnit != "" {
+		pending.Live = &liveSessionState{}
+	}
 	// Seed LastActivity so the first idle-eviction check has a baseline even if no
 	// PostLLMHook chunk has fired yet.
 	pending.LastActivity.Store(pending.CreatedAt.UnixNano())
@@ -1972,6 +1989,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if !ok || requestID == "" {
 		p.logger.Error("request-id not found in context or is empty")
 		return result, bifrostErr, nil
+	}
+	if kind := liveUnitKind(ctx); kind != "" {
+		return p.postLiveUnit(ctx, kind, result, bifrostErr)
 	}
 	// If fallback request ID is present, use it instead of the primary request ID
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
