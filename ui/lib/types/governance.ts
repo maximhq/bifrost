@@ -627,7 +627,7 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
 	// Other
-	search_context_cost_per_query?: number;
+	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;

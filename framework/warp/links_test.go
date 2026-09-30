@@ -974,3 +974,31 @@ func TestWarpChartLinkPerMetric(t *testing.T) {
 		}
 	}
 }
+
+// A link that cannot open must not be clickable. On a deployed instance the
+// model refused the tools' root-relative links as "relative, not complete
+// URLs" and linked the ranking rows to "https://.../" instead; the sanitizer
+// read "..." as a foreign host and let the placeholder through. The same goes
+// for a scheme with nothing after it, an empty target, and an invented domain
+// in front of the dashboard's own path: none of those lead anywhere, so each
+// keeps its text and loses its target. An invented domain whose query the
+// Logs page can honour is repaired to the root-relative link instead.
+func TestWarpSanitizeAnswerLinksUnlinksPlaceholders(t *testing.T) {
+	cases := map[string]string{
+		"[akshay](https://.../)":             "akshay",
+		"[akshay](https://...)":              "akshay",
+		"[akshay](https://…/workspace/logs)": "akshay",
+		"[akshay](https://)":                 "akshay",
+		"[akshay]()":                         "akshay",
+		"[akshay](https://your-domain.com/workspace/logs?nonsense=1)":                          "akshay",
+		"[akshay](https://your-domain.com/workspace/logs?user_ids=u1&start_time=1&end_time=2)": "[akshay](/workspace/logs?user_ids=u1&start_time=1&end_time=2)",
+		"[akshay](https://dashboard/workspace/logs)":                                           "[akshay](/workspace/logs)",
+		// A real host stays a link, even one nobody asked for.
+		"[docs](https://docs.getbifrost.ai/warp)": "[docs](https://docs.getbifrost.ai/warp)",
+		"[local](http://localhost:8080/health)":   "[local](http://localhost:8080/health)",
+		"[ip](http://10.0.0.1:8080/health)":       "[ip](http://10.0.0.1:8080/health)",
+	}
+	for input, want := range cases {
+		require.Equal(t, want, sanitizeAnswerLinks(input, nil), "input: %s", input)
+	}
+}

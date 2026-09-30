@@ -226,6 +226,7 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/complexity-router",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -239,8 +240,7 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers",
-                  "features/governance/complexity-router"
+                  "features/governance/required-headers"
                 ]
               },
               "features/telemetry",
@@ -332,7 +332,8 @@
                       "integrations/guardrails/patronus-ai",
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
-                      "integrations/guardrails/singulr-ai"
+                      "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/a10"
                     ]
                   }
                 ]
@@ -552,7 +553,8 @@
               "integrations/guardrails/patronus-ai",
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
-              "integrations/guardrails/singulr-ai"
+              "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/a10"
             ]
           },
           {
@@ -1170,6 +1172,7 @@
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",
+                  "POST /api/mcp/client/{id}/reregister",
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
                   "GET /api/mcp/sessions",
@@ -1181,7 +1184,20 @@
                 ]
               },
               {
-                "group": "MCP Tool Groups",
+                "group": "Virtual MCPs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/mcp/virtual-mcps",
+                  "POST /api/mcp/virtual-mcps",
+                  "GET /api/mcp/virtual-mcps/{id}",
+                  "PUT /api/mcp/virtual-mcps/{id}",
+                  "DELETE /api/mcp/virtual-mcps/{id}",
+                  "POST /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}",
+                  "DELETE /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}"
+                ]
+              },
+              {
+                "group": "MCP Tool Groups (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/mcp/tool-groups",
@@ -1764,6 +1780,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.4",
               "changelogs/v2.2.3",
               "changelogs/v2.2.2",
               "changelogs/v2.2.1",
@@ -1984,6 +2001,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.4",
               "changelogs/ent-v2.2.3",
               "changelogs/ent-v2.2.2",
               "changelogs/ent-v2.2.1",
@@ -2081,6 +2099,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.9.1",
               "changelogs/edge-v0.9.0",
               "changelogs/edge-v0.8.0",
               "changelogs/edge-v0.7.0",
@@ -2226,6 +2245,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/governance/complexity-router",
+      "destination": "/features/complexity-router"
+    },
     {
       "source": "/integrations/guardrails/lakera",
       "destination": "/integrations/guardrails/checkpoint"

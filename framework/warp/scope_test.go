@@ -8,7 +8,9 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestWarpScopeFromContext(t *testing.T) {
@@ -66,6 +68,65 @@ func TestWarpScopeNeverOverridesAnExplicitScope(t *testing.T) {
 		require.Equal(t, before.VirtualKeyIDs, filters.VirtualKeyIDs, name)
 		require.Equal(t, before.UserIDs, filters.UserIDs, name)
 	}
+}
+
+// An admin's own traffic is nearly always dashboard testing, and "how much
+// have we spent" from the deployment's owner means the deployment. A caller
+// with no row-level query scope sees the whole deployment, so that is their
+// default rather than themselves. The store still applies whatever scope it
+// has, so this widens the question and never the permission.
+func TestWarpScopeUnrestrictedCallerDefaultsToTheDeployment(t *testing.T) {
+	t.Run("derived from the context", func(t *testing.T) {
+		identified := context.WithValue(context.Background(), schemas.BifrostContextKeyUserID, "admin-1")
+		scope := ScopeFromContext(identified)
+		require.True(t, scope.HasIdentity)
+		require.Equal(t, "admin-1", scope.UserID)
+		require.True(t, scope.Unrestricted, "no row-level scope on the context means the caller sees everything")
+
+		restricted := queryscope.WithQueryScope(identified, func(db *gorm.DB) *gorm.DB { return db })
+		require.False(t, ScopeFromContext(restricted).Unrestricted, "a row-level scope means the caller sees a slice")
+
+		// The local admin bypasses RBAC by definition, whatever else the context carries.
+		admin := context.WithValue(restricted, schemas.IsLocalAdminContextKey, true)
+		require.True(t, ScopeFromContext(admin).Unrestricted)
+	})
+
+	unrestricted := Scope{HasIdentity: true, UserID: "admin-1", Unrestricted: true}
+
+	t.Run("no narrowing by default", func(t *testing.T) {
+		filters := &logstore.SearchFilters{}
+		applyScope(filters, unrestricted, false)
+		require.Empty(t, filters.UserIDs)
+	})
+
+	// "How much have I spent" still works: the model names the caller, and the
+	// result is tagged as theirs.
+	t.Run("own traffic on request", func(t *testing.T) {
+		filters := &logstore.SearchFilters{UserIDs: []string{"admin-1"}}
+		applyScope(filters, unrestricted, false)
+		require.Equal(t, []string{"admin-1"}, filters.UserIDs)
+		require.Equal(t, "self", scopeNote(filters, unrestricted))
+	})
+
+	// Its own tag, not "all": for this caller the default really is the whole
+	// deployment, and the prompt asks for a breakdown on exactly that tag.
+	t.Run("tag", func(t *testing.T) {
+		require.Equal(t, "deployment", scopeNote(&logstore.SearchFilters{}, unrestricted))
+		require.Equal(t, "named", scopeNote(&logstore.SearchFilters{TeamIDs: []string{"team-1"}}, unrestricted))
+		require.Equal(t, "all", scopeNote(&logstore.SearchFilters{}, Scope{HasIdentity: true, UserID: "user-7"}),
+			"a restricted caller's widest result is what they may see, not the deployment")
+	})
+
+	// describe_filter_space is where the model learns the default, so it has to
+	// say the deployment is it, and how to ask about the person alone.
+	t.Run("describe_filter_space says so", func(t *testing.T) {
+		deps := &ToolDeps{logManager: &fakeLogReader{}, scope: unrestricted}
+		out := resultMap(t, mustRunTool(t, "describe_filter_space", deps, map[string]any{}))
+		require.Equal(t, true, out["caller_is_identified"])
+		require.Equal(t, "admin-1", out["caller_user_id"])
+		require.Contains(t, out["default_scope"], "whole deployment")
+		require.Contains(t, out["default_scope"], `user_ids: ["admin-1"]`)
+	})
 }
 
 // Scoping happens inside the shared filter parser, so a flow added later gets
@@ -137,6 +198,11 @@ func TestWarpSystemPromptExplainsScoping(t *testing.T) {
 	require.Contains(t, content, "describe_filter_space")
 	require.Contains(t, content, "their own traffic is the default")
 	require.Contains(t, content, "you must ask before querying")
+	// An unrestricted caller defaults to the deployment, and a deployment-wide
+	// total is more useful with the split under it.
+	require.Contains(t, content, `"deployment" means the whole deployment, which is this caller's default`)
+	require.Contains(t, content, "add the breakdown: call query_usage_by with dimension team")
+	require.Contains(t, content, `"I" and "my" questions need user_ids set to caller_user_id`)
 	// ask_user takes at most 8 options, and a mixed list of every team,
 	// customer and business unit overflows it - the prompt has to narrow to
 	// one dimension first, not hand them all over as options.
@@ -261,4 +327,50 @@ func TestWarpRankingAcrossPeopleIsNotScopedToTheCaller(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"u-admin"}, fake.rankingFilters.UserIDs)
+}
+
+// A virtual_key ranking takes no default scope (rankingScope), so for an
+// identified caller it ranks everyone's keys - and the model read its top row
+// as "your traffic is associated with the virtual key X". The result now says
+// whose keys it ranked and how to get the caller's own, with the id to copy.
+// A ranking already narrowed to the caller, or asked by nobody in particular,
+// has nothing to add.
+func TestWarpVirtualKeyRankingSaysWhoseKeysItRanks(t *testing.T) {
+	identified := Scope{HasIdentity: true, UserID: "user-7"}
+	cases := []struct {
+		name     string
+		scope    Scope
+		filters  map[string]any
+		guidance bool
+	}{
+		{"identified, unscoped", identified, map[string]any{"start_time": "-24h"}, true},
+		{"identified, explicit all", identified, map[string]any{"start_time": "-24h", "scope": "all"}, true},
+		{"unrestricted, unscoped", Scope{HasIdentity: true, UserID: "user-7", Unrestricted: true}, map[string]any{"start_time": "-24h"}, true},
+		{"identified, own traffic", identified, map[string]any{"start_time": "-24h", "user_ids": []any{"user-7"}}, false},
+		{"anonymous", Scope{}, map[string]any{"start_time": "-24h"}, false},
+	}
+	tool, ok := toolByName(buildToolsFor(nil, false), "query_usage_by")
+	require.True(t, ok)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Executed directly: runTool substitutes an identified caller for an
+			// empty scope, and the anonymous case is the point of that row.
+			deps := &ToolDeps{logManager: &fakeLogReader{}, scope: tc.scope}
+			out, err := tool.execute(context.Background(), deps, map[string]any{"dimension": "virtual_key", "filters": tc.filters})
+			require.NoError(t, err)
+			guidance, present := resultMap(t, out)["guidance"].(string)
+			require.Equal(t, tc.guidance, present, "guidance: %q", guidance)
+			if tc.guidance {
+				require.Contains(t, guidance, "not the person asking")
+				require.Contains(t, guidance, `user_ids: ["user-7"]`)
+			}
+		})
+	}
+	// Only a ranking of keys: a ranking of what the traffic was keeps the
+	// caller's default and says nothing.
+	deps := &ToolDeps{logManager: &fakeLogReader{}, scope: identified}
+	out, err := runTool(t, "query_usage_by", deps, map[string]any{"dimension": "app", "filters": map[string]any{"start_time": "-24h"}})
+	require.NoError(t, err)
+	_, present := resultMap(t, out)["guidance"]
+	require.False(t, present)
 }

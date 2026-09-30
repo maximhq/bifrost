@@ -868,6 +868,53 @@ test.describe('Provider Management', () => {
     await virtualKeysPage.closeSheet()
   })
 
+  test('should reflect blocked models in the collapsed access summary', async ({ virtualKeysPage, request }) => {
+    const vkName = `Blocked Models Summary VK ${Date.now()}`
+    await virtualKeysApi.create(request, {
+      name: vkName,
+      is_active: true,
+      provider_configs: [
+        {
+          provider: 'openai',
+          allowed_models: ['*'],
+          blacklisted_models: ['gpt-4o', 'gpt-4o-mini'],
+          key_ids: ['*'],
+        },
+      ],
+    })
+    providerVKs.push(vkName)
+
+    await virtualKeysPage.goto()
+    await virtualKeysPage.viewVirtualKey(vkName)
+
+    const summary = await virtualKeysPage.getProviderAccessSummary(0)
+    await expect(summary).toContainText('All models · 2 models blocked')
+  })
+
+  test('should summarize a blocked wildcard as all models blocked', async ({ virtualKeysPage, request }) => {
+    const vkName = `Blocked Wildcard Summary VK ${Date.now()}`
+    await virtualKeysApi.create(request, {
+      name: vkName,
+      is_active: true,
+      provider_configs: [
+        {
+          provider: 'openai',
+          allowed_models: ['*'],
+          blacklisted_models: ['*'],
+          key_ids: ['*'],
+        },
+      ],
+    })
+    providerVKs.push(vkName)
+
+    await virtualKeysPage.goto()
+    await virtualKeysPage.viewVirtualKey(vkName)
+
+    const summary = await virtualKeysPage.getProviderAccessSummary(0)
+    await expect(summary).toContainText('All models blocked')
+    await expect(summary).not.toContainText('All models ·')
+  })
+
   test('should update provider-specific budget', async ({ virtualKeysPage }) => {
     // Create a virtual key with budget
     const vkName = `Provider Budget VK ${Date.now()}`

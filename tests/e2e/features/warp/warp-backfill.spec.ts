@@ -86,3 +86,86 @@ test.describe('Warp backfill spend', () => {
     await expect(page.getByTestId('warp-backfill-spend')).toHaveCount(0)
   })
 })
+
+// The status endpoint answers for the space the deployment is configured with,
+// but the form can be edited off that space before anything is saved. The old
+// run's "Completed" then sat under a model nothing has been indexed for, so
+// the card follows the form: gone while the embedding space is edited, back
+// when the fields return to the saved values.
+test.describe('Warp backfill status and the embedding space', () => {
+  test('hides a finished backfill while the embedding space is edited', async ({ page }) => {
+    await mockWarpBackfill(page, completedJob({ embedding_tokens: 48210 }))
+    await page.goto('/workspace/config/warp')
+
+    const status = page.getByTestId('warp-backfill-status')
+    await expect(status).toBeVisible()
+
+    const dimension = page.getByTestId('warp-embedding-dimension-input')
+    await dimension.fill('3072')
+    await expect(status).toHaveCount(0)
+
+    await dimension.fill(String(configuredWarp.embedding_dimension))
+    await expect(status).toBeVisible()
+  })
+})
+
+// The server refuses to change the embedding space while a backfill is in
+// flight, but the moment the job finishes a save goes through - and the
+// id-pinned poll the page uses during a run still answers for that job. So the
+// old space's "Completed" could arrive after the new space was saved and sit
+// on screen as a finished backfill of rows the new space never indexed.
+test.describe('Warp backfill status after the embedding space is saved over', () => {
+  test('drops a run whose terminal status lands after its space was replaced', async ({ page }) => {
+    const runningJob = {
+      id: 'warp-backfill-2',
+      status: 'running',
+      start_time: '2026-09-17T00:00:00Z',
+      end_time: '2026-09-24T00:00:00Z',
+      total: 120,
+      scanned: 60,
+      indexed: 60,
+      skipped: 0,
+      failed: 0,
+    }
+    const newSpace = { ...configuredWarp, embedding_dimension: 3072, log_vector_store_namespace: 'BifrostWarpLogsV2' }
+    let savedConfig = configuredWarp
+    await page.route('**/api/feature-flags', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      const response = await route.fetch()
+      const body = (await response.json()) as { flags: { id: string; enabled: boolean }[] }
+      body.flags = body.flags.map((flag) => (flag.id === 'warp' ? { ...flag, enabled: true } : flag))
+      await route.fulfill({ response, json: body })
+    })
+    await page.route('**/api/warp/config', async (route) => {
+      if (route.request().method() === 'PUT') savedConfig = newSpace
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedConfig) })
+    })
+    await page.route('**/api/warp/log-index/backfill/status**', (route) => {
+      const pinned = new URL(route.request().url()).searchParams.get('id') === runningJob.id
+      // Once the new space is saved, the job is over: the pinned read still
+      // reports it (by id, no space check), while the id-less read hides a run
+      // of a space that is no longer configured.
+      const job =
+        savedConfig === configuredWarp
+          ? runningJob
+          : pinned
+            ? { ...runningJob, status: 'completed', scanned: 120, indexed: 120 }
+            : { status: 'idle' }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(job) })
+    })
+    await page.goto('/workspace/config/warp')
+
+    const status = page.getByTestId('warp-backfill-status')
+    await expect(status).toContainText('Running')
+    await expect(page.getByTestId('warp-backfill-cancel-btn')).toBeVisible()
+
+    await page.getByTestId('warp-embedding-dimension-input').fill(String(newSpace.embedding_dimension))
+    await page.getByTestId('warp-vector-namespace-input').fill(newSpace.log_vector_store_namespace)
+    await page.getByTestId('warp-save-btn').click()
+
+    // The pinned poll has delivered the terminal status once Cancel gives way
+    // to Start. The old run must not have been kept as this space's result.
+    await expect(page.getByTestId('warp-backfill-start-btn')).toBeVisible()
+    await expect(status).toHaveCount(0)
+  })
+})

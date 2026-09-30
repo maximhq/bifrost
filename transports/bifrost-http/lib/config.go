@@ -856,9 +856,12 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 	}
 }
 
-// FeatureFlagWarp gates Warp, the in-dashboard agent. Off by default: while it
-// is off every /api/warp route answers 404 and new logs are not embedded into
-// Warp's index, and the dashboard hides the launcher, dock and settings page.
+// FeatureFlagWarp gates Warp, the in-dashboard agent. On by default in OSS
+// and off by default in the enterprise build, where an operator turns it on
+// per deployment. While it is off every /api/warp route answers 404 and new
+// logs are not embedded into Warp's index, and the dashboard hides the
+// launcher, dock and settings page. On is only the gate: Warp still answers
+// nothing until it is configured with a provider and a vector store.
 // The UI references the same id in ui/lib/constants/featureFlags.ts.
 const FeatureFlagWarp = "warp"
 
@@ -868,10 +871,11 @@ const FeatureFlagWarp = "warp"
 func registerFeatureFlags(_ context.Context) error {
 	defs := []featureflags.FlagDef{
 		{
-			ID:          FeatureFlagWarp,
-			DisplayName: "Warp",
-			Description: "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
-			Default:     false,
+			ID:                FeatureFlagWarp,
+			DisplayName:       "Warp",
+			Description:       "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
+			Default:           true,
+			EnterpriseDefault: new(false),
 		},
 	}
 	for _, def := range defs {
@@ -1432,6 +1436,8 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 		cc.MCPCodeModeBindingLevel = DefaultClientConfig.MCPCodeModeBindingLevel
 	}
 	cc.MCPDisableAutoToolInject = tm.DisableAutoToolInject
+	cc.MCPMaxInstructionsPerClient = tm.MaxInstructionsPerClient
+	cc.MCPMaxInstructionsTotal = tm.MaxInstructionsTotal
 }
 
 // loadProviders loads and merges providers from file with store using hash reconciliation
@@ -1997,6 +2003,7 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	if len(fileClient.DiscoveredTools) == 0 {
 		fileClient.DiscoveredTools = existing.DiscoveredTools
 		fileClient.DiscoveredToolNameMapping = existing.DiscoveredToolNameMapping
+		fileClient.DiscoveredInstructions = existing.DiscoveredInstructions
 	}
 
 	// Not immutable, and an explicit file declaration (true or false) is
@@ -2233,6 +2240,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.OauthConfigID = clientConfig.OauthConfigID
 	row.DiscoveredTools = clientConfig.DiscoveredTools
 	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
+	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
 	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
 	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
 }
@@ -2352,6 +2360,8 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 		config.ClientConfig.MCPCodeModeBindingLevel,
 	)
 	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
+	mcpCfg.ToolManagerConfig.MaxInstructionsPerClient = config.ClientConfig.MCPMaxInstructionsPerClient
+	mcpCfg.ToolManagerConfig.MaxInstructionsTotal = config.ClientConfig.MCPMaxInstructionsTotal
 
 	// ToolSyncInterval is declared under the file's mcp section rather than
 	// client_config, so it sits outside the hash-driven client config load and
@@ -2466,6 +2476,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Disabled:                  clientConfig.Disabled,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		DiscoveredInstructions:    clientConfig.DiscoveredInstructions,
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		TokenExchange:             clientConfig.TokenExchange,
 		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
@@ -7049,6 +7060,7 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				Weight:            bifrost.Ptr(key.Weight),
 				Provider:          string(providerKey),
 				ConfigHash:        key.ConfigHash,
+				Enabled:           key.Enabled,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

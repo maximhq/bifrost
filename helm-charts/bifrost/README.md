@@ -8,6 +8,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.governance.complexityAnalyzerConfig.jev.criteria` (renders into `complexity_analyzer_config.jev.criteria`): per-tier overrides of the Typesafe Jev `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
+- Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
+
 ### 2.1.44
 
 - Added `bifrost.auditLogs.omitIpAddresses` (default `false`) to stop recording client IP addresses in audit logs while keeping the rest of the audit trail. IPs stored before the flag was turned on are hidden from the API, filter data, search and exports, and archive copies written after the change omit them, but they stay in the database and in archive objects already written. Renders into `audit_logs.omit_ip_addresses`.

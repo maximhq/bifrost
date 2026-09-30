@@ -4195,7 +4195,7 @@ func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string,
 // discovery, and the periodic checker's own refresh. core/mcp has no DB
 // access; this is the seam the transport layer persists through. Pass nil to
 // clear a previously registered callback. A no-op if MCP is not configured.
-func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)) {
 	if bifrost.MCPManager == nil {
 		return
 	}
@@ -4255,6 +4255,16 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 		return nil
 	}
 	return bifrost.MCPManager.GetAvailableTools(ctx)
+}
+
+// GetMCPServerInstructions returns the aggregated initialize `instructions` of every MCP
+// client this request may see, ready to hand to a caller. Empty when nothing is visible,
+// nothing advertises instructions, or no MCP manager is configured.
+func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) string {
+	if bifrost.MCPManager == nil {
+		return ""
+	}
+	return bifrost.MCPManager.GetAggregatedServerInstructions(ctx)
 }
 
 // AddMCPClient adds a new MCP client to the Bifrost instance.
@@ -4473,7 +4483,7 @@ func (bifrost *Bifrost) EnableMCPClient(id string) error {
 // server using a temporary access token and discover available tools. The
 // connection is closed after verification. If the MCP manager is not yet
 // initialized, it is lazily created (same as AddMCPClient).
-func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error) {
+func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error) {
 	// Ensure MCP manager is initialized (lazy init, same pattern as AddMCPClient)
 	if bifrost.MCPManager == nil {
 		bifrost.mcpInitOnce.Do(func() {
@@ -4493,7 +4503,7 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 		})
 	}
 	if bifrost.MCPManager == nil {
-		return nil, nil, fmt.Errorf("MCP manager is not initialized")
+		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
 	}
 	return bifrost.MCPManager.VerifyPerUserOAuthConnection(ctx, config, accessToken)
 }
@@ -4502,7 +4512,7 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 // server using caller-supplied header values (admin sample or user-submitted)
 // and discover available tools. Mirrors VerifyPerUserOAuthConnection's lazy
 // MCP-manager init.
-func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error) {
+func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
 	if bifrost.MCPManager == nil {
 		bifrost.mcpInitOnce.Do(func() {
 			mcpConfig := schemas.MCPConfig{
@@ -4521,33 +4531,35 @@ func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *sch
 		})
 	}
 	if bifrost.MCPManager == nil {
-		return nil, nil, fmt.Errorf("MCP manager is not initialized")
+		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
 	}
 	return bifrost.MCPManager.VerifyHeadersConnection(ctx, config, userHeaders)
 }
 
 // SetClientTools delegates to the MCP manager to update the tool map for an
 // existing MCP client.
-func (bifrost *Bifrost) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+func (bifrost *Bifrost) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) {
 	if bifrost.MCPManager != nil {
-		bifrost.MCPManager.SetClientTools(clientID, tools, toolNameMapping)
+		bifrost.MCPManager.SetClientTools(clientID, tools, toolNameMapping, instructions)
 	}
 }
 
 // UpdateToolManagerConfig updates the tool manager config for the MCP manager.
 // This allows for hot-reloading of the tool manager config at runtime.
-// Pass the current value of disableAutoToolInject whenever only other fields
-// change so the flag is never silently reset to its zero value.
-func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error {
+// Pass the current value of disableAutoToolInject whenever only other fields change, so it
+// is not silently reset to its zero value.
+func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int) error {
 	if bifrost.MCPManager == nil {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-		MaxAgentDepth:         maxAgentDepth,
-		ToolExecutionTimeout:  schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
-		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
-		DisableAutoToolInject: disableAutoToolInject,
+		MaxAgentDepth:            maxAgentDepth,
+		ToolExecutionTimeout:     schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
+		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(codeModeBindingLevel),
+		DisableAutoToolInject:    disableAutoToolInject,
+		MaxInstructionsPerClient: maxInstructionsPerClient,
+		MaxInstructionsTotal:     maxInstructionsTotal,
 	})
 	return nil
 }
@@ -5362,6 +5374,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	var served *schemas.Route
 	servedFallback := false
 	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	stampRequestedRoute(ctx, requested)
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
@@ -5536,6 +5549,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	var served *schemas.Route
 	servedFallback := false
 	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	stampRequestedRoute(ctx, requested)
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
@@ -7465,6 +7479,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			Provider: provider.GetProviderKey(),
 			Model:    originalModelRequested,
 		}
+		// The per-attempt closures overwrite this with BuildRoutingInfo, which already
+		// carries the caller's requested route. The pre-seed only survives when every
+		// retry fails before a closure runs, so stamp the requested route here too or
+		// those errors would be the only responses without it. Not BuildRoutingInfo
+		// itself: it also reads BifrostContextKeyResolvedAlias, which at this point on a
+		// fallback still holds the previous attempt's alias (clearCtxForFallback keeps
+		// it), and would pin the primary's alias onto the fallback's error.
+		attemptRoutingInfo.ApplyRequestRouting(req.Context)
 		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
 		// worker-level error fallback below. Single-threaded write (assigned by the retry
 		// loop's per-attempt closure) and single-threaded read (after retries finish), so

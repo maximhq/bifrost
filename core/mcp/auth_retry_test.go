@@ -203,6 +203,10 @@ func (m *authRetryClientManager) GetToolPerClient(_ context.Context) map[string]
 	return nil
 }
 
+func (m *authRetryClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return nil
+}
+
 func (m *authRetryClientManager) GetPluginPipeline() PluginPipeline      { return nil }
 func (m *authRetryClientManager) ReleasePluginPipeline(_ PluginPipeline) {}
 

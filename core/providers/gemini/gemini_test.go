@@ -5723,17 +5723,17 @@ func TestGoogleSearchBillingUnits(t *testing.T) {
 
 	chatQueries := func(r *gemini.GenerateContentResponse) *int {
 		u := r.ToBifrostChatResponse().Usage
-		if u == nil || u.CompletionTokensDetails == nil {
+		if u == nil || u.ToolUsage == nil {
 			return nil
 		}
-		return u.CompletionTokensDetails.NumSearchQueries
+		return schemas.Ptr(u.ToolUsage.WebSearch.NumRequests)
 	}
 	responsesQueries := func(r *gemini.GenerateContentResponse) *int {
 		u := r.ToResponsesBifrostResponsesResponse().Usage
-		if u == nil || u.OutputTokensDetails == nil {
+		if u == nil || u.ToolUsage == nil {
 			return nil
 		}
-		return u.OutputTokensDetails.NumSearchQueries
+		return schemas.Ptr(u.ToolUsage.WebSearch.NumRequests)
 	}
 
 	t.Run("gemini 3 bills per search query executed", func(t *testing.T) {
@@ -5782,9 +5782,8 @@ func TestGoogleSearchBillingUnits(t *testing.T) {
 			resps, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
 			require.Nil(t, bifrostErr)
 			for _, resp := range resps {
-				if resp.Usage != nil && resp.Usage.CompletionTokensDetails != nil &&
-					resp.Usage.CompletionTokensDetails.NumSearchQueries != nil {
-					billed = resp.Usage.CompletionTokensDetails.NumSearchQueries
+				if resp.Usage != nil && resp.Usage.ToolUsage != nil {
+					billed = schemas.Ptr(resp.Usage.ToolUsage.WebSearch.NumRequests)
 				}
 			}
 		}

@@ -1351,6 +1351,9 @@ false
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
 {{- end }}
+{{- if hasKey $client "maxInstructionsLength" }}
+{{- $_ := set $cc "max_instructions_length" $client.maxInstructionsLength }}
+{{- end }}
 {{- if $client.toolPricing }}
 {{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}
@@ -1405,6 +1408,12 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp.toolManagerConfig "disableAutoToolInject" }}
 {{- $_ := set $tmConfig "disable_auto_tool_inject" .Values.bifrost.mcp.toolManagerConfig.disableAutoToolInject }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- $_ := set $tmConfig "max_instructions_per_client" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- $_ := set $tmConfig "max_instructions_total" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
