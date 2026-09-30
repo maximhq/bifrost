@@ -295,6 +295,8 @@ const (
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                  // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyResolvedAlias                       BifrostContextKey = "bifrost-resolved-alias"                  // *ResolvedAlias (set by bifrost after key-level alias resolution — providers read this for model_family routing and provider-specific overrides; nil/absent when no alias matched)
 	BifrostContextKeyRoutingInfo                         BifrostContextKey = "bifrost-routing-info"                    // RoutingInfo (set by bifrost per stream attempt - DO NOT SET THIS MANUALLY) - streams carry RoutingInfo only on chunks, so the transport reads this snapshot to emit routed-identity response headers before the first chunk
+	BifrostContextKeyRequestedProvider                   BifrostContextKey = "bifrost-requested-provider"              // ModelProvider (set by bifrost before PreRequestHooks run - DO NOT SET THIS MANUALLY) - provider the caller sent, before routing rules, load balancing or session routing rewrote it; empty when the caller sent a bare model
+	BifrostContextKeyRequestedModel                      BifrostContextKey = "bifrost-requested-model"                 // string (set by bifrost before PreRequestHooks run - DO NOT SET THIS MANUALLY) - model the caller sent, before routing rules, load balancing or session routing rewrote it
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"            // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyStreamGated                         BifrostContextKey = "bifrost-stream-gated"                    // bool (set by ctx.PauseStream/ResumeStream/EndStream when a plugin first engages the pause/resume gate; provider helpers use this as a fast-path check to skip Tracer.GateSend on streams that never engage the gate)
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"             // time.Duration (per-chunk idle timeout for streaming)
@@ -1841,8 +1843,10 @@ type BifrostResponseExtraFields struct {
 	Provider ModelProvider `json:"provider,omitempty"`
 	// Deprecated: use RoutingInfo.PrimaryModel when RoutingInfo.IsFallback
 	// is true, otherwise RoutingInfo.Model — both branches collapse to the
-	// model string the caller sent in the request. Still populated for
-	// backward compatibility; new consumers should read from RoutingInfo.
+	// primary model after routing rules and load balancing ran, which is not
+	// the caller's model when a rule rewrote it (see RoutingInfo.RequestedModel).
+	// Still populated for backward compatibility; new consumers should read
+	// from RoutingInfo.
 	OriginalModelRequested string `json:"original_model_requested,omitempty"`
 	// Deprecated: use RoutingInfo.ResolvedKeyAlias.ModelID when an alias
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
@@ -1894,6 +1898,13 @@ type RoutingInfo struct {
 	// What the caller asked for, before any fallback resolution (populated only when fallback resolution occurred)
 	PrimaryProvider *ModelProvider `json:"primary_provider,omitempty"`
 	PrimaryModel    *string        `json:"primary_model,omitempty"`
+
+	// What the caller sent, before any PreRequestHook (routing rules, governance
+	// load balancing, session routing) rewrote it. PrimaryProvider/PrimaryModel
+	// name the head of the fallback chain those hooks produced; these name the
+	// input to them. RequestedProvider is empty when the caller sent a bare model.
+	RequestedProvider ModelProvider `json:"requested_provider,omitempty"`
+	RequestedModel    string        `json:"requested_model,omitempty"`
 
 	// ServerSideFallbackModel names the model that actually produced the response
 	// when the provider swapped models *inside* a single upstream call — today only
@@ -2183,8 +2194,10 @@ type BifrostErrorExtraFields struct {
 	Provider ModelProvider `json:"provider,omitempty"`
 	// Deprecated: use RoutingInfo.PrimaryModel when RoutingInfo.IsFallback
 	// is true, otherwise RoutingInfo.Model — both branches collapse to the
-	// model string the caller sent in the request. Still populated for
-	// backward compatibility; new consumers should read from RoutingInfo.
+	// primary model after routing rules and load balancing ran, which is not
+	// the caller's model when a rule rewrote it (see RoutingInfo.RequestedModel).
+	// Still populated for backward compatibility; new consumers should read
+	// from RoutingInfo.
 	OriginalModelRequested string `json:"original_model_requested,omitempty"`
 	// Deprecated: use RoutingInfo.ResolvedKeyAlias.ModelID when an alias
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
