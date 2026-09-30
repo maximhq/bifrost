@@ -3446,6 +3446,24 @@ func TestUpsertModelPricesBatch_SQLite(t *testing.T) {
 	assert.InDelta(t, 0.000005, *updated.InputCostPerToken, 1e-9)
 }
 
+func TestUpsertModelPricesBatch_WebSearchCostPerRequest_SurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat", WebSearchCostPerRequest: cost(0.01)}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+	pricing[0].WebSearchCostPerRequest = cost(0.02)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].WebSearchCostPerRequest)
+	assert.InDelta(t, 0.02, *got[0].WebSearchCostPerRequest, 1e-9)
+}
+
 func TestUpsertModelPricesBatch_MegapixelImageTierColumns_SurviveResync(t *testing.T) {
 	// Regression test for pricingSyncUpdateColumns: a column present on
 	// TableModelPricing but missing from that explicit update-column list

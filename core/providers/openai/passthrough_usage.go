@@ -145,12 +145,15 @@ func ExtractOAIChatUsage(body []byte) *schemas.BifrostPassthroughUsage {
 // A single wrapper handles both response formats in one unmarshal pass:
 //   - streaming: "response.completed" event nests usage under "response"
 //   - non-streaming: usage sits at the top level
+//   - tool_usage is a sibling of usage in both
 type oaiResponsesWrapper struct {
 	Response *struct {
 		Usage       *schemas.ResponsesResponseUsage `json:"usage"`
+		ToolUsage   *schemas.ToolUsage              `json:"tool_usage"`
 		ServiceTier *string                         `json:"service_tier"`
 	} `json:"response"`
 	Usage       *schemas.ResponsesResponseUsage `json:"usage"`
+	ToolUsage   *schemas.ToolUsage              `json:"tool_usage"`
 	ServiceTier *string                         `json:"service_tier"`
 }
 
@@ -165,13 +168,14 @@ func extractOAIResponsesUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	}
 
 	// Streaming takes priority: nested under "response" with a non-zero total.
-	ru, tier := w.Usage, w.ServiceTier
+	ru, toolUsage, tier := w.Usage, w.ToolUsage, w.ServiceTier
 	if w.Response != nil && w.Response.Usage != nil && w.Response.Usage.TotalTokens > 0 {
-		ru, tier = w.Response.Usage, w.Response.ServiceTier
+		ru, toolUsage, tier = w.Response.Usage, w.Response.ToolUsage, w.Response.ServiceTier
 	}
 	if ru == nil || ru.TotalTokens == 0 {
 		return nil
 	}
+	ru.ToolUsage = toolUsage
 	return buildOAIResponsesUsage(ru, tier)
 }
 

@@ -4291,6 +4291,9 @@ func TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo(t *testing.T) {
 	if got := *result.Usage.CompletionTokensDetails.NumSearchQueries; got != 3 {
 		t.Fatalf("chat usage NumSearchQueries = %d, want 3", got)
 	}
+	if result.Usage.ToolUsage == nil || result.Usage.ToolUsage.WebSearch == nil || result.Usage.ToolUsage.WebSearch.NumRequests != 3 {
+		t.Fatalf("chat usage ToolUsage = %+v, want web_search.num_requests 3", result.Usage.ToolUsage)
+	}
 	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
 		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
 	}
