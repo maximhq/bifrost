@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	cloud.google.com/go/storage v1.62.1
+	github.com/a2aproject/a2a-go/v2 v2.5.0
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.14
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
