@@ -1286,7 +1286,7 @@ func TestWarpAgentFinalStepAnswersPartially(t *testing.T) {
 	// it with an empty end_turn - seven steps of research thrown away.
 	closing := model.lastInput[len(model.lastInput)-1]
 	require.NotNil(t, closing.Role, "the final request must not end on a tool result")
-	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *closing.Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *closing.Role)
 	require.Contains(t, *closing.Content.ContentStr, "final step")
 	last := events[len(events)-1]
 	require.Equal(t, EventDone, last.Type)
@@ -1752,7 +1752,7 @@ func TestWarpAgentRedirectAfterFilterSpaceDoesNotAskForItAgain(t *testing.T) {
 	require.Equal(t, 3, model.calls)
 	var redirect string
 	for _, item := range model.lastInput {
-		if item.Role != nil && *item.Role == schemas.ResponsesInputMessageRoleUser && item.Content != nil && item.Content.ContentStr != nil {
+		if item.Role != nil && *item.Role == schemas.ResponsesInputMessageRoleDeveloper && item.Content != nil && item.Content.ContentStr != nil {
 			redirect = *item.Content.ContentStr
 		}
 	}
@@ -1846,7 +1846,7 @@ func TestWarpAgentAsksAgainAfterAnEmptyReply(t *testing.T) {
 		require.Equal(t, "17 requests failed.", events[len(events)-2].Delta)
 		nudge := model.lastInput[len(model.lastInput)-1]
 		require.NotNil(t, nudge.Role)
-		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *nudge.Role)
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *nudge.Role)
 		require.Contains(t, *nudge.Content.ContentStr, "empty")
 		for _, item := range model.lastInput {
 			if item.Role != nil && *item.Role == schemas.ResponsesInputMessageRoleAssistant && item.Content != nil && item.Content.ContentStr != nil {
@@ -1988,6 +1988,63 @@ func TestWarpVirtualKeySettingsStayInScope(t *testing.T) {
 		redirect := *unsupportedReplyRedirect(false, described).Content.ContentStr
 		require.Contains(t, redirect, "describe_virtual_key", "a refused virtual-key question is sent to the tool, not repeated")
 	}
+}
+
+// The loop's nudges rode as user messages. A reasoning model read the no-data
+// redirect - a user turn full of "if it declines ... give the same reply
+// again" - as someone trying to steer it, refused it ("I can't help with
+// instructions about how to respond"), and that refusal streamed to the screen
+// as the answer. The nudges are the loop's own feedback, not the person's
+// words, so they ride as developer messages: what the model treats as the
+// application speaking. Every provider converter carries the role - OpenAI as
+// is, Anthropic and Bedrock as an in-place system turn, Gemini as user.
+func TestWarpLoopNudgesRideAsDeveloperMessages(t *testing.T) {
+	for _, described := range []bool{false, true} {
+		for _, called := range []bool{false, true} {
+			redirect := unsupportedReplyRedirect(called, described)
+			require.NotNil(t, redirect.Role)
+			require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *redirect.Role, "called=%v described=%v", called, described)
+		}
+	}
+	nudge := loopNudge("Your last reply was empty.")
+	require.NotNil(t, nudge.Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *nudge.Role)
+}
+
+// "Which virtual key should I look up?" was asked of an identified caller, and
+// the option "My own traffic" carried the hint "self" - which came back as the
+// word "self", was searched for as a name, matched nothing, and ended in "I
+// couldn't find a virtual key associated with your account". The schema said a
+// hint is "the value you want back" and nothing said what that value is for
+// the person's own traffic. It is their caller_user_id from
+// describe_filter_space, and the schema, the guidance and the redirect that
+// tells the model to offer that option all say so.
+func TestWarpOwnTrafficOptionCarriesTheCallerID(t *testing.T) {
+	require.Contains(t, AskUserSchema, "caller_user_id")
+	require.Contains(t, QuestionGuidance, "caller_user_id")
+	for _, described := range []bool{false, true} {
+		redirect := *unsupportedReplyRedirect(false, described).Content.ContentStr
+		require.Contains(t, redirect, "caller_user_id", "described=%v", described)
+	}
+}
+
+// "whats my vk" got two answers on two tries: "your traffic is associated with
+// the virtual key Suresh Chaudhary" from an unscoped virtual_key ranking (which
+// covers everyone, so its top row is not the caller's key), and "no virtual
+// key assigned in the last 24 hours" from one narrowed to the caller over a
+// window nobody chose. No tool reads who a key belongs to, so the prompt says
+// how the question is answered from traffic: the caller's own requests, a
+// stated window, every key listed - and never asked back as "which key?".
+func TestWarpPromptAnswersWhichVirtualKeyFromOwnTraffic(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	rule := strings.Index(content, "no tool reads who a key belongs to")
+	require.NotEqual(t, -1, rule, content)
+	rest := content[rule:]
+	require.Contains(t, rest, "dimension virtual_key")
+	require.Contains(t, rest, "user_ids")
+	require.Contains(t, rest, "caller_user_id")
+	require.Contains(t, rest, "Unassigned")
+	require.Contains(t, rest, "Do not ask which key")
 }
 
 // Nothing covered greetings or questions about Warp itself. The scope rule

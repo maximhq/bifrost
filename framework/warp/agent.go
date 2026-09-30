@@ -602,7 +602,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// which discarded every step before it.
 			if !finalNudged {
 				finalNudged = true
-				nudge := userNudge("This is your final step and no tools are available now. Write your answer from the results above: lead with what you found, then say plainly what you could not check.")
+				nudge := loopNudge("This is your final step and no tools are available now. Write your answer from the results above: lead with what you found, then say plainly what you could not check.")
 				conversation = append(conversation, nudge)
 				conversationTokens += estimateMessageTokens(nudge)
 			}
@@ -656,7 +656,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 				return
 			}
 			emptyRetried = true
-			nudge := userNudge("Your last reply was empty. Continue: call a tool if you still need data and tools are available, otherwise write your answer from the results above.")
+			nudge := loopNudge("Your last reply was empty. Continue: call a tool if you still need data and tools are available, otherwise write your answer from the results above.")
 			conversation = append(conversation, nudge)
 			conversationTokens += estimateMessageTokens(nudge)
 			iteration--
@@ -700,7 +700,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// Sent back once, so the model draws it properly or says why not.
 			if droppedCharts > 0 && !finalStep && !chartRedirected && iteration+1 < a.maxIterations {
 				chartRedirected = true
-				nudge := userNudge(droppedChartRedirect)
+				nudge := loopNudge(droppedChartRedirect)
 				conversation = append(conversation, nudge)
 				conversationTokens += estimateMessageTokens(nudge)
 				continue
@@ -1112,28 +1112,35 @@ func endsWithProseQuestion(text string) bool {
 	return strings.HasSuffix(text, "?") && !strings.Contains(text, "```warp-scope")
 }
 
-// unsupportedReplyRedirect is the one-time nudge sent back for a reply that
-// called no tool, or that asked in prose after one did. It rides as a user
-// message because it is feedback on the last reply, not a standing
-// instruction.
-// userNudge builds a user-role message from the loop itself: feedback on the
+// loopNudge builds a message from the loop itself: feedback on the
 // conversation so far rather than a standing instruction, which is why it rides
 // in the transcript and not in the system prompt.
-func userNudge(content string) schemas.ResponsesMessage {
+//
+// It rides as a developer message, not a user one. These nudges are not the
+// person's words, and a reasoning model that was handed the no-data redirect
+// as a user turn - "if it declines ... give the same reply again" - read it as
+// someone trying to steer it, refused it ("I can't help with instructions
+// about how to respond"), and that refusal reached the screen as the answer.
+// The developer role is the application speaking, which is what this is.
+// Every provider converter carries it: OpenAI as is, Anthropic and Bedrock as
+// an in-place system turn, Gemini as a user turn.
+func loopNudge(content string) schemas.ResponsesMessage {
 	itemType := schemas.ResponsesMessageTypeMessage
-	role := schemas.ResponsesInputMessageRoleUser
+	role := schemas.ResponsesInputMessageRoleDeveloper
 	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
 }
 
+// unsupportedReplyRedirect is the one-time nudge sent back for a reply that
+// called no tool, or that asked in prose after one did. It rides as a
+// developer message, like every loopNudge, because it is feedback on the last
+// reply from the loop rather than anything the person said.
 func unsupportedReplyRedirect(calledTool, describedFilterSpace bool) schemas.ResponsesMessage {
-	itemType := schemas.ResponsesMessageTypeMessage
-	role := schemas.ResponsesInputMessageRoleUser
 	content := "That reply asked a question in prose, which reaches the person with nothing to click. " +
 		"If you need to ask, call " + AskUserTool + " with the options instead. If you did not need to ask, answer without the question."
 	if !calledTool {
-		options := "call describe_filter_space first so the options are ones that have traffic, and offer the person's own traffic only if describe_filter_space says they are identified. "
+		options := "call describe_filter_space first so the options are ones that have traffic, and offer the person's own traffic only if describe_filter_space says they are identified, with its caller_user_id as that option's hint. "
 		if describedFilterSpace {
-			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified. "
+			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified, with its caller_user_id as that option's hint. "
 		}
 		// Declining comes first. Listed after ask_user, it read as the last resort,
 		// and correct refusals came back as scope questions.
@@ -1145,7 +1152,7 @@ func unsupportedReplyRedirect(calledTool, describedFilterSpace bool) schemas.Res
 			"If it asks the person something, call " + AskUserTool + " with options instead - " + options +
 			"If it says a question about this deployment cannot be answered, investigate with your tools first - query_usage_by with dimension error_type and status error counts every failure by kind, query_logs returns failed rows with error_type, provider and model, and get_request_trace explains one request."
 	}
-	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
+	return loopNudge(content)
 }
 
 func toolResultMessage(callID, result string) schemas.ResponsesMessage {

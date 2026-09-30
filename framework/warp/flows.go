@@ -967,11 +967,21 @@ func queryUsageByTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 			}
-			return noteRequestTypes(setRankingLogsLink(map[string]any{
+			scope := scopeNote(filters, deps.scope)
+			out := map[string]any{
 				"rankings": linkDimensionRankings(result, filters, dimension),
-				"scope":    scopeNote(filters, deps.scope),
+				"scope":    scope,
 				"window":   resolvedWindow(filters),
-			}, result, filters, dimension), filters), nil
+			}
+			// A key ranking takes no default scope (rankingScope), so for an
+			// identified caller it ranks everyone's keys - and "whats my vk" was
+			// answered from its top row: "your traffic is associated with the
+			// virtual key X". Said here, with the id to copy, rather than left to
+			// the scope tag the model read past.
+			if dimension == logstore.RankingDimensionVirtualKey && deps.scope.HasIdentity && scope == "all" {
+				out["guidance"] = fmt.Sprintf("These are the keys everyone you may see used, not the person asking: a row here is not their key. For the keys their own requests used, call again with user_ids: [%q].", deps.scope.UserID)
+			}
+			return noteRequestTypes(setRankingLogsLink(out, result, filters, dimension), filters), nil
 		},
 	}
 }

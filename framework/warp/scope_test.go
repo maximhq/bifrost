@@ -262,3 +262,48 @@ func TestWarpRankingAcrossPeopleIsNotScopedToTheCaller(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"u-admin"}, fake.rankingFilters.UserIDs)
 }
+
+// A virtual_key ranking takes no default scope (rankingScope), so for an
+// identified caller it ranks everyone's keys - and the model read its top row
+// as "your traffic is associated with the virtual key X". The result now says
+// whose keys it ranked and how to get the caller's own, with the id to copy.
+// A ranking already narrowed to the caller, or asked by nobody in particular,
+// has nothing to add.
+func TestWarpVirtualKeyRankingSaysWhoseKeysItRanks(t *testing.T) {
+	identified := Scope{HasIdentity: true, UserID: "user-7"}
+	cases := []struct {
+		name     string
+		scope    Scope
+		filters  map[string]any
+		guidance bool
+	}{
+		{"identified, unscoped", identified, map[string]any{"start_time": "-24h"}, true},
+		{"identified, explicit all", identified, map[string]any{"start_time": "-24h", "scope": "all"}, true},
+		{"identified, own traffic", identified, map[string]any{"start_time": "-24h", "user_ids": []any{"user-7"}}, false},
+		{"anonymous", Scope{}, map[string]any{"start_time": "-24h"}, false},
+	}
+	tool, ok := toolByName(buildToolsFor(nil), "query_usage_by")
+	require.True(t, ok)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Executed directly: runTool substitutes an identified caller for an
+			// empty scope, and the anonymous case is the point of that row.
+			deps := &ToolDeps{logManager: &fakeLogReader{}, scope: tc.scope}
+			out, err := tool.execute(context.Background(), deps, map[string]any{"dimension": "virtual_key", "filters": tc.filters})
+			require.NoError(t, err)
+			guidance, present := resultMap(t, out)["guidance"].(string)
+			require.Equal(t, tc.guidance, present, "guidance: %q", guidance)
+			if tc.guidance {
+				require.Contains(t, guidance, "not the person asking")
+				require.Contains(t, guidance, `user_ids: ["user-7"]`)
+			}
+		})
+	}
+	// Only a ranking of keys: a ranking of what the traffic was keeps the
+	// caller's default and says nothing.
+	deps := &ToolDeps{logManager: &fakeLogReader{}, scope: identified}
+	out, err := runTool(t, "query_usage_by", deps, map[string]any{"dimension": "app", "filters": map[string]any{"start_time": "-24h"}})
+	require.NoError(t, err)
+	_, present := resultMap(t, out)["guidance"]
+	require.False(t, present)
+}
