@@ -165,8 +165,9 @@ func liveDelegation(ctx *schemas.BifrostContext, result *schemas.BifrostResponse
 	if bifrostErr != nil && bifrostErr.Error != nil {
 		delegation.Error = bifrostErr.Error.Message
 	}
+	// A unit refused at admission ran nothing; the session's failure records why it ended.
 	if result == nil || result.ResponsesResponse == nil {
-		return delegation, delegation.Error != ""
+		return delegation, false
 	}
 	response := result.ResponsesResponse
 	if response.ID != nil && *response.ID != "" {

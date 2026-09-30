@@ -1,0 +1,182 @@
+package live
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// Billing: voice seconds in windows, backend responses once each, and what happens to the bill
+// when the session ends badly.
+
+// settle gives the gateway's async post-hooks a moment to record spend between usage snapshots.
+func settle() { time.Sleep(400 * time.Millisecond) }
+
+func TestBilling_VoiceWindowsAndFinalUsage(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	budget := 10.0
+	vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+	c, s := openFakeSession(t, vk, backendModel, nil)
+
+	// OpenAI reports cumulative seconds; each full 30 s window bills as it fills.
+	for _, seconds := range []float64{30, 60, 75} {
+		s.EmitUsage(seconds)
+		assert.Equal(t, seconds, c.WaitFor("session.usage.updated").Get("usage.seconds").Float(), "usage reaches the client unchanged")
+		settle()
+	}
+	c.Send(`{"type":"session.close"}`)
+	s.WaitInbound(t, "session.close", 1)
+	closed := c.WaitFor("session.closed")
+	assert.Equal(t, 75.0, closed.Get("usage.seconds").Float())
+
+	row := findLiveLog(t, s.ID())
+	assert.Equal(t, 75.0, row.Get("token_usage.audio_seconds").Float())
+	assert.Equal(t, 75.0, row.Get("live_session.voice_seconds").Float())
+	assert.InDelta(t, 75*fakeVoiceCostPerSecond, row.Get("live_session.voice_cost").Float(), 1e-9)
+	assert.InDelta(t, 75*fakeVoiceCostPerSecond, row.Get("cost").Float(), 1e-9)
+	assert.True(t, row.Get("live_session.usage_confirmed").Bool())
+	waitBudgetUsage(t, vk.BudgetID, 75*fakeVoiceCostPerSecond)
+}
+
+func TestBilling_WebRTCSessionBillsAtLeastFifteenSeconds(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{})
+	session := sessionFor(t, voiceModel, backendModel, nil)
+	c, _ := createWebRTCSession(t, clientOptions{headers: vkHeaders(vk), session: session})
+	s := fake.WaitSession(t, session["instructions"].(string))
+	require.Equal(t, "webrtc", s.Transport())
+	s.WaitConnections(t, 1)
+
+	s.EmitUsage(3)
+	c.WaitFor("session.usage.updated")
+	c.CloseSession()
+
+	row := findLiveLog(t, s.ID())
+	assert.Equal(t, 15.0, row.Get("token_usage.audio_seconds").Float(), "OpenAI bills a WebRTC session 15 s at creation")
+	assert.Equal(t, "webrtc", row.Get("metadata.realtime_transport").Str)
+	assert.Equal(t, "webrtc", row.Get("live_session.transport").Str)
+}
+
+func TestBilling_BackendResponseIsBilledOncePerID(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{})
+	c, s := openFakeSession(t, vk, backendModel, nil)
+
+	d := delegation{ID: "item_1", ResponseID: "resp_1", Model: backendModel, Created: true, Input: 1000, Output: 100,
+		Items: []string{messageItem("msg_1", "Once.")}}
+	s.Play(d)
+	// OpenAI replays the terminal event; the second copy must not bill again.
+	d.Created = false
+	d.Items = nil
+	s.Play(d)
+	c.WaitFor("response.event")
+	settle()
+	c.CloseSession()
+
+	row := findLiveLog(t, s.ID())
+	require.Len(t, row.Get("live_session.delegations").Array(), 1)
+	assert.Equal(t, 1100.0, row.Get("token_usage.total_tokens").Float())
+	assert.InDelta(t, 1000*fakeInputCostPerToken+100*fakeOutputCostPerToken, row.Get("live_session.backend_cost").Float(), 1e-9)
+}
+
+func TestBilling_BackendSwitchFromPrimary(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{allowedModels: []string{voiceModel, backendModel, backendModel2}})
+	c, s := openFakeSession(t, vk, backendModel, nil)
+
+	c.Send(`{"type":"session.update","event_id":"switch","session":{"delegation":{"type":"responses","responses":{"model":"openai/` + backendModel2 + `"}}}}`)
+	update := s.WaitInbound(t, "session.update", 1)
+	assert.Equal(t, backendModel2, update.Get("session.delegation.responses.model").Str, "the bare model goes upstream")
+	assert.Equal(t, backendModel2, c.WaitFor("session.updated").Get("session.delegation.responses.model").Str)
+
+	s.Play(delegation{ID: "item_1", ResponseID: "resp_1", Model: backendModel2, Created: true, Input: 10, Output: 5, Items: []string{messageItem("msg_1", "On terra.")}})
+	c.WaitFor("response.event")
+	settle()
+	c.CloseSession()
+
+	row := findLiveLog(t, s.ID())
+	delegations := row.Get("live_session.delegations").Array()
+	require.Len(t, delegations, 1)
+	assert.Equal(t, backendModel2, delegations[0].Get("model").Str, "billed to the model the session switched to")
+}
+
+func TestBilling_BackendSwitchToForbiddenModelIsRefusedBeforeForwarding(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{allowedModels: []string{voiceModel, backendModel}})
+	c, s := openFakeSession(t, vk, backendModel, nil)
+
+	c.Send(`{"type":"session.update","event_id":"switch","session":{"delegation":{"type":"responses","responses":{"model":"` + backendModel2 + `"}}}}`)
+	frame := c.WaitFor("error")
+	assert.NotEmpty(t, errorMessage(frame))
+	c.Send(`{"type":"session.thinking.append","delegation_id":null,"content":"still here"}`)
+	s.WaitInbound(t, "session.thinking.append", 1)
+	assert.Empty(t, s.Inbound("session.update"), "the refused update never reached the provider")
+	c.CloseSession()
+}
+
+func TestBilling_BudgetExhaustionEndsTheSessionGracefully(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	budget := 0.05 // two 30 s windows at $0.03 each cross it; the third is refused
+	vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+	c, s := openFakeSession(t, vk, backendModel, nil)
+
+	s.EmitUsage(30)
+	settle()
+	s.EmitUsage(60)
+	settle()
+	s.EmitUsage(90)
+	refusal := c.WaitFor("error")
+	assert.Contains(t, strings.ToLower(errorMessage(refusal)), "budget")
+	// The gateway closes upstream itself; OpenAI answers with the final usage, which is still billed.
+	s.WaitInbound(t, "session.close", 1)
+	c.WaitFor("session.closed")
+	c.WaitGone()
+
+	row := findLiveLog(t, s.ID())
+	assert.Equal(t, 90.0, row.Get("token_usage.audio_seconds").Float(), "every reported second is billed, refusal included")
+	assert.InDelta(t, 90*fakeVoiceCostPerSecond, row.Get("cost").Float(), 1e-9)
+	assert.NotEqual(t, "success", row.Get("status").Str, "the session ended on a refusal")
+	assert.Contains(t, strings.ToLower(row.Get("error_details.error.message").Str), "budget")
+}
+
+func TestBilling_UpstreamDropBillsLastReportedUsageUnconfirmed(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{})
+	c, s := openFakeSession(t, vk, backendModel, nil)
+
+	s.EmitUsage(45)
+	c.WaitFor("session.usage.updated")
+	s.Drop()
+	c.WaitGone()
+
+	row := findLiveLog(t, s.ID())
+	assert.Equal(t, 45.0, row.Get("token_usage.audio_seconds").Float(), "what OpenAI last reported")
+	assert.False(t, row.Get("live_session.usage_confirmed").Bool(), "no session.closed: the final usage is a guess")
+}
+
+func TestBilling_ClientLeavingStillClosesUpstreamAndBills(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{})
+	c, s := openFakeSession(t, vk, backendModel, nil)
+	s.EmitUsage(20)
+	c.WaitFor("session.usage.updated")
+
+	c.Close()
+	s.WaitInbound(t, "session.close", 1)
+	// The fake answered session.close with session.closed carrying 20 s.
+
+	row := findLiveLog(t, s.ID())
+	assert.Equal(t, 20.0, row.Get("token_usage.audio_seconds").Float())
+	assert.True(t, row.Get("live_session.usage_confirmed").Bool())
+}
