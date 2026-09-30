@@ -332,7 +332,8 @@
                       "integrations/guardrails/patronus-ai",
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
-                      "integrations/guardrails/singulr-ai"
+                      "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/a10"
                     ]
                   }
                 ]
@@ -552,7 +553,8 @@
               "integrations/guardrails/patronus-ai",
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
-              "integrations/guardrails/singulr-ai"
+              "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/a10"
             ]
           },
           {
