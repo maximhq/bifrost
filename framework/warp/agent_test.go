@@ -1062,8 +1062,8 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 		}
 		return out
 	}
-	require.NotContains(t, names(buildToolsFor(nil)), SemanticSearchToolName)
-	require.Contains(t, names(buildToolsFor(&SemanticSearcher{})), SemanticSearchToolName)
+	require.NotContains(t, names(buildToolsFor(nil, false)), SemanticSearchToolName)
+	require.Contains(t, names(buildToolsFor(&SemanticSearcher{}, false)), SemanticSearchToolName)
 }
 
 // This is the correctness guarantee running a step's tool calls together
@@ -1901,7 +1901,7 @@ func TestWarpAgentRefusesArgumentsAToolDoesNotTake(t *testing.T) {
 	require.False(t, failed, "the tool's own arguments still run")
 
 	// Every tool's schema has to declare its arguments for this to hold.
-	for _, tool := range buildToolsFor(&SemanticSearcher{}) {
+	for _, tool := range buildToolsFor(&SemanticSearcher{}, false) {
 		require.NotEmpty(t, tool.argumentNames(), "tool %s declares no arguments", tool.name)
 	}
 

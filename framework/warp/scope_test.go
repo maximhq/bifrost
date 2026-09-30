@@ -282,7 +282,7 @@ func TestWarpVirtualKeyRankingSaysWhoseKeysItRanks(t *testing.T) {
 		{"identified, own traffic", identified, map[string]any{"start_time": "-24h", "user_ids": []any{"user-7"}}, false},
 		{"anonymous", Scope{}, map[string]any{"start_time": "-24h"}, false},
 	}
-	tool, ok := toolByName(buildToolsFor(nil), "query_usage_by")
+	tool, ok := toolByName(buildToolsFor(nil, false), "query_usage_by")
 	require.True(t, ok)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

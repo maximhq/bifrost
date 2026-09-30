@@ -39,7 +39,7 @@ How to work:
   - Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by with that dimension. Each row links to its own requests, and the same values filter every other tool (routing_rule_ids, selected_key_ids, aliases, routing_engine_used, complexity_tiers, tool_call_names, metadata_filters).
   - Per error type, HTTP status code, error code or retry failure reason: query_usage_by with that dimension and status error. It counts every failed request, not a sample of rows, and each row carries a trend.
   - Per provider: query_metrics with group_by provider, reading provider_totals - it carries each provider's requests, cost, tokens, success rate and average latency, so "which provider fails most" is one call with metrics ["summary"].
-- If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error.
+- If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error. Its lists are what traffic contains, though, not what is configured: for a virtual key's budget or settings, describe_virtual_key by exact name is the existence check, and a key absent from describe_filter_space may still exist - never say a key does not exist until describe_virtual_key has failed to find it by name.
 - Leave the objects filter unset unless the person names a request type ("embedding spend", "streamed chat requests"). Spend, usage and performance questions cover every request type, and objects matches exact types: chat_completion leaves out streamed and Responses API requests, which is often most of the traffic. A result narrowed this way carries "request_types" - if you did not mean to narrow, drop objects and query again.
 - Use get_request_trace to explain why one specific request failed or behaved unexpectedly - it returns that request's retry attempts, its full fallback chain in order (every provider/model tried, and why each one failed or succeeded), guardrail and cache decisions, and a latency breakdown. get_log_detail returns a row's content; get_request_trace returns the causation around it. This tool explains one request, not an aggregate: it cannot tell you why an error rate spiked or a trend shifted, only why a given request did what it did. Do not point at one request's trace as "the cause" of an aggregate change - correlate the change across filters instead (provider, model, status, stop_reasons), and say what the tools cannot establish only after you have.
 - "What caused this spike" or "what caused the failure cluster" is an investigation, not a refusal - "a trace cannot explain an aggregate" is a reason to correlate, never a reason to decline without looking. Find the spike's window (query_metrics requests over the range, or the window from the earlier turn), break that window's failures down with query_usage_by with dimension error_type and status error - add providers or models to the filters to see where one error type concentrates - and compare with the same call outside the spike. Pull a few of the failed rows with query_logs status error, then trace one representative request with get_request_trace to show what it actually hit. Report the concentration you found ("32 of 45 were anthropic overloaded_error"), and say what the data cannot establish only after that.
@@ -218,7 +218,33 @@ const NoSemanticSampleGuidance = "\n- For a themes question, take the sample wit
 // the many callers that do not care about it - most of the tests in this
 // package - are not forced to pass a zero value explicitly. At most the first
 // value is used; the same pattern NewAgent already uses for semantic.
+// toolAvailability is which optional tools this deployment offers, so the
+// prompt describes exactly the set the model can call: a capability the prompt
+// names and the declarations lack costs a wasted step and an apology.
+type toolAvailability struct {
+	semantic   bool
+	userLimits bool
+}
+
+// UserLimitsGuidance is appended when describe_user_limits is offered. A budget
+// question about a person - or about a key an access profile manages - is
+// answered from the person's profile, which is where the cap actually sits.
+const UserLimitsGuidance = `
+
+A person's own limits:
+
+- describe_user_limits reads what governs a person's spend: their access profile's budgets, per-provider budgets and rate limits, with live usage. "How much budget do I have left", "what is my limit", "what is Vrinda's allowance", and a budget or rate-limit question about a key that describe_virtual_key reports as managed by an access profile all go there - the key only inherits the profile's cap.
+- The user id is caller_user_id from describe_filter_space for the person asking, or the id on a user ranking row (query_usage_by with dimension user) for someone else. Do not search describe_filter_space for a person's name: it lists traffic values, not people.
+- Report each budget as remaining of max_limit, name the profile it comes from, and say when it resets. A budget's period is its own reset cycle, not a log window, so do not ask for a time range.`
+
+// systemInstructions is systemInstructionsFor with only the semantic tool's
+// availability, which is what most of the prompt's tests and callers need.
 func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc ...timeContext) string {
+	return systemInstructionsFor(config, toolAvailability{semantic: semanticAvailable}, tc...)
+}
+
+func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailability, tc ...timeContext) string {
+	semanticAvailable := available.semantic
 	var ctx timeContext
 	if len(tc) > 0 {
 		ctx = tc[0]
@@ -236,6 +262,9 @@ func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc .
 		builder.WriteString(SemanticSearchGuidance)
 	} else {
 		builder.WriteString(NoSemanticSampleGuidance)
+	}
+	if available.userLimits {
+		builder.WriteString(UserLimitsGuidance)
 	}
 	builder.WriteString(QuestionGuidance)
 	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC%s).", local.Format("2006-01-02 15:04:05"), formatUTCOffset(offset)))

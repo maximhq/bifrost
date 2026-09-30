@@ -6,6 +6,7 @@ import (
 	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -408,7 +409,7 @@ func runTool(t *testing.T, name string, deps *ToolDeps, args map[string]any) (an
 	// Built for the deps under test: the semantic tool is only in the set when a
 	// searcher exists, which is the behaviour TestWarpToolsOmitSemanticSearch...
 	// pins, so a test exercising that tool has to supply one.
-	tool, ok := toolByName(buildToolsFor(deps.semantic), name)
+	tool, ok := toolByName(buildToolsFor(deps.semantic, deps.userGovernance != nil), name)
 	require.True(t, ok, "tool %s should exist", name)
 	// Default to an identified caller. A deployment with no user identity has no
 	// default scope, so an unscoped query from one is refused - correct, but it
@@ -449,20 +450,28 @@ func TestWarpToolSchemasAreValid(t *testing.T) {
 // instead of the pure optimization it is meant to be.
 func TestWarpDeclaredToolsMatchesFreshParse(t *testing.T) {
 	for _, semantic := range []bool{false, true} {
-		var searcher *SemanticSearcher
-		if semantic {
-			searcher = &SemanticSearcher{}
+		for _, userLimits := range []bool{false, true} {
+			var searcher *SemanticSearcher
+			if semantic {
+				searcher = &SemanticSearcher{}
+			}
+			fresh, err := responsesTools(buildToolsFor(searcher, userLimits))
+			require.NoError(t, err)
+
+			cached, err := declaredTools(semantic, userLimits)
+			require.NoError(t, err)
+			require.Equal(t, fresh, cached, "semantic=%v userLimits=%v", semantic, userLimits)
+
+			again, err := declaredTools(semantic, userLimits)
+			require.NoError(t, err)
+			require.Same(t, &cached[0], &again[0], "repeated calls must reuse the same backing array, not re-parse")
+
+			names := make([]string, 0, len(cached))
+			for _, tool := range cached {
+				names = append(names, *tool.Name)
+			}
+			require.Equal(t, userLimits, slices.Contains(names, UserLimitsToolName), "the declarations carry describe_user_limits exactly when a reader exists")
 		}
-		fresh, err := responsesTools(buildToolsFor(searcher))
-		require.NoError(t, err)
-
-		cached, err := declaredTools(semantic)
-		require.NoError(t, err)
-		require.Equal(t, fresh, cached, "semantic=%v", semantic)
-
-		again, err := declaredTools(semantic)
-		require.NoError(t, err)
-		require.Same(t, &cached[0], &again[0], "repeated calls must reuse the same backing array, not re-parse")
 	}
 }
 
@@ -471,7 +480,7 @@ func TestWarpDeclaredToolsMatchesFreshParse(t *testing.T) {
 // and must not carry it otherwise.
 func TestWarpDeclaredToolsFollowSemanticAvailability(t *testing.T) {
 	declaredNames := func(semantic bool) []string {
-		tools, err := declaredTools(semantic)
+		tools, err := declaredTools(semantic, false)
 		require.NoError(t, err)
 		names := make([]string, 0, len(tools))
 		for _, tool := range tools {
@@ -1419,6 +1428,9 @@ func TestWarpDescribeFilterSpaceDescriptionMatchesResult(t *testing.T) {
 		"routing_engines": "routing engines",
 		"tool_call_names": "tool call names",
 		"metadata":        "metadata keys",
+		// What the lists are, so an absence is read as "no traffic" and not
+		// "does not exist".
+		"coverage": "coverage note",
 	}
 	for key := range returned {
 		phrase, known := names[key]
@@ -1998,11 +2010,11 @@ func TestWarpQueryLogsMarksSampledResults(t *testing.T) {
 // step calling it, and gets an error back - and on a deployment with no
 // embedding provider that is every single time it tries.
 func TestWarpToolsOmitSemanticSearchWhenUnavailable(t *testing.T) {
-	withSearcher := buildToolsFor(&SemanticSearcher{})
+	withSearcher := buildToolsFor(&SemanticSearcher{}, false)
 	_, present := toolByName(withSearcher, SemanticSearchToolName)
 	require.True(t, present, "a configured deployment still offers semantic search")
 
-	without := buildToolsFor(nil)
+	without := buildToolsFor(nil, false)
 	_, present = toolByName(without, SemanticSearchToolName)
 	require.False(t, present, "a tool that cannot run must not be advertised to the model")
 
@@ -2599,4 +2611,23 @@ func TestWarpObjectsFilterIsReportedOnAggregates(t *testing.T) {
 			require.NotContains(t, result.(map[string]any), "request_types", "%s: nothing to report without objects", tc.tool)
 		})
 	}
+}
+
+// Asked about a key created minutes earlier, Warp searched describe_filter_space
+// for its name, found nothing, and told the person no such key existed. The
+// lists are what traffic contains, and every result now says so; an empty
+// search additionally points at the tool that reads configuration.
+func TestWarpDescribeFilterSpaceSaysItsListsComeFromTraffic(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "describe_filter_space")
+	require.True(t, ok)
+	deps := &ToolDeps{logManager: &fakeFilterSpaceReader{}}
+
+	out := resultMap(t, mustRunTool(t, "describe_filter_space", deps, map[string]any{}))
+	require.Contains(t, out["coverage"], "seen in logged traffic")
+	require.Contains(t, out["coverage"], "describe_virtual_key")
+	require.Contains(t, tool.description, "not what is configured")
+
+	out = resultMap(t, mustRunTool(t, "describe_filter_space", deps, map[string]any{"search": "warp-verify-budgeted"}))
+	require.Contains(t, out["guidance"], "A virtual key with no traffic is never listed here")
+	require.Contains(t, out["guidance"], "describe_virtual_key")
 }
