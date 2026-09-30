@@ -1756,7 +1756,12 @@ func extractOpenAIModelRetrieveParams(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	}
 
 	rawModel, _ := ctx.UserValue("model").(string)
-	rawModel = strings.Trim(strings.TrimSpace(rawModel), "/")
+	// The router hands the catch-all over still percent-encoded, and OpenAI SDKs send "provider%2Fmodel".
+	decodedModel, err := url.PathUnescape(rawModel)
+	if err != nil {
+		return errors.New("invalid model encoding")
+	}
+	rawModel = strings.Trim(strings.TrimSpace(decodedModel), "/")
 	if rawModel == "" {
 		return errors.New("model parameter is required")
 	}
