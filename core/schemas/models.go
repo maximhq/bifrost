@@ -166,6 +166,12 @@ type Model struct {
 	Reasoning           *ModelReasoning    `json:"reasoning,omitempty"`
 	HuggingFaceID       *string            `json:"hugging_face_id,omitempty"`
 	Description         *string            `json:"description,omitempty"`
+	// DefaultReasoningLevel and SupportedReasoningLevels preserve optional
+	// OpenAI-compatible catalog metadata used by clients such as Codex. The
+	// supported-level payload is deliberately raw because compatible providers
+	// use both string arrays and richer objects containing descriptions.
+	DefaultReasoningLevel    *string         `json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels json.RawMessage `json:"supported_reasoning_levels,omitempty"`
 
 	// AdditionalAttributes carries editorial per-model metadata stored on the
 	// governance_model_pricing row (e.g. description, tags). Preserved across

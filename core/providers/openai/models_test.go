@@ -11,6 +11,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestListModelsByKeyResponseShapes verifies that supported upstream model-list
+// envelope shapes normalize into the same Bifrost model representation.
 func TestListModelsByKeyResponseShapes(t *testing.T) {
 	t.Parallel()
 
@@ -65,4 +67,57 @@ func TestListModelsByKeyResponseShapes(t *testing.T) {
 			require.Equal(t, schemas.Ptr(test.wantContext), response.Data[0].ContextLength)
 		})
 	}
+}
+
+// TestListModelsPreservesDisplayNameAndReasoningMetadata verifies that optional
+// OpenAI-compatible catalog metadata survives the complete conversion round trip.
+func TestListModelsPreservesDisplayNameAndReasoningMetadata(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"object":"list",
+			"data":[{
+				"id":"vendor/reasoner",
+				"owned_by":"vendor",
+				"display_name":"Reasoner Pro",
+				"description":"A readable description",
+				"default_reasoning_level":"medium",
+				"supported_reasoning_levels":[
+					{"effort":"low","description":"Fast"},
+					{"effort":"medium","description":"Balanced"},
+					{"effort":"high","description":"Deep"}
+				]
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	response, bifrostErr := ListModelsByKey(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&fasthttp.Client{},
+		server.URL,
+		schemas.Key{Models: schemas.WhiteList{"*"}},
+		false,
+		nil,
+		schemas.ModelProvider("test"),
+		false,
+		false,
+	)
+	require.Nil(t, bifrostErr)
+	require.Len(t, response.Data, 1)
+	require.Equal(t, schemas.Ptr("Reasoner Pro"), response.Data[0].Name)
+	require.Equal(t, schemas.Ptr("A readable description"), response.Data[0].Description)
+	require.Equal(t, schemas.Ptr("medium"), response.Data[0].DefaultReasoningLevel)
+	require.JSONEq(t, `[
+		{"effort":"low","description":"Fast"},
+		{"effort":"medium","description":"Balanced"},
+		{"effort":"high","description":"Deep"}
+	]`, string(response.Data[0].SupportedReasoningLevels))
+
+	roundTrip := ToOpenAIListModelsResponse(response)
+	require.Len(t, roundTrip.Data, 1)
+	require.Equal(t, schemas.Ptr("Reasoner Pro"), roundTrip.Data[0].DisplayName)
+	require.Equal(t, schemas.Ptr("medium"), roundTrip.Data[0].DefaultReasoningLevel)
+	require.JSONEq(t, string(response.Data[0].SupportedReasoningLevels), string(roundTrip.Data[0].SupportedReasoningLevels))
 }

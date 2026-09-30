@@ -7,7 +7,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ToBifrostListModelsResponse converts an OpenAI list models response to a Bifrost list models response
+// ToBifrostListModelsResponse converts an OpenAI list-models response into the
+// provider-neutral Bifrost model catalog while preserving compatible metadata.
 func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
@@ -34,10 +35,14 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	for _, model := range response.Data {
 		for _, result := range pipeline.FilterModel(model.ID) {
 			entry := schemas.Model{
-				ID:            string(providerKey) + "/" + result.ResolvedID,
-				Created:       model.Created,
-				OwnedBy:       schemas.Ptr(model.OwnedBy),
-				ContextLength: model.ContextWindow,
+				ID:                       string(providerKey) + "/" + result.ResolvedID,
+				Name:                     model.DisplayName,
+				Description:              model.Description,
+				Created:                  model.Created,
+				OwnedBy:                  schemas.Ptr(model.OwnedBy),
+				ContextLength:            model.ContextWindow,
+				DefaultReasoningLevel:    model.DefaultReasoningLevel,
+				SupportedReasoningLevels: append([]byte(nil), model.SupportedReasoningLevels...),
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
@@ -53,7 +58,8 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	return bifrostResponse
 }
 
-// ToOpenAIListModelsResponse converts a Bifrost list models response to an OpenAI list models response
+// ToOpenAIListModelsResponse converts the provider-neutral Bifrost model
+// catalog into an OpenAI-compatible list-models response.
 func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *OpenAIListModelsResponse {
 	if response == nil {
 		return nil
@@ -63,8 +69,12 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 	}
 	for _, model := range response.Data {
 		openaiModel := OpenAIModel{
-			ID:     model.ID,
-			Object: "model",
+			ID:                       model.ID,
+			Object:                   "model",
+			DisplayName:              model.Name,
+			Description:              model.Description,
+			DefaultReasoningLevel:    model.DefaultReasoningLevel,
+			SupportedReasoningLevels: append([]byte(nil), model.SupportedReasoningLevels...),
 		}
 		if model.Created != nil {
 			openaiModel.Created = model.Created
