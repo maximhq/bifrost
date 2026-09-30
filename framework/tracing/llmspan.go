@@ -1524,22 +1524,19 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 				Content: "[computer_call]",
 			})
 
-		case schemas.ResponsesMessageTypeFileSearchCall,
-			schemas.ResponsesMessageTypeCodeInterpreterCall,
+		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
-			schemas.ResponsesMessageTypeCustomToolCall,
+			schemas.ResponsesMessageTypeCodeInterpreterCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				ToolCalls: []ToolCallSummary{responsesItemToolCall(&msg, msgType)},
+			})
+
+		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
-			name := ""
-			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
-				name = *msg.ResponsesToolMessage.Name
-			}
-			content := "[" + string(msgType) + "]"
-			if name != "" {
-				content += " " + name
-			}
 			result = append(result, ResponsesMessageSummary{
 				Role:    "assistant",
-				Content: content,
+				Content: responsesItemTag(&msg, msgType),
 			})
 
 		default:
@@ -1677,22 +1674,19 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 				Content: "[computer_call_output]",
 			})
 
-		case schemas.ResponsesMessageTypeFileSearchCall,
-			schemas.ResponsesMessageTypeCodeInterpreterCall,
+		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
-			schemas.ResponsesMessageTypeCustomToolCall,
+			schemas.ResponsesMessageTypeCodeInterpreterCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				ToolCalls: []ToolCallSummary{responsesItemToolCall(&msg, msgType)},
+			})
+
+		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
-			name := ""
-			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
-				name = *msg.ResponsesToolMessage.Name
-			}
-			content := "[" + string(msgType) + "]"
-			if name != "" {
-				content += " " + name
-			}
 			result = append(result, ResponsesMessageSummary{
 				Role:    "assistant",
-				Content: content,
+				Content: responsesItemTag(&msg, msgType),
 			})
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
@@ -1715,6 +1709,71 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 		}
 	}
 	return result
+}
+
+// responsesItemToolCall summarizes a tool call whose model-generated payload does
+// not live on `arguments`: `input`, `action` and `code` respectively.
+func responsesItemToolCall(msg *schemas.ResponsesMessage, msgType schemas.ResponsesMessageType) ToolCallSummary {
+	tc := ToolCallSummary{Type: responsesItemToolType(msgType)}
+	if msg.ID != nil {
+		tc.ID = *msg.ID
+	}
+	tm := msg.ResponsesToolMessage
+	if tm == nil {
+		tc.Name = tc.Type
+		return tc
+	}
+	if tc.ID == "" && tm.CallID != nil {
+		tc.ID = *tm.CallID
+	}
+	if tm.Name != nil {
+		tc.Name = *tm.Name
+	}
+	switch msgType {
+	case schemas.ResponsesMessageTypeCustomToolCall:
+		if tm.ResponsesCustomToolCall != nil {
+			tc.Args = tm.ResponsesCustomToolCall.Input
+		}
+	case schemas.ResponsesMessageTypeLocalShellCall:
+		if tm.Action != nil && tm.Action.ResponsesLocalShellToolCallAction != nil {
+			if args, err := schemas.MarshalString(tm.Action.ResponsesLocalShellToolCallAction); err == nil {
+				tc.Args = args
+			}
+		}
+	case schemas.ResponsesMessageTypeCodeInterpreterCall:
+		if tm.ResponsesCodeInterpreterToolCall != nil && tm.ResponsesCodeInterpreterToolCall.Code != nil {
+			tc.Args = *tm.ResponsesCodeInterpreterToolCall.Code
+		}
+	}
+	// local_shell_call and code_interpreter_call have no name of their own.
+	if tc.Name == "" {
+		tc.Name = tc.Type
+	}
+	return tc
+}
+
+// responsesItemToolType maps an item type onto the tool type the summary reports.
+func responsesItemToolType(msgType schemas.ResponsesMessageType) string {
+	switch msgType {
+	case schemas.ResponsesMessageTypeCustomToolCall:
+		return "custom"
+	case schemas.ResponsesMessageTypeLocalShellCall:
+		return "local_shell"
+	case schemas.ResponsesMessageTypeCodeInterpreterCall:
+		return "code_interpreter"
+	default:
+		return string(msgType)
+	}
+}
+
+// responsesItemTag renders the placeholder for items with no input to record,
+// e.g. "[file_search_call] my_tool".
+func responsesItemTag(msg *schemas.ResponsesMessage, msgType schemas.ResponsesMessageType) string {
+	content := "[" + string(msgType) + "]"
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil && *msg.ResponsesToolMessage.Name != "" {
+		content += " " + *msg.ResponsesToolMessage.Name
+	}
+	return content
 }
 
 // extractResponsesMessageTextContent extracts plain text from a ResponsesMessage's Content field.
