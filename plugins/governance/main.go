@@ -89,6 +89,7 @@ type InMemoryStore interface {
 	GetMCPClientNames() map[string]string             // clientID → clientName, every client
 	// GetMCPClientBySlug resolves a client by its endpoint slug (for serving one client at /mcp/<slug>).
 	GetMCPClientBySlug(slug string) (clientID, clientName string, ok bool)
+	GetEnabledAgents() map[string]bool // agent name → allow by default
 }
 
 type BaseGovernancePlugin interface {
@@ -1542,6 +1543,89 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		p.tracker.UpdateUsage(p.ctx, usageUpdate)
 	}()
 
+	return resp, bifrostErr, nil
+}
+
+func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas.Permit {
+	if identity == nil || (identity.User() == nil && identity.VirtualKey() == nil) || p.inMemoryStore == nil {
+		return nil
+	}
+	allowedByDefault := make([]string, 0)
+	for agentName, allowByDefault := range p.inMemoryStore.GetEnabledAgents() {
+		if allowByDefault {
+			allowedByDefault = append(allowedByDefault, agentName)
+		}
+	}
+	if len(allowedByDefault) == 0 {
+		return nil
+	}
+	return grant.NewPermit("agent_default", "agent_default", "default agent access", true, false, nil, nil, grant.WithAgentPermits(allowedByDefault))
+}
+
+// PreA2AHook is the Agent Gateway governance decision point. It authorizes each decoded operation
+// from the request's settled grant before any upstream effect. Anonymous requests pass through;
+// identified requests resolve access through the same path as every other governed request.
+func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	if req == nil {
+		return req, nil, nil
+	}
+	if ctx == nil || ctx.Grant() == nil || ctx.Grant().Identity() == nil || !ctx.Grant().Identity().Presented() {
+		return req, nil, nil
+	}
+
+	deny := func(decision Decision, message string) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return req, &schemas.A2APluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(decision)),
+			StatusCode: bifrost.Ptr(403),
+			Error:      &schemas.ErrorField{Message: message},
+		}}, nil
+	}
+
+	enabledAgents := map[string]bool(nil)
+	if p.inMemoryStore != nil {
+		enabledAgents = p.inMemoryStore.GetEnabledAgents()
+	}
+	if _, enabled := enabledAgents[req.AgentName]; !enabled {
+		return deny(DecisionAgentBlocked, fmt.Sprintf("Agent '%s' is disabled or unknown", req.AgentName))
+	}
+
+	access, err := p.ResolveAccess(ctx)
+	if err != nil {
+		return deny(DecisionAccessUnresolved, err.Error())
+	}
+	if defaultPermit := p.defaultAgentPermit(ctx.Grant().Identity()); defaultPermit != nil {
+		bases := []schemas.Permit{defaultPermit}
+		var scoping schemas.Permit
+		var mode grant.CompositionMode
+		if access != nil {
+			bases = append(access.Bases(), defaultPermit)
+			scoping = access.Scoping()
+			mode = grant.CompositionMode(access.Mode())
+		}
+		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	}
+	if refusal := unusablePermit(access); refusal != nil {
+		return deny(refusal.Decision, refusal.Reason)
+	}
+	if access == nil {
+		return deny(DecisionAccessNotFound, "Access not found")
+	}
+	if !access.IsAgentAllowed(req.AgentName) {
+		return deny(DecisionAgentBlocked, denialReason(fmt.Sprintf("Agent '%s' is not allowed", req.AgentName), access.DeniedPermitsForAgent(req.AgentName)))
+	}
+	return req, nil, nil
+}
+
+// PostA2AHook completes the Agent Gateway governance phase. It mirrors
+// PostMCPHook's shape and is deliberately inert: Agent Gateway traffic has no
+// metered unit (no tokens and no per-agent pricing catalog), so recording usage
+// here would produce billing records that cannot be reconciled. PreA2AHook still
+// sets the rejected-request context key used by the MCP billing path, allowing
+// future A2A usage accounting without changing the call site. The operation and
+// agent remain discriminable from ExtraFields, which the gate stamps on both the
+// success response and the error.
+func (p *GovernancePlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
 

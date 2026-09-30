@@ -1497,7 +1497,12 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 	mcpPermits := MCPPermitsFromAccumulator(acc, "virtual key", vk.Name, gs.mcpClientNames(), gs.logger)
 	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.ConfiguredClients(), allowedByDefaultClients)
 
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits, grant.WithAllowAllProviders(vk.AllowAllProviders))
+	agentPermits := make([]string, 0, len(vk.AgentGrants))
+	for _, agentGrant := range vk.AgentGrants {
+		agentPermits = append(agentPermits, agentGrant.AgentName)
+	}
+
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits, grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders))
 }
 
 // virtualMCPByID returns a cached Virtual MCP definition, or nil if none is cached for the id.
