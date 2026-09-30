@@ -43891,6 +43891,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
@@ -43936,7 +43940,10 @@
                   "  pm.expect(/document/i.test(msg), 'message does not mention document content: ' + txt.slice(0, 400)).to.be.true;",
                   "});",
                   "",
-                  "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
+                  "// The row asks for raw_request capture, so an upstream rejection would carry the",
+              "// attempted payload here. Its absence is therefore evidence of a local refusal",
+              "// rather than an artefact of capture being switched off.",
+              "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
                   "  var rr = (body.extra_fields || {}).raw_request;",
                   "  var shown = rr === undefined ? 'undefined' : JSON.stringify(rr).slice(0, 300);",
                   "  pm.expect(!rr, 'raw_request present, so the request reached DeepSeek: ' + shown).to.be.true;",
