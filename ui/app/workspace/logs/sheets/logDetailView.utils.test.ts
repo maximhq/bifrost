@@ -1,3 +1,4 @@
+import { registerReservedMetadataPrefix } from "@/lib/registries/logs";
 import { describe, expect, it } from "vitest";
 import {
 	extractProviderErrorMessage,
@@ -5,6 +6,7 @@ import {
 	isClientToolCallItem,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
+	isShownMetadataKey,
 	parseRoutingDecisionLine,
 	pickNextSessionLog,
 	resolveRawJsonNoticeState,
@@ -256,5 +258,28 @@ describe("nextSessionLookupStart", () => {
 
 	it("keeps a timestamp it cannot parse as it is", () => {
 		expect(nextSessionLookupStart("not a time")).toBe("not a time");
+	});
+});
+describe("isShownMetadataKey", () => {
+	it("shows the caller's own keys", () => {
+		expect(isShownMetadataKey("team", false)).toBe(true);
+		expect(isShownMetadataKey("team", true)).toBe(true);
+	});
+
+	it("hides the async marker", () => {
+		expect(isShownMetadataKey("isAsyncRequest", false)).toBe(false);
+	});
+
+	it("hides a realtime turn's own keys only on a realtime turn, which shows them in its header", () => {
+		expect(isShownMetadataKey("realtime_voice", true)).toBe(false);
+		expect(isShownMetadataKey("realtime_voice", false)).toBe(true);
+	});
+
+	it("hides every key under a reserved prefix, which a registered panel shows its own way", () => {
+		registerReservedMetadataPrefix("ext_");
+		for (const key of ["ext_v", "ext_decision", "ext_some_future_key"]) {
+			expect(isShownMetadataKey(key, false)).toBe(false);
+		}
+		expect(isShownMetadataKey("extra", false)).toBe(true);
 	});
 });
