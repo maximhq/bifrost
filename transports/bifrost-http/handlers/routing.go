@@ -73,6 +73,10 @@ type complexityStatusResponse struct {
 	// that drifts from the gateway's. It is the editable half only; the fixed
 	// tier-name reinforcement is appended server-side and never exposed.
 	LLMDefaultPrompt string `json:"llm_default_prompt,omitempty"`
+	// JevDefaults is the shipped Jev per-tier criteria, served for the same
+	// reason as LLMDefaultPrompt. The fixed question, decision rule, and
+	// context rule are never exposed because they are not editable.
+	JevDefaults configstore.ComplexityJevGuidanceDefaults `json:"jev_defaults"`
 }
 
 // RoutingHandler manages HTTP requests for routing rules and complexity analyzer config.
@@ -448,7 +452,7 @@ func (h *RoutingHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
 		return
 	}
-	response := complexityStatusResponse{SemanticStatusInfo: status}
+	response := complexityStatusResponse{SemanticStatusInfo: status, JevDefaults: configstore.DefaultComplexityJevGuidance()}
 	// The llm classifier state rides the same endpoint and must not be able to
 	// fail the whole response.
 	if llmStatus, llmErr := h.routingManager.GetComplexityLLMStatus(ctx); llmErr != nil {

@@ -122,7 +122,7 @@ Choose a classifier before configuring it. Jev requires a Typesafe provider with
 
 Navigate to **Models > Complexity Router** in the sidebar. On **Classifier**, choose **Jev by Typesafe** or **Semantic**, then select **Next** to open **Configuration**. Switching later retains the other classifier's saved settings.
 
-- **Jev configuration**: set **Previous user messages** and **Classification timeout (ms)**. The UI links to Model Providers if Typesafe is missing or has no enabled key. No phrase or embedding setup is needed for Jev.
+- **Jev configuration**: set **Max messages to send** and **Classification timeout (ms)**. The UI links to Model Providers if Typesafe is missing or has no enabled key. No phrase or embedding setup is needed for Jev.
 - **Semantic configuration**: edit **Phrase to Tier Mapping** and open **Edit embedding configuration** for provider, model, similarity floor, history window, timeout, budgets, and phrase storage. The **Classifier status** badge reports semantic warmup and serving state.
 - **Semantic fallback**: under **When no phrase matches confidently**, choose **Jev by Typesafe** to reveal its settings, or **LLM classifier** to reveal the chat model settings. Choosing **None** retains saved fallback settings for later use.
 

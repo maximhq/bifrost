@@ -1,5 +1,6 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
@@ -7,17 +8,31 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import {
+	COMPLEXITY_TIER_VALUES,
+	JevGuidanceDefaults,
+	JevTier,
 	KeywordListKey,
+	MAX_JEV_CRITERIA_ITEMS,
+	MAX_JEV_DEFINITION_CHARACTERS,
 	MAX_JEV_PREVIOUS_MESSAGE_COUNT,
 	MAX_LLM_PROMPT_CHARACTERS,
 	TIER_PHRASE_LIST_DEFINITIONS,
 } from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, Check, Info, RotateCcw, TriangleAlert, Waypoints } from "lucide-react";
-import { Controller, type Control, type FieldError, type FieldErrors, type UseFormRegister } from "react-hook-form";
+import { ArrowRight, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, TriangleAlert, Waypoints } from "lucide-react";
+import { useState } from "react";
+import {
+	Controller,
+	useWatch,
+	type Control,
+	type FieldError,
+	type FieldErrors,
+	type UseFormRegister,
+	type UseFormSetValue,
+} from "react-hook-form";
 import { jevTimeoutFieldValue, type AnalyzerFormValues, type TypesafeState } from "../formSchema";
-import { FieldLabel, SectionHeading } from "./formPrimitives";
+import { FieldLabel, InfoTip, SectionHeading } from "./formPrimitives";
 
 // The Complexity Router page's sections. Each binds to the page's single form.
 
@@ -31,6 +46,16 @@ import { FieldLabel, SectionHeading } from "./formPrimitives";
 // is a flex column whose description grows to absorb the difference,
 // bottom-aligning all three lists at any column width.
 const PHRASE_LIST_HEIGHT = 300;
+
+// Each Jev tier card stacks two lists, so each gets under half the phrase
+// list's height and a card stays about as tall as a phrase card.
+const JEV_LIST_HEIGHT = 140;
+
+const JEV_TIER_LABELS: Record<JevTier, string> = {
+	SIMPLE: "Simple",
+	MEDIUM: "Medium",
+	COMPLEX: "Complex",
+};
 
 function testIdPart(value: string) {
 	return value.replace(/_/g, "-");
@@ -242,9 +267,15 @@ export function JevFields({ control, register, errors, canUpdate }: JevFieldsPro
 			<div className="space-y-2">
 				<FieldLabel
 					htmlFor="jev-previous-message-count"
-					tooltip="The number of previous user messages to send Jev as context. 1 is the default"
+					tooltip={
+						<>
+							User messages sent to Jev in addition to the current request, oldest to newest. Widening this lets a short follow-up like
+							&ldquo;and make it faster&rdquo; inherit earlier intent, but sends more input tokens per request. Assistant replies are never
+							sent. Defaults to 1.
+						</>
+					}
 				>
-					Previous user messages
+					Max messages to send
 				</FieldLabel>
 				<Input
 					id="jev-previous-message-count"
@@ -294,8 +325,371 @@ export function JevFields({ control, register, errors, canUpdate }: JevFieldsPro
 	);
 }
 
+// The recommendation matches the semantic phrase callout, so both classifiers
+// open the same way. The line under it says where the cards' content goes.
+const JEV_GUIDANCE_NOTE = "We recommend starting with these defaults, then refining them to match what each tier means for you.";
+const JEV_GUIDANCE_USAGE = "Each tier's definition, signals and examples are sent to Jev with every request.";
+
+type JevListField = "signals" | "examples";
+
+// Signals are traits to look for; examples are requests that have them. The
+// tooltips say so because the two lists otherwise read as interchangeable.
+const JEV_LIST_FIELDS: Array<{
+	field: JevListField;
+	label: string;
+	placeholder: string;
+	tooltip: string;
+}> = [
+	{
+		field: "signals",
+		label: "Signals",
+		placeholder: "Type a signal and press Enter",
+		tooltip: "What makes a request belong in this tier: the knowledge, reasoning, or kind of work it needs.",
+	},
+	{
+		field: "examples",
+		label: "Examples",
+		placeholder: "Type an example and press Enter",
+		tooltip: "Sample requests that belong in this tier, showing what the signals look like in practice. Write them as concrete tasks.",
+	},
+];
+
+// sameList compares lists by value and order, matching the gateway's check
+// for whether an override equals the shipped default.
+function sameList(a: string[] | undefined, b: string[] | undefined) {
+	if (!a || !b || a.length !== b.length) return false;
+	return a.every((value, index) => value === b[index]);
+}
+
+interface JevDefinitionFieldProps {
+	tier: JevTier;
+	control: Control<AnalyzerFormValues>;
+	error: string | undefined;
+	canUpdate: boolean;
+	edited: boolean;
+	onReset: () => void;
+}
+
+// JevDefinitionField shows a tier's definition as plain text, like the
+// semantic cards' tier descriptions, and turns into a textarea only while it
+// is being edited. An invalid definition stays open so its error is visible.
+function JevDefinitionField({ tier, control, error, canUpdate, edited, onReset }: JevDefinitionFieldProps) {
+	const [editing, setEditing] = useState(false);
+	const open = editing || Boolean(error);
+	const id = `jev-${tier.toLowerCase()}-definition`;
+	return (
+		<Controller
+			control={control}
+			name={`jev.criteria.${tier}.definition` as const}
+			render={({ field }) => (
+				<div className="flex flex-1 flex-col space-y-1.5">
+					<div className="flex h-6 items-center justify-between">
+						<label htmlFor={id} className="text-xs font-medium">
+							{JEV_TIER_LABELS[tier]}
+						</label>
+						<div className="flex items-center gap-1">
+							{canUpdate && !open && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											className="size-6"
+											aria-label={`Edit ${tier.toLowerCase()} definition`}
+											onClick={() => setEditing(true)}
+											data-testid={`complexity-router-jev-${tier.toLowerCase()}-definition-edit-button`}
+										>
+											<Pencil className="size-3" />
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent className="max-w-xs leading-relaxed">
+										Describe what makes a request {JEV_TIER_LABELS[tier]}. Jev uses this to decide which requests belong in this tier.
+									</TooltipContent>
+								</Tooltip>
+							)}
+							{edited && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											className="size-6"
+											aria-label={`Reset ${tier.toLowerCase()} definition to default`}
+											onClick={onReset}
+											disabled={!canUpdate}
+											data-testid={`complexity-router-jev-${tier.toLowerCase()}-definition-reset-button`}
+										>
+											<RotateCcw className="size-3" />
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent className="max-w-xs leading-relaxed">Reset to the default definition</TooltipContent>
+								</Tooltip>
+							)}
+						</div>
+					</div>
+					{open ? (
+						<Textarea
+							id={id}
+							data-testid={`complexity-router-jev-${tier.toLowerCase()}-definition-input`}
+							rows={4}
+							maxLength={MAX_JEV_DEFINITION_CHARACTERS}
+							autoFocus={editing}
+							{...field}
+							onBlur={() => {
+								field.onBlur();
+								setEditing(false);
+							}}
+							disabled={!canUpdate}
+							aria-invalid={error ? true : undefined}
+							className={cn("resize-none text-xs leading-relaxed", error && "border-destructive focus-visible:ring-destructive")}
+						/>
+					) : (
+						// Grows like the phrase grid's description, so a definition that
+						// wraps to an extra line does not push this card's lists below its
+						// neighbours'.
+						<p
+							className={cn("text-muted-foreground grow text-xs leading-relaxed", canUpdate && "cursor-text")}
+							onClick={() => canUpdate && setEditing(true)}
+							data-testid={`complexity-router-jev-${tier.toLowerCase()}-definition-text`}
+						>
+							{field.value}
+						</p>
+					)}
+					{error && <p className="text-destructive text-xs">{error}</p>}
+				</div>
+			)}
+		/>
+	);
+}
+
+interface JevGuidanceSectionProps {
+	control: Control<AnalyzerFormValues>;
+	setValue: UseFormSetValue<AnalyzerFormValues>;
+	errors: FieldErrors<AnalyzerFormValues>["jev"];
+	canUpdate: boolean;
+	// Undefined until the status endpoint answers, or when the gateway predates
+	// jev_defaults; the editors stay hidden rather than showing empty lists.
+	defaults: JevGuidanceDefaults | undefined;
+	defaultsLoading: boolean;
+	// Primary sits directly under the step header, which already titles it;
+	// the fallback shares the page with other sections, so it keeps a heading.
+	variant: "primary" | "fallback";
+}
+
+// JevGuidanceSection edits the half of Jev's request an operator may tune:
+// each tier's definition, signals, and examples. The question, decision and
+// context rules, and answer contract stay fixed server-side. It mirrors the phrase grid
+// and the llm prompt editor so the page keeps one visual language.
+export function JevGuidanceSection({ control, setValue, errors, canUpdate, defaults, defaultsLoading, variant }: JevGuidanceSectionProps) {
+	const criteria = useWatch({ control, name: "jev.criteria" });
+	const [fallbackOpen, setFallbackOpen] = useState(false);
+
+	const isDefaultDefinition = (tier: JevTier) => criteria?.[tier]?.definition === defaults?.criteria[tier].definition;
+	const isDefaultList = (tier: JevTier, field: JevListField) =>
+		!!defaults && sameList(criteria?.[tier]?.[field], defaults.criteria[tier][field]);
+	const isAllDefault = COMPLEXITY_TIER_VALUES.every(
+		(tier) => isDefaultDefinition(tier) && JEV_LIST_FIELDS.every(({ field }) => isDefaultList(tier, field)),
+	);
+
+	const resetList = (tier: JevTier, field: JevListField) => {
+		if (!defaults) return;
+		setValue(`jev.criteria.${tier}.${field}`, [...defaults.criteria[tier][field]], { shouldDirty: true, shouldValidate: true });
+	};
+	const resetDefinition = (tier: JevTier) => {
+		if (!defaults) return;
+		setValue(`jev.criteria.${tier}.definition`, defaults.criteria[tier].definition, { shouldDirty: true, shouldValidate: true });
+	};
+	const resetAll = () => {
+		for (const tier of COMPLEXITY_TIER_VALUES) {
+			resetDefinition(tier);
+			for (const { field } of JEV_LIST_FIELDS) resetList(tier, field);
+		}
+	};
+
+	// Empty editors would read as "Jev sends nothing" and invite saving that. Until
+	// the shipped guidance is known, say so instead; saving meanwhile keeps
+	// whatever is stored, because unseeded guidance is omitted from the payload.
+	// Shared by both placements: the recommendation, what Jev receives, and the
+	// tier cards (or why they cannot be shown yet). The tier cards sit where the semantic phrase grid
+	// does, so both classifiers read the same way; each holds its tier's only
+	// definition.
+	const body = (
+		<>
+			<Alert variant="info" data-testid="complexity-router-jev-guidance-defaults-callout">
+				<Info className="h-4 w-4" />
+				<AlertDescription>{JEV_GUIDANCE_NOTE}</AlertDescription>
+			</Alert>
+			<p className="text-muted-foreground text-xs leading-relaxed">{JEV_GUIDANCE_USAGE}</p>
+			{defaults ? (
+				<div className="grid items-stretch gap-3 md:grid-cols-3">
+					{COMPLEXITY_TIER_VALUES.map((tier) => (
+						<div
+							key={tier}
+							className="bg-card flex flex-col rounded-sm border"
+							data-testid={`complexity-router-jev-tier-${tier.toLowerCase()}`}
+						>
+							<div className="flex flex-1 flex-col space-y-3 p-4 pl-5">
+								<JevDefinitionField
+									tier={tier}
+									control={control}
+									error={errors?.criteria?.[tier]?.definition?.message}
+									canUpdate={canUpdate}
+									edited={!isDefaultDefinition(tier)}
+									onReset={() => resetDefinition(tier)}
+								/>
+								{JEV_LIST_FIELDS.map(({ field: listField, label, placeholder, tooltip }) => {
+									const fieldError = errors?.criteria?.[tier]?.[listField];
+									const errorId = `jev-${tier.toLowerCase()}-${listField}-error`;
+									const count = criteria?.[tier]?.[listField]?.length ?? 0;
+									const atLimit = count >= MAX_JEV_CRITERIA_ITEMS;
+									const edited = !isDefaultList(tier, listField);
+									return (
+										<Controller
+											key={listField}
+											control={control}
+											name={`jev.criteria.${tier}.${listField}` as const}
+											render={({ field }) => (
+												<div className="space-y-1.5">
+													{/* Fixed height so a row with a reset icon lines up with one without. */}
+													<div className="flex h-6 items-center justify-between">
+														<div className="flex items-center gap-1.5">
+															<span className="text-muted-foreground text-xs">{label}</span>
+															<InfoTip label={`About ${label.toLowerCase()}`}>{tooltip}</InfoTip>
+														</div>
+														<div className="flex items-center gap-1">
+															<span
+																className={cn("font-mono text-[11px] tabular-nums", atLimit ? "text-amber-600" : "text-muted-foreground")}
+															>
+																{count} / {MAX_JEV_CRITERIA_ITEMS}
+															</span>
+															{/* Doubles as the edited marker: present only where this list differs from the default. */}
+															{edited && (
+																<Button
+																	type="button"
+																	variant="ghost"
+																	size="icon"
+																	className="size-6"
+																	aria-label={`Reset ${tier.toLowerCase()} ${listField} to default`}
+																	onClick={() => resetList(tier, listField)}
+																	disabled={!canUpdate}
+																	data-testid={`complexity-router-jev-${tier.toLowerCase()}-${listField}-reset-button`}
+																>
+																	<RotateCcw className="size-3" />
+																</Button>
+															)}
+														</div>
+													</div>
+													<TagInput
+														data-testid={`complexity-router-jev-${tier.toLowerCase()}-${listField}-input`}
+														value={field.value}
+														onValueChange={field.onChange}
+														listHeight={JEV_LIST_HEIGHT}
+														submitOnComma={false}
+														placeholder={atLimit ? `Limit of ${MAX_JEV_CRITERIA_ITEMS} reached` : placeholder}
+														readOnly={!canUpdate}
+														disabled={!canUpdate || atLimit}
+														aria-label={`${JEV_TIER_LABELS[tier]} ${label.toLowerCase()}`}
+														aria-invalid={fieldError ? true : undefined}
+														aria-describedby={fieldError ? errorId : undefined}
+														className={cn(fieldError && "border-destructive")}
+													/>
+													{fieldError && (
+														<p id={errorId} className="text-destructive text-xs">
+															{fieldError.message ?? fieldError.root?.message}
+														</p>
+													)}
+												</div>
+											)}
+										/>
+									);
+								})}
+							</div>
+						</div>
+					))}
+				</div>
+			) : (
+				<div
+					className="bg-card text-muted-foreground flex items-center gap-2 rounded-sm border p-4 text-xs"
+					data-testid="complexity-router-jev-guidance-unavailable"
+				>
+					{defaultsLoading ? (
+						<>
+							<LoaderCircle className="size-3.5 animate-spin" />
+							Loading the default guidance…
+						</>
+					) : (
+						<>
+							<TriangleAlert className="size-3.5" />
+							This gateway did not return its default guidance, so it cannot be edited here. Jev keeps using the saved or shipped guidance.
+						</>
+					)}
+				</div>
+			)}
+		</>
+	);
+
+	// The primary guidance is the step's main content and restores from the
+	// page footer, as the semantic phrases do.
+	if (variant === "primary") {
+		return (
+			<div className="space-y-3" data-testid="complexity-router-jev-guidance-primary">
+				{body}
+			</div>
+		);
+	}
+
+	// The fallback shares the page with the semantic phrase grid, so it folds
+	// away until opened; an invalid field forces it open so its error is never
+	// hidden. The footer's Restore defaults resets the phrases, so the fallback
+	// keeps its own Reset all.
+	const open = fallbackOpen || Boolean(errors?.criteria);
+	return (
+		<Collapsible
+			open={open}
+			onOpenChange={setFallbackOpen}
+			className="bg-card rounded-sm border"
+			data-testid="complexity-router-jev-guidance-fallback"
+		>
+			<div className="flex items-center justify-between gap-2 px-4 py-3">
+				<CollapsibleTrigger asChild>
+					<button
+						type="button"
+						className="flex min-w-0 items-start gap-2 text-left"
+						data-testid="complexity-router-jev-guidance-fallback-toggle"
+					>
+						<ChevronRight className={cn("text-muted-foreground mt-0.5 size-4 shrink-0 transition-transform", open && "rotate-90")} />
+						<span className="space-y-1">
+							<span className="block text-sm font-semibold">Fallback Tier Guidance</span>
+							<span className="text-muted-foreground block text-xs">Used by Jev when no reference phrase matches.</span>
+						</span>
+					</button>
+				</CollapsibleTrigger>
+				{defaults && !isAllDefault && (
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={resetAll}
+						disabled={!canUpdate}
+						data-testid="complexity-router-jev-guidance-reset-button"
+					>
+						<RotateCcw className="h-3.5 w-3.5" />
+						Reset all
+					</Button>
+				)}
+			</div>
+			<CollapsibleContent className="space-y-3 border-t p-4">{body}</CollapsibleContent>
+		</Collapsible>
+	);
+}
+
 const TYPESAFE_PROBLEMS: Record<Exclude<TypesafeState, "configured">, { message: string; action: string }> = {
-	missing: { message: "Jev runs through your Typesafe provider, and none is set up yet.", action: "Set up Typesafe" },
+	missing: {
+		message: "Jev runs through your Typesafe provider, and none is set up yet.",
+		action: "Set up Typesafe",
+	},
 	failing: {
 		message: "Your Typesafe provider is failing its checks, so Jev calls will fail. Check its key and settings.",
 		action: "Review Typesafe provider",
@@ -327,7 +721,11 @@ export function TypesafeAlert({ state }: { state: TypesafeState }) {
 
 type Classifier = AnalyzerFormValues["classifier"];
 
-const CLASSIFIER_OPTIONS: { value: Classifier; title: string; description: string }[] = [
+const CLASSIFIER_OPTIONS: {
+	value: Classifier;
+	title: string;
+	description: string;
+}[] = [
 	{
 		value: "jev",
 		title: "Jev by Typesafe",

@@ -1,6 +1,12 @@
 import {
 	AnalyzerConfig,
+	COMPLEXITY_TIER_VALUES,
 	DEFAULT_JEV_CONFIG,
+	JevGuidanceDefaults,
+	JevTier,
+	MAX_JEV_CRITERIA_ITEM_CHARACTERS,
+	MAX_JEV_CRITERIA_ITEMS,
+	MAX_JEV_DEFINITION_CHARACTERS,
 	DEFAULT_LLM_CONFIG,
 	DEFAULT_SEMANTIC_CONFIG,
 	MAX_JEV_PREVIOUS_MESSAGE_COUNT,
@@ -65,6 +71,41 @@ const semanticSchema = z.object({
 	fallback: z.enum(["none", "llm", "jev"]),
 });
 
+// The editors always hold what the gateway will send, so an emptied field is
+// rejected rather than saved: it would reload as the shipped default, silently
+// undoing the deletion. Reset to default is the way back.
+const jevCriteriaListSchema = (label: string) =>
+	z
+		.array(z.string().max(MAX_JEV_CRITERIA_ITEM_CHARACTERS, `Each ${label} must be at most ${MAX_JEV_CRITERIA_ITEM_CHARACTERS} characters`))
+		.min(1, `Add at least one ${label}`)
+		.max(MAX_JEV_CRITERIA_ITEMS, `At most ${MAX_JEV_CRITERIA_ITEMS} ${label}s`);
+
+const jevTierCriteriaSchema = z.object({
+	definition: z
+		.string()
+		.trim()
+		.min(1, "Enter a definition")
+		.max(MAX_JEV_DEFINITION_CHARACTERS, `Must be at most ${MAX_JEV_DEFINITION_CHARACTERS} characters`),
+	signals: jevCriteriaListSchema("signal"),
+	examples: jevCriteriaListSchema("example"),
+});
+
+// The unvalidated shape the form always holds; jevGuidanceSchema checks it
+// only once the editors are seeded.
+const jevTierFormShape = z.object({
+	definition: z.string(),
+	signals: z.array(z.string()),
+	examples: z.array(z.string()),
+});
+
+const jevGuidanceSchema = z.object({
+	criteria: z.object({
+		SIMPLE: jevTierCriteriaSchema,
+		MEDIUM: jevTierCriteriaSchema,
+		COMPLEX: jevTierCriteriaSchema,
+	}),
+});
+
 const jevSchema = z.object({
 	previous_message_count: z
 		.number()
@@ -116,7 +157,15 @@ export const analyzerConfigSchema = z
 		// classifier or the fallback, so jevSchema runs in superRefine under that
 		// condition rather than letting an invisible error block Save. An emptied
 		// number input registers as NaN, which must pass the shape check too.
-		jev: z.object({ previous_message_count: z.number().or(z.nan()), timeout: z.string() }),
+		jev: z.object({
+			previous_message_count: z.number().or(z.nan()),
+			timeout: z.string(),
+			criteria: z.object({
+				SIMPLE: jevTierFormShape,
+				MEDIUM: jevTierFormShape,
+				COMPLEX: jevTierFormShape,
+			}),
+		}),
 		llm: llmSchema,
 		session: z.object({ enabled: z.boolean() }),
 	})
@@ -152,10 +201,16 @@ export const analyzerConfigSchema = z
 
 		if (usesJev(data)) {
 			const jev = jevSchema.safeParse(data.jev);
-			if (!jev.success) {
-				for (const issue of jev.error.issues) {
-					ctx.addIssue({ code: "custom", message: issue.message, path: ["jev", ...issue.path] });
-				}
+			const issues = jev.success ? [] : [...jev.error.issues];
+			// Guidance that was never seeded (the status endpoint has not supplied
+			// defaults) is hidden and saves as "use the defaults", so it is only
+			// validated once the editors hold something.
+			if (!isJevGuidanceEmpty(data.jev)) {
+				const guidance = jevGuidanceSchema.safeParse(data.jev);
+				if (!guidance.success) issues.push(...guidance.error.issues);
+			}
+			for (const issue of issues) {
+				ctx.addIssue({ code: "custom", message: issue.message, path: ["jev", ...issue.path] });
 			}
 		}
 
@@ -258,22 +313,86 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 	},
 	classifier: "semantic",
 	semantic: DEFAULT_SEMANTIC_FORM_VALUES,
-	jev: DEFAULT_JEV_CONFIG,
+	jev: { ...DEFAULT_JEV_CONFIG, ...jevGuidanceFormValues() },
 	llm: DEFAULT_LLM_FORM_VALUES,
 	session: { enabled: false },
 };
 
+export type JevGuidanceFormValues = Pick<AnalyzerFormValues["jev"], "criteria">;
+
+// isJevTierEmpty reports a tier with no definition and no list entries.
+function isJevTierEmpty({ definition, signals, examples }: JevGuidanceFormValues["criteria"][JevTier]): boolean {
+	return definition.trim() === "" && signals.length === 0 && examples.length === 0;
+}
+
+// isJevGuidanceEmpty reports guidance the form never seeded: no tier content
+// anywhere.
+export function isJevGuidanceEmpty(jev: JevGuidanceFormValues): boolean {
+	return COMPLEXITY_TIER_VALUES.every((tier) => isJevTierEmpty(jev.criteria[tier]));
+}
+
+// jevGuidanceFormValues fills the Jev guidance editors: each saved override
+// wins, and anything unset shows the shipped default so the editor always
+// displays what the gateway will send. Without defaults (status not loaded)
+// unset fields stay empty, which saves as "use the default".
+export function jevGuidanceFormValues(saved?: AnalyzerConfig["jev"], defaults?: JevGuidanceDefaults): JevGuidanceFormValues {
+	const tier = (name: JevTier) => {
+		const override = saved?.criteria?.[name];
+		const shipped = defaults?.criteria[name];
+		return {
+			definition: override?.definition || shipped?.definition || "",
+			signals: override?.signals?.length ? override.signals : (shipped?.signals ?? []),
+			examples: override?.examples?.length ? override.examples : (shipped?.examples ?? []),
+		};
+	};
+	return {
+		criteria: {
+			SIMPLE: tier("SIMPLE"),
+			MEDIUM: tier("MEDIUM"),
+			COMPLEX: tier("COMPLEX"),
+		},
+	};
+}
+
+// jevCriteriaFromDefaults copies the shipped per-tier criteria into form
+// values, so restoring them never shares arrays with the status response.
+export function jevCriteriaFromDefaults(defaults: JevGuidanceDefaults): JevGuidanceFormValues["criteria"] {
+	const tier = (name: JevTier) => ({
+		definition: defaults.criteria[name].definition,
+		signals: [...defaults.criteria[name].signals],
+		examples: [...defaults.criteria[name].examples],
+	});
+	return { SIMPLE: tier("SIMPLE"), MEDIUM: tier("MEDIUM"), COMPLEX: tier("COMPLEX") };
+}
+
+// isJevGuidanceDefault reports whether every tier's definition, signals, and
+// examples equal the shipped criteria, in order.
+export function isJevGuidanceDefault(criteria: JevGuidanceFormValues["criteria"], defaults: JevGuidanceDefaults): boolean {
+	const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
+	return COMPLEXITY_TIER_VALUES.every((tier) => {
+		const shipped = defaults.criteria[tier];
+		const current = criteria[tier];
+		return (
+			current.definition === shipped.definition &&
+			sameList(current.signals, shipped.signals) &&
+			sameList(current.examples, shipped.examples)
+		);
+	});
+}
+
 // Fills in the fields the API omitted so the semantic controls stay controlled.
-export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
+export function toFormValues(config: AnalyzerConfig, jevDefaults?: JevGuidanceDefaults): AnalyzerFormValues {
 	const saved = config.semantic;
 	const savedLLM = config.llm;
 	const classifier = config.classifier?.trim().toLowerCase();
 	return {
 		classifier: classifier === "jev" ? "jev" : "semantic",
 		keywords: config.keywords,
-		jev: config.jev
-			? { ...DEFAULT_JEV_CONFIG, ...config.jev, timeout: config.jev.timeout ?? DEFAULT_JEV_CONFIG.timeout }
-			: DEFAULT_JEV_CONFIG,
+		jev: {
+			previous_message_count: config.jev?.previous_message_count ?? DEFAULT_JEV_CONFIG.previous_message_count,
+			timeout: config.jev?.timeout ?? DEFAULT_JEV_CONFIG.timeout,
+			...jevGuidanceFormValues(config.jev, jevDefaults),
+		},
 		session: config.session ?? { enabled: false },
 		llm: savedLLM
 			? {
@@ -311,10 +430,32 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 		keywords: values.keywords,
 		// Unused Jev values are not validated, so keep the saved block instead of
 		// sending hidden, possibly invalid edits.
-		...(usesJev(values) ? { jev: values.jev } : saved?.jev ? { jev: saved.jev } : {}),
+		...(usesJev(values) ? { jev: toJevPayload(values.jev) } : saved?.jev ? { jev: saved.jev } : {}),
 		...(values.session.enabled ? { session: values.session } : {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
+	};
+}
+
+// toJevPayload sends the editors' contents. The gateway drops anything equal
+// to its shipped default, so saving untouched guidance stores no override and
+// later default updates still apply. Empty fields are omitted only for the
+// window before the status endpoint has supplied defaults to seed them.
+function toJevPayload(jev: AnalyzerFormValues["jev"]): NonNullable<AnalyzerConfig["jev"]> {
+	const criteria: NonNullable<NonNullable<AnalyzerConfig["jev"]>["criteria"]> = {};
+	for (const tier of COMPLEXITY_TIER_VALUES) {
+		const { definition, signals, examples } = jev.criteria[tier];
+		if (isJevTierEmpty(jev.criteria[tier])) continue;
+		criteria[tier] = {
+			...(definition.trim() ? { definition } : {}),
+			...(signals.length ? { signals } : {}),
+			...(examples.length ? { examples } : {}),
+		};
+	}
+	return {
+		previous_message_count: jev.previous_message_count,
+		timeout: jev.timeout,
+		...(Object.keys(criteria).length ? { criteria } : {}),
 	};
 }
 

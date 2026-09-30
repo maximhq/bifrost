@@ -579,12 +579,17 @@ func (c *ComplexityLLMConfig) Validate() error {
 
 // ComplexityJevConfig controls the Typesafe Jev classification request.
 // Jev uses the configured Typesafe provider credentials and a fixed model; this
-// block only controls request history and the classifier timeout.
+// block controls request history, the classifier timeout, and each tier's
+// editable definition, signals, and examples. The question, decision and
+// context rules, and tier order are fixed by the gateway.
 type ComplexityJevConfig struct {
 	// PreviousMessageCount is the number of preceding user messages sent before
 	// the current human request. Assistant messages are excluded.
 	PreviousMessageCount *int          `json:"previous_message_count,omitempty"`
 	Timeout              time.Duration `json:"timeout,omitempty"`
+	// Criteria overrides per-tier definitions, signals, and examples, keyed by
+	// tier name. Any tier or field left unset sends the shipped default.
+	Criteria map[string]ComplexityJevTierCriteria `json:"criteria,omitempty"`
 }
 
 // UnmarshalJSON accepts Timeout as a duration string or milliseconds and rejects unknown fields.
@@ -594,7 +599,9 @@ func (c *ComplexityJevConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	for field := range fields {
-		if field != "previous_message_count" && field != "timeout" {
+		switch field {
+		case "previous_message_count", "timeout", "criteria":
+		default:
 			return fmt.Errorf("unknown jev complexity field %q", field)
 		}
 	}
@@ -642,12 +649,16 @@ func (c ComplexityJevConfig) MarshalJSON() ([]byte, error) {
 	}{Timeout: timeout, alias: alias(c)})
 }
 
-// normalized returns a Jev config copy with its default history and timeout.
+// normalized returns a Jev config copy with its default history and timeout,
+// and guidance overrides reduced to the values that differ from the defaults.
 func (c *ComplexityJevConfig) normalized() *ComplexityJevConfig {
 	if c == nil {
 		return nil
 	}
-	out := &ComplexityJevConfig{Timeout: c.Timeout}
+	out := &ComplexityJevConfig{
+		Timeout:  c.Timeout,
+		Criteria: normalizeComplexityJevCriteria(c.Criteria),
+	}
 	if c.PreviousMessageCount == nil {
 		count := DefaultComplexityJevPreviousMessageCount
 		out.PreviousMessageCount = &count
@@ -672,7 +683,7 @@ func (c *ComplexityJevConfig) Validate() error {
 	if c.PreviousMessageCount != nil && (*c.PreviousMessageCount < 0 || *c.PreviousMessageCount > MaxComplexityJevPreviousMessageCount) {
 		return fmt.Errorf("jev previous_message_count must be between 0 and %d, got %d", MaxComplexityJevPreviousMessageCount, *c.PreviousMessageCount)
 	}
-	return nil
+	return validateComplexityJevGuidance(c)
 }
 
 // ComplexitySessionConfig controls monotonic complexity-tier retention across
