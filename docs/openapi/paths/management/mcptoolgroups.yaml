@@ -1,8 +1,12 @@
 # Paths for MCP Tool Group management.
+#
+# Deprecated: these are aliases for /api/mcp/virtual-mcps, kept so existing
+# integrations keep working. See paths/management/virtualmcps.yaml.
 
 mcp-tool-groups:
   get:
     operationId: listMCPToolGroups
+    deprecated: true
     x-mint:
       metadata:
         tag: Enterprise
@@ -10,6 +14,12 @@ mcp-tool-groups:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        <Warning>
+          Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
+          instead. This alias serves the Enterprise tool-group handler, which does not accept
+          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+        </Warning>
 
         **Required Permissions**
 
@@ -21,6 +31,10 @@ mcp-tool-groups:
     summary: List MCP Tool Groups
     description: |
       Returns tool groups visible to the caller. When all of `limit`, `offset`, and `search` are omitted, every group is returned in one response.
+
+      Deprecated: use the equivalent `/api/mcp/virtual-mcps` operation. Every response
+      from this alias carries `Link: <successor>; rel="successor-version"` and a
+      `Warning: 299` header naming the replacement.
     tags:
       - MCP Tool Groups
     parameters:
@@ -52,6 +66,7 @@ mcp-tool-groups:
 
   post:
     operationId: createMCPToolGroup
+    deprecated: true
     x-mint:
       metadata:
         tag: Enterprise
@@ -59,6 +74,12 @@ mcp-tool-groups:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        <Warning>
+          Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
+          instead. This alias serves the Enterprise tool-group handler, which does not accept
+          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+        </Warning>
 
         **Required Permissions**
 
@@ -72,6 +93,10 @@ mcp-tool-groups:
       Creates a new tool group along with its attachments in a single transaction.
       Validates that every `mcp_client_id` points to a deployed MCP client and that every named
       tool exists on its server.
+
+      Deprecated: use the equivalent `/api/mcp/virtual-mcps` operation. Every response
+      from this alias carries `Link: <successor>; rel="successor-version"` and a
+      `Warning: 299` header naming the replacement.
     tags:
       - MCP Tool Groups
     requestBody:
@@ -98,6 +123,7 @@ mcp-tool-groups:
 mcp-tool-groups-by-id:
   get:
     operationId: getMCPToolGroup
+    deprecated: true
     x-mint:
       metadata:
         tag: Enterprise
@@ -105,6 +131,12 @@ mcp-tool-groups-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        <Warning>
+          Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
+          instead. This alias serves the Enterprise tool-group handler, which does not accept
+          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+        </Warning>
 
         **Required Permissions**
 
@@ -114,6 +146,10 @@ mcp-tool-groups-by-id:
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get MCP Tool Group by ID
+    description: |
+      Deprecated: use the equivalent `/api/mcp/virtual-mcps` operation. Every response
+      from this alias carries `Link: <successor>; rel="successor-version"` and a
+      `Warning: 299` header naming the replacement.
     tags:
       - MCP Tool Groups
     parameters:
@@ -139,6 +175,7 @@ mcp-tool-groups-by-id:
 
   put:
     operationId: updateMCPToolGroup
+    deprecated: true
     x-mint:
       metadata:
         tag: Enterprise
@@ -146,6 +183,12 @@ mcp-tool-groups-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        <Warning>
+          Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
+          instead. This alias serves the Enterprise tool-group handler, which does not accept
+          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+        </Warning>
 
         **Required Permissions**
 
@@ -158,6 +201,10 @@ mcp-tool-groups-by-id:
     description: |
       Partial update. Scalar fields preserve the current value when omitted.
       Array fields are replace-on-send: an empty array clears all attachments in that dimension.
+
+      Deprecated: use the equivalent `/api/mcp/virtual-mcps` operation. Every response
+      from this alias carries `Link: <successor>; rel="successor-version"` and a
+      `Warning: 299` header naming the replacement.
     tags:
       - MCP Tool Groups
     parameters:
@@ -191,6 +238,7 @@ mcp-tool-groups-by-id:
 
   delete:
     operationId: deleteMCPToolGroup
+    deprecated: true
     x-mint:
       metadata:
         tag: Enterprise
@@ -198,6 +246,12 @@ mcp-tool-groups-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        <Warning>
+          Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
+          instead. This alias serves the Enterprise tool-group handler, which does not accept
+          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+        </Warning>
 
         **Required Permissions**
 
@@ -209,6 +263,10 @@ mcp-tool-groups-by-id:
     summary: Delete MCP Tool Group
     description: |
       Deletes the group; attachments are removed automatically.
+
+      Deprecated: use the equivalent `/api/mcp/virtual-mcps` operation. Every response
+      from this alias carries `Link: <successor>; rel="successor-version"` and a
+      `Warning: 299` header naming the replacement.
     tags:
       - MCP Tool Groups
     parameters:
