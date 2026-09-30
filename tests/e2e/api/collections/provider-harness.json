@@ -183835,6 +183835,92 @@
           }
         }
       ]
+    },
+    {
+      "name": "132. List models pagination returns each model once (#7760)",
+      "description": "Issue #7760: ApplyPagination reset to offset 0 when a provider's live listing shifted between page requests, so /v1/models re-emitted the first page (duplicate rows) and skipped rows after the reset point. The case pages through the Hugging Face listing with a small page_size, following next_page_token, and asserts every model id appears exactly once and pagination terminates. Live upstream drift is what triggers the pre-fix failure, so the deterministic pin is the Go unit tests in core/schemas/models_test.go; this case is the end-to-end check that the wire output has no duplicates.",
+      "item": [
+        {
+          "name": "huggingface list models pagination no duplicate ids - #7760",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('first page status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var first = pm.response.json();",
+                  "var ids = (first.data || []).map(function (m) { return m.id; });",
+                  "var pageSize = 100;",
+                  "pm.test('first page non-empty', function () { pm.expect(ids.length, pm.response.text().slice(0, 300)).to.be.above(0); });",
+                  "var headers = {};",
+                  "pm.request.headers.each(function (h) { if (!h.disabled) { headers[h.key] = h.value; } });",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var pages = 1;",
+                  "var maxPages = 500;",
+                  "var seenTokens = {};",
+                  "var loopToken = null;",
+                  "function next(token) {",
+                  "  if (!token) { return finish(null); }",
+                  "  if (seenTokens[token]) { loopToken = token; return finish(token); }",
+                  "  seenTokens[token] = true;",
+                  "  if (pages >= maxPages) {",
+                  "    pm.test('pagination stayed within the request safety limit', function () { pm.expect.fail('still had a next_page_token after ' + maxPages + ' pages; raise maxPages if the listing is legitimately larger'); });",
+                  "    return finish(undefined);",
+                  "  }",
+                  "  pm.sendRequest({ url: base + '/v1/models?provider=huggingface&page_size=' + pageSize + '&page_token=' + encodeURIComponent(token), method: 'GET', header: headers }, function (err, res) {",
+                  "    pm.test('page ' + (pages + 1) + ' status is 200', function () {",
+                  "      pm.expect(err, 'sendRequest error: ' + err).to.equal(null);",
+                  "      pm.expect(res.code, 'failed: ' + res.text()).to.eql(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { return finish(null); }",
+                  "    var body = res.json();",
+                  "    ids = ids.concat((body.data || []).map(function (m) { return m.id; }));",
+                  "    pages++;",
+                  "    next(body.next_page_token);",
+                  "  });",
+                  "}",
+                  "function finish(token) {",
+                  "  if (token !== undefined) {",
+                  "    pm.test('pagination terminated without repeating a next_page_token', function () { pm.expect(loopToken, 'next_page_token repeated after ' + pages + ' pages (loop/reset): ' + loopToken).to.equal(null); });",
+                  "  }",
+                  "  pm.test('every model id appears exactly once across ' + pages + ' pages', function () {",
+                  "    var seen = {}; var dups = [];",
+                  "    ids.forEach(function (id) { if (seen[id]) { dups.push(id); } seen[id] = true; });",
+                  "    pm.expect(dups.slice(0, 10), ids.length + ' rows, ' + Object.keys(seen).length + ' unique; duplicates: ' + dups.slice(0, 10).join(',')).to.have.lengthOf(0);",
+                  "  });",
+                  "}",
+                  "next(first.next_page_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=huggingface&page_size=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "huggingface"
+                },
+                {
+                  "key": "page_size",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
