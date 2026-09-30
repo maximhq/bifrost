@@ -2150,6 +2150,9 @@ func addAnthropicUsageTokenFields(dst, src *AnthropicUsage) {
 		if src.ServerToolUse.WebSearchRequests > dst.ServerToolUse.WebSearchRequests {
 			dst.ServerToolUse.WebSearchRequests = src.ServerToolUse.WebSearchRequests
 		}
+		if src.ServerToolUse.CodeExecutionRequests > dst.ServerToolUse.CodeExecutionRequests {
+			dst.ServerToolUse.CodeExecutionRequests = src.ServerToolUse.CodeExecutionRequests
+		}
 	}
 }
 
@@ -2181,6 +2184,11 @@ func (u *AnthropicUsage) ServerSideFallbackModel() *string {
 // AnthropicServerToolUseUsage represents server tool use statistics in usage
 type AnthropicServerToolUseUsage struct {
 	WebSearchRequests int `json:"web_search_requests"` // Number of web search requests made
+	// CodeExecutionRequests is the number of code execution tool calls. Anthropic
+	// bills code execution by container time (5 minute minimum, $0.05/hour) rather
+	// than by this count, so it is a signal that a container ran, not the billing
+	// quantity itself.
+	CodeExecutionRequests int `json:"code_execution_requests"`
 }
 
 type AnthropicUsageCacheCreation struct {

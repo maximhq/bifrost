@@ -684,6 +684,26 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			}
 		}
 	}
+	// Code execution call count. Max-merged and mirrored onto the billing handle for
+	// the same reasons as the search count above. The billable session count is
+	// applied by the caller, which holds the request context.
+	if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.CodeExecutionRequests > 0 {
+		n := usageToProcess.ServerToolUse.CodeExecutionRequests
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		if usage.OutputTokensDetails.NumCodeExecutionRequests == nil || n > *usage.OutputTokensDetails.NumCodeExecutionRequests {
+			usage.OutputTokensDetails.NumCodeExecutionRequests = schemas.Ptr(n)
+		}
+		if billedUsage != nil {
+			if billedUsage.CompletionTokensDetails == nil {
+				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			}
+			if billedUsage.CompletionTokensDetails.NumCodeExecutionRequests == nil || n > *billedUsage.CompletionTokensDetails.NumCodeExecutionRequests {
+				billedUsage.CompletionTokensDetails.NumCodeExecutionRequests = schemas.Ptr(n)
+			}
+		}
+	}
 	// Extended-thinking tokens. Max-merged (per-request total, not per-event
 	// increment) and mirrored onto the billing handle so a mid-stream cancel or
 	// timeout still reports the reasoning breakdown.
@@ -1056,6 +1076,17 @@ func HandleAnthropicChatCompletionStreaming(
 					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
 						usage.CompletionTokensDetails.NumSearchQueries = &n
 					}
+				}
+				// Code execution call count, max-merged for the same reason, then resolved
+				// into the billable sandbox session count.
+				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.CodeExecutionRequests > 0 {
+					if usage.CompletionTokensDetails == nil {
+						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+					}
+					if n := usageToProcess.ServerToolUse.CodeExecutionRequests; usage.CompletionTokensDetails.NumCodeExecutionRequests == nil || n > *usage.CompletionTokensDetails.NumCodeExecutionRequests {
+						usage.CompletionTokensDetails.NumCodeExecutionRequests = &n
+					}
+					applyCodeExecutionSessionBillingToLLMUsage(ctx, usage)
 				}
 				// Extended-thinking tokens. Max-merged like the other counters because usage
 				// arrives split across message_start and message_delta; the value is a
@@ -1705,6 +1736,11 @@ func HandleAnthropicResponsesStream(
 				// Also mirror it into billedUsage so cancellation/timeout paths can
 				// charge for provider-reported usage before the final chunk arrives.
 				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess)
+				// Decide the billable sandbox sessions from the accumulated call count.
+				// Idempotent per event, so running it on every usage-bearing event is safe
+				// and guarantees the terminal chunk carries it.
+				ApplyCodeExecutionSessionBilling(ctx, usage)
+				applyCodeExecutionSessionBillingToLLMUsage(ctx, billedUsage)
 				// Mirror served tier onto billedUsage so a mid-stream cancel/timeout can
 				// still apply the served-tier multiplier (billed usage is otherwise bare).
 				// service_tier has no home on BifrostLLMUsage, so it is latched for the
@@ -3140,6 +3176,10 @@ func (provider *AnthropicProvider) Passthrough(
 		url += "?" + req.RawQuery
 	}
 
+	// Passthrough forwards the client's body verbatim, bypassing the request
+	// builders, so the code-execution billing exemption is marked from it here.
+	MarkCodeExecutionBillingExemption(ctx, req.Body)
+
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
@@ -3178,7 +3218,7 @@ func (provider *AnthropicProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = ExtractAnthropicPassthroughUsage(req.Path, req.Body, body)
+		passthroughUsage = ApplyCodeExecutionSessionBillingToPassthrough(ctx, ExtractAnthropicPassthroughUsage(req.Path, req.Body, body))
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3211,6 +3251,10 @@ func (provider *AnthropicProvider) PassthroughStream(
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}
+
+	// Passthrough forwards the client's body verbatim, bypassing the request
+	// builders, so the code-execution billing exemption is marked from it here.
+	MarkCodeExecutionBillingExemption(ctx, req.Body)
 
 	startTime := time.Now()
 
@@ -3293,9 +3337,9 @@ func (provider *AnthropicProvider) PassthroughStream(
 			HasUsage:         HasAnthropicPassthroughUsage,
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
 				if messagesUsage != nil {
-					return messagesUsage.ObserveEvent(event)
+					return ApplyCodeExecutionSessionBillingToPassthrough(ctx, messagesUsage.ObserveEvent(event))
 				}
-				return ExtractAnthropicPassthroughUsage(req.Path, req.Body, event)
+				return ApplyCodeExecutionSessionBillingToPassthrough(ctx, ExtractAnthropicPassthroughUsage(req.Path, req.Body, event))
 			},
 		},
 	), nil

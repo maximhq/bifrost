@@ -77,6 +77,14 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		}
 	}
 
+	if au.ServerToolUse != nil && au.ServerToolUse.CodeExecutionRequests > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		n := au.ServerToolUse.CodeExecutionRequests
+		usage.CompletionTokensDetails.NumCodeExecutionRequests = &n
+	}
+
 	// Extended-thinking tokens are already inside au.OutputTokens, so CompletionTokens
 	// and TotalTokens above stay as-is.
 	if au.OutputTokensDetails != nil && au.OutputTokensDetails.ThinkingTokens > 0 {
@@ -156,6 +164,9 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		}
 		if u.ServerToolUse.WebSearchRequests > c.ServerToolUse.WebSearchRequests {
 			c.ServerToolUse.WebSearchRequests = u.ServerToolUse.WebSearchRequests
+		}
+		if u.ServerToolUse.CodeExecutionRequests > c.ServerToolUse.CodeExecutionRequests {
+			c.ServerToolUse.CodeExecutionRequests = u.ServerToolUse.CodeExecutionRequests
 		}
 	}
 	if u.OutputTokensDetails != nil {
