@@ -199878,6 +199878,662 @@
           }
         }
       ]
+    },
+    {
+      "name": "171. Retargeted Claude request fits the target model (PR #7732) (retarget-fit)",
+      "description": "A routing rule, fallback or load-balancer can retarget a request built for one Claude model onto another after the client sized it. Claude Code sizes for Opus (max_tokens 128000, thinking adaptive, output_config.effort xhigh), and the Claude Code body is forwarded verbatim with only the model swapped, so Haiku 4.5 rejected it with \"max_tokens: 128000 > 64000\" and \"adaptive thinking is not supported on this model\", and Opus 4.5/4.6 rejected effort xhigh (\"Supported levels: high, low, medium\" / \"high, low, max, medium\"). Every builder path now fits the request to the target: max_tokens is clamped to the model's max_output_tokens (datasheet row, else the static Claude table), adaptive thinking on a pre-adaptive Claude becomes enabled with a budget in [1024, max_tokens), and output_config.effort snaps onto the model's ladder. The Claude Code cases send the Opus-sized body straight to the target model, which takes the same forwarded path a routing rule does after it swaps the model; they read the provider-bound body back from the log row (x-bf-store-raw-request-response) since the response is Anthropic's own bytes. The rebuilt-path cases read it from extra_fields.raw_request (x-bf-send-back-raw-request). Every case is red before PR #7732 (Anthropic 400) and green after.",
+      "item": [
+        {
+          "name": "Claude Code passthrough /v1/messages - Opus-sized body to claude-haiku-4-5 clamps max_tokens and budgets thinking - retarget-fit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('retargetFitHaikuRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('forwarded Claude Code body accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('retargetFitHaikuRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var wire = JSON.stringify(rr).slice(0, 400);",
+                  "      pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect(rr.max_tokens, wire).to.eql(64000); });",
+                  "      pm.test('adaptive thinking became enabled with a budget in [1024, max_tokens)', function () {",
+                  "        pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "        pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "      });",
+                  "      pm.test('effort not sent to a model without the effort parameter', function () { pm.expect((rr.output_config || {}).effort, wire).to.be.undefined; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "context-management-2025-06-27"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_thinking_20251015\",\n        \"keep\": \"all\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough /v1/messages stream - Opus-sized body to claude-haiku-4-5 streams to message_stop - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('streamed Claude Code body accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('stream reaches message_stop with no error event', function () {",
+                  "  pm.expect(txt, 'no message_stop: ' + txt.slice(0, 600)).to.include('message_stop');",
+                  "  pm.expect(txt.indexOf('event: error'), 'error event in stream: ' + txt.slice(0, 600)).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "context-management-2025-06-27"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_thinking_20251015\",\n        \"keep\": \"all\"\n      }\n    ]\n  },\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - Opus-sized body to claude-haiku-4-5 without the Claude Code agent clamps and budgets - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('Opus-sized body accepted on the rebuilt path (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect((rr || {}).max_tokens, wire).to.eql(64000); });",
+                  "pm.test('adaptive thinking became enabled with a budget in [1024, max_tokens)', function () {",
+                  "  pm.expect(((rr || {}).thinking || {}).type, wire).to.eql('enabled');",
+                  "  pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "context-management-2025-06-27"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_thinking_20251015\",\n        \"keep\": \"all\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - anthropic/claude-haiku-4-5-20251001 max_tokens 128000 is clamped to 64000 - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('128000 max_tokens accepted on the chat route (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect((rr || {}).max_tokens, wire).to.eql(64000); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough /v1/messages - effort xhigh on claude-opus-4-5 snaps to high with a thinking budget - retarget-fit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('retargetFitOpus45RequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('forwarded Claude Code body accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('retargetFitOpus45RequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var wire = JSON.stringify(rr).slice(0, 400);",
+                  "      pm.test('effort xhigh snapped onto the claude-opus-4-5 ladder (high)', function () { pm.expect((rr.output_config || {}).effort, wire).to.eql('high'); });",
+                  "      pm.test('adaptive thinking became enabled with a budget in [1024, max_tokens)', function () {",
+                  "        pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "        pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-5-20251101\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"xhigh\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - effort xhigh on claude-opus-4-6 snaps to max - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('effort xhigh accepted for claude-opus-4-6 (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('effort xhigh snapped onto the claude-opus-4-6 ladder (max)', function () { pm.expect(((rr || {}).output_config || {}).effort, wire).to.eql('max'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"output_config\": {\n    \"effort\": \"xhigh\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort xhigh on anthropic/claude-opus-4-5-20251101 snaps to high - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('reasoning_effort xhigh accepted for claude-opus-4-5 (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('effort xhigh snapped onto the claude-opus-4-5 ladder (high)', function () { pm.expect(((rr || {}).output_config || {}).effort, wire).to.eql('high'); });",
+                  "pm.test('thinking enabled with a budget below max_tokens', function () {",
+                  "  pm.expect(((rr || {}).thinking || {}).type, wire).to.eql('enabled');",
+                  "  pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-5-20251101\",\n  \"max_completion_tokens\": 2048,\n  \"reasoning_effort\": \"xhigh\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - explicit thinking budget above the clamped claude-haiku-4-5 ceiling is refit - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('budget above the clamped ceiling accepted (200; a 400 means budget_tokens >= max_tokens reached Anthropic)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect(rr.max_tokens, wire).to.eql(64000); });",
+                  "pm.test('explicit budget refit below the clamped max_tokens', function () {",
+                  "  pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "  pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 80000\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough /v1/messages - explicit thinking budget above the clamped claude-haiku-4-5 ceiling is refit - retarget-fit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('retargetFitBudgetRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('forwarded Claude Code body accepted (200; a 400 means budget_tokens >= max_tokens reached Anthropic)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('retargetFitBudgetRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var wire = JSON.stringify(rr).slice(0, 400);",
+                  "      pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect(rr.max_tokens, wire).to.eql(64000); });",
+                  "      pm.test('explicit budget refit below the clamped max_tokens', function () {",
+                  "        pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "        pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 80000\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

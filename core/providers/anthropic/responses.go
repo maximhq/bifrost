@@ -4344,7 +4344,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	// Convert basic parameters
 	if bifrostReq.Params != nil {
 		if bifrostReq.Params.MaxOutputTokens != nil {
-			anthropicReq.MaxTokens = *bifrostReq.Params.MaxOutputTokens
+			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxOutputTokens)
 		}
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
@@ -4448,6 +4448,12 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
 						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic: %w", MinimumReasoningMaxTokens, ErrReasoningMaxTokensTooLow)
+					}
+					// The output clamp can leave the caller's budget at or above max_tokens; refit it below.
+					if requested := bifrostReq.Params.MaxOutputTokens; requested != nil && *requested > anthropicReq.MaxTokens {
+						if fitted, ok := fitThinkingBudget(&budgetTokens, bifrostReq.Params.Reasoning.Effort, anthropicReq.MaxTokens); ok {
+							budgetTokens = fitted
+						}
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",

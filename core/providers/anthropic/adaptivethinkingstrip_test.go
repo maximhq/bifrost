@@ -179,12 +179,12 @@ func TestAdaptiveOnlyThinkingStrip(t *testing.T) {
 		}
 	})
 
-	// Legacy models are untouched: on Opus 4.5 / Haiku 4.5 / Sonnet 4.5 "adaptive"
-	// itself is rejected, and on Opus 4.6 / Sonnet 4.6 both modes are accepted and
-	// budget_tokens still works. Either way the sanitizer must not rewrite them.
+	// Legacy models keep the caller's budget: on Opus 4.6 / Sonnet 4.6 both modes
+	// are accepted and budget_tokens still works, and on Opus 4.5 / Haiku 4.5 /
+	// Sonnet 4.5 the adaptive -> enabled rewrite keeps it as the thinking budget.
 	t.Run("raw_body_preserves_budget_tokens_on_legacy_models", func(t *testing.T) {
 		for _, model := range legacyOK {
-			body := []byte(`{"model":"` + model + `","max_tokens":4096,"thinking":{"type":"adaptive","budget_tokens":10000}}`)
+			body := []byte(`{"model":"` + model + `","max_tokens":16000,"thinking":{"type":"adaptive","budget_tokens":10000}}`)
 
 			result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
 			if err != nil {
@@ -195,6 +195,246 @@ func TestAdaptiveOnlyThinkingStrip(t *testing.T) {
 				t.Errorf("%s: budget_tokens = %d, want 10000 preserved; body: %s",
 					model, got, string(result))
 			}
+		}
+	})
+}
+
+// Haiku 4.5, Sonnet 4.5 and Opus 4.5 predate adaptive thinking and reject it with
+// "adaptive thinking is not supported on this model". A Claude Code body sized for
+// an adaptive model reaches them when a routing rule or fallback retargets it, so
+// the sanitizers turn it into extended thinking: the caller's budget_tokens if
+// sent, else a budget from output_config.effort (default "high", as the converted
+// path) over max_tokens. Budgets must be >= 1024 and < max_tokens, so a max_tokens
+// with no room for one drops thinking instead.
+func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
+	preAdaptive := []string{
+		"claude-haiku-4-5",
+		"claude-haiku-4-5-20251001",
+		"claude-sonnet-4-5",
+		"claude-opus-4-5",
+	}
+	adaptiveCapable := []string{
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-opus-4-7",
+	}
+	// Budgets over max_tokens 64000: 1024 + int(ratio * 62976).
+	const highBudget, lowBudget = 51404, 10470
+
+	t.Run("raw_body_rewrites_adaptive_to_budget", func(t *testing.T) {
+		for _, model := range preAdaptive {
+			body := []byte(`{"model":"` + model + `","max_tokens":64000,"thinking":{"type":"adaptive","display":"summarized"}}`)
+			result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", model, err)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != "enabled" {
+				t.Errorf("%s: thinking.type = %q, want \"enabled\"; body: %s", model, got, result)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.budget_tokens").Int(); got != highBudget {
+				t.Errorf("%s: budget_tokens = %d, want %d; body: %s", model, got, highBudget, result)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.display").String(); got != "summarized" {
+				t.Errorf("%s: thinking.display = %q, want \"summarized\" kept; body: %s", model, got, result)
+			}
+		}
+	})
+
+	t.Run("raw_body_budget_follows_effort", func(t *testing.T) {
+		// Opus 4.5 takes effort alongside a budget; Haiku 4.5 has no effort parameter.
+		for model, keepsEffort := range map[string]bool{"claude-opus-4-5": true, "claude-haiku-4-5": false} {
+			body := []byte(`{"model":"` + model + `","max_tokens":64000,"thinking":{"type":"adaptive"},"output_config":{"effort":"low"}}`)
+			result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", model, err)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.budget_tokens").Int(); got != lowBudget {
+				t.Errorf("%s: budget_tokens = %d, want %d; body: %s", model, got, lowBudget, result)
+			}
+			if got := providerUtils.JSONFieldExists(result, "output_config.effort"); got != keepsEffort {
+				t.Errorf("%s: output_config.effort present = %v, want %v; body: %s", model, got, keepsEffort, result)
+			}
+		}
+	})
+
+	t.Run("raw_body_keeps_caller_budget", func(t *testing.T) {
+		body := []byte(`{"model":"claude-haiku-4-5","max_tokens":64000,"thinking":{"type":"adaptive","budget_tokens":10000}}`)
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-haiku-4-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != "enabled" {
+			t.Errorf("thinking.type = %q, want \"enabled\"; body: %s", got, result)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.budget_tokens").Int(); got != 10000 {
+			t.Errorf("budget_tokens = %d, want 10000; body: %s", got, result)
+		}
+	})
+
+	// A caller budget outside [1024, max_tokens) would 400 once enabled - e.g. one
+	// sized for 128K output on a request clamped to 64K - so it falls back to effort.
+	t.Run("raw_body_replaces_caller_budget_that_does_not_fit", func(t *testing.T) {
+		for _, budget := range []string{"80000", "64000", "500"} {
+			body := []byte(`{"model":"claude-haiku-4-5","max_tokens":64000,"thinking":{"type":"adaptive","budget_tokens":` + budget + `}}`)
+			result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-haiku-4-5")
+			if err != nil {
+				t.Fatalf("budget %s: unexpected error: %v", budget, err)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.budget_tokens").Int(); got != highBudget {
+				t.Errorf("budget %s: budget_tokens = %d, want %d; body: %s", budget, got, highBudget, result)
+			}
+		}
+	})
+
+	t.Run("raw_body_budget_from_model_default_without_max_tokens", func(t *testing.T) {
+		// Token counting strips max_tokens before sanitizing; Haiku 4.5 defaults to 64000.
+		body := []byte(`{"model":"claude-haiku-4-5","thinking":{"type":"adaptive"}}`)
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-haiku-4-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.budget_tokens").Int(); got != highBudget {
+			t.Errorf("budget_tokens = %d, want %d; body: %s", got, highBudget, result)
+		}
+	})
+
+	t.Run("raw_body_drops_thinking_without_room_for_a_budget", func(t *testing.T) {
+		body := []byte(`{"model":"claude-haiku-4-5","max_tokens":1024,"thinking":{"type":"adaptive"}}`)
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-haiku-4-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "thinking") {
+			t.Errorf("thinking survived with no room for a >= 1024 budget below max_tokens; body: %s", result)
+		}
+	})
+
+	t.Run("raw_body_leaves_adaptive_capable_models", func(t *testing.T) {
+		for _, model := range adaptiveCapable {
+			body := []byte(`{"model":"` + model + `","max_tokens":64000,"thinking":{"type":"adaptive"}}`)
+			result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", model, err)
+			}
+			if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != "adaptive" {
+				t.Errorf("%s: thinking.type = %q, want \"adaptive\" kept; body: %s", model, got, result)
+			}
+			if providerUtils.JSONFieldExists(result, "thinking.budget_tokens") {
+				t.Errorf("%s: budget_tokens added to an adaptive-capable model; body: %s", model, result)
+			}
+		}
+	})
+
+	t.Run("raw_body_leaves_non_claude_models", func(t *testing.T) {
+		body := []byte(`{"model":"deepseek-chat","max_tokens":8192,"thinking":{"type":"adaptive"}}`)
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.DeepSeek, "deepseek-chat")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != "adaptive" {
+			t.Errorf("thinking.type = %q, want \"adaptive\" kept; body: %s", got, result)
+		}
+	})
+
+	t.Run("typed_request_rewrites_adaptive_to_budget", func(t *testing.T) {
+		for _, model := range preAdaptive {
+			req := &AnthropicMessageRequest{
+				Model:     model,
+				MaxTokens: 64000,
+				Thinking:  &AnthropicThinking{Type: "adaptive", Display: new("summarized")},
+			}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			if req.Thinking == nil || req.Thinking.Type != "enabled" {
+				t.Fatalf("%s: thinking = %+v, want type \"enabled\"", model, req.Thinking)
+			}
+			if req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens != highBudget {
+				t.Errorf("%s: BudgetTokens = %v, want %d", model, req.Thinking.BudgetTokens, highBudget)
+			}
+			if req.Thinking.Display == nil || *req.Thinking.Display != "summarized" {
+				t.Errorf("%s: Display = %v, want \"summarized\" kept", model, req.Thinking.Display)
+			}
+		}
+	})
+
+	t.Run("typed_request_budget_follows_effort", func(t *testing.T) {
+		for model, keepsEffort := range map[string]bool{"claude-opus-4-5": true, "claude-haiku-4-5": false} {
+			req := &AnthropicMessageRequest{
+				Model:        model,
+				MaxTokens:    64000,
+				Thinking:     &AnthropicThinking{Type: "adaptive"},
+				OutputConfig: &AnthropicOutputConfig{Effort: new("low")},
+			}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			if req.Thinking == nil || req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens != lowBudget {
+				t.Errorf("%s: thinking = %+v, want budget %d", model, req.Thinking, lowBudget)
+			}
+			if got := req.OutputConfig != nil && req.OutputConfig.Effort != nil; got != keepsEffort {
+				t.Errorf("%s: effort present = %v, want %v", model, got, keepsEffort)
+			}
+		}
+	})
+
+	t.Run("typed_request_keeps_caller_budget", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "claude-haiku-4-5",
+			MaxTokens: 64000,
+			Thinking:  &AnthropicThinking{Type: "adaptive", BudgetTokens: new(10000)},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+		if req.Thinking == nil || req.Thinking.Type != "enabled" || req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens != 10000 {
+			t.Errorf("thinking = %+v, want enabled with budget 10000", req.Thinking)
+		}
+	})
+
+	t.Run("typed_request_replaces_caller_budget_that_does_not_fit", func(t *testing.T) {
+		for _, budget := range []int{80000, 64000, 500} {
+			req := &AnthropicMessageRequest{
+				Model:     "claude-haiku-4-5",
+				MaxTokens: 64000,
+				Thinking:  &AnthropicThinking{Type: "adaptive", BudgetTokens: new(budget)},
+			}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+			if req.Thinking == nil || req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens != highBudget {
+				t.Errorf("budget %d: thinking = %+v, want budget %d", budget, req.Thinking, highBudget)
+			}
+		}
+	})
+
+	t.Run("typed_request_drops_thinking_without_room_for_a_budget", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "claude-haiku-4-5",
+			MaxTokens: 1024,
+			Thinking:  &AnthropicThinking{Type: "adaptive"},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+		if req.Thinking != nil {
+			t.Errorf("thinking = %+v, want dropped", req.Thinking)
+		}
+	})
+
+	t.Run("typed_request_leaves_adaptive_capable_models", func(t *testing.T) {
+		for _, model := range adaptiveCapable {
+			req := &AnthropicMessageRequest{
+				Model:     model,
+				MaxTokens: 64000,
+				Thinking:  &AnthropicThinking{Type: "adaptive"},
+			}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			if req.Thinking == nil || req.Thinking.Type != "adaptive" || req.Thinking.BudgetTokens != nil {
+				t.Errorf("%s: thinking = %+v, want adaptive kept", model, req.Thinking)
+			}
+		}
+	})
+
+	t.Run("typed_request_leaves_non_claude_models", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "deepseek-chat",
+			MaxTokens: 8192,
+			Thinking:  &AnthropicThinking{Type: "adaptive"},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.DeepSeek, "deepseek-chat")
+		if req.Thinking == nil || req.Thinking.Type != "adaptive" {
+			t.Errorf("thinking = %+v, want adaptive kept", req.Thinking)
 		}
 	})
 }
