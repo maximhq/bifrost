@@ -117,7 +117,7 @@ Sources:
 - [x] **Tool search** (`tool_search_tool_bm25`, `tool_search_tool_regex`) - Anthropic accept-path in folder 12; Bedrock InvokeModel routing (tool_search + defer_loading) pinned in folder 71
 - [ ] **MCP toolset** (`mcp_toolset` server reference)
 - [ ] **Code execution v2** (`code_execution_20250825`)
-- [ ] **Code execution programmatic** (`code_execution_20260120`)
+- [x] **Code execution programmatic** (`code_execution_20260120`) - folder 118 (responses-tool-vocabulary): 118.5 pins that a version-less `code_interpreter` plus a programmatic-restricted tool is RAISED to `code_execution_20260120` on the wire, since 20250825 has no programmatic tool calling; 118.7 pins that a dropped mcp caller does not raise it
 - [ ] **Computer use new-gen** (`computer_20251124` + `text_editor_20250728` + `bash_20250124` for Opus 4.7/4.6/Sonnet 4.6)
 - [x] **PDF input** (`{ type: "document", source: { type: "base64", media_type: "application/pdf" } }`) - folder 75 (cowork-attachments): native + streaming + `/v1/chat/completions` `file.file_data` + `/v1/responses` `input_file.file_data`, plus Files API `file_id` in all three shapes, each asserting the wire payload via `x-bf-send-back-raw-request`
 - [ ] **Citations** (`citations: { enabled: true }` on document blocks)
@@ -127,7 +127,7 @@ Sources:
 - [ ] **Effort** (`output_config: { effort: "low" | "medium" | "high" | "max" }` for Opus 4.5/4.6)
 - [ ] **Format / structured output** (`output_config: { format: { type: "json_schema", schema: {...} } }`)
 - [ ] **Defer loading** (`defer_loading: true` on tools)
-- [ ] **Allowed callers** (`allowed_callers: [...]` on tools)
+- [x] **Allowed callers** (`allowed_callers: [...]` on tools) - folder 118 (responses-tool-vocabulary): both translation directions asserted on the wire via `x-bf-send-back-raw-request` - OpenAI `programmatic` -> Anthropic `code_execution_20260120` (118.5), Anthropic versioned -> OpenAI `programmatic` (118.6), and dropped entirely on an `mcp_toolset`, which has no such field (118.7)
 - [ ] **Eager input streaming** (`eager_input_streaming: true` on tools; beta)
 - [ ] **Strict tool input** (`strict: true` for structured-outputs validation)
 - [ ] **Tool input examples** (`input_examples: [{ input, description }]`)
