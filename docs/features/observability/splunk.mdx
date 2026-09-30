@@ -147,6 +147,7 @@ export SPLUNK_CA_CERT="$(cat /path/to/splunk-ca.pem)"
 | `enable_events` | `boolean` | ❌ | `true` | Emit one flattened event per request to the event index. |
 | `enable_metrics` | `boolean` | ❌ | `true` | Derive and emit the metric set to the metrics index. |
 | `disable_content_logging` | `boolean` | ❌ | `false` | Strip request/response content from events. See [Controlling exported content](#controlling-exported-content). |
+| `excluded_attributes` | `string[]` | ❌ | — | Span attribute names to leave out of exported events. See [Excluding attributes](#excluding-attributes). |
 | `ca_cert` | `string \| SecretVar` | ❌ | - | PEM-encoded CA certificate to verify the HEC server's TLS cert. Omit to use the system CA pool. Supports `env.VAR_NAME`. See [TLS](#tls). |
 | `insecure_skip_verify` | `boolean` | ❌ | `false` | Disable TLS certificate verification. **Development or isolated environments only**; production should trust the endpoint via `ca_cert` instead. See [TLS](#tls). |
 | `custom_fields` | `object` | ❌ | - | Static key/value fields added to every event and metric. |
@@ -311,6 +312,24 @@ It also does **not** cover attribution identifiers, which remain on events and m
 </Warning>
 
 ---
+
+## Excluding attributes
+
+Some attributes are large and not needed downstream. Tool definitions are a common example, and Splunk is priced on ingest volume. List the attribute names you want left out of exported events:
+
+```json
+{
+  "name": "splunk",
+  "config": {
+    "endpoint": "https://localhost:8088",
+    "excluded_attributes": ["gen_ai.request.tools"]
+  }
+}
+```
+
+Names are matched exactly, as they appear in the exported event. A name that does not match any attribute is ignored, so a typo silently has no effect. Check the spelling against an event you have already received.
+
+Unlike `disable_content_logging`, this is per-attribute: everything you have not named is still exported.
 
 ## Troubleshooting
 
