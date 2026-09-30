@@ -844,7 +844,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Filter out tools that the OpenAI-compatible target doesn't support.
 	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
-	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider))
+	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider), toolProvider)
 	req.keepDeferLoading = toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel))
 
 	if bifrostReq.Params != nil {
@@ -980,41 +980,44 @@ func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.Re
 	return message
 }
 
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool) {
+// isOpenAISupportedToolType reports whether a tool type is forwarded to OpenAI-compatible providers.
+func isOpenAISupportedToolType(t schemas.ResponsesToolType, provider schemas.ModelProvider) bool {
+	switch t {
+	case schemas.ResponsesToolTypeFunction,
+		schemas.ResponsesToolTypeFileSearch,
+		schemas.ResponsesToolTypeComputer,
+		schemas.ResponsesToolTypeWebSearch,
+		schemas.ResponsesToolTypeWebFetch,
+		schemas.ResponsesToolTypeMCP,
+		schemas.ResponsesToolTypeApplyPatch,
+		schemas.ResponsesToolTypeCustom,
+		schemas.ResponsesToolTypeWebSearchPreview,
+		schemas.ResponsesToolTypeMemory,
+		schemas.ResponsesToolTypeToolSearch,
+		schemas.ResponsesToolTypeNamespace:
+		return true
+	case schemas.ResponsesToolTypeShell,
+		schemas.ResponsesToolTypeLocalShell,
+		schemas.ResponsesToolTypeCodeInterpreter,
+		schemas.ResponsesToolTypeImageGeneration,
+		schemas.ResponsesToolTypeComputerUsePreview,
+		schemas.ResponsesToolTypeProgrammaticToolCalling:
+		return provider != schemas.BedrockMantle && provider != schemas.Bedrock
+	case schemas.ResponsesToolTypeXSearch:
+		return provider == schemas.XAI
+	}
+	return false
+}
+
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool, baseProvider schemas.ModelProvider) {
 	if len(resp.Tools) == 0 {
 		return
 	}
 
-	// Define OpenAI-supported tool types
-	supportedTypes := map[schemas.ResponsesToolType]bool{
-		schemas.ResponsesToolTypeFunction:                true,
-		schemas.ResponsesToolTypeFileSearch:              true,
-		schemas.ResponsesToolTypeComputerUsePreview:      true,
-		schemas.ResponsesToolTypeComputer:                true,
-		schemas.ResponsesToolTypeWebSearch:               true,
-		schemas.ResponsesToolTypeWebFetch:                true,
-		schemas.ResponsesToolTypeMCP:                     true,
-		schemas.ResponsesToolTypeCodeInterpreter:         true,
-		schemas.ResponsesToolTypeImageGeneration:         true,
-		schemas.ResponsesToolTypeLocalShell:              true,
-		schemas.ResponsesToolTypeShell:                   true,
-		schemas.ResponsesToolTypeProgrammaticToolCalling: true,
-		schemas.ResponsesToolTypeApplyPatch:              true,
-		schemas.ResponsesToolTypeCustom:                  true,
-		schemas.ResponsesToolTypeWebSearchPreview:        true,
-		schemas.ResponsesToolTypeMemory:                  true,
-		schemas.ResponsesToolTypeToolSearch:              true,
-		schemas.ResponsesToolTypeNamespace:               true,
-	}
-
-	// Allow provider-native tools that are not part of the OpenAI spec
-	if resp.Provider == schemas.XAI {
-		supportedTypes[schemas.ResponsesToolTypeXSearch] = true
-	}
-
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
-	for _, tool := range resp.Tools {
+	for i := range resp.Tools {
+		tool := &resp.Tools[i]
 		// OpenRouter exposes server-side tools under the "openrouter:" namespace
 		// (web_search, web_fetch, datetime, image_generation, apply_patch, subagent, ...).
 		// They are native to OpenRouter and must not be stripped by the
@@ -1022,10 +1025,10 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 		// covered without per-tool additions.
 		isOpenRouterServerTool := resp.Provider == schemas.OpenRouter &&
 			strings.HasPrefix(string(tool.Type), schemas.ResponsesToolTypeOpenRouterPrefix)
-		if supportedTypes[tool.Type] || isOpenRouterServerTool {
+		if isOpenAISupportedToolType(tool.Type, baseProvider) || isOpenRouterServerTool {
 			// check for computer use preview
 			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
-				newTool := tool
+				newTool := *tool
 				newComputerUse := &schemas.ResponsesToolComputerUsePreview{
 					DisplayHeight: tool.ResponsesToolComputerUsePreview.DisplayHeight,
 					DisplayWidth:  tool.ResponsesToolComputerUsePreview.DisplayWidth,
@@ -1036,7 +1039,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				filteredTools = append(filteredTools, newTool)
 			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil {
 				// Create a proper deep copy with new nested pointers to avoid mutating the original
-				newTool := tool
+				newTool := *tool
 				newWebSearch := &schemas.ResponsesToolWebSearch{}
 
 				// MaxUses is intentionally omitted (nil) - OpenAI doesn't support it
@@ -1074,7 +1077,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				newTool.ResponsesToolWebSearch = newWebSearch
 				filteredTools = append(filteredTools, newTool)
 			} else {
-				filteredTools = append(filteredTools, tool)
+				filteredTools = append(filteredTools, *tool)
 			}
 		}
 	}
