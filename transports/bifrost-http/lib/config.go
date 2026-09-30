@@ -2001,6 +2001,7 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	if len(fileClient.DiscoveredTools) == 0 {
 		fileClient.DiscoveredTools = existing.DiscoveredTools
 		fileClient.DiscoveredToolNameMapping = existing.DiscoveredToolNameMapping
+		fileClient.DiscoveredInstructions = existing.DiscoveredInstructions
 	}
 
 	// Not immutable, and an explicit file declaration (true or false) is
@@ -2237,6 +2238,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.OauthConfigID = clientConfig.OauthConfigID
 	row.DiscoveredTools = clientConfig.DiscoveredTools
 	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
+	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
 	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
 	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
 }
@@ -2470,6 +2472,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Disabled:                  clientConfig.Disabled,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		DiscoveredInstructions:    clientConfig.DiscoveredInstructions,
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		TokenExchange:             clientConfig.TokenExchange,
 		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,

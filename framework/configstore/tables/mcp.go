@@ -48,6 +48,10 @@ type TableMCPClient struct {
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
 	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	// DiscoveredInstructions is the upstream's initialize `instructions`. Persisted for the
+	// same reason the tools above are: a per-call client holds no connection to re-read it
+	// from, so without this a restart leaves it serving tools with no instructions.
+	DiscoveredInstructions string `gorm:"type:text" json:"-"`
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"

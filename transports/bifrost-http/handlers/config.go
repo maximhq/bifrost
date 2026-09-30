@@ -511,6 +511,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
 		shouldReloadMCPToolManagerConfig = true
 	}
+
+	// Empty means "not supplied" rather than "off", so an update that omits the field
+	// leaves the current mode alone instead of silently turning forwarding off.
 	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
