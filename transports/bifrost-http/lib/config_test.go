@@ -1160,6 +1160,86 @@ func (m *MockConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables
 	return nil, nil
 }
 
+func (m *MockConfigStore) ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) CreateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error {
+	return nil
+}
+
+func (m *MockConfigStore) ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetAgentRegistration(ctx context.Context, name string) (*schemas.AgentRegistration, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteAgentRegistration(ctx context.Context, name string) error {
+	return nil
+}
+
+func (m *MockConfigStore) SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error {
+	return nil
+}
+
+func (m *MockConfigStore) BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimAgentPushDelivery(ctx context.Context, id, runnerID string, leaseUntil time.Time) (*schemas.AgentPushDelivery, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpdateAgentPushDeliveryOutcome(ctx context.Context, delivery *schemas.AgentPushDelivery, runnerID string, leaseUntil time.Time) error {
+	return nil
+}
+
+func (m *MockConfigStore) PruneAgentPushDeliveries(context.Context, time.Time) error {
+	return nil
+}
+
 func (m *MockConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
 	return nil, nil
 }

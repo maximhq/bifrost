@@ -84,9 +84,15 @@ func staleInterfaceHint(err error) bool {
 var agentNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 var (
-	ErrNotFound          = errors.New("agent registration not found")
-	errAgentCardTooLarge = errors.New("upstream agent card exceeds 1 MiB size limit")
+	ErrNotFound            = errors.New("agent registration not found")
+	ErrInvalidRegistration = errors.New("invalid agent registration")
+	errAgentCardTooLarge   = errors.New("upstream agent card exceeds 1 MiB size limit")
 )
+
+// invalidRegistrationError marks request validation and upstream discovery failures as client-correctable.
+func invalidRegistrationError(err error) error {
+	return fmt.Errorf("%w: %v", ErrInvalidRegistration, err)
+}
 
 // Store is the narrow persistence contract the Agent Gateway needs, declared here
 // so core does not depend on the framework config store. Registrations must be
@@ -673,7 +679,7 @@ func (m *Manager) closeInBackground(runtime *runtimeAgent) {
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (schemas.AgentRegistrationView, error) {
 	reg, err := normalize(req)
 	if err != nil {
-		return schemas.AgentRegistrationView{}, err
+		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
 	if len(reg.Name) > MaxGRPCAgentNameLength && m.logger != nil {
 		m.logger.Warn("agent name %q is longer than %d characters and cannot be advertised or served over gRPC; it stays reachable over JSON-RPC and HTTP+JSON", reg.Name, MaxGRPCAgentNameLength)
@@ -686,7 +692,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (schemas.AgentR
 		buildCtx, cancel := context.WithTimeout(ctx, m.buildTimeout)
 		defer cancel()
 		if generation, err = m.buildGeneration(buildCtx, runtimeConfigFromRegistration(reg)); err != nil {
-			return schemas.AgentRegistrationView{}, err
+			return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 		}
 		runtime = m.buildRuntime(reg)
 	}
@@ -724,7 +730,7 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 		return schemas.AgentRegistrationView{}, err
 	}
 	if req.AgentCardURL == nil || req.Enabled == nil {
-		return schemas.AgentRegistrationView{}, errors.New("agent_card_url and enabled are required")
+		return schemas.AgentRegistrationView{}, invalidRegistrationError(errors.New("agent_card_url and enabled are required"))
 	}
 	preserveAuth := func(submitted, stored *schemas.UpstreamAuth) (*schemas.UpstreamAuth, error) {
 		if submitted == nil {
@@ -761,15 +767,15 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 	}
 	discoveryAuth, err := preserveAuth(req.DiscoveryAuth, existing.DiscoveryAuth)
 	if err != nil {
-		return schemas.AgentRegistrationView{}, err
+		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
 	runtimeAuth, err := preserveAuth(req.RuntimeAuth, existing.RuntimeAuth)
 	if err != nil {
-		return schemas.AgentRegistrationView{}, err
+		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
 	reg, err := normalize(CreateRequest{Name: name, AgentCardURL: *req.AgentCardURL, Tenant: req.Tenant, Enabled: req.Enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: discoveryAuth, RuntimeAuth: runtimeAuth, VirtualKeyIDs: req.VirtualKeyIDs, ExtensionURIs: req.ExtensionURIs})
 	if err != nil {
-		return schemas.AgentRegistrationView{}, err
+		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
 	reg.CreatedAt = existing.CreatedAt
 	var replacement *runtimeAgent
@@ -778,7 +784,7 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 		defer cancel()
 		generation, buildErr := m.buildGeneration(buildCtx, runtimeConfigFromRegistration(reg))
 		if buildErr != nil {
-			return schemas.AgentRegistrationView{}, buildErr
+			return schemas.AgentRegistrationView{}, invalidRegistrationError(buildErr)
 		}
 		replacement = m.buildRuntime(reg)
 		if err = replacement.replaceGeneration(generation); err != nil {
