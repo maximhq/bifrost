@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -8,6 +9,8 @@ import (
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,17 +66,23 @@ type liveRelayFixture struct {
 }
 
 // newTestLiveController wires a controller the way admission does, with test-sized timers.
+func testLiveUpdatePolicy(models liveModelChecker) liveUpdatePolicy {
+	return liveUpdatePolicy{
+		models:         models,
+		provider:       schemas.OpenAI,
+		key:            schemas.Key{ID: "key-1", Aliases: schemas.KeyAliases{"terra": {ModelID: "gpt-5.6-terra"}}},
+		checkKeyModels: true,
+	}
+}
+
 func newTestLiveController(models liveModelChecker, meter *liveMeter, io liveSessionIO) *liveSessionController {
 	return &liveSessionController{
-		io:              io,
-		models:          models,
-		meter:           meter,
-		provider:        schemas.OpenAI,
-		key:             schemas.Key{ID: "key-1", Aliases: schemas.KeyAliases{"terra": {ModelID: "gpt-5.6-terra"}}},
-		checkKeyModels:  true,
-		drainTimeout:    time.Second,
-		staleCheckEvery: time.Hour,
-		upstreamDone:    make(chan struct{}),
+		liveUpdatePolicy: testLiveUpdatePolicy(models),
+		io:               io,
+		meter:            meter,
+		drainTimeout:     time.Second,
+		staleCheckEvery:  time.Hour,
+		upstreamDone:     make(chan struct{}),
 	}
 }
 
@@ -295,4 +304,147 @@ func TestReadLiveSessionStart(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, start, string(frame))
 	assert.Equal(t, "openai/gpt-live-1", session.Model)
+}
+
+// fakeLiveDialProvider dials whatever URL the test names.
+type fakeLiveDialProvider struct {
+	schemas.LiveProvider
+	url string
+}
+
+func (f fakeLiveDialProvider) LiveWebSocketURL(schemas.Key, schemas.LiveConnectionKind, string) (string, *schemas.BifrostError) {
+	return f.url, nil
+}
+
+func (f fakeLiveDialProvider) LiveHeaders(*schemas.BifrostContext, schemas.Key) (map[string]string, *schemas.BifrostError) {
+	return nil, nil
+}
+
+func TestLiveDialMapsProviderRefusals(t *testing.T) {
+	if logger == nil {
+		SetLogger(&mockLogger{})
+	}
+	r := router.New()
+	r.GET("/v1/live/sessions/{id}/attach", func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusNotFound) })
+	r.GET("/v1/live/sessions", func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusServiceUnavailable) })
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := &fasthttp.Server{Handler: r.Handler}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Shutdown() })
+	base := "ws://" + ln.Addr().String() + "/v1/live/sessions"
+
+	pool := bfws.NewPool(nil)
+	t.Cleanup(pool.Close)
+	h := &WSLiveHandler{config: &lib.Config{}, pool: pool}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{ID: "key-1"}
+
+	_, bifrostErr := h.dial(ctx, fakeLiveDialProvider{url: base + "/ls_secret/attach"}, schemas.OpenAI, key, schemas.LiveConnectionSideband, "ls_secret")
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, fasthttp.StatusNotFound, *bifrostErr.StatusCode, "the provider's 404 is the client's 404")
+	assert.Contains(t, bifrostErr.Error.Message, "sideband needs a WebRTC or SIP session")
+	assert.NotContains(t, bifrostErr.Error.Message, "ls_secret", "the provider's session id stays behind the handle")
+
+	_, bifrostErr = h.dial(ctx, fakeLiveDialProvider{url: base}, schemas.OpenAI, key, schemas.LiveConnectionPrimary, "")
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, fasthttp.StatusBadGateway, *bifrostErr.StatusCode)
+	assert.NotContains(t, bifrostErr.Error.Message, ln.Addr().String())
+}
+
+func TestLiveRelayBillsSidebandBackendSwitch(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "gpt-5.6-luna")
+
+	// A sideband switched the backend: OpenAI's acknowledgement moves billing to the new model.
+	updated := `{"type":"session.updated","session":{"id":"live_1","delegation":{"type":"responses","responses":{"model":"gpt-5.6-sol"}}}}`
+	sendFrame(t, f.openai, updated)
+	assert.Equal(t, updated, readFrame(t, f.app))
+	sendFrame(t, f.openai, `{"type":"response.event","delegation_id":"item_1","event":{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.6-sol","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}`)
+	readFrame(t, f.app)
+
+	sendFrame(t, f.app, `{"type":"session.close"}`)
+	readFrame(t, f.openai)
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":5}}`)
+	readFrame(t, f.app)
+	f.waitDone(t)
+
+	_, posts, _ := f.runner.snapshot()
+	var billed []string
+	for _, post := range posts {
+		if post.resp != nil && post.resp.Usage != nil && post.resp.Usage.TotalTokens > 0 {
+			billed = append(billed, post.model)
+		}
+	}
+	assert.Equal(t, []string{"gpt-5.6-sol"}, billed, "backend tokens land on the model the session now runs")
+}
+
+func TestLiveSidebandRelayChecksUpdatesAndEndsAlone(t *testing.T) {
+	t.Parallel()
+	bifrostSide, app, cleanup := dialRealtimeTestConn(t)
+	t.Cleanup(cleanup)
+	upstream, openai := dialLiveTestUpstream(t)
+
+	relay := &liveSidebandRelay{
+		liveUpdatePolicy: testLiveUpdatePolicy(fakeLiveModels{allowed: false}),
+		clientConn:       newRealtimeClientConn(bifrostSide),
+		upstream:         upstream,
+	}
+	done := make(chan struct{})
+	go func() {
+		relay.run()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		_ = openai.UnderlyingConn().Close()
+		<-done
+	})
+
+	// Session events and transcripts reach the sideband unchanged.
+	for _, frame := range []string{
+		`{"type":"session.updated","session":{"id":"live_1","model":"gpt-live-1"}}`,
+		`{"type":"session.input_transcript.delta","delta":"hello","start_ms":0,"end_ms":400}`,
+	} {
+		sendFrame(t, openai, frame)
+		assert.Equal(t, frame, readFrame(t, app))
+	}
+
+	// A backend switch the key cannot serve is refused here, before it reaches OpenAI.
+	sendFrame(t, app, `{"type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.6-sol"}}}}`)
+	assert.Contains(t, readFrame(t, app), "does not support model gpt-5.6-sol")
+	command := `{"type":"session.instructions.append","delegation_id":null,"content":"be brief"}`
+	sendFrame(t, app, command)
+	assert.Equal(t, command, readFrame(t, openai))
+
+	// The sideband leaving ends its own connection only: no session.close is sent for the primary.
+	require.NoError(t, app.Close())
+	require.NoError(t, openai.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, frame, err := openai.ReadMessage()
+	assert.Error(t, err, "got %q instead of the sideband's socket closing", frame)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sideband relay did not end")
+	}
+}
+
+func TestLiveAttachRefusesBeforeUpgrade(t *testing.T) {
+	t.Parallel()
+
+	attach := func(enforceAuth bool, id string) *fasthttp.RequestCtx {
+		config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}
+		h := &WSLiveHandler{gateway: &liveGateway{config: config}, config: config}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/v1/live/sessions/" + id + "/attach")
+		ctx.SetUserValue("session_id", id)
+		h.handleAttach(ctx)
+		return ctx
+	}
+
+	ctx := attach(true, "live_1")
+	assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), "anonymous callers are refused first")
+
+	ctx = attach(false, " ")
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, string(ctx.Response.Body()), "session id is required")
 }
