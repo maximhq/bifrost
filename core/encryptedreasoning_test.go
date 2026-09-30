@@ -2825,3 +2825,214 @@ func TestStripRawResponsesEncryptedContent_AllocationScaling(t *testing.T) {
 		stripRawResponsesEncryptedContent(&scratch, false)
 	})
 }
+
+// Gemini and Vertex mint no encrypted_content: the thought signature rides on the function
+// call, and Bifrost carries it inside the call id as "<id>_ts_<signature>" so it survives the
+// Responses shape. A history minted on the other platform is refused with 400 "Corrupted
+// thought signature.", and the strip used to find nothing to remove, report false, and let
+// that 400 through unhealed (harness folder 120, pairs C1/C2). The suffix IS the token here.
+const geminiSignedCallID = "call_154438_ts_AY89a18lvmxD_neXDqsyaZ8p8hQs5WEUcYCIXeXVnQlH"
+
+func newGeminiSignedCallRequest() *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.7-flash",
+			Input: []schemas.ResponsesMessage{
+				{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What time is it in Tokyo?")},
+				},
+				{
+					ID:   schemas.Ptr("fc_" + geminiSignedCallID),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    schemas.Ptr(geminiSignedCallID),
+						Name:      schemas.Ptr("get_time"),
+						Arguments: schemas.Ptr(`{"timezone":"Asia/Tokyo"}`),
+					},
+				},
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr(geminiSignedCallID),
+						Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr(`{"time":"09:00 JST"}`)},
+					},
+				},
+				{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Now say OK.")},
+				},
+			},
+		},
+	}
+}
+
+func corruptedThoughtSignatureError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("INVALID_ARGUMENT"),
+			Code:    schemas.Ptr("400"),
+			Message: "Corrupted thought signature.",
+		},
+	}
+}
+
+func TestStripResponsesEncryptedContent_GeminiCallIDSignature(t *testing.T) {
+	t.Run("strips the _ts_ suffix from the call and its output and keeps both items", func(t *testing.T) {
+		req := newGeminiSignedCallRequest()
+		original := req.ResponsesRequest.Input
+
+		if !stripResponsesEncryptedContent(nil, req) {
+			t.Fatal("expected the strip to report a change: the call id carries the signature")
+		}
+		got := req.ResponsesRequest.Input
+		if len(got) != 4 {
+			t.Fatalf("expected all 4 items to survive (a tool item is never an emptied reasoning item), got %d", len(got))
+		}
+		for _, i := range []int{1, 2} {
+			if got[i].ResponsesToolMessage == nil || got[i].ResponsesToolMessage.CallID == nil {
+				t.Fatalf("item %d lost its tool message", i)
+			}
+			if *got[i].ResponsesToolMessage.CallID != "call_154438" {
+				t.Errorf("item %d: expected the bare call id, got %q", i, *got[i].ResponsesToolMessage.CallID)
+			}
+		}
+		if got[1].ID == nil || *got[1].ID != "fc_call_154438" {
+			t.Errorf("expected the item id built from the call id to be stripped too, got %v", got[1].ID)
+		}
+		// The caller's structs are shared with plugins and the transport layer.
+		if *original[1].ResponsesToolMessage.CallID != geminiSignedCallID || *original[1].ID != "fc_"+geminiSignedCallID {
+			t.Error("the caller's input was mutated in place")
+		}
+	})
+
+	t.Run("reports no change when no call id carries a signature", func(t *testing.T) {
+		req := newGeminiSignedCallRequest()
+		for i := range req.ResponsesRequest.Input {
+			if tm := req.ResponsesRequest.Input[i].ResponsesToolMessage; tm != nil {
+				tm.CallID = schemas.Ptr("call_154438")
+			}
+		}
+		req.ResponsesRequest.Input[1].ID = schemas.Ptr("fc_call_154438")
+		if stripResponsesEncryptedContent(nil, req) {
+			t.Error("expected no change: a bare call id is not a token")
+		}
+	})
+
+	t.Run("strips the suffix on the raw passthrough body", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		req := newGeminiSignedCallRequest()
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gemini-3.7-flash","input":[` +
+			`{"type":"message","role":"user","content":"What time is it in Tokyo?"},` +
+			`{"type":"function_call","id":"fc_` + geminiSignedCallID + `","call_id":"` + geminiSignedCallID + `","name":"get_time","arguments":"{}"},` +
+			`{"type":"function_call_output","call_id":"` + geminiSignedCallID + `","output":"{\"time\":\"09:00 JST\"}"},` +
+			`{"type":"message","role":"user","content":"Now say OK."}` +
+			`]}`)
+
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected the raw strip to report a change")
+		}
+		body := string(req.ResponsesRequest.RawRequestBody)
+		if strings.Contains(body, "_ts_") {
+			t.Errorf("expected every _ts_ suffix to be gone, got %s", body)
+		}
+		if strings.Count(body, `"call_id":"call_154438"`) != 2 {
+			t.Errorf("expected the call and its output to share the bare id, got %s", body)
+		}
+		if !strings.Contains(body, `"id":"fc_call_154438"`) {
+			t.Errorf("expected the item id to be stripped too, got %s", body)
+		}
+		if !strings.Contains(body, `"output":"{\"time\":\"09:00 JST\"}"`) || !strings.Contains(body, `"name":"get_time"`) {
+			t.Errorf("expected the tool items to survive with their fields, got %s", body)
+		}
+	})
+}
+
+// The consequence: the 400 names the token by family word, the strip now has something to
+// remove, and the one fail-soft retry reaches the upstream with bare call ids.
+func TestExecuteRequestWithRetries_HealsGeminiCorruptedThoughtSignature(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := newGeminiSignedCallRequest()
+	callCount := 0
+	var secondAttemptInput []schemas.ResponsesMessage
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", corruptedThoughtSignatureError()
+		}
+		secondAttemptInput = req.ResponsesRequest.Input
+		return "OK", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesRequest, schemas.Gemini, "gemini-3.7-flash", req, logger)
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %v", err)
+	}
+	if result != "OK" || callCount != 2 {
+		t.Fatalf("expected 2 attempts ending in OK, got %d attempts and %q", callCount, result)
+	}
+	for _, i := range []int{1, 2} {
+		if id := *secondAttemptInput[i].ResponsesToolMessage.CallID; id != "call_154438" {
+			t.Errorf("attempt 2 item %d still carries the signature: %q", i, id)
+		}
+	}
+}
+
+func TestStripUnverifiableReasoning_ChatShape_GeminiToolCallIDSignature(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.7-flash",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What time is it in Tokyo?")}},
+				{
+					Role: schemas.ChatMessageRoleAssistant,
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+							ID:       schemas.Ptr(geminiSignedCallID),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_time"), Arguments: `{"timezone":"Asia/Tokyo"}`},
+						}},
+					},
+				},
+				{
+					Role:            schemas.ChatMessageRoleTool,
+					ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(geminiSignedCallID)},
+					Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"time":"09:00 JST"}`)},
+				},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Now say OK.")}},
+			},
+		},
+	}
+	originalCalls := req.ChatRequest.Input[1].ChatAssistantMessage.ToolCalls
+	originalTool := req.ChatRequest.Input[2].ChatToolMessage
+
+	if !stripUnverifiableReasoning(nil, req) {
+		t.Fatal("expected the strip to report a change: the tool call id carries the signature")
+	}
+	if id := *req.ChatRequest.Input[1].ChatAssistantMessage.ToolCalls[0].ID; id != "call_154438" {
+		t.Errorf("expected the bare tool call id, got %q", id)
+	}
+	if id := *req.ChatRequest.Input[2].ChatToolMessage.ToolCallID; id != "call_154438" {
+		t.Errorf("expected the tool result to share the bare id, got %q", id)
+	}
+	if *originalCalls[0].ID != geminiSignedCallID || *originalTool.ToolCallID != geminiSignedCallID {
+		t.Error("the caller's messages were mutated in place")
+	}
+
+	// A second call finds nothing left and must not buy another upstream attempt.
+	if stripUnverifiableReasoning(nil, req) {
+		t.Error("expected no change once the ids are bare")
+	}
+}

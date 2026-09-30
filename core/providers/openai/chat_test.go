@@ -2227,3 +2227,27 @@ func TestOpenAICompatFiltersReadDatasheet(t *testing.T) {
 		require.Nil(t, req.FrequencyPenalty, "fields the row omits keep the grok name-based default")
 	})
 }
+
+// reasoning.type is an Anthropic thinking type; it must never reach the wire of
+// OpenAI or the OpenAI-compatible providers that share this converter.
+func TestToOpenAIChatRequest_DoesNotEmitReasoningType(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Groq, schemas.OpenRouter, schemas.XAI, schemas.Cerebras, schemas.Ollama} {
+		req := &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "gpt-5",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{
+				Type:   schemas.Ptr("between_tools"),
+				Effort: schemas.Ptr("medium"),
+			}},
+		}
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+		require.NotNil(t, out, "%s: expected request", provider)
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		require.NotContains(t, string(body), "between_tools", "%s: reasoning.type leaked: %s", provider, body)
+	}
+}

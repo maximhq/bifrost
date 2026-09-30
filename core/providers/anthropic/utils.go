@@ -301,6 +301,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// resolves to on these models) rather than deleted, so a sibling
 	// thinking.display survives; Type has no omitempty, so a display-only block
 	// would serialize as {"type":""}.
+	// thinking.type:"between_tools" — downgraded to "disabled" on models that lack
+	// it (e.g. a fallback off Sonnet 5.5); the check below then adjusts it further.
+	if req.Thinking != nil && req.Thinking.Type == "between_tools" &&
+		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
+		req.Thinking.Type = "disabled"
+	}
 	if req.Thinking != nil && req.Thinking.Type == "disabled" {
 		var effort *string
 		if req.OutputConfig != nil {
@@ -699,6 +705,14 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// thinking.type:"disabled" — mirrors the typed path in
 	// stripUnsupportedAnthropicFields; see there for why it is rewritten to
 	// "adaptive" rather than deleted.
+	// thinking.type:"between_tools" — mirrors the typed path's downgrade.
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "between_tools" &&
+		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "disabled")
+		if err != nil {
+			return nil, fmt.Errorf("rewrite raw thinking.type to disabled: %w", err)
+		}
+	}
 	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "disabled" {
 		var effort *string
 		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
@@ -969,6 +983,13 @@ func IsSonnet5Plus(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sonnet-5")
 }
 
+// IsSonnet55Plus returns true for Claude Sonnet 5.5, matching the
+// Bedrock/Vertex/date-suffixed forms.
+func IsSonnet55Plus(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
+}
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -1107,11 +1128,33 @@ func DefaultAdaptiveOnlyThinking(model string) bool {
 	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
-// DefaultCanDisableReasoning: the Fable/Mythos family and Opus 5.5 reject
-// thinking:{type:"disabled"} — adaptive thinking is always on, so the param must
-// be omitted entirely rather than sent as disabled.
+// DefaultCanDisableReasoning: the Fable/Mythos family, Opus 5.5 and Sonnet 5.5
+// reject thinking:{type:"disabled"} — adaptive thinking is always on, so the
+// param must be omitted entirely rather than sent as disabled.
 func DefaultCanDisableReasoning(model string) bool {
-	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model)
+	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model) && !IsSonnet55Plus(model)
+}
+
+// DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
+// as its lowest setting (it rejects "disabled").
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/thinking
+func DefaultSupportsBetweenToolsThinking(model string) bool {
+	return IsSonnet55Plus(model)
+}
+
+// BetweenToolsThinking returns the thinking config for a requested
+// thinking:{type:"between_tools"}: itself where the model accepts it, else the
+// nearest setting ("disabled" where accepted at this effort, or nil to omit) so
+// fallbacks to older models keep working.
+func BetweenToolsThinking(caps schemas.ModelCaps, effort *string) *AnthropicThinking {
+	if caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(caps.Model())) {
+		return &AnthropicThinking{Type: "between_tools"}
+	}
+	if !RejectsDisabledThinking(caps, effort) {
+		return &AnthropicThinking{Type: "disabled"}
+	}
+	return nil
 }
 
 // SupportsNativeEffort reports whether the model takes output_config.effort as

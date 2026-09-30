@@ -108284,10 +108284,7 @@
             "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
           },
           "delete_after_expire": {
-            "type": [
-              "boolean",
-              "null"
-            ],
+            "type": ["boolean", "null"],
             "description": "Per-key override for client.delete_expired_virtual_keys. Absent or null inherits the client setting; true or false decide for this key whether the daily cleanup job deletes it once expires_at has passed."
           },
           "previous_value_expires_at": {
@@ -108945,10 +108942,7 @@
             "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
           },
           "delete_after_expire": {
-            "type": [
-              "boolean",
-              "null"
-            ],
+            "type": ["boolean", "null"],
             "description": "Override client.delete_expired_virtual_keys for this key. true or false set it, null resets the key to inherit the client setting, omitted leaves it unchanged. A value requires an expiry; clearing expires_at resets it to inherit."
           }
         },
@@ -109575,10 +109569,7 @@
                   "example": 0.5
                 },
                 "ttft_timeout_ms": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
+                  "type": ["integer", "null"],
                   "minimum": 0,
                   "maximum": 300000,
                   "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
@@ -109754,10 +109745,7 @@
                   "example": 0.5
                 },
                 "ttft_timeout_ms": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
+                  "type": ["integer", "null"],
                   "minimum": 0,
                   "maximum": 300000,
                   "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
@@ -109892,10 +109880,7 @@
                   "example": 0.5
                 },
                 "ttft_timeout_ms": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
+                  "type": ["integer", "null"],
                   "minimum": 0,
                   "maximum": 300000,
                   "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."

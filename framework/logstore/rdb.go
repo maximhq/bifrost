@@ -2326,6 +2326,7 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	baseQuery := s.scopedLogsDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = baseQuery.Where("model IS NOT NULL AND model != ''")
 
 	// Query grouped by bucket and model with status counts
 	var results []struct {

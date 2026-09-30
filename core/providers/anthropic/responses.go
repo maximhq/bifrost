@@ -4168,6 +4168,13 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 					Summary: summary,
 				}
 			}
+		} else if req.Thinking.Type == "between_tools" {
+			params.Reasoning = &schemas.ResponsesParametersReasoning{
+				Type: schemas.Ptr("between_tools"),
+			}
+			if req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+				params.Reasoning.Effort = schemas.Ptr(*req.OutputConfig.Effort)
+			}
 		} else {
 			params.Reasoning = &schemas.ResponsesParametersReasoning{
 				Effort: schemas.Ptr("none"),
@@ -4398,7 +4405,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 		if bifrostReq.Params.Reasoning != nil {
-			if bifrostReq.Params.Reasoning.MaxTokens != nil {
+			if bifrostReq.Params.Reasoning.Type != nil && *bifrostReq.Params.Reasoning.Type == "between_tools" &&
+				schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+				// A thinking type, independent of effort: the caller's effort is forwarded as-is.
+				anthropicReq.Thinking = BetweenToolsThinking(caps, bifrostReq.Params.Reasoning.Effort)
+				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+					caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+				}
+			} else if bifrostReq.Params.Reasoning.MaxTokens != nil {
 				if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
@@ -4484,7 +4499,8 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					}
 				}
 			}
-			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+			// between_tools takes no display field.
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" && anthropicReq.Thinking.Type != "between_tools" {
 				if bifrostReq.Params.Reasoning != nil &&
 					bifrostReq.Params.Reasoning.Summary != nil {
 					if *bifrostReq.Params.Reasoning.Summary == "none" {

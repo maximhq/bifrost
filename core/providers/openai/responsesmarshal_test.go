@@ -2268,3 +2268,33 @@ func TestToOpenAIResponsesRequest_StripsAsyncFromUnsupportedToolKinds(t *testing
 		t.Fatal("caller's request was mutated")
 	}
 }
+
+// reasoning.type is an Anthropic thinking type; it must never reach the wire of
+// OpenAI or the OpenAI-compatible providers that share this converter.
+func TestToOpenAIResponsesRequest_DoesNotEmitReasoningType(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Groq, schemas.OpenRouter, schemas.XAI} {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "gpt-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{
+				Type:   schemas.Ptr("between_tools"),
+				Effort: schemas.Ptr("medium"),
+			}},
+		}
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		if out == nil {
+			t.Fatalf("%s: expected request", provider)
+		}
+		body, err := sonic.Marshal(out)
+		if err != nil {
+			t.Fatalf("%s: marshal failed: %v", provider, err)
+		}
+		if strings.Contains(string(body), "between_tools") {
+			t.Errorf("%s: reasoning.type leaked: %s", provider, body)
+		}
+	}
+}
