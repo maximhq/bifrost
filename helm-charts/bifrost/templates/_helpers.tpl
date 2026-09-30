@@ -1351,6 +1351,9 @@ false
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
 {{- end }}
+{{- if hasKey $client "maxInstructionsLength" }}
+{{- $_ := set $cc "max_instructions_length" $client.maxInstructionsLength }}
+{{- end }}
 {{- if $client.toolPricing }}
 {{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}

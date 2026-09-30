@@ -7116,6 +7116,11 @@
           "type": ["string", "integer"],
           "description": "Per-client override for tool execution timeout. Go duration string (e.g. '30s', '2m') or a bare integer treated as seconds. Overrides the global mcp.toolManagerConfig.toolExecutionTimeout for this server only. Omit or set to 0 to use the global default."
         },
+        "maxInstructionsLength": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-client override for the forwarded instruction byte cap. Overrides the global mcp.toolManagerConfig.maxInstructionsPerClient for this server only; the aggregate is still bounded by maxInstructionsTotal. Omit or set to 0 to use the global default."
+        },
         "isPingAvailable": {
           "type": "boolean",
           "description": "Whether the MCP server supports ping"

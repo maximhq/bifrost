@@ -14,12 +14,12 @@ import (
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -503,6 +503,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
 	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
 	{IDs: []string{"add_mcp_instruction_cap_columns"}, run: migrationAddMCPInstructionCapColumns},
+	{IDs: []string{"add_mcp_client_max_instructions_length_column"}, run: migrationAddMCPClientMaxInstructionsLengthColumn},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
@@ -14318,6 +14319,30 @@ func migrationMovePricingOverrideSearchContextToWebSearch(ctx context.Context, d
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientMaxInstructionsLengthColumn adds the per-client instruction byte cap to
+// the MCP client table. Defaults to 0, which means "use the global cap", so existing clients
+// keep exactly the limit they ran with before.
+func migrationAddMCPClientMaxInstructionsLengthColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_max_instructions_length_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "max_instructions_length")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "max_instructions_length")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client max instructions length migration: %s", err.Error())
 	}
 	return nil
 }

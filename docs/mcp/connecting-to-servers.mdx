@@ -474,7 +474,7 @@ A tool must be in **both** `ToolsToExecute` and `ToolsToAutoExecute` to be auto-
 
 ### Global Tool Manager Settings
 
-Tool-manager behaviour is configured once and applies to every MCP server. There are no per-server overrides for these four knobs — the only per-server tool-manager-adjacent setting is `tool_sync_interval` on each `client_configs[]` entry.
+Tool-manager behaviour is configured once and applies to every MCP server. Three of these can be overridden per server on a `client_configs[]` entry — `tool_sync_interval`, `tool_execution_timeout`, and `max_instructions_length` (which overrides the global `max_instructions_per_client`). In each case `0` or omitted means "use the global".
 
 | Field                      | Type             | Default | Description                                                                                                                  |
 | -------------------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -486,7 +486,7 @@ Tool-manager behaviour is configured once and applies to every MCP server. There
 <Tabs>
 <Tab title="Web UI">
 
-The MCP configuration panel under **Settings → MCP** exposes these four knobs plus `tool_sync_interval`:
+The MCP configuration panel under **Settings → MCP** exposes these knobs; the per-server overrides live on each client's own sheet, under **Sync & Timeouts**:
 
 <Frame>
   <img src="/media/ui-mcp-config.png" alt="MCP Gateway configuration panel showing tool execution timeout, agent depth, code mode binding level, tool sync interval, and auto tool inject toggle" />

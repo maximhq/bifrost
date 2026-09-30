@@ -1668,6 +1668,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+					MaxInstructionsLength:     dbClient.MaxInstructionsLength,
 					ToolPricing:               dbClient.ToolPricing,
 					AllowByDefault:            dbClient.AllowByDefault,
 					Disabled:                  dbClient.Disabled,
@@ -1723,6 +1724,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+			MaxInstructionsLength:     dbClient.MaxInstructionsLength,
 			AllowByDefault:            dbClient.AllowByDefault,
 			Disabled:                  dbClient.Disabled,
 			ToolPricing:               dbClient.ToolPricing,
@@ -2162,6 +2164,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+		MaxInstructionsLength:     dbClient.MaxInstructionsLength,
 		AllowByDefault:            dbClient.AllowByDefault,
 		Disabled:                  dbClient.Disabled,
 		ToolPricing:               dbClient.ToolPricing,
@@ -2331,6 +2334,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			NeedsSessionStickiness: clientConfigCopy.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncIntervalSec,
 			ToolExecutionTimeout:   toolExecutionTimeoutSec,
+			MaxInstructionsLength:  clientConfigCopy.MaxInstructionsLength,
 			AllowByDefault:         clientConfigCopy.AllowByDefault,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
@@ -2502,6 +2506,9 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 		// Update only editable fields using a map to avoid updating connection info
 		// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
+		if clientConfigCopy.MaxInstructionsLength < 0 {
+			return fmt.Errorf("max_instructions_length must be non-negative, got %d", clientConfigCopy.MaxInstructionsLength)
+		}
 		if clientConfigCopy.ToolExecutionTimeout < 0 {
 			return fmt.Errorf("tool_execution_timeout must be non-negative, got %d", clientConfigCopy.ToolExecutionTimeout)
 		}
@@ -2519,6 +2526,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"tool_execution_timeout":     clientConfigCopy.ToolExecutionTimeout,
+			"max_instructions_length":    clientConfigCopy.MaxInstructionsLength,
 			"allow_on_all_virtual_keys":  clientConfigCopy.AllowByDefault,
 			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
