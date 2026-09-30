@@ -218,7 +218,33 @@ const NoSemanticSampleGuidance = "\n- For a themes question, take the sample wit
 // the many callers that do not care about it - most of the tests in this
 // package - are not forced to pass a zero value explicitly. At most the first
 // value is used; the same pattern NewAgent already uses for semantic.
+// toolAvailability is which optional tools this deployment offers, so the
+// prompt describes exactly the set the model can call: a capability the prompt
+// names and the declarations lack costs a wasted step and an apology.
+type toolAvailability struct {
+	semantic   bool
+	userLimits bool
+}
+
+// UserLimitsGuidance is appended when describe_user_limits is offered. A budget
+// question about a person - or about a key an access profile manages - is
+// answered from the person's profile, which is where the cap actually sits.
+const UserLimitsGuidance = `
+
+A person's own limits:
+
+- describe_user_limits reads what governs a person's spend: their access profile's budgets, per-provider budgets and rate limits, with live usage. "How much budget do I have left", "what is my limit", "what is Vrinda's allowance", and a budget or rate-limit question about a key that describe_virtual_key reports as managed by an access profile all go there - the key only inherits the profile's cap.
+- The user id is caller_user_id from describe_filter_space for the person asking, or the id on a user ranking row (query_usage_by with dimension user) for someone else. Do not search describe_filter_space for a person's name: it lists traffic values, not people.
+- Report each budget as remaining of max_limit, name the profile it comes from, and say when it resets. A budget's period is its own reset cycle, not a log window, so do not ask for a time range.`
+
+// systemInstructions is systemInstructionsFor with only the semantic tool's
+// availability, which is what most of the prompt's tests and callers need.
 func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc ...timeContext) string {
+	return systemInstructionsFor(config, toolAvailability{semantic: semanticAvailable}, tc...)
+}
+
+func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailability, tc ...timeContext) string {
+	semanticAvailable := available.semantic
 	var ctx timeContext
 	if len(tc) > 0 {
 		ctx = tc[0]
@@ -236,6 +262,9 @@ func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc .
 		builder.WriteString(SemanticSearchGuidance)
 	} else {
 		builder.WriteString(NoSemanticSampleGuidance)
+	}
+	if available.userLimits {
+		builder.WriteString(UserLimitsGuidance)
 	}
 	builder.WriteString(QuestionGuidance)
 	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC%s).", local.Format("2006-01-02 15:04:05"), formatUTCOffset(offset)))

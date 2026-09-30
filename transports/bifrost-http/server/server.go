@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -279,6 +280,11 @@ type BifrostHTTPServer struct {
 	// VirtualKeyBusinessUnitResolver names each VK's owning business unit on the
 	// governance read paths. Nil on OSS builds; set by the enterprise wrapper.
 	VirtualKeyBusinessUnitResolver handlers.VirtualKeyBusinessUnitResolver
+	// WarpUserGovernanceReader answers Warp's describe_user_limits: what an
+	// access profile lets one person spend. Nil on OSS builds, which have no
+	// per-user governance, so Warp does not offer the tool; set by the
+	// enterprise wrapper before RegisterAPIRoutes, like the resolvers above.
+	WarpUserGovernanceReader warp.UserGovernanceReader
 
 	SidekiqRunner *sidekiq.Runner
 	// GovernanceHandler is kept so the expired-key cleanup scheduler can be started and stopped.
@@ -2514,6 +2520,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
 		return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp)
+	}, handlers.WarpResolvers{
+		ExternalQuotaBudgets: s.ExternalQuotaBudgetResolver,
+		VirtualKeyAssignees:  s.VirtualKeyAssigneeResolver,
+		UserGovernance:       s.WarpUserGovernanceReader,
 	})
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()

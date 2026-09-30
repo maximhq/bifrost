@@ -386,7 +386,7 @@ type UpdateVirtualKeyRequest struct {
 	CalendarAligned   *bool                        `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
 	ResetBudgetUsage  *bool                        `json:"reset_budget_usage,omitempty"`
-	ExpiresAt         *string                      `json:"expires_at,omitempty"`          // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 	// DeleteAfterExpire is tri-state on the wire: omitted leaves the current value, null
 	// clears it back to inheriting client.delete_expired_virtual_keys, true/false set it.
 	// A value requires an expiry.
@@ -1414,22 +1414,39 @@ func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configs
 	hydrateVKGovernanceFromStore(ctx, h.configStore, vk)
 }
 
+// vkModelConfigReader is the one store read hydrateVKGovernanceFromStore
+// needs, so a caller holding less than a whole ConfigStore (Warp's tests, a
+// narrowed reader) can still hydrate a row.
+type vkModelConfigReader interface {
+	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]configstoreTables.TableModelConfig, error)
+}
+
 // hydrateVKGovernanceFromStore is the store-only form of hydrateVKGovernance so
 // producers without a handler (the VirtualKeyRotator) can hydrate a row too.
-func hydrateVKGovernanceFromStore(ctx context.Context, configStore configstore.ConfigStore, vk *configstoreTables.TableVirtualKey) {
+// It logs and leaves the row alone on a read error; callers that must not
+// serve a bare row on a failed read use hydrateVKGovernanceFromStoreErr.
+func hydrateVKGovernanceFromStore(ctx context.Context, configStore vkModelConfigReader, vk *configstoreTables.TableVirtualKey) {
+	if err := hydrateVKGovernanceFromStoreErr(ctx, configStore, vk); err != nil {
+		logger.Error("failed to load model configs for VK governance hydration: %v", err)
+	}
+}
+
+// hydrateVKGovernanceFromStoreErr is hydrateVKGovernanceFromStore returning
+// the read error instead of logging it.
+func hydrateVKGovernanceFromStoreErr(ctx context.Context, configStore vkModelConfigReader, vk *configstoreTables.TableVirtualKey) error {
 	if vk == nil {
-		return
+		return nil
 	}
 	mcs, err := configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
 	if err != nil {
-		logger.Error("failed to load model configs for VK governance hydration: %v", err)
-		return
+		return err
 	}
 	ptrs := make([]*configstoreTables.TableModelConfig, len(mcs))
 	for i := range mcs {
 		ptrs[i] = &mcs[i]
 	}
 	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs), buildVKModelBudgetsIndex(ptrs))
+	return nil
 }
 
 // buildVKModelConfigIndex builds a lookup map of VK-scoped model configs keyed by
@@ -1476,16 +1493,26 @@ func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []c
 // (resolver nil) and for non-AP-managed VKs (resolver returns nil). A resolver error
 // degrades gracefully to the VK's own rows rather than failing the whole read.
 func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
-	if h.externalQuotaBudgetResolver == nil || vk == nil {
-		return
-	}
-	ext, err := h.externalQuotaBudgetResolver(ctx, vk)
-	if err != nil {
+	if _, err := applyExternalQuotaBudgets(ctx, h.externalQuotaBudgetResolver, vk); err != nil {
 		logger.Error("failed to resolve external budgets for VK %s: %v", vk.ID, err)
-		return
+	}
+}
+
+// applyExternalQuotaBudgets overlays a resolver's answer onto a key row, for
+// every read path that shows a key's governance - the governance handler and
+// Warp's describe_virtual_key alike. It returns the result so a caller can
+// name what governs the key (the sources on each budget); nil when the
+// resolver had nothing to say or there is no resolver.
+func applyExternalQuotaBudgets(ctx context.Context, resolver ExternalQuotaBudgetResolver, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+	if resolver == nil || vk == nil {
+		return nil, nil
+	}
+	ext, err := resolver(ctx, vk)
+	if err != nil {
+		return nil, err
 	}
 	if ext == nil {
-		return
+		return nil, nil
 	}
 	// The VK is access-profile-managed: its own budget/rate-limit rows are untracked
 	// mirrors (reset to current_usage=0 at adoption and never charged), so surface the
@@ -1499,6 +1526,7 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	}
 	vk.Budgets = budgets
 	vk.RateLimit = ext.RateLimit
+	return ext, nil
 }
 
 // applyAssignees fills in the AssignedUser of each virtual key from the injected

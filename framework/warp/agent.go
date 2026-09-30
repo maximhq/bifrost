@@ -159,13 +159,23 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance Governanc
 	return &Agent{
 		chat:             chat,
 		cost:             cost,
-		tools:            buildToolsFor(searcher),
+		tools:            buildToolsFor(searcher, false),
 		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry()},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,
 		timezone:         timezone,
 	}
+}
+
+// SetGovernanceExtras hands the agent the two governance overlays the service
+// may have been given: the key decorator and the per-user reader. The tool set
+// is rebuilt because describe_user_limits is only offered when there is a
+// reader to answer it. Called once, before Run.
+func (a *Agent) SetGovernanceExtras(decorator VirtualKeyDecorator, users UserGovernanceReader) {
+	a.deps.vkDecorator = decorator
+	a.deps.userGovernance = users
+	a.tools = buildToolsFor(a.deps.semantic, users != nil)
 }
 
 // accumulateUsage folds one iteration's usage into the running total.
@@ -495,7 +505,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// a.tools is buildToolsFor's fixed output for this deployment's semantic
 	// search availability (see NewAgent), so this is the matching memoized
 	// declaration set - parsed once for the process, not once per turn.
-	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil)
+	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil, a.deps != nil && a.deps.userGovernance != nil)
 	if err != nil {
 		emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
 		return
@@ -511,7 +521,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// system item. The Responses API models instructions as a property of the
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
-	instructions := systemInstructions(a.config, a.deps != nil && a.deps.semantic != nil, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
+	instructions := systemInstructionsFor(a.config, toolAvailability{
+		semantic:   a.deps != nil && a.deps.semantic != nil,
+		userLimits: a.deps != nil && a.deps.userGovernance != nil,
+	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	// conversationTokens tracks the running estimate behind

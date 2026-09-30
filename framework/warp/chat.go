@@ -157,6 +157,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// mid-turn cannot leave the agent searching one backend while it hydrates
 	// details from another - or hand it a nil reader it will dereference.
 	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
+	agent.SetGovernanceExtras(s.vkDecorator, s.userGovernance)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)
