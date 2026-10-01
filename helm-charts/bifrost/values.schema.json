@@ -1851,6 +1851,10 @@
                   },
                   "rate_limit_id": {
                     "type": "string"
+                  },
+                  "access_profile": {
+                    "type": "string",
+                    "description": "Enterprise: name of the access profile (declared under accessProfiles) this customer holds, in place of budgets and a rate limit of its own. Under source_of_truth split it applies when new or changed and dashboard changes are kept otherwise; under config.json it is enforced on every startup and an entry without it has its profile removed."
                   }
                 },
                 "required": ["id", "name"]
@@ -1878,6 +1882,10 @@
                   },
                   "business_unit_id": {
                     "type": "string"
+                  },
+                  "access_profile": {
+                    "type": "string",
+                    "description": "Enterprise: name of the access profile (declared under accessProfiles) this team holds, in place of budgets and a rate limit of its own. Under source_of_truth split it applies when new or changed and dashboard changes are kept otherwise; under config.json it is enforced on every startup and an entry without it has its profile removed."
                   },
                   "profile": {
                     "type": "object"
@@ -1918,6 +1926,10 @@
                   "claims": {
                     "type": "object"
                   },
+                  "access_profile": {
+                    "type": "string",
+                    "description": "Enterprise: name of the access profile (declared under accessProfiles) this business unit holds, in place of budgets and a rate limit of its own. Under source_of_truth split it applies when new or changed and dashboard changes are kept otherwise; under config.json it is enforced on every startup and an entry without it has its profile removed."
+                  },
                   "teamIds": {
                     "type": "array",
                     "items": {
@@ -1941,7 +1953,7 @@
                   },
                   "dac": {
                     "type": "string",
-                    "enum": ["own-data", "team-data", "all-data"],
+                    "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
                     "default": "all-data"
                   },
                   "entity_dac": {
@@ -1949,7 +1961,7 @@
                     "description": "Per-entity DAC overrides keyed by resource name. Each entry narrows or widens the role's global dac for that one entity; unlisted entities follow dac. Resources accepting an override as of this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers, BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules, GuardrailsConfig, MCPGateway, VirtualMCPs, Projects. Names are not enumerated here so a resource added by a newer Bifrost works without a chart upgrade; an unrecognised name is logged and skipped at startup. Config is authoritative - the role's whole override set is replaced on each sync, and omitting entity_dac clears it.",
                     "additionalProperties": {
                       "type": "string",
-                      "enum": ["own-data", "team-data", "all-data"]
+                      "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"]
                     }
                   },
                   "access_profile": {
@@ -2107,6 +2119,12 @@
                           "description": "Probability weight for this target (must be > 0, all weights must sum to 1)",
                           "exclusiveMinimum": 0,
                           "maximum": 1
+                        },
+                        "ttft_timeout_ms": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 300000,
+                          "description": "Time-to-first-token deadline in milliseconds for streaming requests routed to this target. A slow attempt is cut off and the next fallback runs; the last attempt never is. Omit to disable."
                         }
                       },
                       "required": ["weight"]
