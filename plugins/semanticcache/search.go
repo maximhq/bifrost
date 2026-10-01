@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -177,7 +178,7 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	switch {
 	case embedding.EmbeddingStr != nil:
 		var vals []float32
-		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err == nil {
+		if err := sonic.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err == nil {
 			return vals, inputTokens, nil
 		}
 		// encoding_format=base64 packs little-endian float32s rather than a JSON array.
