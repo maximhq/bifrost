@@ -172733,8 +172733,10 @@
                   "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
                   "});",
                   "if (!rr) { return; }",
-                  "pm.test('115.3 Sol preserves reasoning_effort none on the wire', function () {",
-                  "  pm.expect(rr.reasoning_effort).to.eql('none');",
+                  "pm.test('115.3 Sol chat is routed to Responses and keeps reasoning effort none on the wire', function () {",
+                  "  pm.expect((body.extra_fields || {}).converted_request_type, 'compat force_reasoning_only_models_to_responses should route Sol chat to Responses: ' + pm.response.text()).to.eql('responses');",
+                  "  pm.expect(rr.reasoning, 'reasoning missing on the Responses body: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('none');",
                   "});",
                   "pm.test('115.3 Sol returns the required function call while reasoning is disabled', function () {",
                   "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
@@ -202546,6 +202548,800 @@
                 "model",
                 "openrouter%2Fopenai%2Fgpt-5",
                 "converse"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "167. DeepSeek served-model pricing (served-model)",
+      "description": "DeepSeek keeps accepting retired model ids (deepseek-v4-flash) but serves deepseek-flash behind them and bills at its price. The DeepSeek provider stamps the served model on routing_info.server_side_fallback_model, which pricing resolves ahead of the requested model. Two sources feed it: on the default (OpenAI-compatible) endpoint the response `model` names deepseek-flash, so the stamp must equal the response model; DeepSeek's Anthropic endpoint echoes the requested id back, so there the stamp comes from the datasheet entry's server_side_model and must equal deepseek-flash. The Anthropic rows go through the harness profile's deepseek-v4-flash-anthropic alias (use_anthropic_endpoints). Each endpoint is pinned on chat and Responses, non-streaming (body field plus the x-bifrost-routing-info-server-side-fallback-model header) and streaming (the terminal usage chunk / response.completed event, which is what pricing reads). The default-endpoint text completion stream case pins the final chunk, which Bifrost builds with the requested id and must still carry the served model.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash chat non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash chat stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.usage) { target = ev; }",
+                  "});",
+                  "pm.test('stream carried the usage chunk', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = (target || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash text completion stream reports served model on the final chunk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.usage) { target = ev; }",
+                  "});",
+                  "pm.test('stream carried the usage chunk', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = (target || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"prompt\": \"Hello\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash responses non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash responses stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.type === 'response.completed' || ev.type === 'response.incomplete') { target = ev; }",
+                  "});",
+                  "pm.test('stream carried a terminal response.completed or response.incomplete event', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = ((target || {}).response || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic chat non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic chat stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.usage) { target = ev; }",
+                  "});",
+                  "pm.test('stream carried the usage chunk', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = (target || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic responses non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic responses stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.type === 'response.completed' || ev.type === 'response.incomplete') { target = ev; }",
+                  "});",
+                  "pm.test('stream carried a terminal response.completed or response.incomplete event', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = ((target || {}).response || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "168. Reasoning-only models forced to Responses (reasoning-only-to-responses)",
+      "description": "The compat toggle force_reasoning_only_models_to_responses (on by default) routes /v1/chat/completions requests to the Responses API for models whose datasheet sets supports_reasoning_with_tool_calls: false, such as GPT-6 Sol. Before it existed, compat kept these requests on chat completions and turned reasoning off (dropped, or set to none) whenever tools were present. The plugin marks ChangeRequestType=ResponsesRequest whether or not tools are attached; core converts with ToResponsesRequest(), sets reasoning.summary to auto so the converted response carries readable reasoning, calls OpenAI Responses, and maps the result back to chat. Every case sends the targeted x-bf-compat header and reads extra_fields.raw_request to check what Bifrost sent.\n\n168.1 pins the non-streaming tool route: converted, effort high kept, summary auto requested, tool call mapped back. 168.2 is the streaming variant. 168.3 pins conversion without tools. 168.4 pins that a model without the flag (gpt-4o-mini) stays on chat completions.",
+      "item": [
+        {
+          "name": "168.1 openai/gpt-6-sol chat with tools is routed to Responses with reasoning kept - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.1 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('168.1 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('168.1 chat request was routed to Responses', function () {",
+                  "  pm.expect(ef.converted_request_type, 'expected responses: ' + pm.response.text()).to.eql('responses');",
+                  "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+                  "  pm.expect(rr.reasoning_effort, 'chat-shaped reasoning_effort leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+                  "});",
+                  "pm.test('168.1 reasoning effort high survives and a summary is requested', function () {",
+                  "  pm.expect(rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('high');",
+                  "  pm.expect(rr.reasoning.summary).to.eql('auto');",
+                  "});",
+                  "pm.test('168.1 required get_weather call comes back as a chat tool call', function () {",
+                  "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+                  "  pm.expect(msg, 'assistant message missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(msg.tool_calls, 'tool_calls missing: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "168.2 openai/gpt-6-sol chat stream with tools is routed to Responses - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.2 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text();",
+                  "var converted = false, toolName = null, sawDone = false, rr = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { sawDone = true; return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(data); } catch (e) { return; }",
+                  "  if ((chunk.extra_fields || {}).converted_request_type === 'responses') { converted = true; }",
+                  "  if ((chunk.extra_fields || {}).raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "  (chunk.choices || []).forEach(function (ch) {",
+                  "    ((ch.delta || {}).tool_calls || []).forEach(function (t) {",
+                  "      if (t.function && t.function.name) { toolName = t.function.name; }",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('168.2 stream chunks report the Responses conversion', function () {",
+                  "  pm.expect(converted, 'no chunk carried converted_request_type=responses: ' + text.slice(0, 1500)).to.equal(true);",
+                  "});",
+                  "pm.test('168.2 required get_weather call streams back as a chat tool-call delta', function () {",
+                  "  pm.expect(toolName, 'no tool-call delta: ' + text.slice(0, 1500)).to.eql('get_weather');",
+                  "});",
+                  "pm.test('168.2 stream terminates with [DONE]', function () {",
+                  "  pm.expect(sawDone, 'missing [DONE]: ' + text.slice(-800)).to.equal(true);",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('168.2 outbound request captured on the stream', function () {",
+                  "  pm.expect(rr, 'raw_request missing from every chunk: ' + text.slice(-1500)).to.be.an('object');",
+                  "});",
+                  "pm.test('168.2 reasoning effort high survives and a summary is requested', function () {",
+                  "  pm.expect(rr && rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+                  "  pm.expect(rr && rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('high');",
+                  "  pm.expect(rr.reasoning.summary).to.eql('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "168.3 openai/gpt-6-sol chat without tools is still routed to Responses - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.3 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('168.3 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('168.3 chat request was routed to Responses', function () {",
+                  "  pm.expect(ef.converted_request_type, 'expected responses: ' + pm.response.text()).to.eql('responses');",
+                  "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+                  "  pm.expect(rr.reasoning_effort, 'chat-shaped reasoning_effort leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+                  "});",
+                  "pm.test('168.3 reasoning effort low survives and a summary is requested', function () {",
+                  "  pm.expect(rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('low');",
+                  "  pm.expect(rr.reasoning.summary).to.eql('auto');",
+                  "});",
+                  "pm.test('168.3 assistant text returned', function () {",
+                  "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+                  "  pm.expect(msg && msg.content, 'content missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "168.4 openai/gpt-4o-mini chat with tools stays on chat completions - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.4 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "pm.test('168.4 model without the datasheet flag is not converted', function () {",
+                  "  pm.expect(ef.converted_request_type, 'unexpected conversion: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
               ]
             }
           }
