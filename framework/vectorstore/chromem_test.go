@@ -311,6 +311,38 @@ func TestChromemStore_Pagination(t *testing.T) {
 	assert.Len(t, results, 4, "an oversized limit returns the remainder, not a panic")
 }
 
+// A paging read hands back the stored vectors only when it is asked to, the
+// same opt-in the Weaviate backend honours: a listing that wants ids must not
+// carry a vector per row, and a caller that needs them must get what was
+// stored.
+func TestChromemStore_GetAllIncludesVectorsOnRequest(t *testing.T) {
+	ts := NewChromemTestSetup(t)
+	defer ts.Cleanup(t)
+
+	stored := map[string][]float32{}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("vector-doc-%d", i)
+		embedding := make([]float32, ChromemTestDimension)
+		embedding[i] = 1
+		stored[id] = embedding
+		require.NoError(t, ts.Store.Add(ts.ctx, ChromemTestNamespace, id, embedding, map[string]interface{}{"key": id}))
+	}
+
+	plain, _, err := ts.Store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, plain, 3)
+	for _, result := range plain {
+		assert.Nil(t, result.Vector, "vectors are opt-in")
+	}
+
+	withVectors, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, withVectors, 3)
+	for _, result := range withVectors {
+		assert.Equal(t, stored[result.ID], result.Vector)
+	}
+}
+
 func TestChromemStore_DimensionHandling(t *testing.T) {
 	ts := NewChromemTestSetup(t)
 	defer ts.Cleanup(t)

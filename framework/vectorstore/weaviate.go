@@ -202,10 +202,13 @@ func (s *WeaviateStore) GetChunks(ctx context.Context, className string, ids []s
 func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
 	where := buildWeaviateFilter(queries)
 
+	additional := []graphql.Field{{Name: "id"}}
+	includeVectors := IncludeVectorsRequested(ctx)
+	if includeVectors {
+		additional = append(additional, graphql.Field{Name: "vector"})
+	}
 	fields := []graphql.Field{
-		{Name: "_additional", Fields: []graphql.Field{
-			{Name: "id"},
-		}},
+		{Name: "_additional", Fields: additional},
 	}
 	for _, field := range selectFields {
 		fields = append(fields, graphql.Field{Name: field})
@@ -216,10 +219,20 @@ func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []
 		WithLimit(int(limit)).
 		WithFields(fields...)
 
+	// Weaviate's cursor walks a whole class and refuses a filter beside it, so
+	// a filtered read pages by offset instead and its cursor says so. An offset
+	// read cannot go past QUERY_MAXIMUM_RESULTS, 10,000 by default: a filter
+	// that selects more than that has to be narrowed by the caller.
+	offset := 0
 	if where != nil {
 		search = search.WithWhere(where)
-	}
-	if cursor != nil {
+		if cursor != nil && *cursor != "" {
+			if _, err := fmt.Sscanf(*cursor, weaviateOffsetCursorPrefix+"%d", &offset); err != nil || offset < 0 {
+				return nil, nil, fmt.Errorf("%w: invalid cursor %q for a filtered read", ErrQuerySyntax, *cursor)
+			}
+			search = search.WithOffset(offset)
+		}
+	} else if cursor != nil {
 		search = search.WithAfter(*cursor)
 	}
 
@@ -273,13 +286,31 @@ func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []
 				searchResult.ID = id
 				nextCursor = &id
 			}
+			if includeVectors {
+				searchResult.Vector = VectorFromAdditional(additional["vector"])
+			}
 		}
 
 		results = append(results, searchResult)
 	}
 
+	if where != nil {
+		nextCursor = nil
+		if limit > 0 && int64(len(results)) >= limit {
+			next := fmt.Sprintf("%s%d", weaviateOffsetCursorPrefix, offset+len(results))
+			nextCursor = &next
+		}
+	}
 	return results, nextCursor, nil
 }
+
+// weaviateOffsetCursorPrefix marks the cursor of a filtered read, which is an
+// offset, so it is never mistaken for the object id an unfiltered one carries.
+const weaviateOffsetCursorPrefix = "offset:"
+
+// FiltersVectorReadsOnServer reports that a filtered read is served by the
+// class's own indexes.
+func (s *WeaviateStore) FiltersVectorReadsOnServer() bool { return true }
 
 // GetNearest with explicit filters only
 func (s *WeaviateStore) GetNearest(
@@ -400,11 +431,18 @@ func (s *WeaviateStore) GetNearest(
 }
 
 // Delete removes multiple objects by ID
+// Delete removes one object. Deleting one that is not there is not an error,
+// as on the other backends: Weaviate answers 404, and a caller clearing out
+// an id it may never have written has nothing to act on.
 func (s *WeaviateStore) Delete(ctx context.Context, className string, id string) error {
-	return s.client.Data().Deleter().
+	err := s.client.Data().Deleter().
 		WithClassName(className).
 		WithID(id).
 		Do(ctx)
+	if isWeaviateNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries []Query) ([]DeleteResult, error) {

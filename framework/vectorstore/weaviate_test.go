@@ -354,6 +354,18 @@ func TestWeaviateStore_Integration(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup(t)
 
+	// Weaviate answers 404 for an id it does not have. Every other backend
+	// treats that as nothing to do, and a caller clearing out an id it may
+	// never have written cannot act on the difference.
+	t.Run("Delete of a missing object is not an error", func(t *testing.T) {
+		testKey := generateUUID()
+		require.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, testKey))
+
+		require.NoError(t, setup.Store.Add(setup.ctx, TestClassName, testKey, generateTestEmbedding(TestEmbeddingDim), map[string]interface{}{"type": "document"}))
+		require.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, testKey))
+		require.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, testKey), "deleting it a second time")
+	})
+
 	t.Run("Add and GetChunk", func(t *testing.T) {
 		testKey := generateUUID()
 		embedding := generateTestEmbedding(TestEmbeddingDim)
