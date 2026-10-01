@@ -41,13 +41,18 @@ type TableMCPClient struct {
 	// Leaving the column plain-nullable is what lets the migration tell
 	// "pre-existing, needs backfill" (NULL) apart from "explicitly set".
 	NeedsSessionStickiness *bool  `json:"needs_session_stickiness,omitempty"`
-	ToolPricingJSON        string `gorm:"type:text" json:"-"`                      // JSON serialized map[string]float64
-	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global; negative values are rejected)
-	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"` // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
+	ToolPricingJSON        string `gorm:"type:text" json:"-"`                       // JSON serialized map[string]float64
+	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`      // Per-client tool sync interval in seconds (0 = use global; negative values are rejected)
+	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"`  // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
+	MaxInstructionsLength  int    `gorm:"default:0" json:"max_instructions_length"` // Per-client cap on forwarded instructions in bytes (0 = use global from tool_manager_config)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
 	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	// DiscoveredInstructions is the upstream's initialize `instructions`. Persisted for the
+	// same reason the tools above are: a per-call client holds no connection to re-read it
+	// from, so without this a restart leaves it serving tools with no instructions.
+	DiscoveredInstructions string `gorm:"type:text" json:"-"`
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"

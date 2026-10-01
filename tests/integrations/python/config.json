@@ -1087,6 +1087,20 @@
         "fallbacks": [
           "openai_pc_auto/"
         ]
+      },
+      {
+        "id": "harness-requested-route-rewrite",
+        "priority": 911,
+        "name": "Harness requested route: rewrite the model",
+        "description": "Provider harness only (folder 120). Rewrites the caller's model to gpt-4o-mini so the response can report both the routed model and the model the caller sent (routing_info.requested_model and x-bifrost-routing-info-requested-model). Matches nothing without x-harness-requested-route: rewrite.",
+        "cel_expression": "\"x-harness-requested-route\" in headers && headers[\"x-harness-requested-route\"] == \"rewrite\"",
+        "targets": [
+          {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "weight": 1
+          }
+        ]
       }
     ],
     "virtual_keys": [

@@ -127,8 +127,8 @@ func ApplyModelInfo(model *schemas.Model, entry *PricingEntry) {
 	if entry.CacheCreationInputTokenCost != nil {
 		pricing.InputCacheWrite = new(formatCost(*entry.CacheCreationInputTokenCost))
 	}
-	if entry.SearchContextCostPerQuery != nil {
-		pricing.WebSearch = new(formatCost(*entry.SearchContextCostPerQuery))
+	if entry.WebSearchCostPerRequest != nil {
+		pricing.WebSearch = new(formatCost(*entry.WebSearchCostPerRequest))
 	}
 	if entry.CostPerRequest != nil {
 		pricing.Request = new(formatCost(*entry.CostPerRequest))

@@ -98,6 +98,8 @@ type ClientConfig struct {
 	MaxRequestBodySizeMB                  int                                   `json:"max_request_body_size_mb"`                    // The maximum request body size in MB
 	Compat                                CompatConfig                          `json:"compat"`                                      // Compat plugin configuration
 	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
+	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
+	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
 	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
@@ -109,6 +111,7 @@ type ClientConfig struct {
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
+	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
@@ -203,6 +206,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.HideDeletedVirtualKeysInFilters {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
 	}
+	if c.DeleteExpiredVirtualKeys {
+		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
+	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful
 	// config change that should be reflected in the hash. The migration that introduces
@@ -216,6 +222,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpAgentDepth:" + strconv.Itoa(c.MCPAgentDepth)))
 	} else {
 		hash.Write([]byte("mcpAgentDepth:0"))
+	}
+	// No else: 0 is the default, so writing ":0" would change every existing config's hash.
+	if c.MCPMaxInstructionsPerClient > 0 {
+		hash.Write([]byte("mcpMaxInstructionsPerClient:" + strconv.Itoa(c.MCPMaxInstructionsPerClient)))
+	}
+	if c.MCPMaxInstructionsTotal > 0 {
+		hash.Write([]byte("mcpMaxInstructionsTotal:" + strconv.Itoa(c.MCPMaxInstructionsTotal)))
 	}
 
 	if c.MCPToolExecutionTimeout > 0 {
@@ -240,6 +253,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.MCPDisableAutoToolInject {
 		hash.Write([]byte("mcpDisableAutoToolInject:true"))
 	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPEnableTempTokenAuth {
@@ -476,6 +491,8 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	} else {
 		h.Write([]byte("toolMgrDisableAutoInject:false"))
 	}
+	// Only hash a non-default value, so a config written before this field existed keeps
+	// producing the same hash on upgrade.
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -1055,6 +1072,10 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
 	}
+	// Hash DeleteAfterExpire only when set, for the same reason
+	if vk.DeleteAfterExpire != nil {
+		hash.Write([]byte(fmt.Sprintf("deleteAfterExpire:%t", *vk.DeleteAfterExpire)))
+	}
 	// Hash TeamID
 	if vk.TeamID != nil {
 		hash.Write([]byte("teamID:" + *vk.TeamID))
@@ -1429,6 +1450,22 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.SemanticSettings = settingsHash
 	}
 
+	if config.Classifier != "" {
+		settingsHash, err := hashComplexityValue(normalized.Classifier)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash classifier settings: %w", err)
+		}
+		hashes.ClassifierSettings = settingsHash
+	}
+
+	if normalized.Jev != nil {
+		settingsHash, err := hashComplexityValue(normalized.Jev)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash jev settings: %w", err)
+		}
+		hashes.JevSettings = settingsHash
+	}
+
 	if normalized.LLM != nil {
 		settingsHash, err := hashComplexityValue(normalized.LLM)
 		if err != nil {
@@ -1448,6 +1485,7 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 	return hashes, nil
 }
 
+// legacyMediumKeywordsHashFromSectionHashes combines legacy code and technical hashes into the canonical medium hash.
 func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (string, error) {
 	if codeHash == "" && technicalHash == "" {
 		return "", nil
@@ -1461,6 +1499,7 @@ func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (
 	})
 }
 
+// hashComplexityValue returns a stable hash for one complexity configuration section.
 func hashComplexityValue(value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -1491,6 +1530,8 @@ type routingTargetHashPayload struct {
 	Model    string  `json:"model"`
 	KeyID    string  `json:"key_id"`
 	Weight   float64 `json:"weight"`
+	// TTFTTimeoutMs is omitted when unset so targets without it keep their hash.
+	TTFTTimeoutMs int `json:"ttft_timeout_ms,omitempty"`
 }
 
 // derefStr returns the dereferenced value of s, or "" if s is nil.
@@ -1499,6 +1540,14 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// derefInt returns the dereferenced value of n, or 0 if n is nil.
+func derefInt(n *int) int {
+	if n == nil {
+		return 0
+	}
+	return *n
 }
 
 // Skips: CreatedAt, UpdatedAt (dynamic fields)
@@ -1528,8 +1577,8 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	targets := make([]tables.TableRoutingTarget, len(r.Targets))
 	copy(targets, r.Targets)
 	sort.Slice(targets, func(i, j int) bool {
-		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight}
-		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight}
+		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight, TTFTTimeoutMs: derefInt(targets[i].TTFTTimeoutMs)}
+		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight, TTFTTimeoutMs: derefInt(targets[j].TTFTTimeoutMs)}
 		di, err := sonic.Marshal(pi)
 		if err != nil {
 			return false
@@ -1541,7 +1590,7 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 		return string(di) < string(dj)
 	})
 	for _, t := range targets {
-		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight}
+		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight, TTFTTimeoutMs: derefInt(t.TTFTTimeoutMs)}
 		data, err := sonic.Marshal(payload)
 		if err != nil {
 			return "", err

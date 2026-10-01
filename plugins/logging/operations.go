@@ -2177,6 +2177,7 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 					NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
 				}
 			}
+			respUsage.ToolUsage = usage.ToolUsage.DeepCopy()
 		}
 		return &schemas.BifrostResponse{
 			ResponsesResponse: &schemas.BifrostResponsesResponse{

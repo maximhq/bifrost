@@ -53,6 +53,8 @@ const (
 	HeaderBifrostRoutingInfoPrimaryProvider         = "x-bifrost-routing-info-primary-provider"
 	HeaderBifrostRoutingInfoPrimaryModel            = "x-bifrost-routing-info-primary-model"
 	HeaderBifrostRoutingInfoServerSideFallbackModel = "x-bifrost-routing-info-server-side-fallback-model"
+	HeaderBifrostRoutingInfoRequestedProvider       = "x-bifrost-routing-info-requested-provider"
+	HeaderBifrostRoutingInfoRequestedModel          = "x-bifrost-routing-info-requested-model"
 )
 
 // ApplyBifrostStreamResponseHeaders emits the routed-identity headers for a
@@ -153,6 +155,12 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	}
 	if ri.ServerSideFallbackModel != nil && *ri.ServerSideFallbackModel != "" {
 		ctx.Response.Header.Set(HeaderBifrostRoutingInfoServerSideFallbackModel, *ri.ServerSideFallbackModel)
+	}
+	if ri.RequestedProvider != "" {
+		ctx.Response.Header.Set(HeaderBifrostRoutingInfoRequestedProvider, string(ri.RequestedProvider))
+	}
+	if ri.RequestedModel != "" {
+		ctx.Response.Header.Set(HeaderBifrostRoutingInfoRequestedModel, ri.RequestedModel)
 	}
 	// Fallback index lives on the request context, not the response struct.
 	// 0 = primary provider succeeded; non-zero = which fallback fired

@@ -9,13 +9,13 @@ import WarpHistory from "@/components/warp/warpHistory";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
 import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
-import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
+import { useWarp } from "@/lib/contexts/warpContext";
 import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
 import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ArrowDown, Database, History, Loader2, SquarePen, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const STARTERS = [
 	"What did I spend on each provider in the last 7 days?",
@@ -51,14 +51,6 @@ export default function WarpPanel() {
 		if (warp?.isOpen) closeRef.current?.focus();
 	}, [warp?.isOpen]);
 
-	const appendTurn = warp?.appendTurn;
-	const onTurnComplete = useCallback(
-		(turn: WarpTurn) => {
-			if (turn.content || turn.error) appendTurn?.(turn);
-		},
-		[appendTurn],
-	);
-
 	const {
 		streamingText,
 		streamingToolCalls,
@@ -71,7 +63,7 @@ export default function WarpPanel() {
 		discard,
 		resetConversation,
 		openConversation,
-	} = useWarpStream({ onTurnComplete });
+	} = useWarpStream();
 
 	const { containerRef, contentRef, isPinned, scrollToBottom } = useWarpAutoScroll();
 

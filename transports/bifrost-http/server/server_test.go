@@ -16,6 +16,9 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
@@ -35,7 +38,7 @@ func (s *reloadVirtualKeyConfigStore) GetVirtualKey(context.Context, string) (*c
 }
 
 // GetModelConfigsByScopeAndScopeIDs returns no scoped model configs.
-func (s *reloadVirtualKeyConfigStore) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string) ([]configstoreTables.TableModelConfig, error) {
+func (s *reloadVirtualKeyConfigStore) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string, ...*gorm.DB) ([]configstoreTables.TableModelConfig, error) {
 	return nil, nil
 }
 
@@ -66,6 +69,11 @@ func (p *reloadVirtualKeyPlugin) GetGovernanceStore() governance.GovernanceStore
 
 // reloadVirtualKeyToolManager provides an empty MCP tool set.
 type reloadVirtualKeyToolManager struct{}
+
+// GetMCPServerInstructions returns no instructions.
+func (reloadVirtualKeyToolManager) GetMCPServerInstructions(context.Context) string {
+	return ""
+}
 
 // GetAvailableMCPTools returns no tools.
 func (reloadVirtualKeyToolManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
@@ -1167,4 +1175,22 @@ func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testi
 
 	close(done)
 	writers.Wait()
+}
+
+func TestNotificationPublisher_ResolvesPublisherSetAfterRegistration(t *testing.T) {
+	s := &BifrostHTTPServer{Config: &lib.Config{}}
+	// Captured while the notification service does not exist yet, as RegisterAPIRoutes
+	// does when Bootstrap has not run.
+	publish := s.notificationPublisher()
+	require.NotNil(t, publish, "a handler registered early must still reach the publisher set later")
+
+	var got []schemas.NotificationInput
+	s.Config.NotificationPublisher = func(_ context.Context, input schemas.NotificationInput) (*schemas.Notification, error) {
+		got = append(got, input)
+		return &schemas.Notification{}, nil
+	}
+	_, err := publish(context.Background(), schemas.NotificationInput{Title: "late"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "late", got[0].Title)
 }

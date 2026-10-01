@@ -575,3 +575,50 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
 }
+
+// Only output_item.done carries a custom_tool_call's `input`, so the accumulator
+// must take that item wholesale.
+func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	const input = `{"cmd":"whoami","max_output_tokens":1000}`
+
+	shell := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("ctc_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Name:   schemas.Ptr("exec_command"),
+		},
+	}
+	complete := shell
+	complete.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+		CallID:                  schemas.Ptr("call_1"),
+		Name:                    schemas.Ptr("exec_command"),
+		ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: input},
+	}
+
+	chunks := []*ResponsesStreamChunk{
+		{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &shell}},
+		{ChunkIndex: 1, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta,
+			ItemID: schemas.Ptr("ctc_1"), Delta: schemas.Ptr(`{"cmd":"who`)}},
+		{ChunkIndex: 2, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDone,
+			ItemID: schemas.Ptr("ctc_1"), Input: schemas.Ptr(input)}},
+		{ChunkIndex: 3, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: &complete}},
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d: %+v", len(msgs), msgs)
+	}
+	tm := msgs[0].ResponsesToolMessage
+	if tm == nil || tm.ResponsesCustomToolCall == nil {
+		t.Fatalf("custom tool call lost: %+v", msgs[0])
+	}
+	if tm.ResponsesCustomToolCall.Input != input {
+		t.Fatalf("input = %q, want %q", tm.ResponsesCustomToolCall.Input, input)
+	}
+}

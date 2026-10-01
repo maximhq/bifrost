@@ -34,6 +34,9 @@ const mcpServerName = "bifrost"
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
 	GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool
+	// GetMCPServerInstructions returns the upstream instructions this request may see,
+	// already aggregated and size-bounded. Scoped by the same context the tool filter reads.
+	GetMCPServerInstructions(ctx context.Context) string
 	ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
@@ -350,14 +353,36 @@ func (h *MCPServerHandler) server() *server.MCPServer {
 	return h.mcpServer.Load()
 }
 
+// forwardServerInstructions answers initialize with the upstream servers' own usage guidance,
+// which the MCP spec carries in this field and which a gateway that drops it eats on the
+// client's behalf. Runs as an AfterInitialize hook rather than through server.WithInstructions
+// because that option is fixed at construction, and one server here serves every caller: the
+// text has to be resolved per request, from the same context the tool filter reads, or a caller
+// narrowed to one upstream would be handed the instructions of servers it cannot reach.
+//
+// Silent when the aggregate is empty, so no upstream instructions means no field at all rather
+// than an empty one.
+func (h *MCPServerHandler) forwardServerInstructions(ctx context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+	if result == nil {
+		return
+	}
+	if instructions := h.toolManager.GetMCPServerInstructions(ctx); instructions != "" {
+		result.Instructions = instructions
+	}
+}
+
 // buildServer registers every available tool on a fresh server. A tool's handler reads nothing
 // about the caller: what a request may see and call rides on its context, and both the tool filter
 // and the executor read it from there.
 func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *server.MCPServer {
+	hooks := &server.Hooks{}
+	hooks.AddAfterInitialize(h.forwardServerInstructions)
+
 	mcpServer := server.NewMCPServer(
 		mcpServerName,
 		version,
 		server.WithToolCapabilities(true),
+		server.WithHooks(hooks),
 	)
 	// Per-request tool filter so tools/list answers with what this request may see.
 	server.WithToolFilter(h.makeIncludeClientsFilter())(mcpServer)

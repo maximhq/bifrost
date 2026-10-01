@@ -13,6 +13,7 @@ import {
 	type EntitySelectorCommonProps,
 	type EntityLabelResolverProps,
 	type EntitySelectorModeProps,
+	useEntitySelectorPages,
 	useEntitySelectorSearch,
 } from "@/components/entitySelectors/entitySelector";
 import { useGetCustomerQuery, useGetCustomersQuery } from "@/lib/store";
@@ -35,35 +36,27 @@ interface CustomerSelectorOwnProps extends EntitySelectorCommonProps {
 export type CustomerSelectorProps = CustomerSelectorOwnProps & EntitySelectorModeProps;
 
 export function CustomerSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, ...props }: CustomerSelectorProps) {
-	const { open, setOpen, setSearch, debouncedSearch, skip, isDebouncing } = useEntitySelectorSearch();
+	const search = useEntitySelectorSearch();
 
-	const { data: customersData, isFetching, isError } = useGetCustomersQuery({ limit, search: debouncedSearch || undefined }, { skip });
+	const { currentData, isFetching, isError, refetch } = useGetCustomersQuery(
+		{ limit, offset: search.offset, search: search.debouncedSearch || undefined },
+		{ skip: search.skip },
+	);
 
-	// Memoized because multi mode hands this to react-select as defaultOptions,
-	// which re-syncs on identity change.
-	const options = useMemo(
+	// Memoized because multi mode hands the merged list to react-select as
+	// defaultOptions, which re-syncs on identity change.
+	const entries = useMemo(
 		() =>
-			(customersData?.customers ?? []).map((customer) => ({
+			currentData?.customers?.map((customer) => ({
 				value: customer.id,
 				label: customer.name || customer.id,
 			})),
-		[customersData],
+		[currentData],
 	);
 
+	const listProps = useEntitySelectorPages(search, { entries, totalCount: currentData?.total_count, isFetching, isError, refetch });
+
 	return (
-		<EntitySelector
-			{...props}
-			LabelResolver={CustomerLabelResolver}
-			entityLabel="customer"
-			entityLabelPlural="customers"
-			options={options}
-			isFetching={isFetching}
-			isError={isError}
-			open={open}
-			onOpenChange={setOpen}
-			onSearchChange={setSearch}
-			isSearching={isDebouncing || (isFetching && !!debouncedSearch)}
-			debouncedSearch={debouncedSearch}
-		/>
+		<EntitySelector {...props} LabelResolver={CustomerLabelResolver} entityLabel="customer" entityLabelPlural="customers" {...listProps} />
 	);
 }

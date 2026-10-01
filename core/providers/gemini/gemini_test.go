@@ -38,12 +38,13 @@ func TestGemini(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-3.1-flash-lite"},
 		},
-		VisionModel:          "gemini-2.5-flash",
-		EmbeddingModel:       "gemini-embedding-001",
-		TranscriptionModel:   "gemini-2.5-flash",
-		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
-		ImageGenerationModel: "gemini-2.5-flash-image",
-		ImageEditModel:       "gemini-3-pro-image-preview",
+		VisionModel:              "gemini-2.5-flash",
+		EmbeddingModel:           "gemini-embedding-001",
+		MultimodalEmbeddingModel: "gemini-embedding-2",
+		TranscriptionModel:       "gemini-2.5-flash",
+		SpeechSynthesisModel:     "gemini-2.5-flash-preview-tts",
+		ImageGenerationModel:     "gemini-2.5-flash-image",
+		ImageEditModel:           "gemini-3-pro-image-preview",
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
@@ -75,6 +76,7 @@ func TestGemini(t *testing.T) {
 			FileURL:                    false, // supported files via gemini files api
 			CompleteEnd2End:            true,
 			Embedding:                  true,
+			MultimodalEmbedding:        true,
 			Transcription:              false,
 			TranscriptionStream:        false,
 			SpeechSynthesis:            true,
@@ -5723,17 +5725,17 @@ func TestGoogleSearchBillingUnits(t *testing.T) {
 
 	chatQueries := func(r *gemini.GenerateContentResponse) *int {
 		u := r.ToBifrostChatResponse().Usage
-		if u == nil || u.CompletionTokensDetails == nil {
+		if u == nil || u.ToolUsage == nil {
 			return nil
 		}
-		return u.CompletionTokensDetails.NumSearchQueries
+		return schemas.Ptr(u.ToolUsage.WebSearch.NumRequests)
 	}
 	responsesQueries := func(r *gemini.GenerateContentResponse) *int {
 		u := r.ToResponsesBifrostResponsesResponse().Usage
-		if u == nil || u.OutputTokensDetails == nil {
+		if u == nil || u.ToolUsage == nil {
 			return nil
 		}
-		return u.OutputTokensDetails.NumSearchQueries
+		return schemas.Ptr(u.ToolUsage.WebSearch.NumRequests)
 	}
 
 	t.Run("gemini 3 bills per search query executed", func(t *testing.T) {
@@ -5782,9 +5784,8 @@ func TestGoogleSearchBillingUnits(t *testing.T) {
 			resps, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
 			require.Nil(t, bifrostErr)
 			for _, resp := range resps {
-				if resp.Usage != nil && resp.Usage.CompletionTokensDetails != nil &&
-					resp.Usage.CompletionTokensDetails.NumSearchQueries != nil {
-					billed = resp.Usage.CompletionTokensDetails.NumSearchQueries
+				if resp.Usage != nil && resp.Usage.ToolUsage != nil {
+					billed = schemas.Ptr(resp.Usage.ToolUsage.WebSearch.NumRequests)
 				}
 			}
 		}

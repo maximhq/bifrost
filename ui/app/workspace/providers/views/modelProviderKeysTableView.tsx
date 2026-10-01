@@ -247,7 +247,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				</div>
 			) : (
 				<div className="flex w-full flex-col gap-2 rounded-sm border">
-					<Table className="w-full table-fixed" data-testid="keys-table">
+					<Table className="w-full min-w-[560px] table-fixed" data-testid="keys-table">
 						<colgroup>
 							<col className="w-[64%]" />
 							<col className="w-[12%]" />

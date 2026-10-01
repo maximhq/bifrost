@@ -21,19 +21,13 @@ import {
 	useStartWarpBackfillMutation,
 	useUpdateWarpConfigMutation,
 } from "@/lib/store/apis/warpApi";
-import {
-	WARP_MAX_TEMPERATURE,
-	WARP_MIN_TEMPERATURE,
-	WARP_REASONING_EFFORTS,
-	type WarpBackfillJob,
-	type WarpConfigInput,
-} from "@/lib/types/warp";
+import { WARP_MAX_TEMPERATURE, WARP_MIN_TEMPERATURE, WARP_REASONING_EFFORTS, type WarpConfigInput } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	embeddingSpaceChanged,
@@ -42,7 +36,14 @@ import {
 	validateWarpEmbedding,
 	type WarpEmbeddingFields,
 } from "./warpConfig.utils";
-import { isFiniteNumber, validateWarpRetentionDays } from "./warpView.utils";
+import {
+	isFiniteNumber,
+	retainedWarpBackfillForSpace,
+	retainFinishedWarpBackfill,
+	type RetainedWarpBackfill,
+	validateWarpRetentionDays,
+	warpSavedSpaceKey,
+} from "./warpView.utils";
 
 /**
  * Sentinel for "any key". Radix rejects an empty-string SelectItem value, so the
@@ -142,8 +143,15 @@ export default function WarpView() {
 	const [form, setForm] = useState<WarpFormState>(EMPTY_FORM);
 	const [activeBackfillID, setActiveBackfillID] = useState<string | null>(null);
 	// The last terminal result, held so it survives the switch to the id-less
-	// status query. Cleared when a new backfill starts.
-	const [finishedBackfill, setFinishedBackfill] = useState<WarpBackfillJob | null>(null);
+	// status query. Cleared when a new backfill starts. Tagged with the
+	// embedding space it ran under, so a space change cannot leave it on screen
+	// as a completed run of a space nothing has indexed - see lastBackfill.
+	const [finishedBackfill, setFinishedBackfill] = useState<RetainedWarpBackfill | null>(null);
+	// The saved space observed while the pinned job was running. The server
+	// refuses a space change while a job is in flight, so this is the job's own
+	// space, captured before a save that lands after the job finishes could
+	// move savedSpaceKey off it. Null when no run has been observed.
+	const activeBackfillSpaceKey = useRef<string | null>(null);
 	const [backfillPeriod, setBackfillPeriod] = useState<string | undefined>(DEFAULT_BACKFILL_PERIOD);
 	const [backfillStart, setBackfillStart] = useState<Date | undefined>(() => getRangeForPeriod(DEFAULT_BACKFILL_PERIOD).from);
 	const [backfillEnd, setBackfillEnd] = useState<Date | undefined>(() => getRangeForPeriod(DEFAULT_BACKFILL_PERIOD).to);
@@ -222,12 +230,19 @@ export default function WarpView() {
 	});
 	const isBackfillActive =
 		backfillStatus?.status === "pending" || backfillStatus?.status === "running" || backfillStatus?.status === "cancelling";
-	// A live job always wins; otherwise fall back to the run that just ended.
-	const shownBackfill = backfillStatus?.id ? backfillStatus : finishedBackfill;
+	// The saved embedding space, as one comparable value. A finished run is only
+	// the state of the index while this is still the space it ran under.
+	const savedSpaceKey = warpSavedSpaceKey(config);
+	// A live job always wins; otherwise fall back to the run that just ended -
+	// but only while the saved space is still the one it ran under. Checked on
+	// every read, not cleared by an effect: the id-pinned poll can deliver the
+	// old space's terminal status after a save has already moved the space on,
+	// and a one-shot clear would have fired before that status arrived.
+	const lastBackfill = backfillStatus?.id ? backfillStatus : retainedWarpBackfillForSpace(finishedBackfill, savedSpaceKey);
 	// These embedding calls skip the plugin pipeline, so they never show up in
 	// the logs - this line is the only place their spend is visible.
-	const backfillSpend = shownBackfill
-		? formatWarpUsage({ total_tokens: shownBackfill.embedding_tokens, cost: { total_cost: shownBackfill.embedding_cost } })
+	const backfillSpend = lastBackfill
+		? formatWarpUsage({ total_tokens: lastBackfill.embedding_tokens, cost: { total_cost: lastBackfill.embedding_cost } })
 		: null;
 
 	// Adopt a job discovered by the id-less request. Without this a reload during
@@ -241,6 +256,19 @@ export default function WarpView() {
 		}
 	}, [activeBackfillID, backfillStatus?.id, backfillStatus?.status]);
 
+	// Remember which space the pinned job runs under, for the terminal retention
+	// below. Only once config has loaded: before that savedSpaceKey describes
+	// nothing, and tagging the job with it would hide the run once config lands.
+	// Captured once, never overwritten: the server accepts a space change the
+	// moment the job finishes on its side, while this poll can still say
+	// "running" for up to two seconds - and a config refetch landing in that
+	// window would re-tag the job with the new space, so its terminal status
+	// then passed the check it exists to fail.
+	const configLoaded = !!config;
+	useEffect(() => {
+		if (isBackfillActive && configLoaded && activeBackfillSpaceKey.current === null) activeBackfillSpaceKey.current = savedSpaceKey;
+	}, [isBackfillActive, configLoaded, savedSpaceKey]);
+
 	// Release the pinned id once the job has finished, or the view keeps asking
 	// about a completed backfill every two seconds for as long as it stays open.
 	// Keyed on the status string rather than isBackfillActive so this does not
@@ -253,10 +281,20 @@ export default function WarpView() {
 			// id-less request, which answers {status:"idle"} with no id for any
 			// deployment with no active job - so the counters and last_error of the
 			// run that just finished disappeared the moment it finished, which is
-			// exactly when someone wants to read them.
-			setFinishedBackfill(backfillStatus);
+			// exactly when someone wants to read them. Dropped instead when the job
+			// ran under a space that has since been saved over: the id-pinned poll
+			// still answers for it, but it describes rows the new space will never
+			// search.
+			setFinishedBackfill(retainFinishedWarpBackfill(backfillStatus, activeBackfillSpaceKey.current, savedSpaceKey));
+			activeBackfillSpaceKey.current = null;
 			setActiveBackfillID(null);
 		}
+		// Keyed on the status transition only, on purpose. With savedSpaceKey in
+		// the deps a space change would re-run this while the poll still holds
+		// the old job's "completed", and re-retain it under the new space - the
+		// exact leak the tag exists to stop. Both values are read fresh at
+		// execution time, since the closure is rebuilt every render.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [backfillStatus?.status]);
 
 	// A failed or cancelled run that got partway through the window can be
@@ -401,6 +439,17 @@ export default function WarpView() {
 		!!config?.configured &&
 		embeddingSpaceChanged(embeddingFields, savedEmbeddingFields) &&
 		normalizeWarpNamespace(form.namespace) === normalizeWarpNamespace(savedEmbeddingFields.namespace);
+	// A finished backfill describes the embedding space it ran under. Once the
+	// form has moved off that space - a different model, dimension or namespace
+	// - the card would show "Completed" over a full bar for rows the new space
+	// will never search, so it is hidden until the fields come back or a job
+	// runs under the new space (the server answers idle for the old one once
+	// the change is saved). A running job stays: it still needs its cancel.
+	const backfillSpaceEdited =
+		!isBackfillActive &&
+		(embeddingSpaceChanged(embeddingFields, savedEmbeddingFields) ||
+			normalizeWarpNamespace(form.namespace) !== normalizeWarpNamespace(savedEmbeddingFields.namespace));
+	const shownBackfill = backfillSpaceEdited ? null : lastBackfill;
 	const invalid =
 		missingRequired ||
 		iterationsInvalid ||
@@ -468,6 +517,10 @@ export default function WarpView() {
 			// A new run replaces the last one's result, so the panel never shows a
 			// finished job beside a running one.
 			setFinishedBackfill(null);
+			// The run starts under the space saved right now; the capture effect
+			// above would also record it, but not before a job that finishes
+			// between this response and the first poll has already gone terminal.
+			activeBackfillSpaceKey.current = savedSpaceKey;
 			setActiveBackfillID(status.id ?? null);
 			toast.success(restart ? "Warp embedding backfill restarted from the beginning." : "Warp embedding backfill started.");
 		} catch (error) {

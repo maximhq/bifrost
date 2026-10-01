@@ -261,6 +261,7 @@ Routing rules dynamically select the provider and model for each request based o
 | `scope_id` | Conditional | Required when `scope` is not `"global"` |
 | `chain_rule` | No | If `true`, re-evaluates the chain after this rule matches |
 | `fallbacks` | No | Ordered fallback list if the primary target fails. See [Fallback Fields](#fallback-fields) |
+| `ttft_timeout_ms` | No | Time-to-first-token (TTFT) cutoff for streaming requests, 1 to 300000 ms. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. See [TTFT cutoff](/providers/routing-rules#time-to-first-token-ttft-cutoff) |
 
 ### Target Fields
 
