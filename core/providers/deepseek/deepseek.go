@@ -157,15 +157,24 @@ func requiresDeepSeekThinkingDisabled(request *schemas.BifrostChatRequest) bool 
 }
 
 // stampServedModel records the model DeepSeek actually served as the server-side
-// fallback model when it differs from the requested one, so pricing follows it.
+// fallback model
 func stampServedModel(extraFields *schemas.BifrostResponseExtraFields, usage *schemas.BifrostLLMUsage, requested, served string) {
+	if served == "" {
+		return
+	}
+	if strings.EqualFold(served, requested) {
+		served = ""
+		if caps := providerUtils.CapabilitiesFor(schemas.DeepSeek, requested); caps != nil && caps.ServerSideModel != nil {
+			served = *caps.ServerSideModel
+		}
+	}
 	if served == "" || strings.EqualFold(served, requested) {
 		return
 	}
-	if extraFields != nil && extraFields.RoutingInfo.ServerSideFallbackModel == nil {
+	if extraFields != nil {
 		extraFields.RoutingInfo.ServerSideFallbackModel = new(served)
 	}
-	if usage != nil && usage.ServerSideFallbackModel == nil {
+	if usage != nil {
 		usage.ServerSideFallbackModel = new(served)
 	}
 }
