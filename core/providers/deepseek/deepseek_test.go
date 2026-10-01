@@ -67,8 +67,8 @@ func TestDeepseek(t *testing.T) {
 // DeepSeek keeps accepting retired model ids but serves the current model behind
 // them, naming that model in the response. requestedModel/servedModel mirror that.
 const (
-	requestedModel = "deepseek-v4-flash-exp"
-	servedModel    = "deepseek-v4-flash"
+	requestedModel = "deepseek-v4-flash"
+	servedModel    = "deepseek-flash"
 )
 
 // newServedModelServer answers every request with body, served as contentType.
@@ -157,8 +157,7 @@ func TestChatCompletion_NoServedModelWhenModelUnchanged(t *testing.T) {
 		t.Fatalf("NewDeepSeekProvider: %v", err)
 	}
 
-	request := servedModelChatRequest()
-	request.Model = servedModel
+	request := servedModelChatRequest() // newOpenAIChatResponse echoes requestedModel back
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	resp, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, request)
 	if bifrostErr != nil {
@@ -262,4 +261,104 @@ func TestResponsesStream_PricesServedModelOnFinalEvent(t *testing.T) {
 		t.Fatalf("final result is not a responses stream event: %#v", last)
 	}
 	assertServedModel(t, "RoutingInfo", last.ResponsesStreamResponse.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+// useDatasheetServedModel installs a capability resolver whose DeepSeek
+// requestedModel row names served as its server_side_model. The resolver is
+// process-global, so callers must not run in parallel.
+func useDatasheetServedModel(t *testing.T, served string) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider != schemas.DeepSeek || model != requestedModel {
+			return nil
+		}
+		return &schemas.ModelCapabilities{ServerSideModel: &served}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// DeepSeek's Anthropic endpoint echoes the requested id back, so the response
+// cannot reveal the served model and the datasheet has to.
+const echoedAnthropicResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"` + requestedModel + `","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+
+const echoedAnthropicStream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"" + requestedModel + "\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+	"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+	"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+	"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+	"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+	"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+func TestChatCompletion_AnthropicEndpointUsesDatasheetServerSideModel(t *testing.T) {
+	useDatasheetServedModel(t, servedModel)
+
+	server := newServedModelServer(t, "application/json", echoedAnthropicResponse)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}, UseAnthropicEndpoints: new(true)}
+	resp, bifrostErr := provider.ChatCompletion(ctx, key, servedModelChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	assertServedModel(t, "RoutingInfo", resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+	assertServedModel(t, "Usage", resp.Usage.ServerSideFallbackModel)
+}
+
+func TestChatCompletionStream_AnthropicEndpointUsesDatasheetServerSideModel(t *testing.T) {
+	useDatasheetServedModel(t, servedModel)
+
+	server := newServedModelServer(t, "text/event-stream", echoedAnthropicStream)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}, UseAnthropicEndpoints: new(true)}
+	last := collectStream(t, func(runner schemas.PostHookRunner) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		return provider.ChatCompletionStream(ctx, runner, func(context.Context) {}, key, servedModelChatRequest())
+	})
+	if last.ChatResponse == nil {
+		t.Fatalf("final result is not a chat chunk: %#v", last)
+	}
+	assertServedModel(t, "RoutingInfo", last.ChatResponse.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+// The response naming its served model is the stronger signal and wins over the datasheet.
+func TestChatCompletion_ResponseServedModelOutranksDatasheet(t *testing.T) {
+	useDatasheetServedModel(t, "deepseek-stale-datasheet-target")
+
+	server := newServedModelServer(t, "application/json", `{"id":"chatcmpl_1","object":"chat.completion","model":"`+servedModel+`","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, servedModelChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	assertServedModel(t, "RoutingInfo", resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+func TestChatCompletion_AnthropicEndpointWithoutDatasheetServerSideModelStaysUnset(t *testing.T) {
+	server := newServedModelServer(t, "application/json", echoedAnthropicResponse)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}, UseAnthropicEndpoints: new(true)}
+	resp, bifrostErr := provider.ChatCompletion(ctx, key, servedModelChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	if got := resp.ExtraFields.RoutingInfo.ServerSideFallbackModel; got != nil {
+		t.Fatalf("ServerSideFallbackModel = %q, want nil without a datasheet server_side_model", *got)
+	}
 }
