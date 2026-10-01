@@ -6633,7 +6633,17 @@ func executeRequestWithRetries[T any](
 						},
 					}
 				}
-				return zero, newBifrostErrorFromMsg(err.Error())
+				statusCode := 500
+				return zero, &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     &statusCode,
+					Error: &schemas.ErrorField{
+						Message: err.Error(),
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						ErrorType: schemas.ErrorTypeBifrostInternal,
+					},
+				}
 			}
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)

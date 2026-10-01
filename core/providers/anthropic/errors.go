@@ -8,6 +8,34 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// streamErrorStatus maps an Anthropic SSE error event's type to the status the same
+// failure carries over HTTP. The event rides a committed 200, so without a status the
+// error reaches metrics as a caller 400 and ClassifyFailure has nothing to act on — an
+// overloaded_error mid-stream is then neither retried nor rotated away from.
+func streamErrorStatus(errType string) int {
+	switch errType {
+	case "invalid_request_error":
+		return fasthttp.StatusBadRequest
+	case "authentication_error":
+		return fasthttp.StatusUnauthorized
+	case "permission_error":
+		return fasthttp.StatusForbidden
+	case "not_found_error":
+		return fasthttp.StatusNotFound
+	case "request_too_large":
+		return fasthttp.StatusRequestEntityTooLarge
+	case "rate_limit_error":
+		return fasthttp.StatusTooManyRequests
+	case "api_error":
+		return fasthttp.StatusInternalServerError
+	case "overloaded_error":
+		// Anthropic's own non-standard overload status, already in the transient set.
+		return 529
+	}
+	// Unknown: the upstream failed and gave nothing to go on.
+	return fasthttp.StatusBadGateway
+}
+
 // ToAnthropicChatCompletionError converts a BifrostError to AnthropicMessageError
 func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *AnthropicMessageError {
 	if bifrostErr == nil {
