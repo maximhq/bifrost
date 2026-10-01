@@ -183921,6 +183921,186 @@
           }
         }
       ]
+    },
+    {
+      "name": "133. Background jobs API lists and cancels sidekiq jobs (background-jobs)",
+      "description": "Pins the generic /api/sidekiq/jobs surface that backs the notification panel's Background jobs section. (1) The list endpoint returns well-formed jobs whose cancellable flag matches the status. (2) A cost-recalculation job started through its own endpoint appears in the generic list with kind logs_recalculate_cost and a progress object, so the per-kind summarizer is registered and wired through. (3) Cancelling an unknown job id is a harmless 200 with cancelled=false rather than an error. Administrators only: the harness runs with dashboard auth off (local admin), or set managementApiKey when authentication is enabled. Makes no provider calls.",
+      "item": [
+        {
+          "name": "background jobs api lists jobs with a well-formed shape",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('lists background jobs', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(body.jobs, pm.response.text()).to.be.an('array');",
+                  "});",
+                  "pm.test('every job has an id, kind, known status and a cancellable flag that matches the status', function () {",
+                  "  var statuses = ['pending', 'running', 'completed', 'failed', 'cancelled'];",
+                  "  body.jobs.forEach(function (job) {",
+                  "    pm.expect(job.id, JSON.stringify(job)).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(job.kind, JSON.stringify(job)).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(statuses, JSON.stringify(job)).to.include(job.status);",
+                  "    pm.expect(job.cancellable, JSON.stringify(job)).to.equal(job.status === 'pending' || job.status === 'running');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/sidekiq/jobs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sidekiq",
+                "jobs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "background jobs api shows a cost recalculation job with progress",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "pm.variables.unset('bgJobID');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/logs/recalculate-cost', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify({filters: {}})}}, function (err, response) {",
+                  "  pm.test('a recalculation job exists (started now, or already in flight)', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect([202, 409], 'unexpected status ' + response.code + ': ' + response.text()).to.include(response.code);",
+                  "  });",
+                  "  if (err || [202, 409].indexOf(response.code) === -1) { return; }",
+                  "  pm.variables.set('bgJobID', response.json().id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var jobID = pm.variables.get('bgJobID');",
+                  "pm.test('the recalculation job id was captured', function () { pm.expect(jobID, 'no job id from the start request').to.be.a('string').that.is.not.empty; });",
+                  "var body = pm.response.json();",
+                  "var job = (body.jobs || []).filter(function (j) { return j.id === jobID; })[0];",
+                  "pm.test('the job is listed with its kind', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(job, 'job ' + jobID + ' missing from ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(job.kind).to.equal('logs_recalculate_cost');",
+                  "});",
+                  "pm.test('progress is reported for a kind that registers a summarizer', function () {",
+                  "  pm.expect(job.progress, JSON.stringify(job)).to.be.an('object');",
+                  "  pm.expect(job.progress.done, JSON.stringify(job)).to.be.a('number');",
+                  "  pm.expect(job.progress.total, JSON.stringify(job)).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/sidekiq/jobs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sidekiq",
+                "jobs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "background jobs api cancelling an unknown job is a no-op",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cancel of an unknown job is 200 with cancelled=false', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json()).to.deep.equal({cancelled: false});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/sidekiq/jobs/harness-no-such-job-{{$guid}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sidekiq",
+                "jobs",
+                "harness-no-such-job-{{$guid}}",
+                "cancel"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

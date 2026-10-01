@@ -206,6 +206,10 @@
       "description": "Role-targeted dashboard notifications, delivered over the dashboard WebSocket"
     },
     {
+      "name": "Background Jobs",
+      "description": "Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)"
+    },
+    {
       "name": "Warp",
       "description": "Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry"
     }
@@ -94610,6 +94614,169 @@
         ]
       }
     },
+    "/api/sidekiq/jobs": {
+      "get": {
+        "operationId": "listSidekiqJobs",
+        "summary": "List background jobs",
+        "description": "Returns every pending or running background job, plus jobs that reached a\nterminal status (`completed`, `failed`, `cancelled`) within the window, newest\nfirst and capped at 50. Jobs of every kind are listed, including ones started\nfrom other features such as log cost recalculation or Warp log indexing.\n\n`progress` is present only for job kinds that report it; other kinds show\nstatus only. Totals are approximate, so `done` can differ from `total` on a\nfinished job.\n\nAdministrators only: the same callers that may manage Warp backfills.\n",
+        "tags": [
+          "Background Jobs"
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "RFC 3339 timestamp. Terminal jobs that finished before it are omitted.\nDefaults to 24 hours ago. Active jobs are always listed.\n",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Background jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SidekiqJobList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ]
+      }
+    },
+    "/api/sidekiq/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelSidekiqJob",
+        "summary": "Cancel a background job",
+        "description": "Stops a pending or running job. Work the job already committed is kept; a\ncancelled job is terminal and is not resumed.\n\nCancelling an unknown or already finished job is not an error: the response is\n`{\"cancelled\": false}`. A job running on another node is stopped by that node\nat its next heartbeat.\n\nAdministrators only.\n",
+        "tags": [
+          "Background Jobs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Job ID, as returned by the list endpoint.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancellation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SidekiqJobCancelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ]
+      }
+    },
     "/api/warp/config": {
       "get": {
         "operationId": "getWarpConfig",
@@ -116296,6 +116463,116 @@
           "provider",
           "model"
         ]
+      },
+      "SidekiqJobStatus": {
+        "type": "string",
+        "description": "Lifecycle of a job. `completed`, `failed` and `cancelled` are terminal.\n",
+        "enum": [
+          "pending",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "SidekiqJobProgress": {
+        "type": "object",
+        "description": "Units of work finished out of the approximate total.",
+        "required": [
+          "done",
+          "total"
+        ],
+        "properties": {
+          "done": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Approximate; 0 when the total is unknown."
+          }
+        }
+      },
+      "SidekiqJob": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "cancellable",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Job type, for example `logs_recalculate_cost` or `warp_log_embedding_backfill`."
+          },
+          "status": {
+            "$ref": "#/components/schemas/SidekiqJobStatus"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/SidekiqJobProgress"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable note from the job, when it reports one."
+          },
+          "last_error": {
+            "type": "string",
+            "description": "Why the job failed, when it did."
+          },
+          "cancellable": {
+            "type": "boolean",
+            "description": "True while the job is pending or running."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SidekiqJobList": {
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SidekiqJob"
+            }
+          }
+        }
+      },
+      "SidekiqJobCancelResponse": {
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "True when this call moved the job to `cancelled`; false when it was unknown or already finished."
+          }
+        }
       },
       "WarpConfig": {
         "type": "object",

@@ -62,6 +62,20 @@ type CostRecalcJobMeta struct {
 	Message string `json:"message,omitempty"`
 }
 
+// CostRecalcProgress extracts done/total/message from a cost-recalculation job's metadata
+// for generic job views. Malformed metadata yields zero values rather than an error.
+func CostRecalcProgress(metadata string) (done, total int64, message string) {
+	var meta struct {
+		Total     int64  `json:"total"`
+		Processed int64  `json:"processed"`
+		Message   string `json:"message"`
+	}
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil {
+		return 0, 0, ""
+	}
+	return meta.Processed, meta.Total, meta.Message
+}
+
 // stoppedEarlyMessage summarizes a run that ended before walking the whole window,
 // so a cancelled (or shutdown-interrupted) job still reports what it committed.
 // Costs already written are kept — they are correct, just incomplete in coverage.

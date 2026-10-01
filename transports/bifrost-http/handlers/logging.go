@@ -68,6 +68,10 @@ func (h *LoggingHandler) SetSidekiqBackend(runner *sidekiq.Runner, store Sidekiq
 			return progress(meta)
 		})
 	})
+	runner.RegisterSummarizer(logging.CostRecalcJobKind, func(metadata string) sidekiq.JobSummary {
+		done, total, message := logging.CostRecalcProgress(metadata)
+		return sidekiq.JobSummary{Done: done, Total: total, Message: message}
+	})
 }
 
 // Keep session log page size in one place so the session sheet limit is easy to tune later.

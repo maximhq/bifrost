@@ -44,6 +44,16 @@ type ProgressFunc func(metadata string) error
 // The context is cancelled if this node loses ownership or on shutdown.
 type HandlerFunc func(ctx context.Context, job tables.TableSidekiqJob, progress ProgressFunc) (finalMetadata string, err error)
 
+// JobSummary is the kind-independent view of a job's progress, derived from its opaque metadata.
+type JobSummary struct {
+	Done    int64
+	Total   int64
+	Message string
+}
+
+// SummarizeFunc extracts a JobSummary from a job's metadata JSON. It must tolerate malformed input.
+type SummarizeFunc func(metadata string) JobSummary
+
 const (
 	DispatchInterval  = 30 * time.Second
 	HeartbeatInterval = 1 * time.Minute
@@ -57,7 +67,9 @@ type Runner struct {
 	store    Store
 	logger   schemas.Logger
 	handlers map[string]HandlerFunc
-	mu       sync.RWMutex
+	// summarizers holds the optional per-kind progress extractors, guarded by mu.
+	summarizers map[string]SummarizeFunc
+	mu          sync.RWMutex
 
 	// runnerID fences job mutations to the node that claimed the job.
 	// Empty string disables the stale window so crashed jobs are immediately re-claimable.
@@ -95,6 +107,7 @@ func New(store Store, logger schemas.Logger, maxConcurrent int, runnerID string)
 		store:             store,
 		logger:            logger,
 		handlers:          make(map[string]HandlerFunc),
+		summarizers:       make(map[string]SummarizeFunc),
 		runnerID:          runnerID,
 		heartbeatInterval: HeartbeatInterval,
 		inflight:          make(map[string]struct{}),
@@ -116,6 +129,25 @@ func (r *Runner) Register(kind string, fn HandlerFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.handlers[kind] = fn
+}
+
+// RegisterSummarizer binds a progress extractor to a job kind so generic views can show
+// done/total without knowing the kind's metadata shape. Kinds without one report no progress.
+func (r *Runner) RegisterSummarizer(kind string, fn SummarizeFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.summarizers[kind] = fn
+}
+
+// Summarize returns the progress of a job of the given kind and whether the kind has a summarizer.
+func (r *Runner) Summarize(kind, metadata string) (JobSummary, bool) {
+	r.mu.RLock()
+	fn, ok := r.summarizers[kind]
+	r.mu.RUnlock()
+	if !ok {
+		return JobSummary{}, false
+	}
+	return fn(metadata), true
 }
 
 func (r *Runner) handlerFor(kind string) (HandlerFunc, bool) {

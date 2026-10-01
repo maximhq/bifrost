@@ -703,3 +703,43 @@ func TestClaimPartitionedSidekiqJobStaleRunnerDoesNotBlock(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, claimed, "stale (dead-owner) running job must not block its key")
 }
+
+func TestListSidekiqJobs(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	mk := func(id, status string, createdAgo time.Duration, completedAgo *time.Duration) {
+		t.Helper()
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: id, Kind: "k"}))
+		setCreatedAt(t, store, id, now.Add(-createdAgo))
+		updates := map[string]any{"status": status}
+		if completedAgo != nil {
+			updates["completed_at"] = now.Add(-*completedAgo)
+		}
+		require.NoError(t, store.DB().Model(&tables.TableSidekiqJob{}).Where("id = ?", id).Updates(updates).Error)
+	}
+	recent, old := time.Hour, 48*time.Hour
+	mk("old-running", tables.SidekiqStatusRunning, 72*time.Hour, nil)
+	mk("pending", tables.SidekiqStatusPending, time.Minute, nil)
+	mk("recent-done", tables.SidekiqStatusCompleted, 3*time.Hour, &recent)
+	mk("recent-failed", tables.SidekiqStatusFailed, 2*time.Hour, &recent)
+	mk("recent-cancelled", tables.SidekiqStatusCancelled, 4*time.Hour, &recent)
+	mk("old-done", tables.SidekiqStatusCompleted, 72*time.Hour, &old)
+
+	t.Run("active jobs always listed, finished jobs only inside the window, newest first", func(t *testing.T) {
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50)
+		require.NoError(t, err)
+		ids := make([]string, 0, len(jobs))
+		for _, j := range jobs {
+			ids = append(ids, j.ID)
+		}
+		assert.Equal(t, []string{"pending", "recent-failed", "recent-done", "recent-cancelled", "old-running"}, ids)
+	})
+
+	t.Run("limit caps the result", func(t *testing.T) {
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 2)
+		require.NoError(t, err)
+		assert.Len(t, jobs, 2)
+	})
+}
