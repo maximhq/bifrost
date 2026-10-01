@@ -46,21 +46,23 @@ type EnvKeyInfo struct {
 
 // CompatConfig holds the compat plugin feature flags.
 type CompatConfig struct {
-	ConvertTextToChat      bool `json:"convert_text_to_chat"`
-	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
-	ShouldDropParams       bool `json:"should_drop_params"`
-	ShouldConvertParams    bool `json:"should_convert_params"`
-	AzureDeepseek          bool `json:"azure_deepseek"`
+	ConvertTextToChat                   bool `json:"convert_text_to_chat"`
+	ConvertChatToResponses              bool `json:"convert_chat_to_responses"`
+	ShouldDropParams                    bool `json:"should_drop_params"`
+	ShouldConvertParams                 bool `json:"should_convert_params"`
+	AzureDeepseek                       bool `json:"azure_deepseek"`
+	ForceReasoningOnlyModelsToResponses bool `json:"force_reasoning_only_models_to_responses"`
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
 func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	type compatConfig struct {
-		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
-		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
-		ShouldDropParams       *bool `json:"should_drop_params"`
-		ShouldConvertParams    *bool `json:"should_convert_params"`
-		AzureDeepseek          *bool `json:"azure_deepseek"`
+		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses              *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams                    *bool `json:"should_drop_params"`
+		ShouldConvertParams                 *bool `json:"should_convert_params"`
+		AzureDeepseek                       *bool `json:"azure_deepseek"`
+		ForceReasoningOnlyModelsToResponses *bool `json:"force_reasoning_only_models_to_responses"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -71,6 +73,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
+	c.ForceReasoningOnlyModelsToResponses = s.ForceReasoningOnlyModelsToResponses == nil || *s.ForceReasoningOnlyModelsToResponses
 	return nil
 }
 
@@ -134,11 +137,12 @@ func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 	type ClientConfigAlias ClientConfig
 	alias := ClientConfigAlias{
 		Compat: CompatConfig{
-			ConvertTextToChat:      true,
-			ConvertChatToResponses: true,
-			ShouldDropParams:       true,
-			ShouldConvertParams:    true,
-			AzureDeepseek:          true,
+			ConvertTextToChat:                   true,
+			ConvertChatToResponses:              true,
+			ShouldDropParams:                    true,
+			ShouldConvertParams:                 true,
+			AzureDeepseek:                       true,
+			ForceReasoningOnlyModelsToResponses: true,
 		},
 	}
 	if err := sonic.Unmarshal(data, &alias); err != nil {
@@ -200,6 +204,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.Compat.ShouldConvertParams {
 		hash.Write([]byte("compatShouldConvertParams:true"))
+	}
+	if c.Compat.AzureDeepseek {
+		hash.Write([]byte("compatAzureDeepseek:true"))
+	}
+	if !c.Compat.ForceReasoningOnlyModelsToResponses {
+		hash.Write([]byte("compatForceReasoningOnlyModelsToResponses:false"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn.

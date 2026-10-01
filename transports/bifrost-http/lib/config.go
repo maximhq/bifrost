@@ -698,6 +698,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	HideDeletedVirtualKeysInFilters: false,
 	DeleteExpiredVirtualKeys:        false,
 	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
+	Compat:                          configstore.CompatConfig{ForceReasoningOnlyModelsToResponses: true},
 }
 
 // applyV1Compat normalizes ConfigData to restore v1.4.x allow-list semantics.

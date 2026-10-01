@@ -2522,6 +2522,41 @@ func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
 	assert.True(t, result.Compat.AzureDeepseek, "re-enabling the toggle must persist")
 }
 
+func TestUpdateClientConfig_CompatForceReasoningOnlyModelsToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ForceReasoningOnlyModelsToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ForceReasoningOnlyModelsToResponses, "disabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ForceReasoningOnlyModelsToResponses, "re-enabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatForceReasoningOnlyModelsToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ForceReasoningOnlyModelsToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling force_reasoning_only_models_to_responses must change the hash")
+}
+
 func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()

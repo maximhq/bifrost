@@ -628,14 +628,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	oldCompat := currentConfig.Compat
 	if newCompat != oldCompat {
 		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams ||
-			newCompat.AzureDeepseek
+			newCompat.AzureDeepseek || newCompat.ForceReasoningOnlyModelsToResponses
 		if newEnabled {
 			compatCfg := &compat.Config{
-				ConvertTextToChat:      newCompat.ConvertTextToChat,
-				ConvertChatToResponses: newCompat.ConvertChatToResponses,
-				ShouldDropParams:       newCompat.ShouldDropParams,
-				ShouldConvertParams:    newCompat.ShouldConvertParams,
-				AzureDeepseek:          newCompat.AzureDeepseek,
+				ConvertTextToChat:                   newCompat.ConvertTextToChat,
+				ConvertChatToResponses:              newCompat.ConvertChatToResponses,
+				ShouldDropParams:                    newCompat.ShouldDropParams,
+				ShouldConvertParams:                 newCompat.ShouldConvertParams,
+				AzureDeepseek:                       newCompat.AzureDeepseek,
+				ForceReasoningOnlyModelsToResponses: newCompat.ForceReasoningOnlyModelsToResponses,
 			}
 			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
 				logger.Warn("failed to load compat plugin: %v", err)

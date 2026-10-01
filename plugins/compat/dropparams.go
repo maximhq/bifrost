@@ -76,7 +76,7 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			if !isSupported["reasoning"] {
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
-			} else if hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+			} else if hasSupportedTools && !isSupported["reasoning_with_tool_calls"] && !isConvertedToResponses(ctx) {
 				// models like gpt-5.6 series models defaults to reasoning, even when
 				// reasoning_effort is not set.
 				if isSupported["supports_none_reasoning_effort"] {
@@ -87,7 +87,7 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 					dropped = append(dropped, "reasoning")
 				}
 			}
-		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] && !isConvertedToResponses(ctx) {
 			params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
 			dropped = append(dropped, "reasoning")
 		}
@@ -284,4 +284,14 @@ func dropWebsearchToolCalls(req *schemas.BifrostRequest) []string {
 	}
 	req.ResponsesRequest.Params.Tools = kept
 	return dropped
+}
+
+// isConvertedToResponses reports whether an earlier hook already marked the request
+// for conversion to Responses.
+func isConvertedToResponses(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+	return ok && changeType == schemas.ResponsesRequest
 }
