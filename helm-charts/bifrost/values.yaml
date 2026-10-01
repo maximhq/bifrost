@@ -252,6 +252,23 @@ bifrost:
   #       enabled: "env.BIFROST_AUDIT_VERBOSE"
   featureFlags: {}
 
+  # Global outbound proxy (the dashboard's proxy settings page) and which components use it.
+  # Renders into config.json's top-level proxy_config. Under sourceOfTruth "split" it is applied
+  # when new or changed and dashboard edits are kept otherwise; under "config.json" it is applied
+  # on every startup. Leave unset to manage the proxy from the dashboard.
+  # proxyConfig:
+  #   enabled: true
+  #   type: "http"                       # only http is supported
+  #   url: "http://proxy.example.com:8080"
+  #   username: "env.PROXY_USERNAME"     # optional; env.VAR_NAME supported
+  #   password: "env.PROXY_PASSWORD"     # optional; env.VAR_NAME supported
+  #   noProxy: "localhost,.internal.example.com"
+  #   timeout: 30                        # seconds
+  #   skipTlsVerify: false
+  #   enableForScim: true                # Enterprise: SCIM directory sync and identity-provider requests
+  #   enableForInference: false
+  #   enableForApi: false
+
   # Client configuration
   client:
     dropExcessRequests: false
@@ -919,6 +936,9 @@ bifrost:
       #       reset_duration: "1Y"
       #   # Option B: single budget reference (pre-declared in governance.budgets)
       #   budget_id: "budget-1"
+      #   # Enterprise: hold an access profile (declared under accessProfiles) instead of
+      #   # budgets and a rate limit of its own; the two cannot be combined.
+      #   access_profile: "customer-profile"
     teams: []
       # - id: "team-1"
       #   name: "Team Name"
@@ -928,16 +948,25 @@ bifrost:
       #   profile: {}              # Team profile data
       #   config: {}               # Team configuration data
       #   claims: {}               # Team claims data
+      #   access_profile: "team-profile"  # Enterprise: access profile the team holds, instead of budget_id / rate_limit_id
+    # Enterprise: business unit definitions. Membership is managed by the IdP or the dashboard.
+    # businessUnits:
+    #   - id: "bu-emea"
+    #     name: "EMEA"
+    #     access_profile: "bu-profile"  # Access profile the business unit holds
+    #   # source_of_truth "split": access_profile applies when new or changed, dashboard changes kept otherwise.
+    #   # source_of_truth "config.json": enforced every startup; an entry without it has its profile removed.
     roles: []
       # - name: "dataAnalyst"
       #   description: "Read-only access for data analysts"
-      #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
+      #   dac: "team-data"           # own-data | team-data | business-unit-data | customer-data | all-data (default: all-data)
       #   # Optional per-entity overrides of the role's global dac. Resources supported as of
       #   # this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers,
       #   # BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules,
       #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
       #   entity_dac:
       #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
+      #     Logs: "customer-data"    # every log under the customers their teams or business units reach
       #   access_profiles:                    # Optional: names of all access profiles to grant
       #     - "analyst-profile"              # Takes precedence over deprecated access_profile
       #   permissions:
@@ -1035,6 +1064,7 @@ bifrost:
       #       model: ""              # Empty means use original model
       #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
       #       weight: 1.0
+      #       ttft_timeout_ms: 5000  # Optional: cut off a streaming attempt with no first token in 5s and run the next fallback
       #   fallbacks: ["openai"]
       #   scope: "global"           # Options: global, team, customer, virtual_key
       #   scope_id: ""              # Required for non-global scopes
