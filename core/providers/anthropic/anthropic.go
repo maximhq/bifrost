@@ -1183,6 +1183,9 @@ func HandleAnthropicChatCompletionStreaming(
 					if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
 						// Convert tool use delta to content delta
 						content := *event.Delta.PartialJSON
+						// Keep the content length in step so citation spans on
+						// later text blocks stay aligned with the content string.
+						streamState.contentLen += len(content)
 						response := &schemas.BifrostChatResponse{
 							ID:     messageID,
 							Object: "chat.completion.chunk",
