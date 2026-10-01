@@ -327,9 +327,9 @@ func guardrailMetadataForLog(ctx *schemas.BifrostContext, result *schemas.Bifros
 }
 
 // routingMetadataForLog returns the request's routing-classification metadata
-// snapshot — the semantic classification embed, the llm classification
-// completion, or both. Classification runs once in PreRequestHook, before any
-// retry or fallback attempt, so the context snapshot is stable across every
+// snapshot — a semantic embed, LLM completion, Jev decision, or the embed plus
+// its configured classifier fallback. Classification runs once in PreRequestHook,
+// before any retry or fallback attempt, so the context snapshot is stable across every
 // PostLLMHook call for this request; unlike applyInternalCallCosts, this is
 // not gated to the initial attempt because it feeds display, not billing.
 func routingMetadataForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostRoutingMetadata {
@@ -1587,6 +1587,11 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *LoggerPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -1613,7 +1618,8 @@ func userAgentFromContext(ctx *schemas.BifrostContext) string {
 }
 
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
-// from the request context. Returns a new metadata map, or nil if no headers were captured.
+// from the request context, dropping any key under schemas.LoadBalancerMetadataPrefix.
+// Returns a new metadata map, or nil if no headers were captured.
 // System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
 func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[string]interface{} {
 	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
@@ -1660,6 +1666,16 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 		}
 	}
 
+	// The load balancer's prefix is reserved for the routing decision mergeLoadBalancerMetadata
+	// adds from the context: a caller key under it would read as a decision that was never made.
+	for key := range metadata {
+		if strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			delete(metadata, key)
+		}
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
 	return metadata
 }
 
@@ -2027,7 +2043,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					entry.App = &app
 				}
 			}
-			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
+			entry.MetadataParsed = mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
 					entry.MetadataParsed = make(map[string]interface{})
@@ -2239,6 +2255,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
+	entry.MetadataParsed = mergeLoadBalancerMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
 
 	// Path A: Error with nil result

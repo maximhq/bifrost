@@ -73,8 +73,10 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
+// GitHub Copilot may authenticate with a GitHub App bundle in github_copilot_key_config
+// instead of a Copilot API token in value; validateKey checks that one of the two is present.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks || providerKey == schemas.GithubCopilot
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -329,6 +331,23 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	return ch
 }
 
+// stampRequestedRoute records the provider/model the caller sent, before any
+// PreRequestHook (routing rules, load balancing, session routing) rewrites them,
+// so plugins can read the original and RoutingInfo can report it. Always written,
+// even when empty, so a reused context never reports a previous request's route.
+// A large-payload request carries its model in LargePayloadMetadata rather than
+// on req, and routing rewrites that in place, so it is copied here first.
+func stampRequestedRoute(ctx *schemas.BifrostContext, requested schemas.Route) {
+	model := requested.Model
+	if model == "" {
+		if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil {
+			model = metadata.Model
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestedProvider, requested.Provider)
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, model)
+}
+
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
@@ -338,10 +357,12 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
+	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 	// Provider response headers belong to the provider that produced them.
 	// If a fallback attempt fails pre-flight (no HTTP request issued), the
@@ -411,6 +432,7 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
 	ctx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)

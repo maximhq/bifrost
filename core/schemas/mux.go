@@ -1056,6 +1056,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = cu.ToolUsage.DeepCopy()
 
 	return usage
 }
@@ -1095,6 +1096,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = ru.ToolUsage.DeepCopy()
 
 	return usage
 }
@@ -1249,10 +1251,11 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil) {
+		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
 				Effort:    cr.Params.Reasoning.Effort,
 				MaxTokens: cr.Params.Reasoning.MaxTokens,
+				Type:      cr.Params.Reasoning.Type,
 			}
 		}
 
@@ -1348,6 +1351,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 			bcr.Params.Reasoning = &ChatReasoning{
 				Effort:    brr.Params.Reasoning.Effort,
 				MaxTokens: brr.Params.Reasoning.MaxTokens,
+				Type:      brr.Params.Reasoning.Type,
 			}
 		}
 
@@ -1452,6 +1456,22 @@ func responsesStatusFromChatFinishReason(finishReason string) (status string, in
 	default:
 		return "", nil, false
 	}
+}
+
+// ResponsesStatusFromFinishReason maps a Bifrost finish reason to the Responses-API
+// status and incomplete_details. mapped is false for reasons with no Responses
+// equivalent, which should leave Status unset.
+func ResponsesStatusFromFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
+	return responsesStatusFromChatFinishReason(finishReason)
+}
+
+// MarkTruncatedOutputItem sets status "incomplete" on the last output item -- the one
+// being generated when the turn was cut short -- matching OpenAI's truncated-turn shape.
+func MarkTruncatedOutputItem(output []ResponsesMessage) {
+	if len(output) == 0 {
+		return
+	}
+	output[len(output)-1].Status = Ptr(ResponsesResponseStatusIncomplete)
 }
 
 func responsesStopReasonFromChatFinishReason(finishReason *string) *string {

@@ -2556,6 +2556,116 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 	}
 }
 
+// TestToOpenAIResponsesRequest_DropsForeignFunctionCallItemID verifies that a
+// replayed function_call item whose id does not begin with "fc" (e.g. Gemini
+// streaming reuses the "<id>_ts_<sig>" call id as the item id) has its id dropped
+// on the wire while call_id is left untouched, so the function_call_output still
+// pairs with its call and the caller's history is not mutated.
+func TestToOpenAIResponsesRequest_DropsForeignFunctionCallItemID(t *testing.T) {
+	longSig := strings.Repeat("A", 100)
+	cases := []struct {
+		name       string
+		itemID     *string
+		callID     string
+		wantID     *string // nil means the id key must be absent on the wire
+		wantCallID string
+	}{
+		{name: "gemini _ts_ item id dropped, call_id kept", itemID: schemas.Ptr("call_abc_ts_QUJD"), callID: "call_abc_ts_QUJD", wantID: nil, wantCallID: "call_abc_ts_QUJD"},
+		{name: "plain call_ item id dropped", itemID: schemas.Ptr("call_abc"), callID: "call_abc", wantID: nil, wantCallID: "call_abc"},
+		{name: "fc_ item id preserved", itemID: schemas.Ptr("fc_abc"), callID: "call_abc", wantID: schemas.Ptr("fc_abc"), wantCallID: "call_abc"},
+		{name: "nil item id stays absent", itemID: nil, callID: "call_abc", wantID: nil, wantCallID: "call_abc"},
+		{name: "long _ts_ id: item id dropped and call_id stripped", itemID: schemas.Ptr("call_abc_ts_" + longSig), callID: "call_abc_ts_" + longSig, wantID: nil, wantCallID: "call_abc"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var origID *string
+			if tc.itemID != nil {
+				origID = schemas.Ptr(*tc.itemID)
+			}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input: []schemas.ResponsesMessage{
+					{
+						Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather?")},
+					},
+					{
+						ID:   origID,
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr(tc.callID),
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: schemas.Ptr(`{"city":"SF"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr(tc.callID),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("22C")},
+						},
+					},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			converted := ToOpenAIResponsesRequest(ctx, req)
+			if converted == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			wire, err := sonic.Marshal(converted)
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil {
+				t.Fatalf("unmarshal wire request: %v", err)
+			}
+			if len(payload.Input) != 3 {
+				t.Fatalf("wire input length: got %d, want 3", len(payload.Input))
+			}
+
+			functionCall := payload.Input[1]
+			rawID, hasID := functionCall["id"]
+			if tc.wantID == nil {
+				if hasID {
+					t.Errorf("function_call id must be absent on the wire, got %s", rawID)
+				}
+			} else {
+				var gotID string
+				if err := sonic.Unmarshal(rawID, &gotID); err != nil || gotID != *tc.wantID {
+					t.Errorf("function_call id: got %q, want %q (err=%v)", gotID, *tc.wantID, err)
+				}
+			}
+			var gotCallID string
+			if err := sonic.Unmarshal(functionCall["call_id"], &gotCallID); err != nil || gotCallID != tc.wantCallID {
+				t.Errorf("function_call call_id: got %q, want %q (err=%v)", gotCallID, tc.wantCallID, err)
+			}
+			var gotOutputCallID string
+			if err := sonic.Unmarshal(payload.Input[2]["call_id"], &gotOutputCallID); err != nil || gotOutputCallID != gotCallID {
+				t.Errorf("function_call_output call_id %q must match function_call call_id %q (err=%v)", gotOutputCallID, gotCallID, err)
+			}
+
+			// The caller's history is shared with plugins and the fallback chain.
+			switch {
+			case tc.itemID == nil && req.Input[1].ID != nil:
+				t.Error("original function_call id was set")
+			case tc.itemID != nil && (req.Input[1].ID == nil || *req.Input[1].ID != *tc.itemID):
+				t.Error("original function_call id was mutated")
+			}
+			if *req.Input[1].ResponsesToolMessage.CallID != tc.callID {
+				t.Error("original function_call call_id was mutated")
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T) {
 	assistant := schemas.ResponsesInputMessageRoleAssistant
 	user := schemas.ResponsesInputMessageRoleUser
@@ -3579,4 +3689,31 @@ func TestToOpenAIResponsesRequest_ForwardsComputerTool(t *testing.T) {
 	if result.Tools[0].ResponsesToolComputerUsePreview != nil {
 		t.Fatal("expected no computer_use_preview fields on the bare computer tool")
 	}
+}
+
+// TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped: the Anthropic per-message
+// effort override (role:"system", content:[], output_config.effort) has no OpenAI
+// equivalent. Once Bifrost carries it on the neutral request, the OpenAI-shaped egress
+// (and every provider delegating to it) must drop the item instead of forwarding an
+// empty-content system message with an unknown output_config key.
+func TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Say hello."},
+		{"type":"message","role":"system","content":[],"output_config":{"effort":"low"}}
+	]`), &input))
+
+	result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5",
+		Input:    input,
+	})
+	require.NotNil(t, result)
+
+	raw, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1,
+		"effort-only system item reached the OpenAI wire: %s", raw)
+	require.NotContains(t, string(raw), "output_config",
+		"per-message output_config leaked onto the OpenAI wire: %s", raw)
 }

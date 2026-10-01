@@ -265,9 +265,21 @@ export const replicateKeyConfigSchema = z.object({
 // trusting the tag would let any malformed literal skip every check below.
 const isSecretVarRef = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => !!v?.ref?.trim();
 
+// A stored secret comes back from the API masked ("******" or "1234****...****5678"), and the
+// edit form round-trips that mask untouched so the server keeps the original. Judging the
+// mask's shape would fail every edit of a key whose credentials were not all retyped.
+//
+// isRedacted also treats env./vault. prefixes as hidden, but here references live in `ref`.
+// With no ref the server stores an "env.x" value as plain text, so it gets checked like one.
+const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	const value = v?.value ?? "";
+	if (value.startsWith("env.") || value.startsWith("vault.")) return false;
+	return isRedacted(value);
+};
+
 const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
 	if (!isSecretVarSet(v)) return true; // presence is checked separately
-	if (isSecretVarRef(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
 	return /^\d+$/.test((v?.value ?? "").trim());
 };
 
@@ -283,7 +295,7 @@ const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s
 
 const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
 	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
 	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
 	const match = PEM_PRIVATE_KEY.exec(body);
 	// The back-reference makes BEGIN and END agree; the body must also carry something.
@@ -967,6 +979,7 @@ export const coreConfigSchema = z.object({
 	disable_content_logging: z.boolean().default(false),
 	enforce_auth_on_inference: z.boolean().default(false),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
+	delete_expired_virtual_keys: z.boolean().default(false),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
@@ -974,6 +987,8 @@ export const coreConfigSchema = z.object({
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
+	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
+	mcp_max_instructions_total: z.number().int().min(0).default(0),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 
@@ -1350,6 +1365,7 @@ export const mcpClientUpdateSchema = z
 		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
 		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
+		max_instructions_length: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server instruction byte cap
 		allowed_extra_headers: z
 			.array(z.string())
 			.optional()

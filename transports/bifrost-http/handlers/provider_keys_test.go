@@ -157,6 +157,101 @@ func TestMergeUpdatedKey_Name(t *testing.T) {
 	})
 }
 
+// TestDecodeKeyUpdate_PartialBody covers issue #7572: a PUT that names only
+// some fields must leave the others as stored. Omitted fields used to decode to
+// zero values, so a body carrying only models emptied the key's value and set
+// its weight to 0, and the update still returned 200.
+func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
+	h := &ProviderHandler{}
+	const rawValue = "sk-sglrealkey1234567890abcdefghij"
+	stored := func() schemas.Key {
+		return schemas.Key{
+			ID:                "key-1",
+			Name:              "sgl-key",
+			Value:             *schemas.NewSecretVar(rawValue),
+			Models:            schemas.WhiteList{"old-model"},
+			BlacklistedModels: schemas.BlackList{"blocked-model"},
+			Weight:            1,
+			SGLKeyConfig:      &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://old:30000")},
+			Enabled:           schemas.Ptr(false),
+			UseForBatchAPI:    schemas.Ptr(true),
+			Description:       "primary",
+		}
+	}
+	update := func(t *testing.T, body string) schemas.Key {
+		t.Helper()
+		oldRaw := stored()
+		updateKey, err := decodeKeyUpdate([]byte(body), oldRaw)
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate returned error: %v", err)
+		}
+		updateKey.ID = oldRaw.ID
+		merged, err := h.mergeUpdatedKey(oldRaw, updateKey)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		return merged
+	}
+
+	t.Run("omitted fields keep their stored values", func(t *testing.T) {
+		merged := update(t, `{"models":["m1","m2"],"sgl_key_config":{"url":"http://new:30000"}}`)
+		if merged.Value.GetValue() != rawValue {
+			t.Fatalf("value: got %q, want the stored value", merged.Value.GetValue())
+		}
+		if merged.Weight != 1 {
+			t.Fatalf("weight: got %v, want 1", merged.Weight)
+		}
+		if len(merged.BlacklistedModels) != 1 || merged.BlacklistedModels[0] != "blocked-model" {
+			t.Fatalf("blacklisted_models: got %v, want [blocked-model]", merged.BlacklistedModels)
+		}
+		if merged.Enabled == nil || *merged.Enabled {
+			t.Fatalf("enabled: got %v, want the stored false", merged.Enabled)
+		}
+		if merged.UseForBatchAPI == nil || !*merged.UseForBatchAPI {
+			t.Fatalf("use_for_batch_api: got %v, want the stored true", merged.UseForBatchAPI)
+		}
+		if merged.Description != "primary" {
+			t.Fatalf("description: got %q, want primary", merged.Description)
+		}
+		// The fields that were sent still apply.
+		if len(merged.Models) != 2 || merged.Models[0] != "m1" {
+			t.Fatalf("models: got %v, want [m1 m2]", merged.Models)
+		}
+		if merged.SGLKeyConfig == nil || merged.SGLKeyConfig.URL.GetValue() != "http://new:30000" {
+			t.Fatalf("sgl_key_config.url: got %+v, want http://new:30000", merged.SGLKeyConfig)
+		}
+	})
+
+	t.Run("an omitted provider config is kept", func(t *testing.T) {
+		merged := update(t, `{"weight":2}`)
+		if merged.SGLKeyConfig == nil || merged.SGLKeyConfig.URL.GetValue() != "http://old:30000" {
+			t.Fatalf("sgl_key_config: got %+v, want the stored config", merged.SGLKeyConfig)
+		}
+		if merged.Weight != 2 {
+			t.Fatalf("weight: got %v, want 2", merged.Weight)
+		}
+	})
+
+	t.Run("fields sent explicitly empty are cleared", func(t *testing.T) {
+		merged := update(t, `{"value":"","weight":0,"models":[],"description":"","sgl_key_config":null}`)
+		if merged.Value.GetValue() != "" {
+			t.Fatalf("value: got %q, want it cleared", merged.Value.GetValue())
+		}
+		if merged.Weight != 0 {
+			t.Fatalf("weight: got %v, want 0", merged.Weight)
+		}
+		if len(merged.Models) != 0 {
+			t.Fatalf("models: got %v, want empty", merged.Models)
+		}
+		if merged.Description != "" {
+			t.Fatalf("description: got %q, want it cleared", merged.Description)
+		}
+		if merged.SGLKeyConfig != nil {
+			t.Fatalf("sgl_key_config: got %+v, want nil", merged.SGLKeyConfig)
+		}
+	})
+}
+
 func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	h := &ProviderHandler{}
 	merge := func(oldRaw, update schemas.Key) schemas.Key {

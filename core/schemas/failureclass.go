@@ -63,6 +63,16 @@ func (c FailureClass) IsPermanentPerKey() bool {
 	return false
 }
 
+// CoversAllModels reports whether the failure holds for every model on the key, not only the
+// one that was refused: the key itself was rejected, or the account behind it is out of credit
+// or over a billing cap. It measures how broad the failure is, where IsPerKey says whose fault
+// it is: model access, a retired model and a rate limit are the key's fault but bind it only for
+// one model, and a per-model quota is classified as a rate limit. A consumer that holds keys
+// across requests can hold the whole key on this alone.
+func (c FailureClass) CoversAllModels() bool {
+	return c == FailureClassCredential || c == FailureClassQuota
+}
+
 // FailReason returns the attempt-trail label for the classes that name what the provider
 // refused, and "" for the others, whose label is the provider's own error type.
 func (c FailureClass) FailReason() string {

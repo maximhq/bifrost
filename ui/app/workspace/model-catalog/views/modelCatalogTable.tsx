@@ -83,7 +83,7 @@ export default function ModelCatalogTable({
 
 			{/* Table */}
 			<div className="rounded-sm border">
-				<Table className="table-fixed">
+				<Table className="min-w-[640px] table-fixed">
 					<colgroup>
 						<col className="w-[26%]" />
 						<col className="w-[44%]" />

@@ -301,6 +301,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// resolves to on these models) rather than deleted, so a sibling
 	// thinking.display survives; Type has no omitempty, so a display-only block
 	// would serialize as {"type":""}.
+	// thinking.type:"between_tools" — downgraded to "disabled" on models that lack
+	// it (e.g. a fallback off Sonnet 5.5); the check below then adjusts it further.
+	if req.Thinking != nil && req.Thinking.Type == "between_tools" &&
+		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
+		req.Thinking.Type = "disabled"
+	}
 	if req.Thinking != nil && req.Thinking.Type == "disabled" {
 		var effort *string
 		if req.OutputConfig != nil {
@@ -699,6 +705,14 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// thinking.type:"disabled" — mirrors the typed path in
 	// stripUnsupportedAnthropicFields; see there for why it is rewritten to
 	// "adaptive" rather than deleted.
+	// thinking.type:"between_tools" — mirrors the typed path's downgrade.
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "between_tools" &&
+		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "disabled")
+		if err != nil {
+			return nil, fmt.Errorf("rewrite raw thinking.type to disabled: %w", err)
+		}
+	}
 	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "disabled" {
 		var effort *string
 		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
@@ -969,6 +983,13 @@ func IsSonnet5Plus(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sonnet-5")
 }
 
+// IsSonnet55Plus returns true for Claude Sonnet 5.5, matching the
+// Bedrock/Vertex/date-suffixed forms.
+func IsSonnet55Plus(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
+}
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -1107,11 +1128,33 @@ func DefaultAdaptiveOnlyThinking(model string) bool {
 	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
-// DefaultCanDisableReasoning: the Fable/Mythos family and Opus 5.5 reject
-// thinking:{type:"disabled"} — adaptive thinking is always on, so the param must
-// be omitted entirely rather than sent as disabled.
+// DefaultCanDisableReasoning: the Fable/Mythos family, Opus 5.5 and Sonnet 5.5
+// reject thinking:{type:"disabled"} — adaptive thinking is always on, so the
+// param must be omitted entirely rather than sent as disabled.
 func DefaultCanDisableReasoning(model string) bool {
-	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model)
+	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model) && !IsSonnet55Plus(model)
+}
+
+// DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
+// as its lowest setting (it rejects "disabled").
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/thinking
+func DefaultSupportsBetweenToolsThinking(model string) bool {
+	return IsSonnet55Plus(model)
+}
+
+// BetweenToolsThinking returns the thinking config for a requested
+// thinking:{type:"between_tools"}: itself where the model accepts it, else the
+// nearest setting ("disabled" where accepted at this effort, or nil to omit) so
+// fallbacks to older models keep working.
+func BetweenToolsThinking(caps schemas.ModelCaps, effort *string) *AnthropicThinking {
+	if caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(caps.Model())) {
+		return &AnthropicThinking{Type: "between_tools"}
+	}
+	if !RejectsDisabledThinking(caps, effort) {
+		return &AnthropicThinking{Type: "disabled"}
+	}
+	return nil
 }
 
 // SupportsNativeEffort reports whether the model takes output_config.effort as
@@ -1333,9 +1376,9 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5) and the Claude
-// Fable/Mythos family (Fable post-dates Opus 4.8; the public doc lists Opus 4.8
-// but Fable supports it as well). No beta header is required.
+// Vertex. Supported on Claude Opus 4.8+ (including Opus 5 and 5.5), Claude
+// Sonnet 5.5 (not Sonnet 5), and the Claude Fable/Mythos family. No beta header
+// is required.
 //
 // Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
 // gate, prefers the datasheet's supports_mid_conversation_system_messages
@@ -1348,11 +1391,29 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 		return false
 	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) {
+	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
 		return true
 	}
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+}
+
+// DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
+// accepts output_config.effort on a role:"system" message inside messages (per-message
+// effort, beta mid-conversation-output-config-2026-07-01). Claude API direct only: the
+// Bedrock and Vertex converters have no native mid-conversation system role to carry it.
+// Documented on Claude Fable 5.1 / Mythos 5.1, Claude Opus 5 and 5.5, and Claude Sonnet
+// 5.5. Every other model, Claude Fable 5 and Opus 4.8 included, returns 400
+// "output_config.effort requires a model that supports per-turn effort", so callers drop
+// the override fail-soft when this is false instead of forwarding a guaranteed rejection.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+func DefaultSupportsMidConversationOutputConfig(provider schemas.ModelProvider, model string) bool {
+	if provider != schemas.Anthropic {
+		return false
+	}
+	m := strings.ToLower(model)
+	return schemas.IsFable51(m) || IsOpus5Plus(m) || IsSonnet55Plus(m)
 }
 
 // SupportsFastMode reports fast-mode support for a single (provider, model)
@@ -1593,13 +1654,37 @@ type anthropicMessageBetaSignals struct {
 	scopedCacheControl bool
 	// fileSource: some content block has a source of type "file" (Files API).
 	fileSource bool
+
+	// --- derived from messages[] themselves ---
+
+	// midConversationOutputConfig: some message carries output_config.effort (per-message effort).
+	midConversationOutputConfig bool
+}
+
+// complete reports whether every signal is already set, so a scan can stop early.
+func (s anthropicMessageBetaSignals) complete() bool {
+	return s.blocksDone() && s.midConversationOutputConfig
+}
+
+// blocksDone reports whether both block-level signals are set, so content blocks need no
+// further scanning even while the message-level effort signal is still being looked for.
+func (s anthropicMessageBetaSignals) blocksDone() bool {
+	return s.scopedCacheControl && s.fileSource
 }
 
 // scanMessagesForBetaSignals derives the signals from decoded messages.
 func scanMessagesForBetaSignals(messages []AnthropicMessage) anthropicMessageBetaSignals {
 	var signals anthropicMessageBetaSignals
 	for _, message := range messages {
-		if message.Content.ContentBlocks == nil {
+		if signals.complete() {
+			return signals
+		}
+		if message.OutputConfig != nil && message.OutputConfig.Effort != nil {
+			signals.midConversationOutputConfig = true
+		}
+		// Block scanning stops once both block-level signals are known; only the
+		// message-level effort check keeps walking the (potentially huge) array.
+		if signals.blocksDone() || message.Content.ContentBlocks == nil {
 			continue
 		}
 		for _, block := range message.Content.ContentBlocks {
@@ -1609,8 +1694,8 @@ func scanMessagesForBetaSignals(messages []AnthropicMessage) anthropicMessageBet
 			if block.Source != nil && block.Source.SourceObj != nil && block.Source.SourceObj.Type == "file" {
 				signals.fileSource = true
 			}
-			if signals.scopedCacheControl && signals.fileSource {
-				return signals
+			if signals.blocksDone() {
+				break
 			}
 		}
 	}
@@ -1626,12 +1711,26 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 	if !messages.Exists() || !messages.IsArray() {
 		return signals
 	}
-	for _, message := range messages.Array() {
+	// ForEach walks the array in place; Array() would materialise every element first.
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if signals.complete() {
+			return false
+		}
+		// A message-level sibling of content, so it is read before the content gate below:
+		// the effort-only form carries an empty content array and a string-content system
+		// message may carry it too. Type-checked for the same present-but-null reason as
+		// cache_control.scope.
+		if effort := message.Get("output_config.effort"); effort.Type == gjson.String {
+			signals.midConversationOutputConfig = true
+		}
+		if signals.blocksDone() {
+			return true
+		}
 		content := message.Get("content")
 		if !content.Exists() || !content.IsArray() {
-			continue
+			return true
 		}
-		for _, block := range content.Array() {
+		content.ForEach(func(_, block gjson.Result) bool {
 			// Exists() is `Type != Null || len(Raw) != 0`, so a present-but-null scope
 			// reports true while typed decoding leaves the *string nil. Check the type
 			// too, otherwise an explicit `"scope": null` injects a prompt-caching-scope
@@ -1642,11 +1741,10 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 			if block.Get("source.type").String() == "file" {
 				signals.fileSource = true
 			}
-			if signals.scopedCacheControl && signals.fileSource {
-				return signals
-			}
-		}
-	}
+			return !signals.blocksDone()
+		})
+		return true
+	})
 	return signals
 }
 
@@ -1948,6 +2046,15 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicFilesAPIBetaHeader)
 		}
 	}
+	// Per-message effort: output_config.effort on a role:"system" message inside messages
+	// (the Pi / mid-conversation effort override). Sourced from signals so the raw-body path
+	// derives it identically. Model support is enforced at conversion time, where an
+	// unsupported model has the override dropped before it can reach here.
+	if signals.midConversationOutputConfig {
+		if !hasProvider || features.MidConvOutputConfig {
+			headers = appendUniqueHeader(headers, AnthropicMidConversationOutputConfigBetaHeader)
+		}
+	}
 	if len(headers) == 0 {
 		return nil
 	}
@@ -2010,6 +2117,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicServerSideFallbackBetaHeaderPrefix,
 	AnthropicFallbackCreditBetaHeaderPrefix,
 	AnthropicMidConversationToolChangesBetaHeaderPrefix,
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 }
 
 // betaHeaderProviderVersion rewrites a beta header's version date on providers
@@ -2553,7 +2661,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicServerSideFallbackBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.ServerSideFallback },
 	AnthropicFallbackCreditBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.FallbackCredit },
 	// Long key kept in its own group so gofmt doesn't realign the block above.
-	AnthropicMidConversationToolChangesBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
+	AnthropicMidConversationToolChangesBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -3103,6 +3212,28 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 		return providerReason
 	}
 	return AnthropicStopReason(bifrostReason)
+}
+
+// anthropicResponsesStatus derives the Responses status and incomplete_details from a
+// stop reason already converted by ConvertAnthropicFinishReasonToBifrost. refusal is a
+// content-filter stop and model_context_window_exceeded a truncation; reasons with no
+// Responses equivalent (pause_turn, compaction) leave the status unset.
+func anthropicResponsesStatus(stopReason *string) (*string, *schemas.ResponsesResponseIncompleteDetails) {
+	if stopReason == nil {
+		return nil, nil
+	}
+	reason := *stopReason
+	switch AnthropicStopReason(reason) {
+	case AnthropicStopReasonRefusal:
+		reason = "content_filter"
+	case AnthropicStopReasonModelContextWindowExceeded:
+		reason = string(schemas.BifrostFinishReasonLength)
+	}
+	status, details, mapped := schemas.ResponsesStatusFromFinishReason(reason)
+	if !mapped {
+		return nil, nil
+	}
+	return &status, details
 }
 
 // anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the

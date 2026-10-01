@@ -3,6 +3,8 @@ package typesafe
 import (
 	"strings"
 
+	"github.com/bytedance/sonic"
+
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -14,6 +16,9 @@ const typesafeDefaultBaseURL = "https://api.typesafe.ai"
 // model field.
 const typesafeSystemOnePath = "/v1/systemone"
 
+// typesafeModelsPath is the native model-listing endpoint.
+const typesafeModelsPath = "/v1/models"
+
 // typesafeModel is one entry of the static model catalog.
 type typesafeModel struct {
 	ID          string
@@ -22,10 +27,10 @@ type typesafeModel struct {
 	ReleaseDate string
 }
 
-// typesafeModels is the static catalog served by ListModels. Typesafe documents
-// no model-listing endpoint, so the catalog is pinned here and in the hosted
-// datasheet. Aliases resolve upstream: jev-latest and jev-preview both point at
-// jev-1.13.0 today.
+// typesafeModels is the pinned jev catalog: merged into the live listing
+// (which carries the aliases only) and served alone when the live call fails
+// against the default endpoint. Mirrored in the hosted datasheet. Aliases
+// resolve upstream: jev-latest and jev-preview both point at jev-1.13.0 today.
 var typesafeModels = []typesafeModel{
 	{
 		ID:          "jev-1.13.0",
@@ -56,16 +61,16 @@ type TypesafeNativeModel struct {
 	ReleaseDate string `json:"release_date,omitempty"`
 }
 
-// TypesafeNativeListModelsResponse is the native model-listing shape served on
-// /typesafe/v1/models. Typesafe documents no upstream listing endpoint, so
-// this is synthesized from the static catalog.
+// TypesafeNativeListModelsResponse is the native model-listing shape of
+// GET /v1/models, served on /typesafe/v1/models.
 type TypesafeNativeListModelsResponse struct {
 	Models []TypesafeNativeModel `json:"models"`
 }
 
 // ToTypesafeNativeListModelsResponse converts a Bifrost model listing into the
-// native shape, restoring bare upstream model names and re-attaching catalog
-// descriptions and release dates.
+// native shape, restoring bare upstream model names. Description and
+// release_date come from the upstream entry the provider carried on
+// ProviderExtra, falling back to the pinned catalog.
 func ToTypesafeNativeListModelsResponse(resp *schemas.BifrostListModelsResponse) *TypesafeNativeListModelsResponse {
 	native := &TypesafeNativeListModelsResponse{Models: []TypesafeNativeModel{}}
 	if resp == nil {
@@ -79,7 +84,11 @@ func ToTypesafeNativeListModelsResponse(resp *schemas.BifrostListModelsResponse)
 	for _, model := range resp.Data {
 		name := strings.TrimPrefix(model.ID, prefix)
 		entry := TypesafeNativeModel{Name: name}
-		if known, ok := catalog[name]; ok {
+		var upstream TypesafeNativeModel
+		if len(model.ProviderExtra) > 0 && sonic.Unmarshal(model.ProviderExtra, &upstream) == nil {
+			entry.Description = upstream.Description
+			entry.ReleaseDate = upstream.ReleaseDate
+		} else if known, ok := catalog[name]; ok {
 			entry.Description = known.Description
 			entry.ReleaseDate = known.ReleaseDate
 		}

@@ -423,6 +423,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
 			continue
 		}
+		// Anthropic's per-message effort override (a system item with empty content and
+		// output_config.effort) has no OpenAI equivalent: the key is unknown to OpenAI and an
+		// empty content array is rejected, so the effort-only item is dropped and any other
+		// item sheds the key. `message` is the range copy, so the caller's input is untouched.
+		if message.OutputConfig != nil {
+			if message.IsEffortOnlySystemItem() {
+				continue
+			}
+			message.OutputConfig = nil
+		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
 			needsRewrite := false
@@ -495,6 +505,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				toolMsgCopy.CallID = &stripped
 				message.ResponsesToolMessage = &toolMsgCopy
 			}
+		}
+
+		// OpenAI requires an input function_call item's id to begin with "fc". Foreign
+		// histories (e.g. Gemini streaming reuses the "<id>_ts_<sig>" call id as the item
+		// id) trip this even through a fallback. The id is optional on input, so drop it;
+		// call_id is left intact so the function_call_output still pairs with its call.
+		// message is a value copy, so the caller's input is untouched.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "fc") {
+			message.ID = nil
 		}
 
 		// OpenAI accepts role only on message input items.

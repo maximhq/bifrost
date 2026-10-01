@@ -11,8 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { AutoSizeTextarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { formatWarpUsage } from "@/components/warp/warpStream.utils";
 import { getErrorMessage } from "@/lib/store";
-import { cn } from "@/lib/utils";
 import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import {
 	useCancelWarpBackfillMutation,
@@ -21,20 +21,14 @@ import {
 	useStartWarpBackfillMutation,
 	useUpdateWarpConfigMutation,
 } from "@/lib/store/apis/warpApi";
-import {
-	WARP_MAX_TEMPERATURE,
-	WARP_MIN_TEMPERATURE,
-	WARP_REASONING_EFFORTS,
-	type WarpBackfillJob,
-	type WarpConfigInput,
-} from "@/lib/types/warp";
+import { WARP_MAX_TEMPERATURE, WARP_MIN_TEMPERATURE, WARP_REASONING_EFFORTS, type WarpConfigInput } from "@/lib/types/warp";
+import { cn } from "@/lib/utils";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
-import { getExampleBaseUrl } from "@/lib/utils/port";
 import {
 	embeddingSpaceChanged,
 	normalizeWarpNamespace,
@@ -42,30 +36,14 @@ import {
 	validateWarpEmbedding,
 	type WarpEmbeddingFields,
 } from "./warpConfig.utils";
-import { isFiniteNumber, isValidBaseURL, validateWarpRetentionDays } from "./warpView.utils";
-
-/**
- * Warp talks to Bifrost itself by default.
- *
- * Pointing base_url at this deployment means Warp reaches its model through the
- * gateway, using the provider credentials already configured here. That is why
- * the API key below is optional: for the default setup there is no second
- * credential to supply.
- *
- * The /openai suffix matters. Warp sends OpenAI-shaped requests, and the
- * provider appends its own path - so the base has to be the origin's
- * OpenAI-compatible mount, giving /openai/v1/responses. Pointed at the bare
- * origin it would resolve to /v1/responses, which this server does not serve.
- * Routing through the compatibility layer is also what keeps Warp working
- * against any configured provider rather than only OpenAI.
- */
-const defaultBaseUrl = () => {
-	// On the Vite dev server the page origin is Vite, not Bifrost, so this
-	// resolves to the Go server (localhost:8080) there and to the page origin in
-	// production.
-	const origin = getExampleBaseUrl();
-	return origin ? `${origin}/openai` : "";
-};
+import {
+	isFiniteNumber,
+	retainedWarpBackfillForSpace,
+	retainFinishedWarpBackfill,
+	type RetainedWarpBackfill,
+	validateWarpRetentionDays,
+	warpSavedSpaceKey,
+} from "./warpView.utils";
 
 /**
  * Sentinel for "any key". Radix rejects an empty-string SelectItem value, so the
@@ -83,7 +61,7 @@ const DEFAULT_HISTORY_RETENTION_DAYS = 30;
 const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
-const DEFAULT_SEARCH_THRESHOLD = 0.8;
+const DEFAULT_SEARCH_THRESHOLD = 0.7;
 const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_BACKFILL_PERIOD = "7d";
 
@@ -96,7 +74,6 @@ interface WarpFormState {
 	provider: string;
 	model: string;
 	apiKeyID: string;
-	baseURL: string;
 	maxIterations: number;
 	requestTimeoutSeconds: number;
 	historyRetentionDays: number;
@@ -122,7 +99,6 @@ const EMPTY_FORM: WarpFormState = {
 	provider: "",
 	model: "",
 	apiKeyID: "",
-	baseURL: "",
 	maxIterations: DEFAULT_MAX_ITERATIONS,
 	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
 	historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
@@ -167,8 +143,15 @@ export default function WarpView() {
 	const [form, setForm] = useState<WarpFormState>(EMPTY_FORM);
 	const [activeBackfillID, setActiveBackfillID] = useState<string | null>(null);
 	// The last terminal result, held so it survives the switch to the id-less
-	// status query. Cleared when a new backfill starts.
-	const [finishedBackfill, setFinishedBackfill] = useState<WarpBackfillJob | null>(null);
+	// status query. Cleared when a new backfill starts. Tagged with the
+	// embedding space it ran under, so a space change cannot leave it on screen
+	// as a completed run of a space nothing has indexed - see lastBackfill.
+	const [finishedBackfill, setFinishedBackfill] = useState<RetainedWarpBackfill | null>(null);
+	// The saved space observed while the pinned job was running. The server
+	// refuses a space change while a job is in flight, so this is the job's own
+	// space, captured before a save that lands after the job finishes could
+	// move savedSpaceKey off it. Null when no run has been observed.
+	const activeBackfillSpaceKey = useRef<string | null>(null);
 	const [backfillPeriod, setBackfillPeriod] = useState<string | undefined>(DEFAULT_BACKFILL_PERIOD);
 	const [backfillStart, setBackfillStart] = useState<Date | undefined>(() => getRangeForPeriod(DEFAULT_BACKFILL_PERIOD).from);
 	const [backfillEnd, setBackfillEnd] = useState<Date | undefined>(() => getRangeForPeriod(DEFAULT_BACKFILL_PERIOD).to);
@@ -247,8 +230,20 @@ export default function WarpView() {
 	});
 	const isBackfillActive =
 		backfillStatus?.status === "pending" || backfillStatus?.status === "running" || backfillStatus?.status === "cancelling";
-	// A live job always wins; otherwise fall back to the run that just ended.
-	const shownBackfill = backfillStatus?.id ? backfillStatus : finishedBackfill;
+	// The saved embedding space, as one comparable value. A finished run is only
+	// the state of the index while this is still the space it ran under.
+	const savedSpaceKey = warpSavedSpaceKey(config);
+	// A live job always wins; otherwise fall back to the run that just ended -
+	// but only while the saved space is still the one it ran under. Checked on
+	// every read, not cleared by an effect: the id-pinned poll can deliver the
+	// old space's terminal status after a save has already moved the space on,
+	// and a one-shot clear would have fired before that status arrived.
+	const lastBackfill = backfillStatus?.id ? backfillStatus : retainedWarpBackfillForSpace(finishedBackfill, savedSpaceKey);
+	// These embedding calls skip the plugin pipeline, so they never show up in
+	// the logs - this line is the only place their spend is visible.
+	const backfillSpend = lastBackfill
+		? formatWarpUsage({ total_tokens: lastBackfill.embedding_tokens, cost: { total_cost: lastBackfill.embedding_cost } })
+		: null;
 
 	// Adopt a job discovered by the id-less request. Without this a reload during
 	// a running backfill kept polling id-less, and the moment the job finished
@@ -260,6 +255,19 @@ export default function WarpView() {
 			setActiveBackfillID(backfillStatus.id);
 		}
 	}, [activeBackfillID, backfillStatus?.id, backfillStatus?.status]);
+
+	// Remember which space the pinned job runs under, for the terminal retention
+	// below. Only once config has loaded: before that savedSpaceKey describes
+	// nothing, and tagging the job with it would hide the run once config lands.
+	// Captured once, never overwritten: the server accepts a space change the
+	// moment the job finishes on its side, while this poll can still say
+	// "running" for up to two seconds - and a config refetch landing in that
+	// window would re-tag the job with the new space, so its terminal status
+	// then passed the check it exists to fail.
+	const configLoaded = !!config;
+	useEffect(() => {
+		if (isBackfillActive && configLoaded && activeBackfillSpaceKey.current === null) activeBackfillSpaceKey.current = savedSpaceKey;
+	}, [isBackfillActive, configLoaded, savedSpaceKey]);
 
 	// Release the pinned id once the job has finished, or the view keeps asking
 	// about a completed backfill every two seconds for as long as it stays open.
@@ -273,10 +281,20 @@ export default function WarpView() {
 			// id-less request, which answers {status:"idle"} with no id for any
 			// deployment with no active job - so the counters and last_error of the
 			// run that just finished disappeared the moment it finished, which is
-			// exactly when someone wants to read them.
-			setFinishedBackfill(backfillStatus);
+			// exactly when someone wants to read them. Dropped instead when the job
+			// ran under a space that has since been saved over: the id-pinned poll
+			// still answers for it, but it describes rows the new space will never
+			// search.
+			setFinishedBackfill(retainFinishedWarpBackfill(backfillStatus, activeBackfillSpaceKey.current, savedSpaceKey));
+			activeBackfillSpaceKey.current = null;
 			setActiveBackfillID(null);
 		}
+		// Keyed on the status transition only, on purpose. With savedSpaceKey in
+		// the deps a space change would re-run this while the poll still holds
+		// the old job's "completed", and re-retain it under the new space - the
+		// exact leak the tag exists to stop. Both values are read fresh at
+		// execution time, since the closure is rebuilt every render.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [backfillStatus?.status]);
 
 	// A failed or cancelled run that got partway through the window can be
@@ -325,7 +343,6 @@ export default function WarpView() {
 			provider: config.provider ?? "",
 			model: config.model ?? "",
 			apiKeyID: config.api_key_id ?? "",
-			baseURL: config.base_url || defaultBaseUrl(),
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
 			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
 			historyRetentionDays: config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS,
@@ -377,7 +394,6 @@ export default function WarpView() {
 			form.provider !== (config.provider ?? "") ||
 			form.model !== (config.model ?? "") ||
 			form.apiKeyID !== (config.api_key_id ?? "") ||
-			form.baseURL !== (config.base_url || defaultBaseUrl()) ||
 			// The same fallback hydration applied, or a config stored without these
 			// fields reads as dirty the moment it loads and Save lights up before
 			// anyone has touched anything.
@@ -399,7 +415,6 @@ export default function WarpView() {
 
 	// The server enforces the same rules; checking here only saves a round trip.
 	const missingRequired = form.enabled && (!form.provider || !form.model);
-	const baseURLInvalid = form.baseURL !== "" && !isValidBaseURL(form.baseURL);
 	const iterationsInvalid = !isFiniteNumber(form.maxIterations) || form.maxIterations < 1 || form.maxIterations > 20;
 	const timeoutInvalid = !isFiniteNumber(form.requestTimeoutSeconds) || form.requestTimeoutSeconds < 1;
 	// No upper bound: the per-owner conversation cap already limits the table, so
@@ -424,9 +439,19 @@ export default function WarpView() {
 		!!config?.configured &&
 		embeddingSpaceChanged(embeddingFields, savedEmbeddingFields) &&
 		normalizeWarpNamespace(form.namespace) === normalizeWarpNamespace(savedEmbeddingFields.namespace);
+	// A finished backfill describes the embedding space it ran under. Once the
+	// form has moved off that space - a different model, dimension or namespace
+	// - the card would show "Completed" over a full bar for rows the new space
+	// will never search, so it is hidden until the fields come back or a job
+	// runs under the new space (the server answers idle for the old one once
+	// the change is saved). A running job stays: it still needs its cancel.
+	const backfillSpaceEdited =
+		!isBackfillActive &&
+		(embeddingSpaceChanged(embeddingFields, savedEmbeddingFields) ||
+			normalizeWarpNamespace(form.namespace) !== normalizeWarpNamespace(savedEmbeddingFields.namespace));
+	const shownBackfill = backfillSpaceEdited ? null : lastBackfill;
 	const invalid =
 		missingRequired ||
-		baseURLInvalid ||
 		iterationsInvalid ||
 		timeoutInvalid ||
 		retentionInvalid ||
@@ -443,7 +468,6 @@ export default function WarpView() {
 			provider: form.provider.trim(),
 			model: form.model.trim(),
 			api_key_id: form.apiKeyID,
-			base_url: form.baseURL.trim(),
 			max_iterations: form.maxIterations,
 			request_timeout_seconds: form.requestTimeoutSeconds,
 			history_retention_days: form.historyRetentionDays,
@@ -493,6 +517,10 @@ export default function WarpView() {
 			// A new run replaces the last one's result, so the panel never shows a
 			// finished job beside a running one.
 			setFinishedBackfill(null);
+			// The run starts under the space saved right now; the capture effect
+			// above would also record it, but not before a job that finishes
+			// between this response and the first poll has already gone terminal.
+			activeBackfillSpaceKey.current = savedSpaceKey;
 			setActiveBackfillID(status.id ?? null);
 			toast.success(restart ? "Warp embedding backfill restarted from the beginning." : "Warp embedding backfill started.");
 		} catch (error) {
@@ -634,6 +662,7 @@ export default function WarpView() {
 										// which is Bifrost load-balancing across the whole pool.
 										keys={modelKeys}
 										value={form.model}
+										unfiltered
 										onChange={(model) => update("model", model)}
 										placeholder={form.provider ? "Search or type a model..." : "Select a provider first"}
 										disabled={!form.provider || !hasWarpUpdateAccess}
@@ -704,25 +733,6 @@ export default function WarpView() {
 											</button>
 										</p>
 									)}
-								</WarpField>
-
-								<WarpField
-									className="md:col-span-3"
-									label="Base URL"
-									htmlFor="warp-base-url"
-									hint="Defaults to this Bifrost, so Warp reuses the credentials configured here. Point it elsewhere only to call a provider directly."
-									error={baseURLInvalid ? "Enter an absolute http:// or https:// URL, with no username or password" : undefined}
-								>
-									<Input
-										id="warp-base-url"
-										type="text"
-										placeholder="https://llm.internal.example.com/v1"
-										data-testid="warp-base-url-input"
-										className={baseURLInvalid ? "border-destructive" : ""}
-										value={form.baseURL}
-										onChange={(event) => update("baseURL", event.target.value)}
-										disabled={!hasWarpUpdateAccess}
-									/>
 								</WarpField>
 							</div>
 						</WarpSection>
@@ -1161,9 +1171,12 @@ export default function WarpView() {
 												}}
 											/>
 										</div>
-										<p className="text-muted-foreground text-xs">
-											{shownBackfill.indexed} indexed · {shownBackfill.skipped} skipped · {shownBackfill.failed} failed
-										</p>
+										<div className="text-muted-foreground flex items-center justify-between gap-3 text-xs">
+											<span>
+												{shownBackfill.indexed} indexed · {shownBackfill.skipped} skipped · {shownBackfill.failed} failed
+											</span>
+											{backfillSpend && <span data-testid="warp-backfill-spend">{backfillSpend}</span>}
+										</div>
 										{shownBackfill.message && <p className="text-muted-foreground text-xs">{shownBackfill.message}</p>}
 										{shownBackfill.last_error && <p className="text-destructive text-xs">Latest error: {shownBackfill.last_error}</p>}
 									</div>

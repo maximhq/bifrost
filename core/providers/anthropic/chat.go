@@ -285,7 +285,7 @@ func convertMCPToolsetConfigMap(m map[string]*schemas.ChatMCPToolsetConfig) map[
 // thinks and the response carries no reasoning_details.
 //
 // Two return values because Anthropic has one thinking mode the neutral type cannot
-// express. "enabled"/"disabled" map cleanly onto ChatReasoning and are returned as
+// express. "enabled"/"disabled"/"between_tools" map cleanly onto ChatReasoning and are returned as
 // reasoning so they flow through the model-aware mapping in ToAnthropicChatRequest -
 // budget_tokens was removed on Opus 4.7+, so copying the caller's object verbatim
 // would turn a valid request into an upstream 400. "adaptive" has no neutral
@@ -335,6 +335,8 @@ func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, 
 		// Fable/Mythos carve-out below (that family rejects an explicit
 		// thinking:{type:"disabled"}) still applies.
 		return &schemas.ChatReasoning{Effort: schemas.Ptr("none")}, nil
+	case "between_tools":
+		return &schemas.ChatReasoning{Type: schemas.Ptr("between_tools")}, nil
 	default:
 		return nil, nil
 	}
@@ -751,7 +753,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		// Convert reasoning
 		if reasoningParams != nil {
-			if reasoningParams.MaxTokens != nil {
+			if reasoningParams.Type != nil && *reasoningParams.Type == "between_tools" && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+				// A thinking type, independent of effort: the caller's effort is forwarded as-is.
+				anthropicReq.Thinking = BetweenToolsThinking(caps, reasoningParams.Effort)
+				if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
+					caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+				}
+			} else if reasoningParams.MaxTokens != nil {
 				if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
@@ -817,7 +826,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// Opus 4.7+ and the Fable/Mythos family omit reasoning text by
 			// default; default to "summarized" so the text is visible unless
 			// the caller explicitly requests "omitted".
-			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+			// between_tools takes no display field.
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" && anthropicReq.Thinking.Type != "between_tools" {
 				if reasoningParams.Display != nil {
 					anthropicReq.Thinking.Display = reasoningParams.Display
 				} else if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
@@ -1413,6 +1423,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 				NumSearchQueries: &n,
 			}
+			bifrostResponse.Usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 		}
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that

@@ -119,6 +119,10 @@ type LogStore interface {
 	GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
+	// GetUserSpend returns each user's total cost inside the filter window in one
+	// query: no previous-period comparison, no ordering, no row limit. It is the cheap
+	// read for jobs that rank every user by spend.
+	GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)

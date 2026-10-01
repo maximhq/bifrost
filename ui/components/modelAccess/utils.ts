@@ -113,6 +113,21 @@ export function summarizeModelAccess(list: readonly string[] | undefined | null,
 	return parts.join(", ");
 }
 
+/**
+ * Collapsed summary for a grant's allow and block sides together. The block list
+ * wins over the allow list, so a blocked "*" denies everything, and an empty
+ * allow list already denies everything whatever is blocked.
+ */
+export function summarizeGrantModelAccess(
+	allowed: readonly string[] | undefined | null,
+	blocked: readonly string[] | undefined | null,
+): string {
+	if (isWildcardList(blocked)) return summarizeModelAccess(blocked, "block");
+	const allowSummary = summarizeModelAccess(allowed, "allow");
+	if ((allowed ?? []).length === 0 || (blocked ?? []).length === 0) return allowSummary;
+	return `${allowSummary} · ${summarizeModelAccess(blocked, "block")} blocked`;
+}
+
 /** Placeholder for the picker control, mirroring the wording each surface used before. */
 export function modelAccessPlaceholder(list: readonly string[] | undefined | null, mode: ModelAccessMode): string {
 	const { models, patterns } = splitModelAccess(list);

@@ -42,9 +42,19 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { getLogRoutingPanel } from "@/lib/registries/logs";
+import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import {
+	BatchRequestCounts,
+	ContentBlock,
+	InputCostDetails,
+	LLMUsage,
+	LogEntry,
+	OutputCostDetails,
+	OverheadBucket,
+	ResponsesMessage,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -53,6 +63,7 @@ import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappin
 import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/logs";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
@@ -69,7 +80,17 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { extractProviderErrorMessage, parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import {
+	extractProviderErrorMessage,
+	hasNoToolArguments,
+	isClientToolCallItem,
+	nextSessionLookupStart,
+	isResponsesToolCallItem,
+	isShownMetadataKey,
+	parseRoutingDecisionLine,
+	pickNextSessionLog,
+	resolveRawJsonNoticeState,
+} from "./logDetailView.utils";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -421,6 +442,35 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	}
 	lines.push(`Input tokens: ${formatExactNumber(total)}`);
 	return lines.join("\n");
+};
+
+const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["cached_read_cost", "Cache read"],
+	["cached_write_cost", "Cache write"],
+	["request_cost", "Per-request fee"],
+];
+
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["reasoning_cost", "Reasoning"],
+	["citation_cost", "Citations"],
+	["search_queries_cost", "Web search"],
+];
+
+// Lists the non-zero cost categories; undefined when there are none or text is the only one.
+const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
+	details: T | undefined,
+	labels: [keyof T, string][],
+): string | undefined => {
+	if (!details) return undefined;
+	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
+	if (set.length === 0 || (set.length === 1 && set[0][0] === "text_cost")) return undefined;
+	return set.map(([key, label]) => `${label}: ${formatCostPrecise(details[key] as number)}`).join("\n");
 };
 
 // Helper to detect passthrough operations
@@ -1037,6 +1087,63 @@ function ToolNameLabel({ name }: { name: string }) {
 	);
 }
 
+// A response that ends on a tool call the caller runs itself (Warp's agent loop, any
+// Responses client) has no result in this row: the caller executes the tool and, if
+// it carries on, sends the output with a later request. Point at the next row in the
+// same session, without claiming it is the one that carries the result.
+function NextSessionRequestLink({ log, onOpenLog }: { log: LogEntry; onOpenLog: (logId: string) => void }) {
+	// currentData, not data: data keeps the previous log's page while this one's
+	// lookup runs, which would briefly link to the wrong request.
+	const { currentData, isError, refetch } = useGetLogsQuery(
+		{
+			filters: { session_id: log.session_id, start_time: nextSessionLookupStart(log.timestamp) },
+			pagination: { limit: 2, offset: 0, sort_by: "timestamp", order: "asc" },
+			rootsOnly: true,
+		},
+		// The caller may send its follow-up after this opens, so look again while
+		// the page is in view.
+		{ skip: !log.session_id, pollingInterval: 10_000, skipPollingIfUnfocused: true },
+	);
+	const next = currentData ? pickNextSessionLog(currentData.logs, log) : undefined;
+	// A failed lookup is not "there is no next request": say so, and offer a retry.
+	if (isError && !currentData) {
+		return (
+			<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request-error">
+				Couldn't look up the next request in this session.{" "}
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => void refetch()}
+					data-testid="log-tool-call-next-request-retry"
+				>
+					Retry
+				</button>
+			</div>
+		);
+	}
+	return (
+		<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request">
+			The tool's result isn't in this request.{" "}
+			{next ? (
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => onOpenLog(next.id)}
+					data-testid="log-tool-call-next-request-link"
+				>
+					Open next request
+				</button>
+			) : !log.session_id ? null : currentData ? (
+				// The lookup finished and found nothing: the caller has not sent a
+				// follow-up in this session, or has not yet.
+				<span data-testid="log-tool-call-next-request-none">No later request in this session.</span>
+			) : (
+				<span data-testid="log-tool-call-next-request-loading">Looking for the next request…</span>
+			)}
+		</div>
+	);
+}
+
 function MessageRow({
 	role,
 	meta,
@@ -1098,6 +1205,7 @@ interface LogDetailViewProps {
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 	onFilterBySessionId?: (sessionId: string) => void;
+	onOpenLog?: (logId: string) => void;
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -1176,6 +1284,7 @@ export function LogDetailView({
 	headerAction,
 	onFilterByParentRequestId,
 	onFilterBySessionId,
+	onOpenLog,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1220,6 +1329,8 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	// A downstream build can draw its own routing record at the top of the Routing tab.
+	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
@@ -1692,11 +1803,13 @@ export function LogDetailView({
 					/>
 					<HeroStat
 						label="Cost"
-						// Decisions bill fractions of a cent per call (jev: $42 per 1B input
-						// tokens), so the shared 4-dp rounding floors every value to $0.0000.
+						// Routing classifiers add sidecar cost to normal inference
+						// requests, so keep those totals visible at useful precision.
 						value={
 							log.cost != null
-								? log.object === "decisions" || (log.status === "cancelled" && log.stream && log.provider === "anthropic")
+								? log.object === "decisions" ||
+									(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 ||
+									(log.status === "cancelled" && log.stream && log.provider === "anthropic")
 									? formatCostPrecise(log.cost)
 									: formatCost(log.cost)
 								: "—"
@@ -2270,13 +2383,19 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
-										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
+										<LogEntryDetailsView
+											className="w-full"
+											label="Input Cost"
+											value={formatCostPrecise(log.cost_breakdown?.input_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.input_cost_details, INPUT_COST_LABELS)}
+										/>
 									)}
 									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
 											label="Output Cost"
 											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.output_cost_details, OUTPUT_COST_LABELS)}
 										/>
 									)}
 									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
@@ -2467,7 +2586,9 @@ export function LogDetailView({
 														}
 													/>
 												)}
-												{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
+												{reasoning.max_tokens != null && (
+													<LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />
+												)}
 											</div>
 										</div>
 									</>
@@ -2706,7 +2827,11 @@ export function LogDetailView({
 												label="Mechanism"
 												value={
 													<Badge variant="secondary" className="uppercase">
-														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+														{call.request_type === "decisions"
+															? "Jev Classification"
+															: call.output_tokens != null
+																? "LLM Classification"
+																: "Embedding"}
 													</Badge>
 												}
 											/>
@@ -2735,46 +2860,14 @@ export function LogDetailView({
 					{!isContainer &&
 						!isPassthrough &&
 						log.metadata &&
-						Object.keys(log.metadata).filter((k) => {
-							if (k === "isAsyncRequest") return false;
-							if (
-								isRealtimeTurn &&
-								[
-									"realtime_session_id",
-									"provider_session_id",
-									"realtime_source",
-									"realtime_event_type",
-									"realtime_transport",
-									"realtime_voice",
-									"realtime",
-								].includes(k)
-							)
-								return false;
-							return true;
-						}).length > 0 && (
+						Object.keys(log.metadata).some((k) => isShownMetadataKey(k, isRealtimeTurn)) && (
 							<>
 								<DottedSeparator />
 								<div className="space-y-4">
 									<BlockHeader title="Metadata" />
 									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 										{Object.entries(log.metadata)
-											.filter(([key]) => {
-												if (key === "isAsyncRequest") return false;
-												if (
-													isRealtimeTurn &&
-													[
-														"realtime_session_id",
-														"provider_session_id",
-														"realtime_source",
-														"realtime_event_type",
-														"realtime_transport",
-														"realtime_voice",
-														"realtime",
-													].includes(key)
-												)
-													return false;
-												return true;
-											})
+											.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 											.map(([key, value]) => (
 												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
 											))}
@@ -3389,16 +3482,23 @@ export function LogDetailView({
 						const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
 						const outputMsgs =
 							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
-						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
-							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
-							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
+						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string>; fromOutput: boolean }> = [
+							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping, fromOutput: false })),
+							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping, fromOutput: true })),
 						];
 						if (all.length === 0) return null;
+						// The link to the request carrying the results goes under the last call
+						// the caller has to run, once, however many calls the response made.
+						const lastClientCallIndex =
+							onOpenLog && log.session_id ? all.findLastIndex((entry) => entry.fromOutput && isClientToolCallItem(entry.msg.type)) : -1;
 						return (
 							<div className="bg-card rounded-sm border p-5">
 								{all.map(({ msg, mapping }, index) => {
 									const role = getResponsesRole(msg);
 									const isLast = index === all.length - 1;
+									const isToolCall = isResponsesToolCallItem(msg.type);
+									// `{}` arguments rendered as a one-line body read as an empty result.
+									const noArguments = isToolCall && hasNoToolArguments(msg.arguments);
 									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, mapping) : null;
 									const reasoningHasAny =
 										!!reasoningParts &&
@@ -3406,7 +3506,7 @@ export function LogDetailView({
 											!!reasoningParts.encrypted ||
 											!!reasoningParts.contentText ||
 											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
+									const text = role === "reasoning" || noArguments ? "" : extractResponsesText(msg, mapping);
 									// Whatever the item carries outside the fields rendered below — a server tool's `action`,
 									// a custom_tool_call's `input`, a compaction item's `encrypted_content`.
 									const itemPayload = extractResponsesItemPayload(msg);
@@ -3442,6 +3542,11 @@ export function LogDetailView({
 											) : (
 												`${lineCount} line${lineCount === 1 ? "" : "s"}`
 											)
+										) : noArguments ? (
+											<>
+												{msg.name ? <ToolNameLabel name={msg.name} /> : null}
+												{msg.name ? " · no arguments" : "no arguments"}
+											</>
 										) : msg.name ? (
 											<ToolNameLabel name={msg.name} />
 										) : msg.type === "function_call_output" && msg.call_id ? (
@@ -3459,7 +3564,7 @@ export function LogDetailView({
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
-										<MessageRow key={index} role={role} meta={meta} last={isLast}>
+										<MessageRow key={index} role={role} meta={meta} last={isLast} label={isToolCall ? "Tool Call" : undefined}>
 											{role === "reasoning" ? (
 												reasoningHasAny && reasoningParts ? (
 													<div className="space-y-3">
@@ -3491,6 +3596,8 @@ export function LogDetailView({
 												) : (
 													<div className="text-muted-foreground text-[12px] italic">No reasoning content available</div>
 												)
+											) : noArguments ? (
+												<div className="text-muted-foreground text-[12px] italic">No arguments</div>
 											) : text ? (
 												usePlainText ? (
 													<CollapsibleCode text={text} preview={3} mono={false} />
@@ -3526,6 +3633,7 @@ export function LogDetailView({
 															className="mt-2 max-w-full rounded border"
 														/>
 													))}
+											{index === lastClientCallIndex && onOpenLog ? <NextSessionRequestLink log={log} onOpenLog={onOpenLog} /> : null}
 										</MessageRow>
 									);
 								})}
@@ -3714,6 +3822,7 @@ export function LogDetailView({
 				</TabsContent>
 
 				<TabsContent value="routing" className="space-y-3">
+					{RoutingPanel && <RoutingPanel log={log} />}
 					{log.attempt_trail && log.attempt_trail.length > 1 && (
 						<CollapsibleBox
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
