@@ -549,3 +549,70 @@ func TestClassifierMatchesCategorization(t *testing.T) {
 		}
 	}
 }
+
+// A nil StatusCode must resolve to the same status for every reader.
+func TestEffectiveHTTPStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *BifrostError
+		want int
+	}{
+		{"nil error", nil, 500},
+		{"explicit provider status wins", &BifrostError{StatusCode: statusPtr(429)}, 429},
+		{"bodyless status normalized to 502", &BifrostError{StatusCode: statusPtr(204)}, 502},
+		{"informational status normalized to 502", &BifrostError{StatusCode: statusPtr(100)}, 502},
+		{"provider-attributed, no status", &BifrostError{IsBifrostError: false}, 400},
+		{"bifrost-internal, no status", &BifrostError{IsBifrostError: true}, 500},
+		{
+			"provider auto-resolve failure is a caller mistake",
+			&BifrostError{IsBifrostError: true, Error: &ErrorField{Message: ProviderAutoResolveErrorMessage}},
+			400,
+		},
+		{
+			"model auto-resolve failure is a caller mistake",
+			&BifrostError{IsBifrostError: true, Error: &ErrorField{Message: ModelAutoResolveErrorMessage}},
+			400,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.EffectiveHTTPStatus(); got != tt.want {
+				t.Errorf("EffectiveHTTPStatus() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// A nil StatusCode used to leave the attribute unset, read as status_code="unknown".
+func TestSpanStatusAttributeMatchesEffectiveStatus(t *testing.T) {
+	internal := &BifrostError{IsBifrostError: true, Error: &ErrorField{Message: "failed to write model field"}}
+
+	d := &LLMSpanData{Error: &SpanError{
+		Detail:     internal.Error,
+		StatusCode: Ptr(internal.EffectiveHTTPStatus()),
+	}}
+
+	attrs := d.ResponseAttributes()
+	if got := GetIntAttr(attrs, AttrHTTPResponseStatusCode); got != 500 {
+		t.Errorf("%s = %d, want 500", AttrHTTPResponseStatusCode, got)
+	}
+}
+
+// A status-only error must keep its status; Error is optional.
+func TestStatusOnlyErrorStillCarriesStatus(t *testing.T) {
+	statusOnly := &BifrostError{StatusCode: statusPtr(429)}
+
+	d := &LLMSpanData{Error: &SpanError{
+		Detail:     statusOnly.Error, // nil
+		StatusCode: Ptr(statusOnly.EffectiveHTTPStatus()),
+	}}
+	attrs := d.ResponseAttributes()
+	if got := GetIntAttr(attrs, AttrHTTPResponseStatusCode); got != 429 {
+		t.Errorf("%s = %d, want 429", AttrHTTPResponseStatusCode, got)
+	}
+	// Absent, not empty.
+	if _, ok := attrs[AttrError]; ok {
+		t.Errorf("%s should be absent when Error is nil", AttrError)
+	}
+}

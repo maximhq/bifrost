@@ -133,20 +133,22 @@ func PopulateResponseAttributes(resp *schemas.BifrostResponse) map[string]any {
 // PopulateErrorAttributes extracts error attributes from a BifrostError.
 func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 	attrs := make(map[string]any)
-	if err == nil || err.Error == nil {
+	if err == nil {
 		return attrs
 	}
 
-	attrs[schemas.AttrError] = err.Error.Message
-	if err.Error.Type != nil {
-		attrs[schemas.AttrErrorTypeSpec] = *err.Error.Type
+	// Error is optional, so a status-only error must not return early here.
+	if err.Error != nil {
+		attrs[schemas.AttrError] = err.Error.Message
+		if err.Error.Type != nil {
+			attrs[schemas.AttrErrorTypeSpec] = *err.Error.Type
+		}
+		if err.Error.Code != nil {
+			attrs[schemas.AttrErrorCode] = *err.Error.Code
+		}
 	}
-	if err.Error.Code != nil {
-		attrs[schemas.AttrErrorCode] = *err.Error.Code
-	}
-	if err.StatusCode != nil {
-		attrs[schemas.AttrHTTPResponseStatusCode] = *err.StatusCode
-	}
+	// Effective, not raw: an internal error has no StatusCode but still returns 500.
+	attrs[schemas.AttrHTTPResponseStatusCode] = err.EffectiveHTTPStatus()
 
 	// Usage the provider billed us for even though the request failed or was
 	// cancelled (see BifrostError.ExtraFields.BilledUsage). Governance and the

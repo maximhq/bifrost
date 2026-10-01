@@ -1017,3 +1017,23 @@ func TestSpanAttributesCarryCustomToolCallInput(t *testing.T) {
 		t.Fatalf("%s = %v, want absent without WantContent", schemas.AttrOutputMessages, got)
 	}
 }
+
+// A status-only error must keep its status; Error is optional.
+func TestPopulateErrorAttributes_StatusOnlyError(t *testing.T) {
+	attrs := PopulateErrorAttributes(&schemas.BifrostError{StatusCode: schemas.Ptr(429)})
+
+	if got := schemas.GetIntAttr(attrs, schemas.AttrHTTPResponseStatusCode); got != 429 {
+		t.Errorf("%s = %d, want 429", schemas.AttrHTTPResponseStatusCode, got)
+	}
+	for _, absent := range []string{schemas.AttrError, schemas.AttrErrorTypeSpec, schemas.AttrErrorCode} {
+		if _, ok := attrs[absent]; ok {
+			t.Errorf("%s should be absent when Error is nil, got %v", absent, attrs[absent])
+		}
+	}
+}
+
+func TestPopulateErrorAttributes_NilError(t *testing.T) {
+	if attrs := PopulateErrorAttributes(nil); len(attrs) != 0 {
+		t.Errorf("attrs = %v, want empty for a nil error", attrs)
+	}
+}

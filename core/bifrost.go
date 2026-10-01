@@ -6937,14 +6937,8 @@ func executeRequestWithRetries[T any](
 				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			}
 
-			// End span with appropriate status
+			// Error attributes are stamped by PopulateLLMResponseAttributes above.
 			if bifrostError != nil {
-				if bifrostError.Error != nil {
-					tracer.SetAttribute(handle, "error", bifrostError.Error.Message)
-				}
-				if bifrostError.StatusCode != nil {
-					tracer.SetAttribute(handle, "status_code", *bifrostError.StatusCode)
-				}
 				tracer.EndSpan(handle, schemas.SpanStatusError, "request failed")
 			} else {
 				tracer.EndSpan(handle, schemas.SpanStatusOk, "")
