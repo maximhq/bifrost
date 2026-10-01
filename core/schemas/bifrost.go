@@ -1762,6 +1762,14 @@ type BifrostMCPResponse struct {
 	// BifrostMCPExecuteToolResponse in the next major bump.
 	ChatMessage      *ChatMessage
 	ResponsesMessage *ResponsesMessage
+	// MCPToolResult preserves the protocol-native result for callers that need
+	// every MCP content block and structuredContent rather than an LLM-facing
+	// text conversion. Native MCP execution stores *mcp.CallToolResult here;
+	// the field stays transport-neutral so the shared schemas package remains
+	// usable in TinyGo/WASM builds where MCP transport code is excluded. It is
+	// excluded from envelope serialization so binary tool data is not copied
+	// into trace attributes.
+	MCPToolResult any `json:"-"`
 
 	// Empty stub today; will hold ChatMessage/ResponsesMessage in the next major bump.
 	*BifrostMCPExecuteToolResponse

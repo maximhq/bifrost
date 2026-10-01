@@ -415,7 +415,6 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 				},
 			}
 
-			// Execute the tool via tool executor
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
 				logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
@@ -425,6 +424,22 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
 			logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
+
+			// The existing Chat API retains its text projection and optionally carries
+			// the native result. A getter assertion also supports older core releases.
+			if toolMessage != nil {
+				if carrier, ok := any(toolMessage.ChatToolMessage).(interface{ GetMCPToolResult() any }); ok {
+					if native := carrier.GetMCPToolResult(); native != nil {
+						toolResult, ok := native.(*mcp.CallToolResult)
+						if !ok {
+							return mcp.NewToolResultError("Tool execution returned an invalid protocol result"), nil
+						}
+						if toolResult != nil {
+							return toolResult, nil
+						}
+					}
+				}
+			}
 
 			// Extract content from tool message
 			var resultText string
@@ -443,7 +458,9 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 			}
 
 			// Return result using mcp-go helper
-			return mcp.NewToolResultText(resultText), nil
+			result := mcp.NewToolResultText(resultText)
+			result.IsError = toolMessage != nil && toolMessage.ChatToolMessage != nil && toolMessage.ChatToolMessage.IsError != nil && *toolMessage.ChatToolMessage.IsError
+			return result, nil
 		}
 
 		// Convert description from *string to string

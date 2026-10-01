@@ -180352,6 +180352,76 @@
           }
         }
       ]
+    },
+    {
+      "name": "131. MCP Gateway Preserves Rich Tool Results (#7666)",
+      "description": "Regression for #7666. The provider-independent /mcp gateway used to rebuild an upstream CallToolResult as one text block, dropping images, audio, embedded resources, resource links, structuredContent, _meta, and isError. The local sse_mcp fixture exposes rich_result over examples/mcps/remote-test-server; this case asserts the complete JSON-RPC result survives the gateway. Run the fixture before this focused harness case.",
+      "item": [
+        {
+          "name": "MCP gateway rich tool result passthrough - #7666",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gateway preserves the complete upstream CallToolResult', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'gateway call failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, 'JSON-RPC error: ' + body).to.not.be.ok;",
+                  "  var result = response.result;",
+                  "  pm.expect(result, 'missing tool result: ' + body).to.be.an('object');",
+                  "  pm.expect(result._meta, 'missing result metadata: ' + body).to.deep.include({fixture: 'mcp-gateway-rich-result'});",
+                  "  pm.expect(result.structuredContent, 'missing structuredContent: ' + body).to.deep.equal({filename: 'report.pdf', size: 606});",
+                  "  pm.expect(result.isError, 'isError was dropped: ' + body).to.equal(true);",
+                  "  pm.expect(result.content, 'missing content array: ' + body).to.be.an('array').with.lengthOf(5);",
+                  "  var byType = {};",
+                  "  result.content.forEach(function (block) { byType[block.type] = block; });",
+                  "  pm.expect(byType.text, 'text block missing: ' + body).to.include({text: 'Attachment report.pdf'});",
+                  "  pm.expect(byType.image, 'image block missing: ' + body).to.include({data: 'aW1hZ2U=', mimeType: 'image/png'});",
+                  "  pm.expect(byType.audio, 'audio block missing: ' + body).to.include({data: 'YXVkaW8=', mimeType: 'audio/wav'});",
+                  "  pm.expect(byType.resource, 'embedded resource missing: ' + body).to.be.an('object');",
+                  "  pm.expect(byType.resource.resource, 'embedded blob missing: ' + body).to.deep.include({uri: 'fixture://attachment/report.pdf', mimeType: 'application/pdf', blob: 'JVBERi0xLjQK'});",
+                  "  pm.expect(byType.resource_link, 'resource link missing: ' + body).to.deep.include({uri: 'ui://attachment/report.pdf', name: 'report.pdf', mimeType: 'application/pdf'});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":7666,\"method\":\"tools/call\",\"params\":{\"name\":\"sse_mcp-rich_result\",\"arguments\":{}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

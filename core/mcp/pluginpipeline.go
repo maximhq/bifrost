@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/client"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -24,6 +25,102 @@ var (
 // BifrostMCPResponse from the outcome. The plain Go error returned here is wrapped
 // into a BifrostError by the gate before being handed to PostMCPHooks.
 type MCPOpFunc func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
+
+type mcpChatProjection struct {
+	messagePresent bool
+	contentPresent bool
+	content        string
+	isErrorPresent bool
+	isError        bool
+}
+
+func captureMCPChatProjection(response *schemas.BifrostMCPResponse) mcpChatProjection {
+	if response == nil || response.ChatMessage == nil {
+		return mcpChatProjection{}
+	}
+
+	projection := mcpChatProjection{messagePresent: true}
+	message := response.ChatMessage
+	if message.Content != nil {
+		projection.contentPresent = true
+		if message.Content.ContentStr != nil {
+			projection.content = *message.Content.ContentStr
+		} else {
+			for _, block := range message.Content.ContentBlocks {
+				if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
+					projection.content += *block.Text
+				}
+			}
+		}
+	}
+	if message.ChatToolMessage != nil && message.ChatToolMessage.IsError != nil {
+		projection.isErrorPresent = true
+		projection.isError = *message.ChatToolMessage.IsError
+	}
+	return projection
+}
+
+// reconcileMCPToolResultAfterPostHooks applies chat-facing PostMCPHook mutations
+// to the protocol-native result. Hooks written before MCPToolResult existed only
+// know how to redact ChatMessage, so returning the untouched native result would
+// bypass those redactions on the /mcp gateway. Non-text blocks and result-level
+// fields stay intact; only the chat projection that a hook actually changed is
+// synchronized.
+func reconcileMCPToolResultAfterPostHooks(before mcpChatProjection, response *schemas.BifrostMCPResponse) {
+	if !before.messagePresent || response == nil || response.MCPToolResult == nil {
+		return
+	}
+	result, ok := response.MCPToolResult.(*mcpgo.CallToolResult)
+	if !ok || result == nil {
+		return
+	}
+
+	after := captureMCPChatProjection(response)
+	if before.contentPresent != after.contentPresent || before.content != after.content {
+		setMCPTextContent(result, after.content, after.contentPresent)
+	}
+	if before.isErrorPresent != after.isErrorPresent || before.isError != after.isError {
+		result.IsError = after.isErrorPresent && after.isError
+	}
+}
+
+// setMCPTextContent keeps every native content block and its metadata. The first
+// text block carries the post-hook text; additional text blocks are retained with
+// empty text because an arbitrary whole-message rewrite cannot be safely split
+// back across their original boundaries.
+func setMCPTextContent(result *mcpgo.CallToolResult, text string, contentPresent bool) {
+	foundText := false
+	for i, block := range result.Content {
+		switch typed := block.(type) {
+		case mcpgo.TextContent:
+			if !foundText {
+				typed.Text = text
+				foundText = true
+			} else {
+				typed.Text = ""
+			}
+			result.Content[i] = typed
+		case *mcpgo.TextContent:
+			if typed == nil {
+				continue
+			}
+			cloned := *typed
+			if !foundText {
+				cloned.Text = text
+				foundText = true
+			} else {
+				cloned.Text = ""
+			}
+			result.Content[i] = &cloned
+		}
+	}
+	if !foundText && contentPresent {
+		result.Content = append([]mcpgo.Content{mcpgo.TextContent{
+			Type: mcpgo.ContentTypeText,
+			Text: text,
+		}}, result.Content...)
+	}
+}
 
 // RunWithPluginPipeline wraps an MCP wire operation (connect / ping / list_tools / execute_tool)
 // with the plugin pipeline. It is the single source of truth for the MCP plugin gate
@@ -173,6 +270,14 @@ func (m *MCPManager) RunWithPluginPipeline(
 		return resp, nil
 	}
 	defer m.ReleasePluginPipeline(pipeline)
+	runPostHooks := func(response *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+		before := captureMCPChatProjection(response)
+		finalResponse, finalError := pipeline.RunMCPPostHooks(ctx, response, bifrostErr, runFrom)
+		if finalError == nil {
+			reconcileMCPToolResultAfterPostHooks(before, finalResponse)
+		}
+		return finalResponse, finalError
+	}
 
 	// PreHooks. preReq is the (possibly mutated) request for the op. Their spans chain under
 	// the /mcp HTTP span — no op span exists yet.
@@ -194,7 +299,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 		// Short-circuit: the wire op never runs, so no op span is created. PostHooks still run.
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(mcpReqType, clientName, toolName)
-			finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, shortCircuit.Response, nil, preCount)
+			finalResp, finalErr := runPostHooks(shortCircuit.Response, nil, preCount)
 			drainMCPPluginLogs(ctx)
 			if finalErr != nil {
 				return nil, finalErr
@@ -206,7 +311,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 			if shortCircuit.Error.ExtraFields.MCPRequestType == "" {
 				shortCircuit.Error.ExtraFields.MCPRequestType = mcpReqType
 			}
-			finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, nil, shortCircuit.Error, preCount)
+			finalResp, finalErr := runPostHooks(nil, shortCircuit.Error, preCount)
 			drainMCPPluginLogs(ctx)
 			if finalErr != nil {
 				return nil, finalErr
@@ -252,7 +357,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 		}
 	}
 
-	finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, resp, bErr, preCount)
+	finalResp, finalErr := runPostHooks(resp, bErr, preCount)
 	drainMCPPluginLogs(ctx)
 
 	if finalErr != nil {

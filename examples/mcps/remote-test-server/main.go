@@ -103,6 +103,11 @@ func newMCPServer() *server.MCPServer {
 		mcp.WithString("name", mcp.Required(), mcp.Description("Name to greet")),
 	), greetHandler)
 
+	s.AddTool(mcp.NewTool(
+		"rich_result",
+		mcp.WithDescription("Return every MCP tool-result content type for gateway fidelity tests"),
+	), richResultHandler)
+
 	return s
 }
 
@@ -137,6 +142,39 @@ func greetHandler(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return jsonResult(map[string]any{"greeting": "Hello, " + strings.TrimSpace(name) + "!"})
+}
+
+func richResultHandler(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{
+		Result: mcp.Result{Meta: &mcp.Meta{AdditionalFields: map[string]any{
+			"fixture": "mcp-gateway-rich-result",
+		}}},
+		Content: []mcp.Content{
+			mcp.TextContent{Type: mcp.ContentTypeText, Text: "Attachment report.pdf"},
+			mcp.ImageContent{Type: mcp.ContentTypeImage, Data: "aW1hZ2U=", MIMEType: "image/png"},
+			mcp.AudioContent{Type: mcp.ContentTypeAudio, Data: "YXVkaW8=", MIMEType: "audio/wav"},
+			mcp.EmbeddedResource{
+				Type: mcp.ContentTypeResource,
+				Resource: mcp.BlobResourceContents{
+					URI:      "fixture://attachment/report.pdf",
+					MIMEType: "application/pdf",
+					Blob:     "JVBERi0xLjQK",
+				},
+			},
+			mcp.ResourceLink{
+				Type:        mcp.ContentTypeLink,
+				URI:         "ui://attachment/report.pdf",
+				Name:        "report.pdf",
+				Description: "Open the attachment",
+				MIMEType:    "application/pdf",
+			},
+		},
+		StructuredContent: map[string]any{
+			"filename": "report.pdf",
+			"size":     606,
+		},
+		IsError: true,
+	}, nil
 }
 
 // jsonResult marshals v and returns it as the tool's text content.

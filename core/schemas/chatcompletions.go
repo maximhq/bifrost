@@ -1564,6 +1564,8 @@ type ChatInputFile struct {
 
 // ChatToolMessage represents a tool message in a chat conversation.
 type ChatToolMessage struct {
+	MCPToolResult any `json:"-"` // Protocol-native MCP result; excluded from LLM wire payloads.
+
 	ToolCallID *string `json:"tool_call_id,omitempty"`
 	// IsError marks the tool execution as failed. Not part of the OpenAI wire
 	// format — converters for providers whose wire supports an error marker map
@@ -1571,6 +1573,15 @@ type ChatToolMessage struct {
 	// OpenAI-wire converters strip it before serialization so providers that
 	// reject unknown message parameters never see it.
 	IsError *bool `json:"is_error,omitempty"`
+}
+
+// GetMCPToolResult returns the protocol-native result, when this message came from MCP execution.
+// The transport-neutral return type keeps schemas usable in TinyGo/WASM builds.
+func (m *ChatToolMessage) GetMCPToolResult() any {
+	if m == nil {
+		return nil
+	}
+	return m.MCPToolResult
 }
 
 // ChatAssistantMessage represents a message in a chat conversation.

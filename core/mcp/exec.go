@@ -113,6 +113,22 @@ func (m *MCPManager) executeToolWithHooks(
 		bErr.ExtraFields.RequestType = requestType
 		return nil, bErr
 	}
+	// Carry the reconciled native result through the existing return structures.
+	// Attach after hooks so replaced Chat/Responses messages receive the final result.
+	if resp != nil && resp.MCPToolResult != nil {
+		if resp.ChatMessage != nil {
+			if resp.ChatMessage.ChatToolMessage == nil {
+				resp.ChatMessage.ChatToolMessage = &schemas.ChatToolMessage{}
+			}
+			resp.ChatMessage.ChatToolMessage.MCPToolResult = resp.MCPToolResult
+		}
+		if resp.ResponsesMessage != nil {
+			if resp.ResponsesMessage.ResponsesToolMessage == nil {
+				resp.ResponsesMessage.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+			}
+			resp.ResponsesMessage.ResponsesToolMessage.MCPToolResult = resp.MCPToolResult
+		}
+	}
 	return resp, nil
 }
 
@@ -239,7 +255,8 @@ func (m *MCPManager) executeToolForAgent(ctx *schemas.BifrostContext, request *s
 
 // ExecuteChatTool executes an MCP tool call and returns the result as a chat message.
 // This is the canonical entry point for manual MCP tool execution in Chat format.
-// Bifrost.ExecuteChatMCPTool delegates here.
+// Bifrost.ExecuteChatMCPTool delegates here. The returned ChatToolMessage also
+// carries MCPToolResult for callers that need protocol-native content.
 func (m *MCPManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	if toolCall == nil {
 		return nil, &schemas.BifrostError{
@@ -269,7 +286,8 @@ func (m *MCPManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *sche
 }
 
 // ExecuteResponsesTool executes an MCP tool call and returns the result as a responses
-// message. Bifrost.ExecuteResponsesMCPTool delegates here.
+// message. Bifrost.ExecuteResponsesMCPTool delegates here. The returned
+// ResponsesToolMessage also carries the protocol-native MCPToolResult.
 func (m *MCPManager) ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
 	if toolCall == nil {
 		return nil, &schemas.BifrostError{
