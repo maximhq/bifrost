@@ -8,9 +8,12 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func mediaPartToGeminiPart(partType schemas.EmbeddingContentPartType, media *schemas.EmbeddingMediaPart) (*Part, error) {
+func mediaPartToGeminiPart(partType schemas.EmbeddingContentPartType, media *schemas.EmbeddingMediaPart, allowedURLSchemes ...string) (*Part, error) {
 	if err := media.Validate(); err != nil {
-		return nil, err
+		return nil, providerUtils.InvalidRequestErrorf("%s", err)
+	}
+	if len(allowedURLSchemes) == 0 {
+		allowedURLSchemes = defaultGeminiImageURLSchemes
 	}
 
 	defaultMime := map[schemas.EmbeddingContentPartType]string{
@@ -45,9 +48,9 @@ func mediaPartToGeminiPart(partType schemas.EmbeddingContentPartType, media *sch
 	}
 	url := *media.URL
 	if partType == schemas.EmbeddingContentPartTypeImage {
-		sanitizedURL, err := schemas.SanitizeImageURL(url)
+		sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(url, allowedURLSchemes...)
 		if err != nil {
-			return nil, err
+			return nil, providerUtils.InvalidRequestErrorf("%s", err)
 		}
 		urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
 		if urlInfo.Type == schemas.ImageContentTypeBase64 {
@@ -57,7 +60,7 @@ func mediaPartToGeminiPart(partType schemas.EmbeddingContentPartType, media *sch
 			}
 			decoded, err := decodeBase64StringToBytes(data)
 			if err != nil {
-				return nil, err
+				return nil, providerUtils.InvalidRequestErrorf("%s", err)
 			}
 			if urlInfo.MediaType != nil && (media.MIMEType == nil || *media.MIMEType == "") {
 				mimeType = *urlInfo.MediaType
@@ -86,22 +89,22 @@ func mediaPartToGeminiPart(partType schemas.EmbeddingContentPartType, media *sch
 	}, nil
 }
 
-func embeddingContentPartToGeminiPart(part schemas.EmbeddingContentPart) (*Part, error) {
+func embeddingContentPartToGeminiPart(part schemas.EmbeddingContentPart, allowedURLSchemes ...string) (*Part, error) {
 	if err := part.Validate(); err != nil {
-		return nil, err
+		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
 	switch part.Type {
 	case schemas.EmbeddingContentPartTypeText:
 		return &Part{Text: *part.Text}, nil
 	case schemas.EmbeddingContentPartTypeImage:
-		return mediaPartToGeminiPart(part.Type, part.Image)
+		return mediaPartToGeminiPart(part.Type, part.Image, allowedURLSchemes...)
 	case schemas.EmbeddingContentPartTypeAudio:
-		return mediaPartToGeminiPart(part.Type, part.Audio)
+		return mediaPartToGeminiPart(part.Type, part.Audio, allowedURLSchemes...)
 	case schemas.EmbeddingContentPartTypeFile:
-		return mediaPartToGeminiPart(part.Type, part.File)
+		return mediaPartToGeminiPart(part.Type, part.File, allowedURLSchemes...)
 	case schemas.EmbeddingContentPartTypeVideo:
-		return mediaPartToGeminiPart(part.Type, part.Video)
+		return mediaPartToGeminiPart(part.Type, part.Video, allowedURLSchemes...)
 	default:
 		return nil, providerUtils.InvalidRequestErrorf("unsupported embedding content part type %q", part.Type)
 	}
@@ -109,14 +112,15 @@ func embeddingContentPartToGeminiPart(part schemas.EmbeddingContentPart) (*Part,
 
 // EmbeddingContentToGeminiContent converts a Bifrost EmbeddingContent (a slice
 // of typed parts) into the Gemini Content struct used by both the embedContent
-// and batchEmbedContents endpoints.
-func EmbeddingContentToGeminiContent(content schemas.EmbeddingContent) (*Content, error) {
+// and batchEmbedContents endpoints. Callers that accept image URLs beyond
+// http/https - Vertex resolves gs:// - pass their own scheme allowlist.
+func EmbeddingContentToGeminiContent(content schemas.EmbeddingContent, allowedURLSchemes ...string) (*Content, error) {
 	if err := content.Validate(); err != nil {
-		return nil, err
+		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 	parts := make([]*Part, 0, len(content))
 	for _, contentPart := range content {
-		part, err := embeddingContentPartToGeminiPart(contentPart)
+		part, err := embeddingContentPartToGeminiPart(contentPart, allowedURLSchemes...)
 		if err != nil {
 			return nil, err
 		}
