@@ -18,6 +18,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 		ResponsesInputHistory:   `[{"role":"user","content":"hi"}]`,
 		OutputMessage:           `{"role":"assistant","content":"world"}`,
 		ResponsesOutput:         `[{"role":"assistant","content":"there"}]`,
+		EmbeddingInput:          `[{"content":[{"type":"text","text":"embed me"}]}]`,
 		EmbeddingOutput:         `[{"embedding":[0.1]}]`,
 		RerankOutput:            `[{"score":0.9}]`,
 		Params:                  `{"temperature":0.7}`,
@@ -56,6 +57,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Equal(t, len(payloadFields)+1+6, len(payload), "payload map should have all payload fields plus metadata and index fields")
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
+	assert.Equal(t, `[{"content":[{"type":"text","text":"embed me"}]}]`, payload["embedding_input"])
 	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, payload["guardrail_debug"])
 	assert.Equal(t, `routing log`, payload["routing_engine_logs"])
 	assert.Equal(t, metadata, payload["metadata"], "metadata must be written to the snapshot for object consumers")
@@ -64,6 +66,8 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	ClearPayload(log)
 	assert.Empty(t, log.InputHistory)
 	assert.Empty(t, log.OutputMessage)
+	assert.Empty(t, log.EmbeddingInput)
+	assert.Nil(t, log.EmbeddingInputParsed)
 	assert.Empty(t, log.RawRequest)
 	assert.Empty(t, log.GuardrailDebug)
 	assert.Empty(t, log.RoutingEngineLogs)
@@ -85,6 +89,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, log.InputHistory)
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, log.OutputMessage)
+	assert.Equal(t, `[{"content":[{"type":"text","text":"embed me"}]}]`, log.EmbeddingInput)
 	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, log.GuardrailDebug)
 	assert.Equal(t, `routing log`, log.RoutingEngineLogs)
 	require.NotNil(t, log.Metadata)

@@ -1,3 +1,4 @@
+import { readStoredWarpModelKey, storeWarpModelKey } from "@/components/warp/warpComposer.utils";
 import type { WarpQuestion, WarpUsage } from "@/components/warp/warpStream.utils";
 import { WarpStreamSession } from "@/components/warp/warpStreamSession";
 import { useFeatureFlag } from "@/hooks/useFeatureFlag";
@@ -107,6 +108,15 @@ interface WarpContextValue {
 	question: WarpQuestion | null;
 	setQuestion: (question: WarpQuestion | null) => void;
 	setConversationId: (id: string) => void;
+	/**
+	 * The model this viewer picked, as a warpModelKey, or null for none.
+	 *
+	 * A preference, not a setting: the panel resolves it against the models the
+	 * operator exposes on every read (resolveWarpModel). Provider state so it
+	 * survives the dock closing, like the rest of the thread.
+	 */
+	selectedModelKey: string | null;
+	selectModel: (key: string) => void;
 }
 
 const WarpContext = createContext<WarpContextValue | null>(null);
@@ -142,6 +152,7 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 	const [turns, setTurns] = useState<WarpTurn[]>([]);
 	const [conversationId, setConversationIdState] = useState("");
 	const [question, setQuestion] = useState<WarpQuestion | null>(null);
+	const [selectedModelKey, setSelectedModelKey] = useState<string | null>(readStoredWarpModelKey);
 	// One session for the provider's lifetime. The sink only closes over state
 	// setters, which are stable, so nothing here goes stale across renders.
 	const [stream] = useState(
@@ -164,6 +175,10 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 	const toggle = useCallback(() => setIsOpen((current) => !current), []);
 	const appendTurn = useCallback((turn: WarpTurn) => setTurns((current) => [...current, turn]), []);
 	const replaceTurns = useCallback((next: WarpTurn[]) => setTurns(next), []);
+	const selectModel = useCallback((key: string) => {
+		setSelectedModelKey(key);
+		storeWarpModelKey(key);
+	}, []);
 	// Clearing starts a new thread as well as a new transcript, or the next
 	// question would be appended to the conversation just discarded.
 	const clear = useCallback(() => {
@@ -191,8 +206,25 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 			setConversationId,
 			question,
 			setQuestion,
+			selectedModelKey,
+			selectModel,
 		}),
-		[isOpen, open, close, toggle, turns, stream, appendTurn, replaceTurns, clear, conversationId, setConversationId, question],
+		[
+			isOpen,
+			open,
+			close,
+			toggle,
+			turns,
+			stream,
+			appendTurn,
+			replaceTurns,
+			clear,
+			conversationId,
+			setConversationId,
+			question,
+			selectedModelKey,
+			selectModel,
+		],
 	);
 	return <WarpContext.Provider value={isWarpEnabled ? value : null}>{children}</WarpContext.Provider>;
 }

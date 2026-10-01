@@ -76,7 +76,22 @@ const (
 	// silently clamping a number the operator typed to something else.
 	WarpMinTemperature = 0.0
 	WarpMaxTemperature = 2.0
+
+	// WarpMaxAdditionalModels bounds how many models an operator may expose
+	// beside the default. The list is offered whole in the panel's model
+	// switcher, so the ceiling is about a menu somebody can still read rather
+	// than anything the server struggles with.
+	WarpMaxAdditionalModels = 20
 )
+
+// WarpModel is one provider and model pair Warp may run on, with the provider
+// key it is pinned to. APIKeyID follows WarpConfig.APIKeyID: a reference, not a
+// credential, and empty for a provider that needs no key.
+type WarpModel struct {
+	Provider ModelProvider `json:"provider"`
+	Model    string        `json:"model"`
+	APIKeyID string        `json:"api_key_id,omitempty"`
+}
 
 // WarpReasoningEfforts is every value ReasoningEffort accepts, in the order
 // the settings page lists them. It mirrors ResponsesParametersReasoning.Effort
@@ -106,6 +121,9 @@ type WarpConfig struct {
 	// Empty is valid and common: a provider on a trusted network, or one using
 	// ambient IAM credentials, needs no key at all.
 	APIKeyID string `json:"api_key_id,omitempty"`
+	// AdditionalModels are the other models an operator has exposed. Provider
+	// and Model above stay the default; see ForModel.
+	AdditionalModels []WarpModel `json:"additional_models,omitempty"`
 	// MaxIterations bounds the agent loop. Zero means WarpDefaultMaxIterations.
 	MaxIterations int `json:"max_iterations,omitempty"`
 	// RequestTimeoutSeconds bounds a single upstream call. Zero means
@@ -155,6 +173,44 @@ type WarpConfig struct {
 	RetiredLogVectorStoreNamespaces []string `json:"-"`
 
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// Models returns every model a turn may run on, the default first.
+func (c *WarpConfig) Models() []WarpModel {
+	if c == nil {
+		return nil
+	}
+	models := make([]WarpModel, 0, 1+len(c.AdditionalModels))
+	if c.Provider != "" && c.Model != "" {
+		models = append(models, WarpModel{Provider: c.Provider, Model: c.Model, APIKeyID: c.APIKeyID})
+	}
+	return append(models, c.AdditionalModels...)
+}
+
+// ForModel returns the config a turn on the named model runs under: a copy
+// with Provider, Model and APIKeyID pointed at that entry, so everything
+// downstream keeps reading the same three fields. An empty pair means the
+// default and returns the receiver.
+//
+// The second result is false when the pair is not one the operator exposed.
+// The pair is client-sent, so this lookup is what keeps a dashboard user from
+// running Warp on a model nobody approved; the key is always the entry's own
+// and never something the request can name.
+func (c *WarpConfig) ForModel(provider ModelProvider, model string) (*WarpConfig, bool) {
+	if c == nil {
+		return nil, false
+	}
+	if provider == "" && model == "" {
+		return c, true
+	}
+	for _, candidate := range c.Models() {
+		if candidate.Provider == provider && candidate.Model == model {
+			selected := *c
+			selected.Provider, selected.Model, selected.APIKeyID = candidate.Provider, candidate.Model, candidate.APIKeyID
+			return &selected, true
+		}
+	}
+	return nil, false
 }
 
 // EffectiveMaxIterations resolves the configured loop bound, substituting the

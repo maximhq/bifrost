@@ -254,6 +254,8 @@ export interface CreateMCPClientRequest {
 	// Only meaningful when connection_type === "http". See MCPClientConfig's
 	// field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	// Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
+	allowed_extra_headers?: string[];
 }
 
 export interface OAuthFlowResponse {

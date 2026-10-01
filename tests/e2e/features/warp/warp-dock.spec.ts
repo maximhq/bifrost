@@ -46,9 +46,13 @@ async function enableWarpFlag(page: Page) {
   })
 }
 
-async function mockWarpConfig(page: Page) {
+async function mockWarpConfig(page: Page, additionalModels: { provider: string; model: string }[] = []) {
   await page.route('**/api/warp/config', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(configuredWarp) }),
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...configuredWarp, additional_models: additionalModels }),
+    }),
   )
   await page.route('**/api/warp/log-index/status', (route) =>
     route.fulfill({
@@ -99,5 +103,118 @@ test.describe('Warp dock and an in-flight answer', () => {
     await expect(page.getByTestId('warp-message-assistant')).toContainText('Two requests hit a 429.')
     // The answer is filed, not still streaming, so the composer is ready again.
     await expect(page.getByTestId('warp-stop-btn')).toHaveCount(0)
+  })
+})
+
+// Warp ran on exactly one model, and the composer's model chip was a link to
+// the settings page for whoever was looking at it. An administrator can now
+// expose several models: the chip switches between them, the request names the
+// one picked, and the way into settings is a separate control.
+test.describe('Warp model switcher', () => {
+  test.beforeEach(async ({ dashboardPage }) => {
+    await enableWarpFlag(dashboardPage.page)
+    await dashboardPage.goto()
+    await expect(dashboardPage.pageTitle).toBeVisible()
+    // The first-run checklist is a fixed card in the bottom-right corner, over
+    // the dock's composer, so a click on the model chip would time out against
+    // it. Snoozed with its own cookie, the same way the config suite does; each
+    // test reloads after setting up its routes, which is when it takes effect.
+    await dashboardPage.page.context().addCookies([
+      {
+        name: 'bifrost_onboarding_remind_at',
+        value: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        url: new URL(dashboardPage.page.url()).origin,
+      },
+    ])
+  })
+
+  test('asks on the model picked from the exposed list, and remembers the pick', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page, [{ provider: 'anthropic', model: 'claude-sonnet-5' }])
+    const sent: { provider?: string; model?: string }[] = []
+    await page.route('**/api/warp/chat', async (route) => {
+      sent.push(route.request().postDataJSON() as { provider?: string; model?: string })
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse('Answered.') })
+    })
+    await page.reload()
+
+    await page.getByTestId('topbar-warp-btn').click()
+    const chip = page.getByTestId('warp-composer-model')
+    await expect(chip).toContainText('gpt-5.6-luna')
+
+    // With nothing picked the request names no model, so the server's default answers.
+    const composer = page.getByTestId('warp-composer-input')
+    await composer.fill('first question')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-message-assistant')).toHaveCount(1)
+    expect(sent).toHaveLength(1)
+    expect(sent[0].provider).toBeUndefined()
+    expect(sent[0].model).toBeUndefined()
+
+    await chip.click()
+    await expect(page.getByTestId('warp-model-option-openai-gpt-5.6-luna')).toContainText('Default')
+    await page.getByTestId('warp-model-option-anthropic-claude-sonnet-5').click()
+    await expect(chip).toContainText('claude-sonnet-5')
+
+    await composer.fill('second question')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-message-assistant')).toHaveCount(2)
+    expect(sent).toHaveLength(2)
+    expect(sent[1].provider).toBe('anthropic')
+    expect(sent[1].model).toBe('claude-sonnet-5')
+
+    // The pick is this browser's preference, so it outlives a reload.
+    await page.reload()
+    await page.getByTestId('topbar-warp-btn').click()
+    await expect(page.getByTestId('warp-composer-model')).toContainText('claude-sonnet-5')
+  })
+
+  test('a single configured model is a label with settings beside it, not a link', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page)
+    await page.reload()
+
+    await page.getByTestId('topbar-warp-btn').click()
+    const chip = page.getByTestId('warp-composer-model')
+    await expect(chip).toContainText('gpt-5.6-luna')
+    // Nothing to switch to, so the chip opens no menu and goes nowhere.
+    await chip.click()
+    await expect(page.getByTestId('warp-model-menu')).toHaveCount(0)
+    await expect(page).not.toHaveURL(/\/workspace\/config\/warp/)
+
+    // Settings is its own control. This suite runs as the local administrator;
+    // the control is withheld from callers without Warp Update.
+    await page.getByTestId('warp-composer-settings').click()
+    await expect(page).toHaveURL(/\/workspace\/config\/warp/)
+  })
+
+  test('falls back to the default when the remembered model is no longer exposed', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page, [{ provider: 'anthropic', model: 'claude-sonnet-5' }])
+    await page.reload()
+    await page.getByTestId('topbar-warp-btn').click()
+    await page.getByTestId('warp-composer-model').click()
+    await page.getByTestId('warp-model-option-anthropic-claude-sonnet-5').click()
+    await expect(page.getByTestId('warp-composer-model')).toContainText('claude-sonnet-5')
+
+    // The administrator removes that model. A request still naming it would be
+    // refused, so the panel must stop offering it and stop sending it.
+    await page.unroute('**/api/warp/config')
+    await mockWarpConfig(page)
+    const sent: { provider?: string; model?: string }[] = []
+    await page.route('**/api/warp/chat', async (route) => {
+      sent.push(route.request().postDataJSON() as { provider?: string; model?: string })
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse('Answered.') })
+    })
+    await page.reload()
+
+    await page.getByTestId('topbar-warp-btn').click()
+    await expect(page.getByTestId('warp-composer-model')).toContainText('gpt-5.6-luna')
+    const composer = page.getByTestId('warp-composer-input')
+    await composer.fill('still works?')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-message-assistant')).toHaveCount(1)
+    expect(sent[0].provider).toBeUndefined()
+    expect(sent[0].model).toBeUndefined()
   })
 })

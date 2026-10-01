@@ -779,6 +779,22 @@ func TestConvertSingleBedrockMessageToBifrostMessages_ImageBlock(t *testing.T) {
 // BedrockContentBlock field to land on (only "cachePoint" is a recognized JSON key), so it must be
 // unmarshalled from real JSON — a struct literal can't reproduce the bug since there's no field to
 // set. Bedrock Converse expects a standalone trailing cachePoint entry instead.
+// TestBedrockInvokeRequest_UnmarshalJSON_TitanMultimodalFieldsNotExtraParams pins that typed Titan
+// embedding fields stay out of ExtraParams, so the raw copy cannot override the converted request.
+func TestBedrockInvokeRequest_UnmarshalJSON_TitanMultimodalFieldsNotExtraParams(t *testing.T) {
+	raw := `{"inputText":"a cat","inputImage":"aGVsbG8=","embeddingConfig":{"outputEmbeddingLength":256}}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	assert.Equal(t, "aGVsbG8=", req.InputImage)
+	require.NotNil(t, req.EmbeddingConfig)
+	require.NotNil(t, req.EmbeddingConfig.OutputEmbeddingLength)
+	assert.Equal(t, 256, *req.EmbeddingConfig.OutputEmbeddingLength)
+	assert.NotContains(t, req.ExtraParams, "inputImage")
+	assert.NotContains(t, req.ExtraParams, "embeddingConfig")
+}
+
 func TestBedrockInvokeRequest_UnmarshalJSON_TextContentBlockCacheControlSurvives(t *testing.T) {
 	raw := `{
 		"anthropic_version": "bedrock-2023-05-31",

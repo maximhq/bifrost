@@ -1,5 +1,7 @@
 import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import type { ModelProvider } from "@/lib/types/config";
+import type { WarpConfig, WarpConfigInput } from "@/lib/types/warp";
+import { v4 as uuid } from "uuid";
 
 export interface WarpEmbeddingFields {
 	embeddingProvider: string;
@@ -54,4 +56,80 @@ export const embeddingSpaceChanged = (current: WarpEmbeddingFields, saved: WarpE
 		current.embeddingModel.trim() !== saved.embeddingModel.trim() ||
 		current.embeddingDimension !== saved.embeddingDimension
 	);
+};
+
+/** Mirrors schemas.WarpMaxAdditionalModels. */
+export const WARP_MAX_ADDITIONAL_MODELS = 20;
+
+/**
+ * One model in the settings form. The first row is Warp's default; the rest are
+ * the additional models the panel may switch to. `id` only keys the row in
+ * React and never leaves the form.
+ */
+export interface WarpModelRow {
+	id: string;
+	provider: string;
+	model: string;
+	apiKeyID: string;
+}
+
+export const newWarpModelRow = (): WarpModelRow => ({ id: uuid(), provider: "", model: "", apiKeyID: "" });
+
+type WarpModelFields = Pick<WarpConfig, "provider" | "model" | "api_key_id" | "additional_models">;
+type WarpModelValues = Omit<WarpModelRow, "id">;
+
+/** The default first, blank if unset, then the additional models. */
+const storedWarpModels = (config: WarpModelFields): WarpModelValues[] =>
+	[{ provider: config.provider ?? "", model: config.model ?? "", api_key_id: config.api_key_id }, ...(config.additional_models ?? [])].map(
+		(model) => ({ provider: model.provider, model: model.model, apiKeyID: model.api_key_id ?? "" }),
+	);
+
+/** The form's rows for a stored config: always the default row, then one per additional model. */
+export const warpModelRowsFromConfig = (config: WarpModelFields): WarpModelRow[] =>
+	storedWarpModels(config).map((model) => ({ id: uuid(), ...model }));
+
+/** The rows as the write body carries them: the first is the default, the rest additional_models. */
+export const warpModelsPayload = (
+	rows: WarpModelValues[],
+): Pick<WarpConfigInput, "provider" | "model" | "api_key_id" | "additional_models"> => {
+	const [first, ...rest] = rows;
+	return {
+		provider: first?.provider.trim() ?? "",
+		model: first?.model.trim() ?? "",
+		api_key_id: first?.apiKeyID ?? "",
+		additional_models: rest.map((row) => ({
+			provider: row.provider.trim(),
+			model: row.model.trim(),
+			// Omitted rather than "", matching how the server returns an unpinned entry.
+			...(row.apiKeyID ? { api_key_id: row.apiKeyID } : {}),
+		})),
+	};
+};
+
+/** Whether the rows differ from what is stored. Compared as the payload, so row ids and padding never read as an edit. */
+export const warpModelRowsChanged = (rows: WarpModelValues[], config: WarpModelFields): boolean =>
+	JSON.stringify(warpModelsPayload(rows)) !== JSON.stringify(warpModelsPayload(storedWarpModels(config)));
+
+/**
+ * One message per row, null where the row is fine. Mirrors validateAdditionalModels on the server.
+ *
+ * The default may be left blank while Warp is off, since the form can be filled
+ * in over several sittings. An additional row is never a draft of anything: it
+ * is either a complete choice or it should not be in the list.
+ */
+export const validateWarpModelRows = (rows: WarpModelValues[], enabled: boolean): (string | null)[] => {
+	const seen = new Set<string>();
+	return rows.map((row, index) => {
+		const provider = row.provider.trim();
+		const model = row.model.trim();
+		if (!provider || !model) {
+			if (index === 0) return enabled ? "Choose a provider and model to enable Warp." : null;
+			return "Choose a provider and model, or remove this model.";
+		}
+		// The pair is how a question names its model, so a repeat would be ambiguous between two keys.
+		const pair = `${provider}\u0000${model}`;
+		if (seen.has(pair)) return "This provider and model is already listed.";
+		seen.add(pair);
+		return null;
+	});
 };

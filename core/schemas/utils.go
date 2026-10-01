@@ -2397,6 +2397,11 @@ func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
 }
 
+// IsTitanMultimodalEmbeddingModel checks if the model is Titan's multimodal embedding model.
+func IsTitanMultimodalEmbeddingModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "titan-embed-image")
+}
+
 // IsGrokModel checks if the model is an xAI Grok model.
 func IsGrokModel(model string) bool {
 	return strings.Contains(model, "grok")

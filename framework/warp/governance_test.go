@@ -121,8 +121,8 @@ func TestWarpDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
 	budgets, ok := out["budgets"].([]map[string]any)
 	require.True(t, ok)
 	require.Len(t, budgets, 1)
-	require.InDelta(t, 100.0, budgets[0]["max_limit"], 0.001)
-	require.InDelta(t, 42.0, budgets[0]["current_usage"], 0.001)
+	require.InDelta(t, 100.0, budgets[0]["max_limit_usd"], 0.001)
+	require.InDelta(t, 42.0, budgets[0]["current_usage_usd"], 0.001)
 
 	rateLimit, ok := out["rate_limit"].(map[string]any)
 	require.True(t, ok)
@@ -167,7 +167,7 @@ func TestWarpDescribeVirtualKeyBudgetReportsEffectiveLimitUnderOverride(t *testi
 	require.NoError(t, err)
 
 	budgets := result.(map[string]any)["budgets"].([]map[string]any)
-	require.InDelta(t, 150.0, budgets[0]["max_limit"], 0.001, "override amount must be folded into the reported cap")
+	require.InDelta(t, 150.0, budgets[0]["max_limit_usd"], 0.001, "override amount must be folded into the reported cap")
 	require.Equal(t, true, budgets[0]["override_active"])
 }
 
@@ -229,9 +229,9 @@ func TestWarpDescribeVirtualKeyReportsWhatTheDecoratorOverlays(t *testing.T) {
 		require.Equal(t, true, out["access_profile_managed"])
 		budgets := out["budgets"].([]map[string]any)
 		require.Len(t, budgets, 1)
-		require.InDelta(t, 450.0, budgets[0]["max_limit"], 0.001, "override folded in")
-		require.InDelta(t, 380.28, budgets[0]["current_usage"], 0.001)
-		require.InDelta(t, 69.72, budgets[0]["remaining"], 0.001)
+		require.InDelta(t, 450.0, budgets[0]["max_limit_usd"], 0.001, "override folded in")
+		require.InDelta(t, 380.28, budgets[0]["current_usage_usd"], 0.001)
+		require.InDelta(t, 69.72, budgets[0]["remaining_usd"], 0.001)
 		require.Equal(t, int64(1000), out["rate_limit"].(map[string]any)["request_max_limit"])
 		require.Equal(t, map[string]any{"id": "u-vrinda", "name": "Vrinda"}, out["assigned_user"])
 		guidance, _ := out["guidance"].(string)
@@ -253,8 +253,8 @@ func TestWarpDescribeVirtualKeyReportsWhatTheDecoratorOverlays(t *testing.T) {
 // subtraction itself got it wrong often enough. It never goes below zero: an
 // overspent budget has nothing left, not a negative amount.
 func TestWarpBudgetSummaryReportsRemaining(t *testing.T) {
-	require.InDelta(t, 30.0, budgetSummary(tables.TableBudget{MaxLimit: 100, CurrentUsage: 70})["remaining"], 0.001)
-	require.InDelta(t, 0.0, budgetSummary(tables.TableBudget{MaxLimit: 100, CurrentUsage: 130})["remaining"], 0.001)
+	require.InDelta(t, 30.0, budgetSummary(tables.TableBudget{MaxLimit: 100, CurrentUsage: 70})["remaining_usd"], 0.001)
+	require.InDelta(t, 0.0, budgetSummary(tables.TableBudget{MaxLimit: 100, CurrentUsage: 130})["remaining_usd"], 0.001)
 }
 
 type fakeUserGovernanceReader struct {
@@ -311,7 +311,7 @@ func TestWarpDescribeUserLimits(t *testing.T) {
 	require.Equal(t, true, profile["active"])
 	require.Equal(t, expires, profile["expires_at"])
 	budgets := profile["budgets"].([]map[string]any)
-	require.InDelta(t, 69.72, budgets[0]["remaining"], 0.001)
+	require.InDelta(t, 69.72, budgets[0]["remaining_usd"], 0.001)
 	rateLimit := profile["rate_limit"].(map[string]any)
 	require.Equal(t, int64(1000), rateLimit["request_max_limit"])
 	require.Equal(t, "1h", rateLimit["request_reset_duration"])
@@ -319,10 +319,10 @@ func TestWarpDescribeUserLimits(t *testing.T) {
 	require.Len(t, providers, 1)
 	require.Equal(t, "databricks", providers[0]["provider"])
 	require.Equal(t, []string{"dbrx"}, providers[0]["allowed_models"])
-	require.InDelta(t, 20.0, providers[0]["budgets"].([]map[string]any)[0]["remaining"], 0.001)
+	require.InDelta(t, 20.0, providers[0]["budgets"].([]map[string]any)[0]["remaining_usd"], 0.001)
 	models := providers[0]["model_budgets"].([]map[string]any)
 	require.Equal(t, "dbrx", models[0]["model"])
-	require.Contains(t, out["guidance"], "remaining is max_limit minus current_usage")
+	require.Contains(t, out["guidance"], "remaining_usd is max_limit_usd minus current_usage_usd")
 
 	// Nobody governs this person at the user level, and the result says so
 	// rather than handing over an empty list to be read as a failed lookup.
@@ -495,4 +495,31 @@ func TestWarpPromptSendsExistenceChecksForKeysToDescribeVirtualKey(t *testing.T)
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 	require.Contains(t, content, "describe_virtual_key by exact name is the existence check")
 	require.Contains(t, content, "never say a key does not exist until describe_virtual_key has failed to find it by name")
+}
+
+// A budget amount has to say what it is an amount of. The summary used to
+// carry bare numbers under max_limit, current_usage and remaining, and nothing
+// in the tool text or the prompt said they were dollars - so a model reading
+// "max_limit": 5000 reported "5,000 units per month". The unit now rides on
+// the key, right beside the number, and the text around it says the same.
+func TestWarpBudgetAmountsNameTheirCurrency(t *testing.T) {
+	summary := budgetSummary(tables.TableBudget{ID: "b-1", MaxLimit: 5000, CurrentUsage: 120.5, ResetDuration: "1M"})
+	require.InDelta(t, 5000.0, summary["max_limit_usd"], 0.001)
+	require.InDelta(t, 120.5, summary["current_usage_usd"], 0.001)
+	require.InDelta(t, 4879.5, summary["remaining_usd"], 0.001)
+	for _, bare := range []string{"max_limit", "current_usage", "remaining"} {
+		require.NotContains(t, summary, bare, "a unitless amount is what got read as \"units\"")
+	}
+
+	// Both tools hand out the same summary, so both say what the amounts are.
+	virtualKey, ok := toolByName(buildTools(), "describe_virtual_key")
+	require.True(t, ok)
+	require.Contains(t, virtualKey.description, "US dollars")
+	require.Contains(t, describeUserLimitsTool().description, "US dollars")
+
+	// And the model is told how to write them, where it is told how to report a budget.
+	require.Contains(t, UserLimitsGuidance, "US dollars")
+	require.Contains(t, UserLimitsGuidance, "$")
+	governed := describeUserGovernance(&UserGovernance{UserID: "u-1", Profiles: []UserGovernanceProfile{{Name: "admin", Active: true}}})
+	require.Contains(t, governed["guidance"], "US dollars")
 }

@@ -1,10 +1,18 @@
 import { Button } from "@/components/ui/button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { matchWarpCommands, resolveWarpCommand, type WarpCommand } from "@/components/warp/warpCommands";
 import { cn } from "@/lib/utils";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { warpModelLabel } from "./warpComposer.utils";
+import type { WarpModel } from "@/lib/types/warp";
+import { hasProviderIcon, warpModelKey, warpModelLabel } from "./warpComposer.utils";
 import { Link } from "@tanstack/react-router";
-import { ArrowUp, Settings2, Square } from "lucide-react";
+import { ArrowUp, ChevronDown, Settings2, Square } from "lucide-react";
 import { useState } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 
@@ -14,8 +22,13 @@ interface WarpComposerProps {
 	disabled?: boolean;
 	/** A question card is showing above and already supplies the top gap. */
 	attached?: boolean;
-	provider?: string;
-	model?: string;
+	/** Every model the operator exposed, the default first. */
+	models: WarpModel[];
+	/** The model the next question runs on. */
+	selectedModel?: WarpModel;
+	onSelectModel: (model: WarpModel) => void;
+	/** Offers the link to Warp's settings. Only for callers who may change them. */
+	canConfigure?: boolean;
 	onSend: (question: string) => void;
 	/** Holds a message submitted mid-answer until it finishes; without it the submit is dropped. */
 	onQueue?: (question: string) => void;
@@ -26,8 +39,10 @@ export default function WarpComposer({
 	isStreaming,
 	disabled,
 	attached,
-	provider,
-	model,
+	models,
+	selectedModel,
+	onSelectModel,
+	canConfigure,
 	onCommand,
 	onSend,
 	onQueue,
@@ -131,15 +146,20 @@ export default function WarpComposer({
 					className="placeholder:text-muted-foreground max-h-48 w-full resize-none bg-transparent px-1 text-sm outline-none disabled:opacity-50"
 				/>
 				<div className="flex items-center justify-between gap-2">
-					<Link
-						to="/workspace/config/warp"
-						className="text-muted-foreground hover:text-foreground hover:bg-accent flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-xs transition-colors"
-						data-testid="warp-composer-model"
-					>
-						{provider && <RenderProviderIcon provider={provider as ProviderIconType} size="xs" className="size-3.5 shrink-0" />}
-						<span className="truncate">{warpModelLabel(provider, model)}</span>
-						<Settings2 className="size-3 shrink-0 opacity-60" />
-					</Link>
+					<div className="flex min-w-0 items-center gap-0.5">
+						<WarpModelSwitcher models={models} selectedModel={selectedModel} onSelectModel={onSelectModel} />
+						{canConfigure && (
+							<Link
+								to="/workspace/config/warp"
+								aria-label="Warp settings"
+								title="Warp settings"
+								className="text-muted-foreground hover:text-foreground hover:bg-accent flex size-5 shrink-0 items-center justify-center rounded transition-colors"
+								data-testid="warp-composer-settings"
+							>
+								<Settings2 className="size-3" />
+							</Link>
+						)}
+					</div>
 					{isStreaming ? (
 						<Button
 							type="button"
@@ -168,5 +188,77 @@ export default function WarpComposer({
 				</div>
 			</div>
 		</div>
+	);
+}
+
+function WarpModelName({ model }: { model: WarpModel }) {
+	return (
+		<>
+			{hasProviderIcon(model.provider) && (
+				<RenderProviderIcon provider={model.provider as ProviderIconType} size="xs" className="size-3.5 shrink-0" />
+			)}
+			<span className="truncate">{warpModelLabel(model.provider, model.model)}</span>
+		</>
+	);
+}
+
+interface WarpModelSwitcherProps {
+	models: WarpModel[];
+	selectedModel?: WarpModel;
+	onSelectModel: (model: WarpModel) => void;
+}
+
+/**
+ * Names the model the next question runs on, and switches between the models
+ * the operator exposed when there is more than one.
+ *
+ * A menu over that fixed list rather than ModelSelector: this picks one of a
+ * handful of configured provider and model pairs, not a model from the catalog.
+ */
+function WarpModelSwitcher({ models, selectedModel, onSelectModel }: WarpModelSwitcherProps) {
+	if (!selectedModel) return null;
+	const chipClassName = "text-muted-foreground flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-xs";
+	if (models.length < 2) {
+		return (
+			<span className={chipClassName} data-testid="warp-composer-model">
+				<WarpModelName model={selectedModel} />
+			</span>
+		);
+	}
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>
+				<button
+					type="button"
+					aria-label="Switch model"
+					className={cn(chipClassName, "hover:text-foreground hover:bg-accent cursor-pointer transition-colors")}
+					data-testid="warp-composer-model"
+				>
+					<WarpModelName model={selectedModel} />
+					<ChevronDown className="size-3 shrink-0 opacity-60" />
+				</button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent side="top" align="start" className="max-w-72" data-testid="warp-model-menu">
+				<DropdownMenuRadioGroup
+					value={warpModelKey(selectedModel)}
+					onValueChange={(key) => {
+						const next = models.find((model) => warpModelKey(model) === key);
+						if (next) onSelectModel(next);
+					}}
+				>
+					{models.map((model, index) => (
+						<DropdownMenuRadioItem
+							key={warpModelKey(model)}
+							value={warpModelKey(model)}
+							className="text-xs"
+							data-testid={`warp-model-option-${model.provider}-${model.model}`}
+						>
+							<WarpModelName model={model} />
+							{index === 0 && <span className="text-muted-foreground ml-auto pl-2 text-[10px]">Default</span>}
+						</DropdownMenuRadioItem>
+					))}
+				</DropdownMenuRadioGroup>
+			</DropdownMenuContent>
+		</DropdownMenu>
 	);
 }

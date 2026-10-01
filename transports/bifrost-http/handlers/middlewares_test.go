@@ -3398,3 +3398,161 @@ func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
 		})
 	}
 }
+
+// Copies the root span's attributes out of a flushed trace, synchronously because
+// the tracer pools the trace.
+type captureRootAttrsPlugin struct {
+	done  chan struct{}
+	name  string
+	attrs map[string]any
+}
+
+func (p *captureRootAttrsPlugin) GetName() string { return "capture-root-attrs" }
+func (p *captureRootAttrsPlugin) Cleanup() error  { return nil }
+func (p *captureRootAttrsPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	if trace == nil || trace.RootSpan == nil {
+		return nil
+	}
+	p.name = trace.RootSpan.Name
+	p.attrs = make(map[string]any, len(trace.RootSpan.Attributes))
+	for k, v := range trace.RootSpan.Attributes {
+		p.attrs[k] = v
+	}
+	return nil
+}
+
+// The root span must carry the stable OTel HTTP attributes, with http.route as the
+// matched route template rather than the raw path (#7438).
+func TestTracingMiddleware_RootSpanCarriesStableHTTPSemconv(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureRootAttrsPlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions?stream=true")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("User-Agent", "bifrost-test/1.0")
+
+	NewTracingMiddleware(tracer).Middleware()(func(c *fasthttp.RequestCtx) {
+		// The router resolves the route template only once it dispatches, so this lands
+		// after the span opens, mirroring the real chain.
+		c.SetUserValue(string(schemas.BifrostContextKeyHTTPRoute), "/openai/v1/chat/completions")
+		c.Response.SetStatusCode(fasthttp.StatusOK)
+	})(ctx)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace injection")
+	}
+
+	want := map[string]any{
+		"http.route":                "/openai/v1/chat/completions",
+		"http.request.method":       "POST",
+		"http.response.status_code": 200,
+		"url.path":                  "/openai/v1/chat/completions",
+		"url.scheme":                "http",
+		"user_agent.original":       "bifrost-test/1.0",
+	}
+	for k, v := range want {
+		if got := plugin.attrs[k]; got != v {
+			t.Errorf("stable attribute %s = %#v, want %#v", k, got, v)
+		}
+	}
+
+	// Deprecated keys stay so existing dashboards keep working.
+	legacy := map[string]any{
+		"http.method":      "POST",
+		"http.url":         "/openai/v1/chat/completions",
+		"http.user_agent":  "bifrost-test/1.0",
+		"http.status_code": 200,
+	}
+	for k, v := range legacy {
+		if got := plugin.attrs[k]; got != v {
+			t.Errorf("legacy attribute %s = %#v, want %#v (must stay)", k, got, v)
+		}
+	}
+}
+
+// The query string is dropped rather than redacted, and an unknown HTTP method
+// collapses to _OTHER so it cannot inflate cardinality.
+func TestTracingMiddleware_RootSpanDropsQueryAndNormalizes(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	run := func(t *testing.T, uri, method string) (string, map[string]any) {
+		t.Helper()
+		store := tracing.NewTraceStore(5*time.Minute, nil)
+		defer store.Stop()
+		tracer := tracing.NewTracer(store, nil, nil)
+		defer tracer.Stop()
+		plugin := &captureRootAttrsPlugin{done: make(chan struct{})}
+		tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.SetMethod(method)
+		NewTracingMiddleware(tracer).Middleware()(func(*fasthttp.RequestCtx) {})(ctx)
+
+		select {
+		case <-plugin.done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for trace injection")
+		}
+		return plugin.name, plugin.attrs
+	}
+
+	// Dropping rather than redacting means no denylist can go stale. The query must
+	// reach neither an attribute nor the span name.
+	t.Run("the query string reaches nothing on the span", func(t *testing.T) {
+		name, attrs := run(t, "/v1/realtime?ticket=SUPERSECRET&%74oken=ALSOSECRET&model=gpt-4o", "GET")
+
+		if _, ok := attrs["url.query"]; ok {
+			t.Error("url.query must not be set at all")
+		}
+		if got := attrs["url.path"]; got != "/v1/realtime" {
+			t.Errorf("url.path = %#v, want %q", got, "/v1/realtime")
+		}
+		if got := attrs["http.url"]; got != "/v1/realtime" {
+			t.Errorf("http.url = %#v, want the path with no query", got)
+		}
+		if name != "/v1/realtime" {
+			t.Errorf("span name = %q, want the path with no query", name)
+		}
+		for k, v := range attrs {
+			if str, ok := v.(string); ok && (strings.Contains(str, "SECRET") || strings.Contains(str, "gpt-4o")) {
+				t.Errorf("attribute %s carried query content: %q", k, str)
+			}
+		}
+	})
+
+	t.Run("unknown method collapses to _OTHER", func(t *testing.T) {
+		_, attrs := run(t, "/v1/chat/completions", "FOOBAR")
+		if got := attrs["http.request.method"]; got != "_OTHER" {
+			t.Errorf("http.request.method = %#v, want %q", got, "_OTHER")
+		}
+		if got := attrs["http.request.method_original"]; got != "FOOBAR" {
+			t.Errorf("http.request.method_original = %#v, want %q", got, "FOOBAR")
+		}
+		// The deprecated key keeps the raw value it has always carried.
+		if got := attrs["http.method"]; got != "FOOBAR" {
+			t.Errorf("http.method = %#v, want %q", got, "FOOBAR")
+		}
+	})
+
+	t.Run("known method is passed through without an original", func(t *testing.T) {
+		_, attrs := run(t, "/v1/chat/completions", "POST")
+		if got := attrs["http.request.method"]; got != "POST" {
+			t.Errorf("http.request.method = %#v, want %q", got, "POST")
+		}
+		if _, ok := attrs["http.request.method_original"]; ok {
+			t.Error("http.request.method_original must be absent for a known method")
+		}
+	})
+}

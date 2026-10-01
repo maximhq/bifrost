@@ -2193,7 +2193,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 }
 
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
-// Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
+// Supports Titan, Cohere and Nova embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
@@ -2233,6 +2233,19 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
 				return ToBedrockCohereEmbeddingRequest(request)
+			})
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
+		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
+
+	case "nova":
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return ToBedrockNovaEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -2302,6 +2315,42 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
+
+	case "nova":
+		var novaResp BedrockNovaEmbeddingResponse
+		novaParseTracer, novaParseHandle := providerUtils.StartResponseParseSpan(ctx)
+		umErr := sonic.Unmarshal(rawResponse, &novaResp)
+		if novaParseTracer != nil {
+			if umErr != nil {
+				novaParseTracer.EndSpan(novaParseHandle, schemas.SpanStatusError, umErr.Error())
+			} else {
+				novaParseTracer.EndSpan(novaParseHandle, schemas.SpanStatusOk, "")
+			}
+		}
+		if umErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Nova embedding response", umErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		novaConvTracer, novaConvHandle := providerUtils.StartResponseConvertorSpan(ctx)
+		converted, convErr := novaResp.ToBifrostEmbeddingResponse()
+		if novaConvTracer != nil {
+			if convErr != nil {
+				novaConvTracer.EndSpan(novaConvHandle, schemas.SpanStatusError, convErr.Error())
+			} else {
+				novaConvTracer.EndSpan(novaConvHandle, schemas.SpanStatusOk, "")
+			}
+		}
+		if convErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Nova embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		bifrostResponse = converted
+		bifrostResponse.Model = request.Model
+	}
+
+	// Titan admits only float/binary and Cohere v3 has no base64 at all, so a base64 request
+	// is served by re-encoding the float vector here rather than by asking AWS for a
+	// representation it would reject. The bytes match what Cohere v4 returns natively.
+	if shouldEncodeEmbeddingsAsBase64(request) {
+		encodeEmbeddingsAsBase64(bifrostResponse)
 	}
 
 	// Bedrock Cohere embed models omit token usage from the response body and instead
@@ -2319,6 +2368,11 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -2726,7 +2780,6 @@ func (provider *BedrockProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas
 
 // FileUpload uploads a file to S3 for Bedrock batch processing.
 func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
 		if err.Error != nil {
 			provider.logger.Error("file upload operation not allowed: %s", err.Error.Message)
@@ -4223,6 +4276,11 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	}
 
 	return response, nil
+}
+
+// ModelRetrieve is not supported by the Bedrock provider.
+func (provider *BedrockProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Bedrock provider.

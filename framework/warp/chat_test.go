@@ -443,3 +443,75 @@ func TestWarpNewTurnRejectsOversizedConversationID(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "thread-1", turn.ConversationID)
 }
+
+func chatServiceWithModels(model *scriptedModel) *Service {
+	row := validWarpConfigRow()
+	row.APIKeyID = "key-default"
+	additional := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"}]`
+	row.AdditionalModels = &additional
+	return NewService(nil,
+		WithConfigStore(&recordingStore{row: row}),
+		WithVectorStore(newFakeWarpVectorStore()),
+		WithLogReader(&fakeLogReader{}),
+		WithChatFunc(model.respond),
+	)
+}
+
+// A turn runs on the model the request names, when the operator exposed it,
+// and on the default when it names none. The start frame reports which.
+func TestWarpTurnRunsOnTheSelectedModel(t *testing.T) {
+	for name, test := range map[string]struct {
+		request      ChatRequest
+		wantProvider schemas.ModelProvider
+		wantModel    string
+		wantKey      string
+	}{
+		"no selection is the default": {ChatRequest{}, schemas.OpenAI, "gpt-4o", "key-default"},
+		"the default, named":          {ChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}, schemas.OpenAI, "gpt-4o", "key-default"},
+		"an additional model":         {ChatRequest{Provider: " anthropic ", Model: " claude-sonnet-5 "}, schemas.Anthropic, "claude-sonnet-5", "key-anthropic"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scripted := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done.")}}
+			service := chatServiceWithModels(scripted)
+			request := test.request
+			request.Messages = []ChatMessage{{Role: "user", Content: "hi"}}
+			turn, err := service.NewTurn(context.Background(), &request, 64)
+			require.NoError(t, err)
+			// The pinned key is read off the turn's config by warpInferenceContext.
+			require.Equal(t, test.wantKey, turn.config.APIKeyID)
+
+			var started Event
+			response := service.RunTurn(context.Background(), turn, func(event Event) bool {
+				if event.Type == EventStart {
+					started = event
+				}
+				return true
+			})
+			require.Equal(t, "done.", response.Answer)
+			require.Equal(t, test.wantProvider, scripted.lastProvider)
+			require.Equal(t, test.wantModel, scripted.lastModel)
+			require.Equal(t, string(test.wantProvider), started.Provider)
+			require.Equal(t, test.wantModel, started.Model)
+		})
+	}
+}
+
+// The pair is client-sent, so a model the operator never exposed must be
+// refused before anything runs - not answered on the default, and never routed
+// to a model nobody approved.
+func TestWarpNewTurnRefusesAnUnexposedModel(t *testing.T) {
+	for name, request := range map[string]ChatRequest{
+		"unknown model":                 {Provider: schemas.OpenAI, Model: "gpt-5"},
+		"exposed model, wrong provider": {Provider: schemas.Anthropic, Model: "gpt-4o"},
+		"model without provider":        {Model: "claude-sonnet-5"},
+		"provider without model":        {Provider: schemas.Anthropic},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scripted := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done.")}}
+			request.Messages = []ChatMessage{{Role: "user", Content: "hi"}}
+			_, err := chatServiceWithModels(scripted).NewTurn(context.Background(), &request, 64)
+			require.ErrorIs(t, err, ErrModelNotAvailable)
+			require.Zero(t, scripted.calls)
+		})
+	}
+}

@@ -5,6 +5,10 @@ import {
 	normalizeWarpNamespace,
 	supportsWarpEmbedding,
 	validateWarpEmbedding,
+	validateWarpModelRows,
+	warpModelRowsChanged,
+	warpModelRowsFromConfig,
+	warpModelsPayload,
 	type WarpEmbeddingFields,
 } from "./warpConfig.utils";
 
@@ -106,5 +110,94 @@ describe("embeddingSpaceChanged normalizes before comparing", () => {
 	it("still sees a real change", () => {
 		expect(embeddingSpaceChanged({ ...saved, embeddingModel: "text-embedding-3-large" }, saved)).toBe(true);
 		expect(embeddingSpaceChanged({ ...saved, embeddingDimension: 3072 }, saved)).toBe(true);
+	});
+});
+
+describe("Warp model rows", () => {
+	const stored = {
+		provider: "openai",
+		model: "gpt-4o",
+		api_key_id: "key-1",
+		additional_models: [{ provider: "anthropic", model: "claude-sonnet-5" }],
+	};
+	const values = (rows: { provider: string; model: string; apiKeyID: string }[]) =>
+		rows.map(({ provider, model, apiKeyID }) => ({ provider, model, apiKeyID }));
+
+	it("hydrates the default first, then one row per additional model", () => {
+		const rows = warpModelRowsFromConfig(stored);
+		expect(values(rows)).toEqual([
+			{ provider: "openai", model: "gpt-4o", apiKeyID: "key-1" },
+			{ provider: "anthropic", model: "claude-sonnet-5", apiKeyID: "" },
+		]);
+		expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+	});
+
+	it("always has a default row, blank on a config that never chose a model", () => {
+		expect(values(warpModelRowsFromConfig({ provider: "", model: "" }))).toEqual([{ provider: "", model: "", apiKeyID: "" }]);
+	});
+
+	it("writes the first row as the default and the rest as additional_models", () => {
+		expect(
+			warpModelsPayload([
+				{ provider: " openai ", model: " gpt-4o ", apiKeyID: "key-1" },
+				{ provider: "anthropic", model: "claude-sonnet-5", apiKeyID: "" },
+				{ provider: "openai", model: "gpt-4o-mini", apiKeyID: "key-2" },
+			]),
+		).toEqual({
+			provider: "openai",
+			model: "gpt-4o",
+			api_key_id: "key-1",
+			additional_models: [
+				{ provider: "anthropic", model: "claude-sonnet-5" },
+				{ provider: "openai", model: "gpt-4o-mini", api_key_id: "key-2" },
+			],
+		});
+	});
+
+	it("sends an empty list when only the default is left, so removed models are cleared", () => {
+		expect(warpModelsPayload([{ provider: "openai", model: "gpt-4o", apiKeyID: "" }]).additional_models).toEqual([]);
+	});
+
+	it("reads a freshly loaded config as unchanged", () => {
+		expect(warpModelRowsChanged(warpModelRowsFromConfig(stored), stored)).toBe(false);
+		expect(warpModelRowsChanged(warpModelRowsFromConfig({ provider: "", model: "" }), { provider: "", model: "" })).toBe(false);
+	});
+
+	it("sees an added, removed, edited or reordered model as a change", () => {
+		const rows = warpModelRowsFromConfig(stored);
+		expect(warpModelRowsChanged([...rows, { id: "new", provider: "openai", model: "gpt-4o-mini", apiKeyID: "" }], stored)).toBe(true);
+		expect(warpModelRowsChanged(rows.slice(0, 1), stored)).toBe(true);
+		expect(warpModelRowsChanged([rows[0], { ...rows[1], apiKeyID: "key-9" }], stored)).toBe(true);
+		// Making another model the default is a reorder.
+		expect(warpModelRowsChanged([rows[1], rows[0]], stored)).toBe(true);
+	});
+
+	it("lets the default stay blank only while Warp is off", () => {
+		const blank = [{ provider: "", model: "", apiKeyID: "" }];
+		expect(validateWarpModelRows(blank, false)).toEqual([null]);
+		expect(validateWarpModelRows(blank, true)).toEqual(["Choose a provider and model to enable Warp."]);
+		expect(validateWarpModelRows([{ provider: "openai", model: "", apiKeyID: "" }], true)[0]).toContain("Choose a provider and model");
+	});
+
+	it("never accepts a half-filled additional model, enabled or not", () => {
+		const rows = [
+			{ provider: "openai", model: "gpt-4o", apiKeyID: "" },
+			{ provider: "anthropic", model: "", apiKeyID: "" },
+		];
+		expect(validateWarpModelRows(rows, false)).toEqual([null, "Choose a provider and model, or remove this model."]);
+		expect(validateWarpModelRows(rows, true)[1]).toContain("remove this model");
+	});
+
+	it("flags a repeated provider and model on the later row, whatever its key", () => {
+		expect(
+			validateWarpModelRows(
+				[
+					{ provider: "openai", model: "gpt-4o", apiKeyID: "key-1" },
+					{ provider: "azure", model: "gpt-4o", apiKeyID: "" },
+					{ provider: "openai", model: " gpt-4o ", apiKeyID: "key-2" },
+				],
+				true,
+			),
+		).toEqual([null, null, "This provider and model is already listed."]);
 	});
 });

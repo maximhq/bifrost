@@ -136,7 +136,8 @@ func describeVirtualKeyTool() Tool {
 			"Use query_usage_by with dimension virtual_key for what it has actually spent; use this for what it is allowed to spend or call before it is throttled. " +
 			"Takes the key's id (from describe_filter_space's virtual_keys list, or a ranking row) or its exact name. " +
 			"This reads configuration, not traffic: a key that exists but has never been used is not in describe_filter_space and is still found here by name, so a name missing from that list is not proof the key does not exist. " +
-			"A key managed by an access profile reports the profile's budgets and rate limit, and names its owner; the person's full limits are then a describe_user_limits question.",
+			"A key managed by an access profile reports the profile's budgets and rate limit, and names its owner; the person's full limits are then a describe_user_limits question. " +
+			"Budget amounts are US dollars: write them with a $ sign.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
@@ -332,15 +333,20 @@ func describeVirtualKey(vk *tables.TableVirtualKey) map[string]any {
 // capped at right now (EffectiveMaxLimit, which folds in an active override
 // rather than the raw MaxLimit an override has already changed), what has
 // been spent against that cap, and when it next resets.
+//
+// The amounts carry their unit in the key. A budget is stored in US dollars,
+// but a bare "max_limit": 5000 says so nowhere, and a model that is not told
+// reports "5,000 units". The key is the one place the unit cannot be read
+// apart from the number it belongs to.
 func budgetSummary(budget tables.TableBudget) map[string]any {
 	limit := budget.EffectiveMaxLimit()
 	out := map[string]any{
-		"id":             budget.ID,
-		"max_limit":      limit,
-		"current_usage":  budget.CurrentUsage,
-		"remaining":      max(limit-budget.CurrentUsage, 0),
-		"reset_duration": budget.ResetDuration,
-		"last_reset":     budget.LastReset,
+		"id":                budget.ID,
+		"max_limit_usd":     limit,
+		"current_usage_usd": budget.CurrentUsage,
+		"remaining_usd":     max(limit-budget.CurrentUsage, 0),
+		"reset_duration":    budget.ResetDuration,
+		"last_reset":        budget.LastReset,
 	}
 	if budget.HasActiveOverride() {
 		out["override_active"] = true
@@ -416,7 +422,8 @@ func describeUserLimitsTool() Tool {
 		name: UserLimitsToolName,
 		description: "Look up what governs one person's spend: the budgets, per-provider budgets and rate limits their access profile puts on them, with live usage - their configured room, not their traffic. " +
 			"Use it for \"how much budget do I have left\", a person's limit or allowance, and any budget question about a key that describe_virtual_key reports as managed by an access profile. " +
-			"Needs the user's id: caller_user_id from describe_filter_space for the person asking, or the id on a user ranking row (query_usage_by with dimension user) for someone else - a name is not enough.",
+			"Needs the user's id: caller_user_id from describe_filter_space for the person asking, or the id on a user ranking row (query_usage_by with dimension user) for someone else - a name is not enough. " +
+			"Budget amounts are US dollars: write them with a $ sign.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
@@ -505,7 +512,7 @@ func describeUserGovernance(gov *UserGovernance) map[string]any {
 	if len(profiles) == 0 {
 		out["guidance"] = "No access profile is attached to this user, so nothing caps their spend at the user level. A budget on a key they use, or on their team, customer or business unit, may still apply."
 	} else {
-		out["guidance"] = "remaining is max_limit minus current_usage, per budget, and resets reset_duration after last_reset. An inactive or expired profile does not cap anything. Report each profile by name."
+		out["guidance"] = "remaining_usd is max_limit_usd minus current_usage_usd, per budget, in US dollars, and resets reset_duration after last_reset. An inactive or expired profile does not cap anything. Report each profile by name."
 	}
 	return out
 }

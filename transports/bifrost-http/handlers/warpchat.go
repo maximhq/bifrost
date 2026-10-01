@@ -133,7 +133,7 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 	case errors.Is(err, warp.ErrConversationTooLong):
 		SendError(ctx, fasthttp.StatusRequestEntityTooLarge, "Conversation is too long. Start a new chat.")
 		return
-	case errors.Is(err, warp.ErrEmptyConversation), errors.Is(err, warp.ErrBadRole), errors.Is(err, warp.ErrEmptyFinalTurn), errors.Is(err, warp.ErrBadConversationID):
+	case errors.Is(err, warp.ErrEmptyConversation), errors.Is(err, warp.ErrBadRole), errors.Is(err, warp.ErrEmptyFinalTurn), errors.Is(err, warp.ErrBadConversationID), errors.Is(err, warp.ErrModelNotAvailable):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	case err != nil:

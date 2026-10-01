@@ -3662,6 +3662,11 @@
                       },
                       "description": "Custom labels to add to Prometheus metrics"
                     },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "description": "Serve the /metrics scrape endpoint. Defaults to true when omitted.",
+                      "default": true
+                    },
                     "overhead_breakdown_enabled": {
                       "type": "boolean",
                       "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
@@ -4914,6 +4919,12 @@
           "type": "boolean",
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
           "default": false
+        },
+        "excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+          "default": []
         },
         "export_raw_payloads": {
           "type": "boolean",
@@ -11278,6 +11289,9 @@
           "description": "Allowed request types for the custom provider",
           "properties": {
             "list_models": {
+              "type": "boolean"
+            },
+            "model_retrieve": {
               "type": "boolean"
             },
             "text_completion": {
