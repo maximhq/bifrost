@@ -196,6 +196,9 @@ type ConfigData struct {
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+	// ProxyConfig is the global outbound proxy (the dashboard's proxy settings page), not a
+	// provider's own proxy_config.
+	ProxyConfig *GlobalProxyFileConfig `json:"proxy_config,omitempty"`
 
 	presentSections           map[string]bool
 	presentGovernanceSections map[string]bool
@@ -462,6 +465,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+		ProxyConfig       *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
 		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
 	}
 
@@ -486,6 +490,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
 	cd.FeatureFlags = temp.FeatureFlags
+	cd.ProxyConfig = temp.ProxyConfig
 	cd.presentGovernanceSections = nil
 	if rawGovernance, ok := raw["governance"]; ok && len(rawGovernance) > 0 {
 		var rawGovernanceFields map[string]json.RawMessage
@@ -1056,6 +1061,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := loadAuthConfig(ctx, config, &configData); err != nil {
 		return nil, err
 	}
+	// 9a. Global proxy config (read by the enterprise build when it builds its outbound clients)
+	loadProxyConfig(ctx, config, &configData)
 	// 10. Plugins
 	loadPlugins(ctx, config, &configData)
 	// 11. Skills registry (after plugins, before framework)
